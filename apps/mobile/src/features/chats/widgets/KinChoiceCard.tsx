@@ -30,6 +30,7 @@ import {
   kinChoiceDecidedLine,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  kinChoiceUndoOffer,
   KIN_CHOICE_DISMISS_COPY,
   kinChoiceDismissedLine,
   kinChoiceClosedLine,
@@ -67,7 +68,10 @@ import {
   type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import { visibleKinCardStatus } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
+import {
+  type KinCardNotice,
+  visibleKinCardStatus,
+} from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 
 // A mid grey: a white logo and a black one both stand out on it, in light and dark themes.
 const IMAGE_GROUND = "#8c8c8c";
@@ -546,6 +550,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   readonly choice: KinChoiceCardView;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** Whether the viewer is owner-level, for a settled card's Undo; undefined until known. */
+  readonly ownerLevel: boolean | undefined;
 }) {
   const { choice, environmentId } = props;
   // The shared minute tick: enough to retire an expired card, never a repaint loop.
@@ -587,25 +593,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const checked = kinSendTicked(warnedView, ticked) !== null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
-    choice,
-    environmentId,
-    newId: uuidv4,
-    taps,
-    heldKey,
-    state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
-    commands: { post, setSendFrom, sendEdited, saveEdited },
-    set: {
-      pending: setPending,
-      lastStatus: setLastStatus,
-      switching: setSwitching,
-      switchProblem: setSwitchProblem,
-      editBusy: setEditBusy,
-      editing: setEditing,
-      ack: setAck,
-      ticked: setTicked,
-    },
-  });
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss, undo } =
+    kinChoiceCardActions({
+      choice,
+      environmentId,
+      newId: uuidv4,
+      taps,
+      heldKey,
+      state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
+      commands: { post, setSendFrom, sendEdited, saveEdited },
+      set: {
+        pending: setPending,
+        lastStatus: setLastStatus,
+        switching: setSwitching,
+        switchProblem: setSwitchProblem,
+        editBusy: setEditBusy,
+        editing: setEditing,
+        ack: setAck,
+        ticked: setTicked,
+      },
+    });
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
     else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
@@ -678,20 +685,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
   const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
   const dismissing = pending !== null && choice.options.every((option) => option.id !== pending);
-  const notice =
-    status?.notice == null ? null : (
+  const noticeLine = (said: KinCardNotice | null | undefined) =>
+    said == null ? null : (
       <Text
         accessibilityRole="alert"
         accessibilityLiveRegion="polite"
         textRole="footnote"
         className={cn(
           "font-t3-medium",
-          status.notice.kind === "stale" ? "text-warning-foreground" : "text-danger-foreground",
+          said.kind === "stale" ? "text-warning-foreground" : "text-danger-foreground",
         )}
       >
-        {status.notice.text}
+        {said.text}
       </Text>
     );
+  const notice = noticeLine(status?.notice);
+  const undoOffer = kinChoiceUndoOffer(
+    choice,
+    { personId: props.viewerPersonId, ownerLevel: props.ownerLevel, canAct },
+    { pending, status },
+  );
 
   if (phase === "dismissed" && dismissed !== null)
     return (
@@ -903,6 +916,28 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {decided}
         </Text>
+      )}
+      {undoOffer === null ? null : (
+        <View className="items-start gap-0.5 pt-1">
+          <Button
+            label={undoOffer.label}
+            accessibilityHint={undoOffer.line}
+            tone="outline"
+            size="compact"
+            loading={undoOffer.busy}
+            disabled={undoOffer.disabled}
+            onPress={() => void undo()}
+          />
+          <Text
+            textRole="footnote"
+            className="px-1 text-foreground-muted"
+            importantForAccessibility="no"
+            accessibilityElementsHidden
+          >
+            {undoOffer.line}
+          </Text>
+          {noticeLine(undoOffer.notice)}
+        </View>
       )}
       {undone === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
