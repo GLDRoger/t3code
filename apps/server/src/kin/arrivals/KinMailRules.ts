@@ -9,6 +9,7 @@ import {
   type KinMailRuleRef,
   type KinMailRuleResumeInput,
   type KinMailRuleRunNow,
+  type KinMailRuleSetLimitInput,
   type KinMailRulesListInput,
   type KinOrgId,
 } from "@t3tools/contracts";
@@ -83,6 +84,7 @@ export class KinMailRules extends Context.Service<
       expectedHash?: string,
     ) => Effect.Effect<KinMailRule, KinChatError>;
     readonly pause: Method<KinMailRuleRef, KinMailRule>;
+    readonly setLimit: Method<KinMailRuleSetLimitInput, KinMailRule>;
     readonly resume: Method<KinMailRuleResumeInput, KinMailRule>;
     readonly remove: Method<KinMailRuleRef, KinMailRule>;
     readonly list: Method<KinMailRulesListInput, { readonly rules: ReadonlyArray<KinMailRule> }>;
@@ -242,6 +244,23 @@ const make = Effect.gen(function* () {
     }
     return yield* view(input);
   }, transaction);
+  const setLimit = Effect.fn("KinMailRules.setLimit")(function* (
+    people: People,
+    { orgId, ruleId, monthlyCap }: KinMailRuleSetLimitInput,
+  ) {
+    yield* owner(people, orgId);
+    const ref = { orgId, ruleId };
+    const row = yield* one(ref);
+    if (row.state === "removed") return yield* notFound;
+    if (row.state === "proposed") return yield* notReady;
+    if (row.monthlyCap !== monthlyCap) {
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_mail_rules SET monthly_cap = ${monthlyCap}, updated_at = ${now}
+        WHERE org_id = ${orgId} AND rule_id = ${ruleId}`;
+      yield* refresh.touch(orgId, "connections");
+    }
+    return yield* view(ref);
+  }, transaction);
   const resume = Effect.fn("KinMailRules.resume")(function* (
     people: People,
     input: KinMailRuleResumeInput,
@@ -272,10 +291,14 @@ const make = Effect.gen(function* () {
   }, transaction);
   const list = Effect.fn("KinMailRules.list")(function* (
     people: People,
-    { orgId, connectionId }: KinMailRulesListInput,
+    { orgId, connectionId, removed }: KinMailRulesListInput,
   ) {
     yield* owner(people, orgId);
-    const rows = yield* sql<RuleRow>`${rules} WHERE r.org_id = ${orgId} AND r.state != 'removed'
+    const recentRemoval =
+      removed === true
+        ? sql`r.state = 'removed' AND r.updated_at >= ${(yield* Clock.currentTimeMillis) - KEEP_MS}`
+        : sql`r.state != 'removed'`;
+    const rows = yield* sql<RuleRow>`${rules} WHERE r.org_id = ${orgId} AND ${recentRemoval}
       ${connectionId === undefined ? sql`` : sql`AND r.connection_id = ${connectionId}`}
       ORDER BY r.created_at, r.rule_id`;
     const now = yield* Clock.currentTimeMillis;
@@ -292,7 +315,11 @@ const make = Effect.gen(function* () {
     type Entry = KinMailRuleHistory["entries"][number];
     type MailEntry = Extract<Entry, { kind: "mail" }>;
     const rows = yield* sql<
-      Omit<MailEntry, "kind" | "refs"> & { class: string; refsJson: string | null }
+      Omit<MailEntry, "kind" | "refs" | "manual"> & {
+        class: string;
+        refsJson: string | null;
+        manual: 0 | 1;
+      }
     >`
       WITH recent AS (
         SELECT * FROM kin_arrivals WHERE org_id = ${input.orgId}
@@ -301,7 +328,7 @@ const make = Effect.gen(function* () {
         SELECT a.arrival_id, r.event_id, r.wakeup_id, r.settled_at,
           CASE WHEN r.outcome = 'held' THEN 'held_paused' ELSE r.state END AS state,
           CASE r.outcome WHEN 'nothing' THEN 'nothing' WHEN 'raised_card' THEN 'draft' END AS outcome,
-          NULL AS refs_json, r.hold_reason, r.outcome AS run_outcome
+          NULL AS refs_json, r.hold_reason, r.outcome AS run_outcome, r.manual
         FROM recent a JOIN kin_mail_rule_runs r ON r.org_id = a.org_id
           AND r.arrival_id = a.arrival_id AND r.rule_id = ${row.ruleId}
         UNION ALL
@@ -309,7 +336,7 @@ const make = Effect.gen(function* () {
           COALESCE(a.rule_held_at, CASE WHEN a.event_id IS NOT NULL THEN a.settled_at END),
           a.rule_state, CASE WHEN a.rule_hold_reason IS NULL AND a.event_id IS NOT NULL THEN a.outcome END,
           CASE WHEN a.rule_hold_reason IS NULL AND a.event_id IS NOT NULL THEN a.refs_json END,
-          a.rule_hold_reason, CASE WHEN a.rule_hold_reason IS NOT NULL THEN 'held' END
+          a.rule_hold_reason, CASE WHEN a.rule_hold_reason IS NOT NULL THEN 'held' END, 0
         FROM recent a WHERE a.class = 'gap' OR (a.rule_id = ${row.ruleId}
           AND a.rule_state IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM kin_mail_rule_runs r WHERE r.org_id = a.org_id
@@ -319,10 +346,10 @@ const make = Effect.gen(function* () {
       SELECT a.arrival_id AS "arrivalId", a.from_address AS "fromAddress",
         a.received_at AS "receivedAt", a.noticed_at AS "noticedAt", a.class, r.state, r.outcome,
         r.event_id AS "eventId", r.wakeup_id AS "wakeupId", r.settled_at AS "settledAt",
-        r.refs_json AS "refsJson", r.hold_reason AS "holdReason", r.run_outcome AS "runOutcome"
+        r.refs_json AS "refsJson", r.hold_reason AS "holdReason", r.run_outcome AS "runOutcome", r.manual
       FROM attempts r JOIN recent a ON a.arrival_id = r.arrival_id
       ORDER BY a.noticed_at DESC, a.arrival_id DESC, r.settled_at DESC, r.event_id DESC`;
-    const entries = rows.map(({ class: kind, refsJson, ...entry }): Entry =>
+    const entries = rows.map(({ class: kind, refsJson, manual, ...entry }): Entry =>
       kind === "gap"
         ? {
             kind: "gap",
@@ -330,7 +357,12 @@ const make = Effect.gen(function* () {
             from: entry.receivedAt ?? entry.noticedAt,
             to: entry.noticedAt,
           }
-        : { kind: "mail", ...entry, refs: Option.getOrNull(decodeRefs(refsJson)) },
+        : {
+            kind: "mail",
+            ...entry,
+            ...(manual === 1 ? { manual: true as const } : {}),
+            refs: Option.getOrNull(decodeRefs(refsJson)),
+          },
     );
     return { entries };
   }, transaction);
@@ -537,6 +569,7 @@ const make = Effect.gen(function* () {
   return KinMailRules.of({
     createFromTap,
     pause: Effect.fn("KinMailRules.pause")((people, input) => turnOff(people, input, "paused")),
+    setLimit,
     resume,
     remove: Effect.fn("KinMailRules.remove")((people, input) => turnOff(people, input, "removed")),
     list,

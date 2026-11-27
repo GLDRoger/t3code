@@ -15,6 +15,7 @@ import {
   type KinMailRulePreview,
   type KinMailRuleRef,
   type KinMailRuleRunNow,
+  type KinMailRuleSetLimitInput,
   type KinMailRulesListInput,
   type KinPersonId,
   type KinWidget,
@@ -68,6 +69,7 @@ export const KIN_MAIL_RULE_METHODS = {
   history: "kin.mailRules.history",
   preview: "kin.mailRules.preview",
   runNow: "kin.mailRules.runNow",
+  setLimit: "kin.mailRules.setLimit",
 } as const;
 
 export const KIN_MAIL_RULES = {
@@ -216,6 +218,24 @@ export const KIN_MAIL_RULES = {
   resumeRow: "Turns it on again. From then on it runs for you.",
   removeRow: "Stops it for good.",
   goneMailbox: "A mailbox no longer connected",
+  /** A mailbox's removed rules, kept 30 days so their runs can still be read; read when shown. */
+  removedShow: "Show removed rules",
+  removedHide: "Hide removed rules",
+  removedTitle: "Removed",
+  removedLoading: "Loading removed rules",
+  removedFailed: "Couldn't load removed rules.",
+  removedEmpty: "No rules removed in the last 30 days.",
+  removedOn: (day: string) => `Removed ${day}`,
+  removedNote: (day: string) => `Removed ${day}. Its runs stay here for 30 days after removal.`,
+  limitChange: "Change limit",
+  limitTitle: "Change the monthly limit",
+  limitField: "Runs a month, at most",
+  limitHint: "From 1 to 1000. Mail already held stays held; Run now can still run it.",
+  limitSave: "Save",
+  limitSaving: "Saving",
+  limitCancel: "Cancel",
+  limitInvalid: "Enter a whole number from 1 to 1000.",
+  limitFailed: "Couldn't change the limit.",
   notHere: "Mail rules aren't available here.",
 } as const;
 
@@ -342,14 +362,19 @@ export function kinMailRuleRowView(
 ): KinMailRuleRowView {
   const words = options.words ?? {};
   const copy = KIN_MAIL_RULES;
+  const state = kinMailRuleState(rule, { leads: options.leads, words });
+  const removed = rule.state === "removed";
   return {
     ruleId: rule.ruleId,
     title: kinMailRuleMatchLine(rule.match),
     does: `${leadName(options.leads, rule.agentId)}: ${kinMailRuleWhatShort(rule.what)}`,
-    counts: `${copy.counts(rule.fired, rule.monthlyCap)} · ${
-      rule.lastWakeAt === null ? copy.neverRan : copy.lastRan(when(rule.lastWakeAt, words))
-    }`,
-    state: kinMailRuleState(rule, { leads: options.leads, words }),
+    counts: removed
+      ? copy.removedOn(day(rule.updatedAt, options.now, words))
+      : `${copy.counts(rule.fired, rule.monthlyCap)} · ${
+          rule.lastWakeAt === null ? copy.neverRan : copy.lastRan(when(rule.lastWakeAt, words))
+        }`,
+    // Under the Removed group the date says it; a second "Removed" beside it says nothing.
+    state: removed ? { ...state, tone: "ok" } : state,
   };
 }
 
@@ -359,6 +384,8 @@ export interface KinMailRulePageView {
   /** The instruction whole, as the setter's card had it. */
   readonly what: string;
   readonly state: KinMailRuleStateView;
+  /** A removed rule's page is read-only: when it went, and how long its runs stay. */
+  readonly removed: string | null;
 }
 
 /** One rule's own page: its filters, the lead, who set it and when, and its limit. */
@@ -417,6 +444,8 @@ export function kinMailRulePageView(
     facts,
     what: rule.what,
     state: kinMailRuleState(rule, { leads: options.leads, words }),
+    removed:
+      rule.state === "removed" ? copy.removedNote(day(rule.updatedAt, options.now, words)) : null,
   };
 }
 
@@ -431,6 +460,7 @@ export interface KinMailRulePermissions {
   readonly history: boolean;
   readonly preview: boolean;
   readonly runNow: boolean;
+  readonly setLimit: boolean;
 }
 
 /** What the guarded commands' permission atoms allow; the host stays the authority. */
@@ -442,6 +472,7 @@ export function kinMailRulePermissions(input: {
   readonly history: boolean;
   readonly preview: boolean;
   readonly runNow: boolean;
+  readonly setLimit: boolean;
 }): KinMailRulePermissions {
   const visible = input.list !== "refused";
   const ready = input.list === "granted";
@@ -454,6 +485,7 @@ export function kinMailRulePermissions(input: {
     history: ready && input.history,
     preview: ready && input.preview,
     runNow: ready && input.runNow,
+    setLimit: ready && input.setLimit,
   };
 }
 
@@ -465,11 +497,13 @@ export interface KinMailRuleActions {
   readonly runNow: boolean;
   readonly preview: boolean;
   readonly history: boolean;
+  readonly setLimit: boolean;
 }
 
 /**
  * What one rule offers: what the viewer may do and what the host would accept for its state. A
- * rule changed outside Kin can still be stopped, never run or looked into.
+ * rule changed outside Kin can still be stopped, never run or looked into. A removed one is
+ * read-only: its runs, nothing else.
  */
 export function kinMailRuleActions(
   rule: KinMailRule,
@@ -477,14 +511,16 @@ export function kinMailRuleActions(
 ): KinMailRuleActions {
   const sound = !rule.wordingChanged && rule.match !== null;
   const runnable = (rule.state === "on" && rule.setterDemoted !== true) || rule.state === "paused";
+  const removed = rule.state === "removed";
   return {
     open: can.ready,
     pause: can.pause && rule.state === "on",
     resume: can.resume && sound && rule.state === "paused",
-    remove: can.remove && rule.state !== "removed",
+    remove: can.remove && !removed,
     runNow: can.runNow && sound && runnable,
-    preview: can.preview && sound,
+    preview: can.preview && sound && !removed,
     history: can.history && sound,
+    setLimit: can.setLimit && sound && (rule.state === "on" || rule.state === "paused"),
   };
 }
 
@@ -578,7 +614,11 @@ export function kinMailRuleHistoryRows(
       // Run now runs a mail again, so one mail can have several rows.
       key: `${entry.arrivalId}:${entry.eventId ?? entry.state}`,
       title: entry.fromAddress ?? KIN_MAIL_RULES.unknownSender,
-      detail: `${when(entry.receivedAt ?? entry.noticedAt, words)} · ${happened(entry)}`,
+      detail: [
+        when(entry.receivedAt ?? entry.noticedAt, words),
+        ...(entry.manual === true ? [KIN_MAIL_RULES.runNow] : []),
+        happened(entry),
+      ].join(" · "),
       tone: entry.state.startsWith("held_") ? "attention" : "ok",
     };
   });
@@ -639,6 +679,45 @@ export function kinMailRuleRunNowAnswer(result: KinMailRuleRunNow): {
  */
 export function kinMailRuleBreaks(text: string): ReadonlyArray<string> {
   return text.split(/(?<=@)|(?<=\.)(?=\S)/);
+}
+
+/** A typed monthly limit: a whole number from 1 to 1000, as the host takes it. */
+export function kinMailRuleLimitDraft(
+  text: string,
+): { readonly ok: true; readonly cap: number } | { readonly ok: false; readonly problem: string } {
+  const flat = text.trim();
+  const cap = /^\d{1,4}$/.test(flat) ? Number.parseInt(flat, 10) : Number.NaN;
+  return cap >= 1 && cap <= 1000
+    ? { ok: true, cap }
+    : { ok: false, problem: KIN_MAIL_RULES.limitInvalid };
+}
+
+/**
+ * A new monthly limit: nothing is sent for a number out of range or the limit it has. The host's
+ * answer is the rule as it now stands; a refusal leaves the old limit and says the host's reason.
+ */
+export async function kinMailRuleSetLimitSend(input: {
+  readonly rule: KinMailRule;
+  readonly text: string;
+  readonly online: () => boolean;
+  readonly send: (
+    input: KinMailRuleSetLimitInput,
+  ) => Promise<AtomCommandResult<KinMailRule, unknown>>;
+}): Promise<
+  | { readonly ok: true; readonly rule: KinMailRule }
+  | { readonly ok: false; readonly problem: string }
+> {
+  const draft = kinMailRuleLimitDraft(input.text);
+  if (!draft.ok) return draft;
+  if (draft.cap === input.rule.monthlyCap) return { ok: true, rule: input.rule };
+  const { orgId, ruleId } = input.rule;
+  const sent = await kinListSend({
+    online: input.online,
+    send: () => input.send({ orgId, ruleId, monthlyCap: draft.cap }),
+  });
+  return sent.ok
+    ? { ok: true, rule: sent.value }
+    : { ok: false, problem: sent.problem || KIN_MAIL_RULES.limitFailed };
 }
 
 /**
@@ -951,6 +1030,11 @@ export function makeKinMailRules<R, ER>(
     mailRuleRunNow: createKinRpcCommand(runtime, {
       label: "kin:mail-rule:run-now",
       tag: KIN_MAIL_RULE_METHODS.runNow,
+      concurrency: { mode: "singleFlight", key: byRule },
+    }),
+    mailRuleSetLimit: createKinRpcCommand(runtime, {
+      label: "kin:mail-rule:set-limit",
+      tag: KIN_MAIL_RULE_METHODS.setLimit,
       concurrency: { mode: "singleFlight", key: byRule },
     }),
   };

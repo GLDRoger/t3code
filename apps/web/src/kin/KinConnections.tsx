@@ -91,7 +91,13 @@ type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId 
 type Open =
   | { readonly kind: "connection"; readonly id: string }
   | { readonly kind: "github" }
-  | { readonly kind: "rule"; readonly id: string; readonly ruleId: string }
+  | {
+      readonly kind: "rule";
+      readonly id: string;
+      readonly ruleId: string;
+      /** Opened from the mailbox's Removed group. */
+      readonly removed: boolean;
+    }
   /** Back on the list, so a search that landed on one mailbox's rules doesn't open it again. */
   | { readonly kind: "list" };
 type Adding = { readonly title: string; readonly offered: ReadonlyArray<KinConnectionService> };
@@ -296,6 +302,7 @@ function ConnectionsBody(
           orgId={orgId}
           connectionId={opened.connectionId}
           ruleId={open.ruleId}
+          removed={open.removed}
           mailbox={address}
           onGone={() => setOpen({ kind: "connection", id: opened.connectionId })}
         />
@@ -318,7 +325,9 @@ function ConnectionsBody(
           signInAddress={view?.signInAddress ?? ""}
           differs={differs}
           onRemoved={() => setOpen({ kind: "list" })}
-          onOpenRule={(ruleId) => setOpen({ kind: "rule", id: opened.connectionId, ruleId })}
+          onOpenRule={(ruleId, removed) =>
+            setOpen({ kind: "rule", id: opened.connectionId, ruleId, removed })
+          }
         />
       </KinSettingsSubpage>
     );

@@ -4,6 +4,7 @@ import {
   AuthKinTasksScope,
   AuthSessionId,
   CLIENT_GUARDED_RPC_SCOPES,
+  KIN_RPC_AGGREGATES,
   KinChatError,
   KinOrgId,
   KinPersonId,
@@ -25,6 +26,22 @@ import type { Services } from "./KinServer.ts";
 import { KIN_READ_RPCS } from "./readRpcs.ts";
 import { admits, decodeKinAfterAccess, forPerson } from "./rpcHandlers.ts";
 import { countryFirstMessage } from "./work/companyProfile.ts";
+
+it.effect("decodes mail rule limits only from 1 through 1000", () =>
+  Effect.sync(() => {
+    const method = KinRpcs.find((rpc) => rpc._tag === "kin.mailRules.setLimit");
+    assert.isDefined(method);
+    // The socket decodes Kin payloads with the JSON codec, after the access check.
+    const decode = Schema.decodeUnknownExit(
+      Schema.toCodecJson(method!.payloadSchema as Schema.Codec<unknown, unknown>),
+    );
+    const accepts = (payload: unknown) => decode(payload)._tag === "Success";
+    const input = { orgId, ruleId: "juniper-invoices" };
+    for (const monthlyCap of [1, 1000]) assert.isTrue(accepts({ ...input, monthlyCap }));
+    for (const monthlyCap of [0, 1001, 1.5, "5", -1, Number.MAX_SAFE_INTEGER, "Infinity", null])
+      assert.isFalse(accepts({ ...input, monthlyCap }), String(monthlyCap));
+  }),
+);
 
 const orgId = KinOrgId.make("kin-default");
 const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("kin-default-owner") };
@@ -247,6 +264,7 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         for (const method of [
           "kin.mailRules.create",
           "kin.mailRules.pause",
+          "kin.mailRules.setLimit",
           "kin.mailRules.resume",
           "kin.mailRules.remove",
           "kin.mailRules.list",
@@ -263,6 +281,7 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           assert.strictEqual(kinRpcAccess(method), "person");
           assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
         }
+        assert.strictEqual(KIN_RPC_AGGREGATES["kin.mailRules.setLimit"], "kin-connections");
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
         assert.lengthOf(bills, 6);
