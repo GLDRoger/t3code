@@ -3740,7 +3740,7 @@ it.effect("Looks upgrades K232 with one mark per org, person and record", () =>
     yield* runKinMigrations();
     yield* sql`DROP TABLE IF EXISTS kin_looks`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id > 232`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[233, "Looks"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(233));
     assert.deepStrictEqual(
       yield* sql`PRAGMA table_info(kin_looks)`.pipe(
         Effect.map((columns) =>
