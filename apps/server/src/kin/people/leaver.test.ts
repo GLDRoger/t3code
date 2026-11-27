@@ -803,6 +803,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_lead_access: "agent_id granted_by person_id",
   kin_lead_deliveries: "agent_id",
   kin_leads: "agent_id created_by_person_id",
+  kin_mail_rules: "agent_id said_by",
   kin_list_proposals: "agent_id",
   kin_memory_shared_writes: "person_id",
   kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",

@@ -110,6 +110,7 @@ const tableNames = [
   "kin_lead_tool_calls",
   "kin_leads",
   "kin_list_proposals",
+  "kin_mail_rules",
   "kin_memory_heads",
   "kin_memory_labels",
   "kin_memory_reads",
@@ -2351,6 +2352,66 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
         assert.deepStrictEqual(yield* cursors, [{ until: 42 }]);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K231 keeps arrival rows through upgrade and rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP TABLE IF EXISTS kin_mail_rules`;
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_history`;
+      const columns = ["rule_id", "rule_state", "has_file", "sender_check"];
+      for (const name of columns) {
+        if (
+          (yield* sql`SELECT name FROM pragma_table_info('kin_arrivals') WHERE name = ${name}`)
+            .length
+        )
+          yield* sql`ALTER TABLE kin_arrivals DROP COLUMN ${sql(name)}`;
+      }
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Tidewater Freight', '2026-11-11')`;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES ('org', 'mail', 'google', 'Mail', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 1, 1)`;
+      yield* sql`INSERT INTO kin_arrivals
+        (org_id, arrival_id, connection_id, message_id, noticed_at, state)
+        VALUES ('org', 'arrival', 'mail', 'message', 1, 'settled')`;
+      const rows = sql`SELECT arrival_id, rule_id, rule_state, has_file, sender_check
+        FROM kin_arrivals`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* rows, [
+        {
+          arrival_id: "arrival",
+          rule_id: null,
+          rule_state: null,
+          has_file: null,
+          sender_check: null,
+        },
+      ]);
+      yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what, agent_id,
+        chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at, updated_at)
+        VALUES ('org', 'rule', 'mail', '{}', 'File the bill.', 'finance', 'direct', 'rhea', 'tap',
+          'hash', 'on', 30, 1, 1)`;
+      yield* sql`UPDATE kin_arrivals SET rule_id = 'rule', rule_state = 'woke',
+        has_file = 1, sender_check = 'passed'`;
+      const invalid = yield* Effect.exit(sql`UPDATE kin_arrivals SET has_file = 2`);
+      assert.isTrue(Exit.isFailure(invalid));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* rows, [
+        {
+          arrival_id: "arrival",
+          rule_id: "rule",
+          rule_state: "woke",
+          has_file: 1,
+          sender_check: "passed",
+        },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT state, fired FROM kin_mail_rules`, [
+        { state: "on", fired: 0 },
+      ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect(
