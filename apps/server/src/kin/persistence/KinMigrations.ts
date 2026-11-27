@@ -153,6 +153,7 @@ import BankSenders from "./migrations/K229_BankSenders.ts";
 import WaitingMessageIndex from "./migrations/K230_WaitingMessageIndex.ts";
 import MailRules from "./migrations/K231_MailRules.ts";
 import BillSenders from "./migrations/K232_BillSenders.ts";
+import BillCrops from "./migrations/K233_BillCrops.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -387,6 +388,7 @@ const migrations = {
   "230_WaitingMessageIndex": WaitingMessageIndex,
   "231_MailRules": MailRules,
   "232_BillSenders": BillSenders,
+  "233_BillCrops": BillCrops,
 };
 const loader = Migrator.fromRecord(migrations);
 

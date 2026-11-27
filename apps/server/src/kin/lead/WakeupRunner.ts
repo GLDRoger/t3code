@@ -296,6 +296,7 @@ const make = Effect.gen(function* () {
     // Its bills left unanswered are told as unread once the turn is over for good.
     if (Option.isSome(chatRepository) && Option.isSome(chatHub))
       yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
+        Effect.provideService(KinEventQueue.KinEventQueue, queue),
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(Repository.KinChatRepository, chatRepository.value),
         Effect.provideService(KinChatHub, chatHub.value),

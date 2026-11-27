@@ -579,6 +579,7 @@ it.effect(
         kin_connection_call: "outside read",
         social_read: "outside read",
         social_lookup: "outside read",
+        bill_cut: "confined bills turn, never the owner carry seat",
         bill_read: "confined bills turn, never the owner carry seat",
         statement_read: "ends carry: sensitive read",
         statement_rows: "ends carry: sensitive read",

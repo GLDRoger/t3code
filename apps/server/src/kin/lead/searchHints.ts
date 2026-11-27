@@ -3,6 +3,7 @@
 export const KIN_SEARCH_HINTS: Readonly<Record<string, string>> = {
   agent_update: "switch model effort setting",
   away_set: "holiday leave out of office return",
+  bill_cut: "crop split separate receipts collage page scan",
   bill_read: "vendor invoice printed details scan",
   bills_add: "many receipts photos expenses at once",
   budget_set: "monthly spending limit category",

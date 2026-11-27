@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import {
   EnvironmentId,
   type KinAttachment,
@@ -13,6 +14,7 @@ import {
   KinBillBatchCard,
   type KinBillRead,
   KinBillsAddResult,
+  KinBillsListResult,
   type KinChatError,
   KinChatId,
   KinEventId,
@@ -35,7 +37,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../../assets/AttachmentUpload.testkit.ts";
-import { createPendingAttachmentId } from "../../attachmentStore.ts";
+import { createPendingAttachmentId, resolveAttachmentPathById } from "../../attachmentStore.ts";
+import { scannedBillPdf } from "../../../scripts/kin-bill-cutter-benchmark.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -52,12 +55,13 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { KinTurnContent } from "../lead/turn/content.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
+import type { BillBox } from "./billCutterProtocol.ts";
 import * as LeadBills from "./leadBills.ts";
 import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
-import { decline, update } from "./ownerWork.ts";
+import { confirm, decline, update } from "./ownerWork.ts";
 import { defineList, PRESETS, presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 
@@ -114,23 +118,21 @@ const layer = Layer.mergeAll(
 );
 
 /** A person's fresh upload, as `attachments.createUploadUrl` and its POST leave one. */
-const upload = (name: string, text: string, mimeType = "image/png") =>
+const upload = (name: string, input: string | Uint8Array, mimeType = "image/png") =>
   Effect.gen(function* () {
     const { attachmentsDir } = yield* ServerConfig.ServerConfig;
     const extension = name.split(".").at(-1)!;
     const id = createPendingAttachmentId(extension === "png" ? undefined : extension)!;
     NodeFS.mkdirSync(attachmentsDir, { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(attachmentsDir, `${id}.${extension}`),
-      new TextEncoder().encode(text),
-    );
+    const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
+    NodeFS.writeFileSync(NodePath.join(attachmentsDir, `${id}.${extension}`), bytes);
     recordTestUploadOwner(attachmentsDir, id, TEST_UPLOAD_OWNER);
     return {
       type: mimeType.startsWith("image/") ? ("image" as const) : ("file" as const),
       id,
       name,
       mimeType,
-      sizeBytes: text.length,
+      sizeBytes: bytes.byteLength,
     };
   });
 
@@ -238,7 +240,93 @@ const read = (
     );
   });
 
+const threeBoxes: ReadonlyArray<BillBox> = [
+  [25, 50, 280, 900],
+  [350, 50, 300, 900],
+  [695, 50, 280, 900],
+];
+const stripes = () => {
+  const sheet = createCanvas(300, 120);
+  const context = sheet.getContext("2d");
+  ["#e00000", "#00d000", "#0000d0"].forEach((color, i) => {
+    context.fillStyle = color;
+    context.fillRect(100 * i, 0, 100, 120);
+  });
+  return sheet;
+};
+const addPage = (attachment: KinAttachment, clientRequestId = "page") =>
+  Bills.add(as(rhea), { orgId, attachments: [attachment], clientRequestId }, TEST_UPLOAD_OWNER);
+const photoPage = Effect.gen(function* () {
+  const bytes = yield* Effect.promise(() => stripes().encode("png"));
+  return yield* upload("page.png", bytes);
+});
+const firstCut = Effect.gen(function* () {
+  const added = yield* addPage(yield* photoPage);
+  const { wakeupId } = yield* claimTurn(1);
+  const cut = yield* Bills.cut(
+    { orgId, agentId: finance, wakeupId },
+    { bill: "B1", boxes: threeBoxes },
+  );
+  return { added, wakeupId, cut };
+});
+
 describe("bills in bulk", () => {
+  it.effect("a single bill preserves the original row, expense and card bytes", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [yield* upload("single.png", "single bill")],
+          clientRequestId: "single",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId } = yield* claimTurn(1);
+      const figures = {
+        vendor: "Sample Cloud",
+        date: "2026-11-03",
+        amount: "1180.00",
+        currency: "INR",
+      };
+      assert.deepStrictEqual(yield* read({ bill: "B1", ...figures }), {
+        bill: "B1",
+        result: "B1 saved; the owner keeps it.",
+      });
+      yield* endTurn(wakeupId);
+      const [row] = yield* billRows;
+      const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+      assert.strictEqual(
+        JSON.stringify(row),
+        JSON.stringify({
+          name: "single.png",
+          state: "read",
+          problem: null,
+          readJson:
+            '{"vendor":"Sample Cloud","date":"2026-11-03","amount":"1180.00","currency":"INR"}',
+        }),
+      );
+      const [expense] =
+        yield* sql`SELECT origin_key AS origin, title, state, confirmed, amount_minor AS amount, currency, fields_json AS fields
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+      assert.strictEqual(
+        JSON.stringify(expense),
+        JSON.stringify({
+          origin: `bill:${added.added[0]!.sha256}`,
+          title: "Sample Cloud, Nov 2026",
+          state: "done",
+          confirmed: 0,
+          amount: 118000,
+          currency: "INR",
+          fields: `{"vendor":"Sample Cloud","receipt":["${bill!.file.attachmentId}"]}`,
+        }),
+      );
+      assert.strictEqual((yield* card(added.batchId)).text, "1 bill: 1 read.");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "an add keeps each new file once, refuses what isn't a bill alone, and a rerun adds nothing",
     () =>
@@ -896,15 +984,21 @@ describe("bills in bulk", () => {
           "invalid_state",
           "That message has no photo or PDF.",
         ]);
-        // A turn a teammate reads may call neither bills tool.
+        // A turn a teammate reads may call no bills tool.
         yield* endTurn(KinWakeupId.make("wake-1"));
         yield* message("zoya-event", "zoya-bills", "zoya-finance", zoya);
         const { wakeupId } = yield* claimTurn(2);
-        for (const tool of ["bills_add", "bill_read"])
+        for (const tool of ["bills_add", "bill_read", "bill_cut"])
           assert.isFalse(
             yield* toolAdmitted({ orgId, agentId: finance, wakeupId }, tool, {}),
             tool,
           );
+        assert.include(
+          yield* LeadBills.cut(scope, { bill: "B1", boxes: threeBoxes }).pipe(Effect.flip),
+          {
+            reason: "not_allowed",
+          },
+        );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -956,7 +1050,7 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a bills turn admits bill_read and kin_skip and confines other tools", () =>
+  it.effect("a bills turn confines tools, and another turn cannot cut a bill", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* Bills.add(
@@ -1011,11 +1105,16 @@ describe("bills in bulk", () => {
       const hers = { orgId, agentId: finance, wakeupId: asked.wakeupId };
       assert.isUndefined(yield* billToolAllowed(hers, "payment_record", {}));
       assert.isTrue(yield* toolAdmitted(hers, "payment_record", {}));
+      assert.include(yield* Bills.cut(hers, { bill: "B1", boxes: threeBoxes }).pipe(Effect.flip), {
+        reason: "not_allowed",
+        message: "bill_cut answers only the bills Kin handed this turn. Nothing was cut.",
+      });
       yield* endTurn(asked.wakeupId);
       // The bills turn: a bill's text can reach nothing but its own answer.
       const { wakeupId } = yield* claimTurn(1);
       const bills = { orgId, agentId: finance, wakeupId };
       assert.isTrue(yield* toolAdmitted(bills, "bill_read", {}));
+      assert.isTrue(yield* toolAdmitted(bills, "bill_cut", {}));
       assert.isTrue(yield* toolAdmitted(bills, "kin_skip", {}));
       for (const tool of [
         "delegate_task",
@@ -1377,5 +1476,312 @@ describe("bills in bulk", () => {
         { bill: "B1", result: "B1 saved as not read cleanly." },
       );
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("bill_cut", () => {
+  it.effect(
+    "the photo is finished without an expense and stores three waiting JPEGs in box order",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const { added, cut } = yield* firstCut;
+        assert.strictEqual(yield* Bills.sweep(), 0);
+        assert.deepStrictEqual(cut, {
+          bill: "B1",
+          result: "Cut 3 pieces; each comes back as its own bill.",
+        });
+        const rows = yield* sql<{
+          name: string;
+          state: string;
+          batchId: string;
+          position: number;
+          attachmentId: string;
+          mimeType: string;
+          parent: string | null;
+          page: number | null;
+          box: string | null;
+        }>`SELECT name, state, batch_id AS "batchId", position, attachment_id AS "attachmentId",
+          mime_type AS "mimeType", parent_sha256 AS parent, cut_page AS page, cut_box_json AS box
+        FROM kin_bill_reads WHERE org_id = ${orgId} ORDER BY position`;
+        assert.deepStrictEqual(
+          rows.map(({ name, state, batchId, position }) => [name, state, batchId, position]),
+          [
+            ["page.png", "read", added.batchId, 0],
+            ...threeBoxes.map((_, i) => [
+              `page.png · ${i + 1} of 3`,
+              "waiting",
+              added.batchId,
+              i + 1,
+            ]),
+          ],
+        );
+        for (const [i, row] of rows.slice(1).entries()) {
+          assert.deepStrictEqual(
+            [row.parent, row.page, row.box, row.mimeType],
+            [added.added[0]!.sha256, 1, JSON.stringify(threeBoxes[i]), "image/jpeg"],
+          );
+          const file = resolveAttachmentPathById({
+            attachmentsDir,
+            attachmentId: row.attachmentId,
+          })!;
+          const bytes = NodeFS.readFileSync(file);
+          assert.deepStrictEqual([...bytes.subarray(0, 2)], [255, 216]);
+          const jpeg = yield* Effect.promise(() => loadImage(bytes));
+          const sample = createCanvas(jpeg.width, jpeg.height).getContext("2d");
+          sample.drawImage(jpeg, 0, 0);
+          const pixel = sample.getImageData(jpeg.width >> 1, jpeg.height >> 1, 1, 1).data;
+          assert.isAbove(pixel[i]!, 170);
+          assert.isBelow(pixel[(i + 1) % 3]!, 40);
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT record_id FROM kin_records WHERE org_id = ${orgId}`,
+          [],
+        );
+        assert.include(yield* card(added.batchId), {
+          total: 3,
+          done: 0,
+          text: "Reading 3 bills: 0 done.",
+        });
+        assert.deepStrictEqual((yield* card(added.batchId)).counts, {
+          read: 0,
+          duplicate: 0,
+          unreadable: 0,
+          check: 0,
+          already: 0,
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("the next bills turn reads the three crops and a co-owner can keep just one", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { added, wakeupId } = yield* firstCut;
+      yield* endTurn(wakeupId);
+      const next = yield* claimTurn(2);
+      const event = next.events[0];
+      if (event?._tag !== "bills.read") return assert.fail("no crops turn");
+      const turn = (yield* billTurn(orgId, event))!;
+      assert.deepStrictEqual(turn.ids, ["B1", "B2", "B3"]);
+      assert.deepStrictEqual(
+        turn.attachments.map((file) => file.name),
+        ["B1.jpg", "B2.jpg", "B3.jpg"],
+      );
+      for (const [i, bill] of turn.ids.entries())
+        yield* read({
+          bill,
+          vendor: "Tidewater Freight",
+          date: "2026-11-03",
+          currency: "INR",
+          amount: String(i + 1),
+        });
+      yield* endTurn(next.wakeupId);
+      const sql = yield* SqlClient.SqlClient;
+      const expenses = sql<{ receipt: string; confirmed: number }>`SELECT
+        json_extract(fields_json, '$.receipt[0]') AS receipt, confirmed FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'expenses' ORDER BY amount_minor`;
+      const suggested = (yield* expenses).map((row) => row.receipt);
+      assert.deepStrictEqual(
+        yield* expenses,
+        suggested.map((receipt) => ({ receipt, confirmed: 0 })),
+      );
+      assert.deepStrictEqual(
+        suggested,
+        turn.attachments.map((file) => file.id),
+      );
+      assert.strictEqual(new Set(suggested).size, 3);
+      const spent = () =>
+        moneySummary(orgId, NOW, KIN_OWNER_LEVEL).pipe(
+          Effect.map((summary) => summary.spent.thisMonth.total),
+        );
+      assert.deepStrictEqual(yield* spent(), []);
+      const first = (yield* Bills.list(as(meera), { orgId, batchId: added.batchId })).bills[0]!
+        .expense!;
+      yield* confirm(as(meera), { orgId, key: first.key, rev: first.rev });
+      assert.deepStrictEqual(
+        (yield* expenses).map((row) => row.confirmed),
+        [1, 0, 0],
+      );
+      assert.deepStrictEqual(yield* spent(), [{ minor: 100, currency: "INR" }]);
+      assert.strictEqual((yield* card(added.batchId)).text, "3 bills: 3 read.");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "the unchanged client list schema sends crop names and counts but never the cut page",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const { added } = yield* firstCut;
+        const encode = Schema.encodeEffect(KinBillsListResult);
+        const mine = yield* encode(yield* Bills.list(as(meera), { orgId, batchId: added.batchId }));
+        assert.deepStrictEqual(
+          mine.bills.map((row) => [row.file.name, row.file.mimeType, row.state]),
+          [
+            ["page.png · 1 of 3", "image/jpeg", "reading"],
+            ["page.png · 2 of 3", "image/jpeg", "reading"],
+            ["page.png · 3 of 3", "image/jpeg", "reading"],
+          ],
+        );
+        const repo = yield* KinChatRepository.KinChatRepository;
+        for (const row of mine.bills) {
+          assert.deepStrictEqual(
+            Option.getOrThrow(yield* repo.attachmentChat(row.file.attachmentId)),
+            { orgId, chatId: row.file.chatId, messageId: row.file.messageId },
+          );
+        }
+        const all = yield* encode(yield* Bills.list(as(rhea), { orgId }));
+        assert.include(all.batches[0], { bills: 3 });
+        assert.include(all.batches[0]!.states, { reading: 3, read: 0, unreadable: 0, check: 0 });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a PDF can cut each page once and refuses an absent page without consuming a valid cut",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sheet = stripes();
+        const jpeg = yield* Effect.promise(() => sheet.encode("jpeg", 90));
+        const bytes = scannedBillPdf({
+          jpeg,
+          width: sheet.width,
+          height: sheet.height,
+          pageCount: 2,
+          pageWidth: 120,
+          pageHeight: 60,
+        });
+        const added = yield* addPage(yield* upload("pages.pdf", bytes, "application/pdf"));
+        const { wakeupId } = yield* claimTurn(1);
+        const cut = (page: number, box: BillBox) =>
+          Bills.cut({ orgId, agentId: finance, wakeupId }, { bill: "B1", page, boxes: [box] });
+        assert.include(yield* cut(1, threeBoxes[0]!), {
+          result: "Cut 1 piece; it comes back as its own bill.",
+        });
+        assert.include(yield* cut(9, threeBoxes[1]!).pipe(Effect.flip), {
+          message: "Kin couldn't cut this page. Nothing was cut.",
+        });
+        assert.include(yield* cut(2, threeBoxes[1]!), {
+          result: "Cut 1 piece; it comes back as its own bill.",
+        });
+        assert.include(yield* cut(1, threeBoxes[2]!).pipe(Effect.flip), {
+          message: "Page 1 was already cut. Nothing was cut.",
+        });
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, cut_page AS page FROM kin_bill_reads WHERE org_id = ${orgId}
+            AND batch_id = ${added.batchId} AND parent_sha256 IS NOT NULL ORDER BY position`,
+          [
+            { name: "pages.pdf · page 1 · 1 of 1", page: 1 },
+            { name: "pages.pdf · page 2 · 1 of 1", page: 2 },
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "only this turn's unanswered files can be cut and malformed cuts leave the file open",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            clientRequestId: "add",
+            attachments: [yield* photoPage, yield* upload("single.png", "ordinary bill")],
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { wakeupId } = yield* claimTurn(1);
+        const cut = (bill: string, box: BillBox, page?: number) =>
+          Bills.cut(
+            { orgId, agentId: finance, wakeupId },
+            { bill, boxes: [box], ...(page === undefined ? {} : { page }) },
+          );
+        assert.include(yield* cut("B9", threeBoxes[0]!).pipe(Effect.flip), {
+          reason: "not_found",
+          message: "No bill B9 in this turn: B1, B2. Nothing was cut.",
+        });
+        assert.include(yield* cut("B1", threeBoxes[0]!, 1).pipe(Effect.flip), {
+          message: "Only PDFs take a page number. Nothing was cut.",
+        });
+        assert.include(yield* cut("B1", [800, 0, 201, 100]).pipe(Effect.flip), {
+          message: "Kin couldn't cut this page. Nothing was cut.",
+        });
+        yield* read({ bill: "B2", readable: false });
+        assert.include(yield* cut("B2", threeBoxes[0]!).pipe(Effect.flip), {
+          message: "B2 is already answered. Nothing was cut.",
+        });
+        yield* cut("B1", threeBoxes[0]!);
+        assert.include(yield* read({ bill: "B1", readable: false }), {
+          result: "B1 is already answered.",
+        });
+        assert.deepStrictEqual(
+          (yield* billRows).map((row) => row.name),
+          ["page.png", "single.png", "page.png · 1 of 1"],
+        );
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM kin_bill_reads WHERE org_id = ${orgId} ORDER BY position`,
+          [{ name: "page.png" }, { name: "page.png · 1 of 1" }, { name: "single.png" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a crop can be cut once more, but a crop of a crop must be read", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { wakeupId } = yield* firstCut;
+      yield* endTurn(wakeupId);
+      const two = yield* claimTurn(2);
+      yield* Bills.cut(
+        { orgId, agentId: finance, wakeupId: two.wakeupId },
+        { bill: "B1", boxes: [threeBoxes[0]!] },
+      );
+      yield* endTurn(two.wakeupId);
+      const three = yield* claimTurn(3);
+      const attempt = yield* Bills.cut(
+        { orgId, agentId: finance, wakeupId: three.wakeupId },
+        { bill: "B1", boxes: [threeBoxes[0]!] },
+      ).pipe(Effect.flip);
+      assert.include(attempt, {
+        message:
+          "A crop of a crop can't be cut again. Use bill_read and leave unreadable fields blank. Nothing was cut.",
+      });
+      assert.include(yield* read({ bill: "B1", readable: false }), {
+        result: "B1 saved as not read cleanly.",
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "adding the same page twice is still one file, and identical crop bytes are already added",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const bytes = yield* Effect.promise(() => stripes().encode("png"));
+        const added = yield* addPage(yield* upload("page.png", bytes));
+        const again = yield* addPage(yield* upload("same.png", bytes), "again");
+        assert.deepStrictEqual(again.added, []);
+        assert.deepInclude(again.already[0], {
+          sha256: added.added[0]!.sha256,
+          batchId: added.batchId,
+        });
+        assert.lengthOf(yield* billRows, 1);
+        const { wakeupId } = yield* claimTurn(1);
+        yield* Bills.cut(
+          { orgId, agentId: finance, wakeupId },
+          { bill: "B1", boxes: [threeBoxes[0]!, threeBoxes[0]!] },
+        );
+        const list = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        assert.deepStrictEqual(
+          list.bills.map((row) => row.file.name),
+          ["page.png · 1 of 2"],
+        );
+        assert.include((yield* card(added.batchId)).counts, { already: 1 });
+      }).pipe(Effect.provide(layer)),
   );
 });

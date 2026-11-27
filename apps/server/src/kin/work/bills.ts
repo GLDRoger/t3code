@@ -46,11 +46,14 @@ import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { billsOnly } from "../lead/billsOnly.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { shownAsPicture } from "../lead/turn/content.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
+import { cutBillPage } from "./billCutter.ts";
+import { MAX_BILL_BOXES, refuseBillPage, type BillBox } from "./billCutterProtocol.ts";
 import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { billReader } from "./billReader.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
@@ -146,6 +149,11 @@ const ReadJson = Schema.fromJsonString(
 );
 const encodeRead = Schema.encodeEffect(ReadJson);
 const decodeRead = Schema.decodeUnknownOption(ReadJson);
+// A cut source is terminal, with a list of pages cut instead of a bill_read object.
+const CutPages = Schema.fromJsonString(Schema.Array(Schema.Int));
+const decodeCutPages = Schema.decodeUnknownOption(CutPages);
+const encodeCutPages = Schema.encodeEffect(CutPages);
+const NOT_CUT = "json_type(read_json) IS NOT 'array'";
 const CardJson = Schema.decodeUnknownOption(KinBillBatchCard);
 const Stored = Schema.fromJsonString(Schema.Unknown);
 const decodeStored = Schema.decodeEffect(Stored);
@@ -178,6 +186,7 @@ type Row = {
   readonly duplicateOf: string | null;
   readonly recordId: string | null;
   readonly dismissedAt: number | null;
+  readonly parentSha256: string | null;
 };
 const COLUMNS = `sha256, attachment_id AS "attachmentId", chat_id AS "chatId",
   message_id AS "messageId", name, file_type AS "fileType", mime_type AS "mimeType",
@@ -185,12 +194,18 @@ const COLUMNS = `sha256, attachment_id AS "attachmentId", chat_id AS "chatId",
   batch_id AS "batchId", position, agent_id AS "agentId", card_chat_id AS "cardChatId",
   widget_id AS "widgetId", added_by_person_id AS "addedBy", added_at AS "addedAt", state,
   event_id AS "eventId", reads, read_json AS "readJson", problem, duplicate_of AS "duplicateOf",
-  record_id AS "recordId", dismissed_at AS "dismissedAt"`;
+  record_id AS "recordId", dismissed_at AS "dismissedAt", parent_sha256 AS "parentSha256"`;
 
-const batchRows = Effect.fn("KinBills.batchRows")(function* (orgId: KinOrgId, batchId: string) {
+const batchRows = Effect.fn("KinBills.batchRows")(function* (
+  orgId: KinOrgId,
+  batchId: string,
+  { includeCut = false } = {},
+) {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
-    WHERE org_id = ${orgId} AND batch_id = ${batchId} ORDER BY position, sha256`;
+    WHERE org_id = ${orgId} AND batch_id = ${batchId}
+      AND ${includeCut ? sql.literal("1") : sql.literal(NOT_CUT)}
+    ORDER BY position, sha256`;
 });
 const billRow = Effect.fn("KinBills.billRow")(function* (orgId: KinOrgId, hash: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -232,16 +247,14 @@ const keepAnswer = Effect.fn("KinBills.keepAnswer")(function* (
     ON CONFLICT DO NOTHING`;
 });
 
-/** The sha256 of a kept file's bytes, read from where Kin stored it: never a client's word. */
-const fileHash = Effect.fn("KinBills.fileHash")(function* (attachment: ChatAttachment) {
+const fileBytes = Effect.fn("KinBills.fileBytes")(function* (attachment: ChatAttachment) {
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = resolveAttachmentPath({ attachmentsDir, attachment });
   if (path === null) return yield* invalid(`${attachment.name.slice(0, 80)} couldn't be read.`);
-  const bytes = yield* fs
+  return yield* fs
     .readFile(path)
     .pipe(Effect.mapError(() => invalid(`${attachment.name.slice(0, 80)} couldn't be read.`)));
-  return sha256(bytes);
 });
 
 /** Where a batch's card goes: the adder's own direct chat with the reading agent. */
@@ -349,7 +362,12 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
   const now = yield* Clock.currentTimeMillis;
-  const rows = (yield* batchRows(orgId, batchId)).filter((row) => row.state === "waiting");
+  // New crops wait for the turn that cut them; a read again need not wait on its old event.
+  const rows = yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads b
+    WHERE org_id = ${orgId} AND batch_id = ${batchId} AND state = 'waiting'
+      AND (b.reads > 0 OR NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = b.org_id
+        AND e.event_id = b.event_id AND e.state IN ('queued', 'claimed')))
+    ORDER BY position, sha256`;
   // A photo no turn can show (a phone's HEIC) is told at once, without spending a turn.
   const unshown = rows.filter(
     (row) => !isPdf(row) && !shownAsPicture({ type: row.fileType, mimeType: row.mimeType }),
@@ -473,6 +491,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
   orgId: KinOrgId,
   batchId: string,
   pause?: number | null,
+  newlyAlready = 0,
 ) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
@@ -494,7 +513,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     unreadable: rows.filter((row) => row.state === "unreadable").length,
     check: rows.filter((row) => row.state === "unreadable" && READ_CLEAN.has(row.problem ?? ""))
       .length,
-    already: stored.counts.already,
+    already: stored.counts.already + newlyAlready,
   };
   const total = rows.length + counts.already;
   const status = pending === 0 ? ("done" as const) : ("reading" as const);
@@ -536,6 +555,8 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     stored.pausedUntil === card.pausedUntil &&
     stored.status === card.status &&
     stored.done === card.done &&
+    stored.total === card.total &&
+    stored.counts.already === card.counts.already &&
     stored.counts.read === card.counts.read &&
     stored.counts.duplicate === card.counts.duplicate &&
     stored.counts.unreadable === card.counts.unreadable &&
@@ -615,25 +636,35 @@ const insertBills = Effect.fn("KinBills.insertBills")(function* (input: {
   readonly agentId: string;
   readonly cardChatId: KinChatId;
   readonly addedBy: string;
+  readonly startPosition?: number;
+  readonly source?: { readonly sha256: string; readonly page: number; readonly eventId: string };
   readonly files: ReadonlyArray<{
     readonly attachment: KinAttachment;
     readonly sha256: string;
     readonly chatId: string;
     readonly messageId: string;
+    readonly boxJson?: string;
   }>;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const added: Array<string> = [];
-  for (const [position, file] of input.files.entries()) {
+  const parent = input.source?.sha256 ?? null;
+  const page = input.source?.page ?? null;
+  const eventId = input.source?.eventId ?? null;
+  for (const [index, file] of input.files.entries()) {
+    const position = (input.startPosition ?? 0) + index;
+    const box = file.boxJson ?? null;
     const inserted = yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id,
         message_id, name, file_type, mime_type, size_bytes, batch_id, position, agent_id,
-        card_chat_id, widget_id, added_by_person_id, added_at, state)
+        card_chat_id, widget_id, added_by_person_id, added_at, state, event_id,
+        parent_sha256, cut_page, cut_box_json)
       VALUES (${input.orgId}, ${file.sha256}, ${file.attachment.id}, ${file.chatId},
         ${file.messageId}, ${file.attachment.name}, ${file.attachment.type},
         ${file.attachment.mimeType},
         ${file.attachment.sizeBytes}, ${input.batchId}, ${position}, ${input.agentId},
-        ${input.cardChatId}, ${billWidgetId(input.batchId)}, ${input.addedBy}, ${now}, 'waiting')
+        ${input.cardChatId}, ${billWidgetId(input.batchId)}, ${input.addedBy}, ${now}, 'waiting',
+        ${eventId}, ${parent}, ${page}, ${box})
       ON CONFLICT DO NOTHING RETURNING sha256`;
     // A dismissed or orphaned bill comes back as this batch's, on this file, to be read anew.
     const revived =
@@ -646,8 +677,9 @@ const insertBills = Effect.fn("KinBills.insertBills")(function* (input: {
               batch_id = ${input.batchId}, position = ${position}, agent_id = ${input.agentId},
               card_chat_id = ${input.cardChatId}, widget_id = ${billWidgetId(input.batchId)},
               added_by_person_id = ${input.addedBy}, added_at = ${now}, state = 'waiting',
-              event_id = NULL, reads = 0, read_json = NULL, problem = NULL, duplicate_of = NULL,
-              read_at = NULL, dismissed_at = NULL
+              event_id = ${eventId}, reads = 0, read_json = NULL, problem = NULL, duplicate_of = NULL,
+              read_at = NULL, dismissed_at = NULL, parent_sha256 = ${parent}, cut_page = ${page},
+              cut_box_json = ${box}
             WHERE b.org_id = ${input.orgId} AND b.sha256 = ${file.sha256}
               AND ${revivable(sql)}
             RETURNING sha256`;
@@ -819,7 +851,7 @@ const prepareFiles = Effect.fn("KinBills.prepareFiles")(function* (
 ) {
   const accepted: Array<Prepared["accepted"][number]> = [];
   for (const attachment of files)
-    accepted.push({ attachment, sha256: yield* fileHash(attachment) });
+    accepted.push({ attachment, sha256: sha256(yield* fileBytes(attachment)) });
   return accepted;
 });
 
@@ -988,6 +1020,8 @@ export const addFromMessage = Effect.fn("KinBills.addFromMessage")(function* (in
   );
 }, workFailure);
 
+type BillTurn = { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string };
+
 /** A turn's bills, each by the short id the turn names it with: B1, B2… in the event's order. */
 const turnBills = Effect.fn("KinBills.turnBills")(function* (
   orgId: KinOrgId,
@@ -995,14 +1029,15 @@ const turnBills = Effect.fn("KinBills.turnBills")(function* (
   wakeupId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const hashes = yield* sql<{ hash: string }>`SELECT j.value AS hash
+  const hashes = yield* sql<{
+    hash: string;
+    eventId: string;
+  }>`SELECT j.value AS hash, e.event_id AS "eventId"
     FROM kin_events e, json_each(e.json, '$.bills') j
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag = 'bills.read' AND e.state = 'claimed'
     ORDER BY e.priority, e.received_at, e.event_id, j.key`;
-  const byId = new Map<string, string>();
-  hashes.forEach((row, index) => byId.set(`B${index + 1}`, row.hash));
-  return byId;
+  return new Map(hashes.map((row, index) => [`B${index + 1}`, row]));
 });
 
 /** One bill's answer, by plain rules: a clean read becomes one suggested expense or a duplicate. */
@@ -1190,7 +1225,7 @@ export const readAnswer = (
 
 /** `bill_read`: one answer for a bill this turn was handed, settled at once by plain rules. */
 export const answer = Effect.fn("KinBills.answer")(function* (
-  turn: { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string },
+  turn: BillTurn,
   input: {
     readonly bill: string;
     readonly readable: boolean;
@@ -1205,8 +1240,8 @@ export const answer = Effect.fn("KinBills.answer")(function* (
       message: "bill_read answers only the bills Kin handed you in this turn.",
     });
   const id = input.bill.trim().toUpperCase();
-  const hash = bills.get(id);
-  if (hash === undefined)
+  const file = bills.get(id);
+  if (file === undefined)
     return yield* new KinChatError({
       reason: "not_found",
       message: `No bill ${id.slice(0, 8)} in this turn: ${[...bills.keys()].join(", ")}.`,
@@ -1214,11 +1249,198 @@ export const answer = Effect.fn("KinBills.answer")(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const row = yield* billRow(turn.orgId, hash);
-      if (row === undefined || row.state !== "reading") return readAnswer(id, "answered");
+      const row = yield* billRow(turn.orgId, file.hash);
+      if (row === undefined || row.state !== "reading" || row.eventId !== file.eventId)
+        return readAnswer(id, "answered");
       return readAnswer(id, yield* settleRead(turn.orgId, row, input));
     }),
   );
+}, workFailure);
+
+type CutInput = {
+  readonly bill: string;
+  readonly page?: number | undefined;
+  readonly boxes: ReadonlyArray<BillBox>;
+};
+
+const cutRefusal = (message: string, reason: KinChatError["reason"] = "invalid_state") =>
+  new KinChatError({
+    reason,
+    message: `${message.endsWith(".") ? message : `${message}.`} Nothing was cut.`,
+  });
+
+const cutTarget = Effect.fn("KinBills.cutTarget")(function* (
+  turn: BillTurn,
+  id: string,
+  requestedPage: number | undefined,
+) {
+  const bills = yield* turnBills(turn.orgId, turn.agentId, turn.wakeupId);
+  if (bills.size === 0 || !(yield* billsOnly(turn)))
+    return yield* cutRefusal(
+      "bill_cut answers only the bills Kin handed this turn.",
+      "not_allowed",
+    );
+  const file = bills.get(id);
+  if (file === undefined)
+    return yield* cutRefusal(
+      `No bill ${id.slice(0, 8)} in this turn: ${[...bills.keys()].join(", ")}.`,
+      "not_found",
+    );
+  const row = yield* billRow(turn.orgId, file.hash);
+  if (row === undefined || row.eventId !== file.eventId)
+    return yield* cutRefusal(`${id} is already answered.`);
+  const pdf = isPdf(row);
+  const pages = Option.getOrUndefined(decodeCutPages(row.readJson));
+  if (row.state !== "reading" && !(pdf && row.state === "read" && pages !== undefined))
+    return yield* cutRefusal(`${id} is already answered.`);
+  if (!pdf && requestedPage !== undefined)
+    return yield* cutRefusal("Only PDFs take a page number.");
+  const page = requestedPage ?? 1;
+  if (pages?.includes(page) === true) return yield* cutRefusal(`Page ${page} was already cut.`);
+  const parent =
+    row.parentSha256 === null ? undefined : yield* billRow(turn.orgId, row.parentSha256);
+  if (parent?.parentSha256 != null)
+    return yield* cutRefusal(
+      "A crop of a crop can't be cut again. Use bill_read and leave unreadable fields blank.",
+    );
+  return { row, pdf, page, pages: pages ?? [], eventId: file.eventId };
+});
+
+const encodeBox = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Tuple([Schema.Int, Schema.Int, Schema.Int, Schema.Int])),
+);
+
+export const cut = Effect.fn("KinBills.cut")(function* (turn: BillTurn, input: CutInput) {
+  const { orgId } = turn;
+  const id = input.bill.trim().toUpperCase();
+  const target = yield* cutTarget(turn, id, input.page);
+  if (input.boxes.length === 0 || input.boxes.length > MAX_BILL_BOXES)
+    return yield* cutRefusal(refuseBillPage("box").problem);
+  const bytes = yield* fileBytes({
+    ...target.row,
+    id: target.row.attachmentId,
+    type: target.row.fileType,
+  }).pipe(Effect.mapError((error) => cutRefusal(error.message)));
+  const result = yield* cutBillPage(
+    target.pdf
+      ? { kind: "pdf", page: target.page, bytes, boxes: input.boxes }
+      : { kind: "photo", bytes, boxes: input.boxes },
+  );
+  if (result.outcome._tag === "refused") return yield* cutRefusal(result.outcome.problem);
+  const crops = result.outcome.crops.map((bytes, index) => ({
+    bytes,
+    index,
+    hash: sha256(bytes),
+    box: input.boxes[index]!,
+  }));
+  const sql = yield* SqlClient.SqlClient;
+  const store = yield* KinAttachmentStore;
+  const repo = yield* KinChatRepository;
+  const stored: Array<string> = [];
+  return yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const { row, pdf, page, pages, eventId } = yield* cutTarget(turn, id, input.page);
+        if (row.attachmentId !== target.row.attachmentId || eventId !== target.eventId)
+          return yield* cutRefusal(`${id} is already answered.`);
+        const chatId = KinChatId.make(row.cardChatId);
+        const messageId = KinMessageId.make(`bills:${row.batchId}`);
+        const card = yield* repo.getMessage({ orgId, messageId });
+        if (Option.isNone(card) || card.value.status !== "posted")
+          return yield* cutRefusal("The bill's card is no longer available.");
+
+        const known = yield* alreadyAdded(
+          orgId,
+          crops.map((crop) => crop.hash),
+        );
+        const seen = new Set([
+          row.sha256,
+          ...(row.parentSha256 === null ? [] : [row.parentSha256]),
+        ]);
+        const fresh = crops.filter(({ hash }) => {
+          const prior = known.get(hash);
+          if (seen.has(hash) || (prior !== undefined && !prior.revive)) return false;
+          seen.add(hash);
+          return true;
+        });
+        const name = pdf ? `${row.name} · page ${page}` : row.name;
+        const files = yield* Effect.forEach(fresh, ({ bytes, index, hash, box }) =>
+          Effect.gen(function* () {
+            const id = yield* store
+              .storeImage(bytes, "jpg")
+              .pipe(Effect.mapError((error) => cutRefusal(error.message)));
+            stored.push(id);
+            return {
+              attachment: {
+                type: "image" as const,
+                id,
+                name: `${name} · ${index + 1} of ${crops.length}`,
+                mimeType: "image/jpeg",
+                sizeBytes: bytes.byteLength,
+              },
+              chatId,
+              messageId,
+              sha256: hash,
+              boxJson: yield* encodeBox(box).pipe(Effect.orDie),
+            };
+          }),
+        );
+        if (files.length > 0) {
+          const [last] = yield* sql<{
+            position: number;
+          }>`SELECT COALESCE(MAX(position), ${row.position}) AS position
+        FROM kin_bill_reads WHERE org_id = ${orgId} AND batch_id = ${row.batchId}
+          AND parent_sha256 = ${row.sha256} AND cut_page < ${page}`;
+          const after = last!.position;
+          yield* sql`UPDATE kin_bill_reads SET position = position + ${files.length}
+        WHERE org_id = ${orgId} AND batch_id = ${row.batchId} AND position > ${after}`;
+          yield* insertBills({
+            orgId,
+            batchId: row.batchId,
+            agentId: row.agentId,
+            cardChatId: chatId,
+            addedBy: row.addedBy,
+            startPosition: after + 1,
+            source: { sha256: row.sha256, page, eventId },
+            files,
+          });
+          for (const file of files)
+            yield* repo.attachCardFile({
+              orgId,
+              chatId,
+              messageId,
+              attachmentId: file.attachment.id,
+            });
+        }
+        const json = yield* encodeCutPages([...pages, page]).pipe(Effect.orDie);
+        yield* sql`UPDATE kin_bill_reads SET state = 'read', read_json = ${json},
+        read_at = ${yield* Clock.currentTimeMillis}
+      WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
+        const already = crops.length - fresh.length;
+        yield* refreshCard(orgId, row.batchId, undefined, already);
+        for (const batchId of new Set(
+          fresh.flatMap(({ hash }) => {
+            const prior = known.get(hash);
+            return prior === undefined || prior.batchId === row.batchId ? [] : [prior.batchId];
+          }),
+        ))
+          yield* refreshCard(orgId, batchId);
+        const pieces = `Cut ${crops.length} piece${crops.length === 1 ? "" : "s"}`;
+        const whatNext =
+          already > 0
+            ? fresh.length > 0
+              ? `${already} already added, and the rest come back as their own bills.`
+              : "all were already added."
+            : crops.length === 1
+              ? "it comes back as its own bill."
+              : "each comes back as its own bill.";
+        return { bill: id, result: `${pieces}; ${whatNext}` };
+      }),
+    )
+    .pipe(
+      Effect.onError(() => store.remove(stored)),
+      Effect.uninterruptible,
+    );
 }, workFailure);
 
 /**
@@ -1243,7 +1465,10 @@ export const turnEnded = Effect.fn("KinBills.turnEnded")(function* (
         WHERE org_id = ${orgId} AND state = 'reading' AND event_id IN (SELECT event_id
           FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
             AND tag = 'bills.read' AND state IN ('done', 'failed', 'expired'))`;
-      for (const { batchId } of touched) yield* refreshCard(orgId, batchId);
+      for (const { batchId } of touched) {
+        yield* queueWaiting(orgId, batchId);
+        yield* refreshCard(orgId, batchId);
+      }
     }),
   );
 });
@@ -1267,7 +1492,7 @@ export const sweep = Effect.fn("KinBills.sweep")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const orphans = yield* sql<{ orgId: string; sha256: string; batchId: string; reads: number }>`
     SELECT b.org_id AS "orgId", b.sha256, b.batch_id AS "batchId", b.reads FROM kin_bill_reads b
-    WHERE b.state = 'reading' AND NOT EXISTS (SELECT 1 FROM kin_events e
+    WHERE b.state IN ('waiting', 'reading') AND NOT EXISTS (SELECT 1 FROM kin_events e
       WHERE e.org_id = b.org_id AND e.event_id = b.event_id AND e.state IN ('queued', 'claimed'))
     ORDER BY b.org_id, b.batch_id, b.position`;
   if (orphans.length === 0) return 0;
@@ -1351,7 +1576,7 @@ export const list = Effect.fn("KinBills.list")(function* (
       (row) => row.dismissedAt === null,
     );
     if (all.length === 0 && offset === 0) {
-      const any = yield* batchRows(input.orgId, input.batchId);
+      const any = yield* batchRows(input.orgId, input.batchId, { includeCut: true });
       if (any.length === 0) return yield* notFound;
     }
     yield* sql.withTransaction(refreshCard(input.orgId, input.batchId));
@@ -1386,7 +1611,7 @@ export const list = Effect.fn("KinBills.list")(function* (
       ? []
       : yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
           WHERE org_id = ${input.orgId} AND batch_id IN ${sql.in(shown.map((one) => one.batchId))}
-            AND dismissed_at IS NULL
+            AND dismissed_at IS NULL AND ${sql.literal(NOT_CUT)}
           ORDER BY batch_id, position`;
   const records = yield* recordsById(
     input.orgId,
