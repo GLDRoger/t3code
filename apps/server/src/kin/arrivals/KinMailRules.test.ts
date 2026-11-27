@@ -284,12 +284,14 @@ it.effect("applies a changed cap to the next matching mail and keeps held mail h
     yield* feed("next");
     const { entries } = yield* rules.history(owners, ref);
     assert.sameDeepMembers(
-      entries.flatMap((entry) => (entry.kind === "mail" ? [[entry.arrivalId, entry.state]] : [])),
+      entries.flatMap((entry) =>
+        entry.kind === "mail" ? [[entry.arrivalId, entry.state, "manual" in entry]] : [],
+      ),
       [
-        ["next", "woke"],
-        ["held", "held_cap"],
-        ["held", "woke"],
-        ["first", "woke"],
+        ["next", "woke", false],
+        ["held", "held_cap", false],
+        ["held", "woke", true],
+        ["first", "woke", false],
       ],
     );
     assert.deepStrictEqual(
@@ -328,6 +330,90 @@ it.effect("refuses limit changes for a teammate and for a proposed or removed ru
       (yield* rules.setLimit(owners, input).pipe(Effect.flip)).reason,
       "not_found",
     );
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "a lower limit holds at once below what fired, and the owner's local first clears it",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* seed();
+      const rules = yield* MailRules.KinMailRules;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream,
+      full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+      VALUES ('org', 'Asia/Kolkata', '09:00', '18:00', '02:00', 1, 1, '10:00', '{}')`;
+      const last = Date.parse("2026-11-30T18:29:59Z");
+      yield* TestClock.setTime(last);
+      const rule = yield* rules.createFromTap(owners, { ...tap, monthlyCap: 10 });
+      const ref = { orgId, ruleId: rule.ruleId };
+      for (let wake = 0; wake < 3; wake++)
+        assert.strictEqual(
+          (yield* sql.withTransaction(recordMailRuleWake(ref, last))).status,
+          "counted",
+        );
+      assert.include(yield* rules.setLimit(owners, { ...ref, monthlyCap: 2 }), {
+        monthlyCap: 2,
+        fired: 3,
+        atLimit: true,
+      });
+      assert.strictEqual(
+        (yield* sql.withTransaction(recordMailRuleWake(ref, last))).status,
+        "held",
+      );
+      const elsewhere = KinOrgId.make("elsewhere");
+      assert.strictEqual(
+        (yield* rules
+          .setLimit(owners, { orgId: elsewhere, ruleId: rule.ruleId, monthlyCap: 10 })
+          .pipe(Effect.flip)).reason,
+        "not_allowed",
+      );
+      assert.strictEqual(
+        (yield* rules
+          .setLimit(owners, { orgId, ruleId: "rule_elsewhere", monthlyCap: 10 })
+          .pipe(Effect.flip)).reason,
+        "not_found",
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-30T18:30:00Z"));
+      assert.include((yield* rules.list(owners, { orgId })).rules[0], {
+        monthlyCap: 2,
+        month: "2026-12",
+        fired: 0,
+        atLimit: false,
+      });
+      assert.strictEqual(
+        (yield* sql.withTransaction(recordMailRuleWake(ref, yield* Clock.currentTimeMillis)))
+          .status,
+        "counted",
+      );
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("lists a removed rule for exactly 30 days, and no path turns it back on", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const rule = yield* rules.createFromTap(owners, tap);
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.remove(owners, ref);
+    const removed = { orgId, removed: true } as const;
+    yield* TestClock.adjust(30 * DAY_MS);
+    const resume = { ...ref, agentId, chatId, tapId: "resume-tap" };
+    assert.strictEqual(
+      (yield* rules.resume(owners, resume).pipe(Effect.flip)).reason,
+      "invalid_state",
+    );
+    assert.strictEqual(
+      (yield* rules.setLimit(owners, { ...ref, monthlyCap: 5 }).pipe(Effect.flip)).reason,
+      "not_found",
+    );
+    yield* rules.remove(owners, ref);
+    assert.deepInclude((yield* rules.list(owners, removed)).rules[0], {
+      ruleId: rule.ruleId,
+      state: "removed",
+      updatedAt: 0,
+    });
+    yield* TestClock.adjust(1);
+    assert.isEmpty((yield* rules.list(owners, removed)).rules);
   }).pipe(Effect.provide(fixture)),
 );
 

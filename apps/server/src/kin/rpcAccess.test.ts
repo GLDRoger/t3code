@@ -30,10 +30,15 @@ it.effect("decodes mail rule limits only from 1 through 1000", () =>
   Effect.sync(() => {
     const method = KinRpcs.find((rpc) => rpc._tag === "kin.mailRules.setLimit");
     assert.isDefined(method);
-    const accepts = Schema.is(method!.payloadSchema);
+    // The socket decodes Kin payloads with the JSON codec, after the access check.
+    const decode = Schema.decodeUnknownExit(
+      Schema.toCodecJson(method!.payloadSchema as Schema.Codec<unknown, unknown>),
+    );
+    const accepts = (payload: unknown) => decode(payload)._tag === "Success";
     const input = { orgId, ruleId: "juniper-invoices" };
     for (const monthlyCap of [1, 1000]) assert.isTrue(accepts({ ...input, monthlyCap }));
-    for (const monthlyCap of [0, 1001]) assert.isFalse(accepts({ ...input, monthlyCap }));
+    for (const monthlyCap of [0, 1001, 1.5, "5", -1, Number.MAX_SAFE_INTEGER, "Infinity", null])
+      assert.isFalse(accepts({ ...input, monthlyCap }), String(monthlyCap));
   }),
 );
 
