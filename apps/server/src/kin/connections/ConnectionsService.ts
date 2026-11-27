@@ -1210,7 +1210,28 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const refreshing = yield* Semaphore.make(1);
+  const refreshing = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
+  const withRefreshPermit = <A, E, R>(
+    connectionId: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        let entry = refreshing.get(connectionId);
+        if (entry === undefined) {
+          entry = { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+          refreshing.set(connectionId, entry);
+        }
+        entry.users++;
+        return entry;
+      }),
+      ({ semaphore }) => semaphore.withPermits(1)(effect),
+      (entry) =>
+        Effect.sync(() => {
+          entry.users--;
+          if (entry.users === 0) refreshing.delete(connectionId);
+        }),
+    );
   const stamp = (orgId: KinOrgId, connectionId: string) =>
     sql<{ gen: number }>`SELECT sign_in_gen AS gen FROM kin_connections
       WHERE org_id = ${orgId} AND connection_id = ${connectionId}`.pipe(
@@ -1234,7 +1255,8 @@ const make = Effect.gen(function* () {
       force ||
       (seen.expiresAt !== undefined && seen.expiresAt - now < Duration.toMillis(REFRESH_EARLY));
     if (!due) return seen;
-    return yield* refreshing.withPermits(1)(
+    return yield* withRefreshPermit(
+      row.connectionId,
       Effect.gen(function* () {
         // A sign-in moves the generation and stores its tokens in one transaction: read both so.
         const [gen, again] = yield* sql.withTransaction(
