@@ -4,6 +4,7 @@ import {
   KIN_PROMISE_SENSES,
   KIN_PULSE_URGENT,
   kinPulseFactRecord,
+  type KinDay,
   type KinGoal,
   type KinPulseAside,
   type KinPulseFact,
@@ -32,14 +33,16 @@ import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 export const KIN_ATTENTION = {
   title: "Needs attention",
   gotIt: "I've got it",
-  notAProblem: "Not a problem",
+  later: "Later",
+  laterTomorrow: "Tomorrow",
+  laterMonday: "Monday",
+  laterWeek: "A week",
+  pickDay: "Pick a day",
+  laterTitle: "Later until",
+  notNeeded: "Not needed",
   handled: "Handled",
   undo: "Undo",
   ask: (name: string) => `Ask ${name}`,
-  snoozeTomorrow: "Snooze until tomorrow",
-  snoozeMonday: "Snooze until Monday",
-  snoozeWeek: "Snooze for a week",
-  setAside: "Set aside until…",
   setAsideTitle: "Set aside until",
   setAsideDay: "Until this day",
   untilLifted: "Until I lift it",
@@ -48,7 +51,7 @@ export const KIN_ATTENTION = {
   failed: "Couldn't save that.",
   whatsNext: "What's next?",
   notNow: "Not now",
-  menu: (title: string) => `Snooze or set aside ${title}`,
+  menu: (title: string) => `Later or not needed for ${title}`,
 } as const;
 
 /** "Not now" on a deal with no next step: its own hold, this many days. */
@@ -74,11 +77,11 @@ export interface KinAttentionRow {
   readonly agentId: string | null;
   /** What "Ask" puts in the chat, so the agent knows what it is about. */
   readonly askDraft: string;
-  /** In the Handled list: who has it, until when, or that it is not a problem. */
+  /** In the Handled list: who has it, until when, or that it is not needed. */
   readonly handled: string | null;
   /** About money: Tasks counts these in one row that opens Money, which lists them. */
   readonly money: boolean;
-  /** The record it is about, which "Set aside until…" holds; null when it is not a record. */
+  /** The record it is about, which Later holds in the set-aside store; null when it is not a record. */
   readonly record: KinRecordKey | null;
   /** A deal with no next step: "What's next?" opens it, "Not now" holds it for 14 days. */
   readonly whatsNext: KinRecordKey | null;
@@ -201,7 +204,7 @@ const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now
   if (handled === null) return null;
   const by = kinWorkName(handled.by, { people: names, agents: names });
   return handled.until === null
-    ? `${by}: not a problem`
+    ? `${by}: not needed`
     : `${by} has it until ${dayLabel(handled.until, now)}`;
 };
 
@@ -572,20 +575,171 @@ const dayOf = (date: Date) =>
 const plusDays = (date: Date, days: number) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 
-/** Snooze's three choices, as the days the host hides a row until. */
-export function kinSnoozeDays(now: Date) {
+/** The existing host call an attention answer makes: hold the record, or mark the fact handled. */
+type KinAttentionCall =
+  | {
+      readonly kind: "aside";
+      readonly record: KinRecordKey;
+      readonly until?: KinDay;
+      readonly factKey: string;
+    }
+  | {
+      readonly kind: "handle";
+      readonly factKey: string;
+      readonly action: "got_it" | "not_a_problem";
+      readonly until?: KinDay;
+    };
+
+type KinLaterPresetId = "tomorrow" | "monday" | "week";
+
+type KinLaterChoice =
+  | {
+      readonly id: KinLaterPresetId;
+      readonly label: string;
+      readonly until: KinDay;
+      readonly call: KinAttentionCall;
+    }
+  | {
+      readonly id: "pick_day";
+      readonly label: string;
+      /** True when the row has a record, so "Until I lift it" works alongside a chosen day. */
+      readonly allowUntilLifted: boolean;
+      readonly callForDay: (until?: KinDay) => KinAttentionCall | null;
+    };
+
+interface KinAttentionMenu {
+  readonly later: {
+    readonly label: string;
+    readonly choices: ReadonlyArray<KinLaterChoice>;
+  };
+  readonly notNeeded: {
+    readonly label: string;
+    readonly call: KinAttentionCall;
+  };
+}
+
+/** "Later"'s preset days, as the days the host hides a row until. */
+function kinLaterDays(now: Date) {
   const toMonday = (8 - now.getDay()) % 7 || 7;
   return [
-    { label: KIN_ATTENTION.snoozeTomorrow, until: dayOf(plusDays(now, 1)) },
-    { label: KIN_ATTENTION.snoozeMonday, until: dayOf(plusDays(now, toMonday)) },
-    { label: KIN_ATTENTION.snoozeWeek, until: dayOf(plusDays(now, 7)) },
+    { id: "tomorrow" as const, label: KIN_ATTENTION.laterTomorrow, until: dayOf(plusDays(now, 1)) },
+    {
+      id: "monday" as const,
+      label: KIN_ATTENTION.laterMonday,
+      until: dayOf(plusDays(now, toMonday)),
+    },
+    { id: "week" as const, label: KIN_ATTENTION.laterWeek, until: dayOf(plusDays(now, 7)) },
   ] as const;
 }
 
 /** The day "Not now" holds a deal with no next step until. */
 export const kinNotNowUntil = (now: Date) => dayOf(plusDays(now, KIN_NOT_NOW_DAYS));
 
-/** "Set aside until…": the first day it may be set to (tomorrow) and the day it starts on. */
+/** "I've got it": claims the fact for its default window. */
+export const kinGotItCall = (row: Pick<KinAttentionRow, "factKey">): KinAttentionCall => ({
+  kind: "handle",
+  factKey: row.factKey,
+  action: "got_it",
+});
+
+/** "Not now" on a deal with no next step: holds the deal for 14 days in the set-aside store. */
+export const kinNotNowCall = (
+  row: Pick<KinAttentionRow, "factKey" | "whatsNext">,
+  now: Date,
+): KinAttentionCall | null =>
+  row.whatsNext === null
+    ? null
+    : {
+        kind: "aside",
+        record: row.whatsNext,
+        until: kinNotNowUntil(now),
+        factKey: row.factKey,
+      };
+
+/** "Later" for a day (or until lifted on a record): set-aside for records, got_it otherwise. */
+function kinAttentionLaterCall(
+  row: Pick<KinAttentionRow, "factKey" | "record">,
+  until?: KinDay,
+): KinAttentionCall | null {
+  if (row.record !== null)
+    return {
+      kind: "aside",
+      record: row.record,
+      ...(until === undefined ? {} : { until }),
+      factKey: row.factKey,
+    };
+  if (until === undefined) return null;
+  return { kind: "handle", factKey: row.factKey, action: "got_it", until };
+}
+
+/** One menu model for web and phone: "Later" (presets + Pick a day) and "Not needed". */
+export function kinAttentionMenu(
+  row: Pick<KinAttentionRow, "factKey" | "record">,
+  now: Date,
+): KinAttentionMenu {
+  return {
+    later: {
+      label: KIN_ATTENTION.later,
+      choices: [
+        ...kinLaterDays(now).map((choice) => ({
+          id: choice.id,
+          label: choice.label,
+          until: choice.until,
+          call: kinAttentionLaterCall(row, choice.until)!,
+        })),
+        {
+          id: "pick_day",
+          label: KIN_ATTENTION.pickDay,
+          allowUntilLifted: row.record !== null,
+          callForDay: (until?: KinDay) => kinAttentionLaterCall(row, until),
+        },
+      ],
+    },
+    notNeeded: {
+      label: KIN_ATTENTION.notNeeded,
+      call: { kind: "handle", factKey: row.factKey, action: "not_a_problem" },
+    },
+  };
+}
+
+/** Labels for the "Pick a day" dialog/picker, matching whether the row holds a record. */
+export function kinPickDayCopy(allowUntilLifted: boolean) {
+  return allowUntilLifted
+    ? {
+        title: KIN_ATTENTION.setAsideTitle,
+        save: KIN_ATTENTION.setAsideSave,
+        untilLifted: KIN_ATTENTION.untilLifted,
+      }
+    : {
+        title: KIN_ATTENTION.laterTitle,
+        save: KIN_ATTENTION.later,
+        untilLifted: null,
+      };
+}
+
+/** Runs a mapped attention call against the client's handle/aside runner. */
+export function runKinAttentionCall(
+  handler: {
+    readonly aside: (
+      record: KinRecordKey,
+      action: "set" | "lift",
+      until?: KinDay,
+      factKey?: string,
+    ) => unknown;
+    readonly send: (
+      factKey: string,
+      action: "got_it" | "not_a_problem" | "undo" | "set_aside",
+      until?: KinDay,
+    ) => unknown;
+  },
+  call: KinAttentionCall | null,
+) {
+  if (call === null) return;
+  if (call.kind === "aside") void handler.aside(call.record, "set", call.until, call.factKey);
+  else void handler.send(call.factKey, call.action, call.until);
+}
+
+/** "Pick a day": the first day it may be set to (tomorrow) and the day it starts on. */
 export function kinSetAsideDays(now: Date) {
   return { min: dayOf(plusDays(now, 1)), initial: dayOf(plusDays(now, 30)) } as const;
 }
