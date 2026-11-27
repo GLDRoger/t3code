@@ -18,13 +18,24 @@ export function useKinPageVisible(): boolean {
   return useSyncExternalStore(subscribeVisibility, readVisibility, () => true);
 }
 
-/** Scrolls an element into view, turning smooth scrolling off when reduced motion is asked for. */
+/**
+ * Scrolls an element's own scroller to it, turning smooth scrolling off when reduced motion is asked
+ * for. Only that scroller moves: `scrollIntoView` also shifts the clipped app frame around it.
+ */
 export function scrollIntoViewRespectingMotion(node: HTMLElement | null) {
   if (node === null) return;
-  const reduced =
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-  node.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+  let scroller = node.parentElement;
+  while (
+    scroller !== null &&
+    (scroller.scrollHeight <= scroller.clientHeight ||
+      !/auto|scroll/.test(getComputedStyle(scroller).overflowY))
+  )
+    scroller = scroller.parentElement;
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const behavior = reduced ? "auto" : "smooth";
+  const top = node.getBoundingClientRect().top;
+  if (scroller === null) window.scrollBy({ top, behavior });
+  else scroller.scrollBy({ top: top - scroller.getBoundingClientRect().top, behavior });
 }
 
 /**
