@@ -43,22 +43,31 @@ const KEEP_MS = 30 * DAY_MS;
 const failure = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notAllowed = failure("not_allowed", "Only the owner or a co-owner can manage mail rules.");
-const notFound = failure("not_found", "Mail rule not found.");
+const notFound = failure("not_found", "Kin can't find that mail rule.");
 const badRule = failure(
   "invalid_state",
   "Check the sender filters, subject words, instruction and monthly limit.",
 );
-const changed = failure("invalid_state", "The rule's wording has changed. Kin won't use it.");
+const changed = failure(
+  "invalid_state",
+  "This mail rule was changed outside Kin, so it won't run. Remove it and set it up again.",
+);
 const noMailbox = failure("invalid_state", "Choose a connected company mailbox.");
 const noLead = failure(
   "invalid_state",
   "Choose an active lead and your direct chat with that lead.",
 );
-const notPaused = failure("invalid_state", "Only a paused mail rule can resume.");
+const notPaused = failure(
+  "invalid_state",
+  "This mail rule isn't paused, so there's nothing to resume.",
+);
 const notReady = failure("invalid_state", "Turn on the mail rule before running it.");
-const tapUsed = failure("invalid_state", "This tap already turned on a different rule.");
+const tapUsed = failure(
+  "invalid_state",
+  "That tap already turned on a different mail rule. Set this one up again.",
+);
 const oldResume = failure("invalid_state", "Tap Resume again to turn on this mail rule.");
-const unavailable = failure("unavailable", "Kin couldn't load or save mail rules.");
+const unavailable = failure("unavailable", "Kin couldn't load or save mail rules. Try again.");
 const MatchJson = Schema.fromJsonString(KinMailRuleMatch);
 const decodeMatch = Schema.decodeUnknownOption(MatchJson);
 const encodeMatch = Schema.encodeEffect(MatchJson);
@@ -191,23 +200,23 @@ const make = Effect.gen(function* () {
     mailRuleContentHash(row.matchJson, row.what) === row.contentHash
       ? Option.getOrUndefined(decodeMatch(row.matchJson))
       : undefined;
-  const toView = Effect.fn("KinMailRules.view")(function* (row: RuleRow, at: number, zone: string) {
-    const match = checkedMatch(row);
-    if (match === undefined) return yield* changed;
+  const toView = (row: RuleRow, at: number, zone: string) => {
+    const match = checkedMatch(row) ?? null;
     const {
       matchJson: _matchJson,
       contentHash: _contentHash,
       sourceEvent: _sourceEvent,
       ...view
     } = row;
-    return { ...view, match, ...monthlyMailRuleLimit(row, at, zone) };
-  });
+    return {
+      ...view,
+      match,
+      wordingChanged: match === null,
+      ...monthlyMailRuleLimit(row, at, zone),
+    } satisfies KinMailRule;
+  };
   const view = Effect.fn("KinMailRules.read")(function* (input: KinMailRuleRef) {
-    return yield* toView(
-      yield* one(input),
-      yield* Clock.currentTimeMillis,
-      yield* zoneFor(input.orgId),
-    );
+    return toView(yield* one(input), yield* Clock.currentTimeMillis, yield* zoneFor(input.orgId));
   });
   const transaction = <A, E>(effect: Effect.Effect<A, E>) => settle(sql.withTransaction(effect));
 
@@ -254,7 +263,6 @@ const make = Effect.gen(function* () {
   ) {
     yield* owner(people, input.orgId);
     const row = yield* one(input);
-    if (checkedMatch(row) === undefined) return yield* changed;
     if (row.state === "removed" && state !== "removed") return yield* notFound;
     if (row.state !== state) {
       const now = yield* Clock.currentTimeMillis;
@@ -300,7 +308,7 @@ const make = Effect.gen(function* () {
       ORDER BY r.created_at, r.rule_id`;
     const now = yield* Clock.currentTimeMillis;
     const zone = yield* zoneFor(orgId);
-    return { rules: yield* Effect.forEach(rows, (row) => toView(row, now, zone)) };
+    return { rules: rows.map((row) => toView(row, now, zone)) };
   }, transaction);
   const history = Effect.fn("KinMailRules.history")(function* (
     people: People,
@@ -369,27 +377,28 @@ const make = Effect.gen(function* () {
     input: KinMailRulePreviewInput,
   ) {
     const orgId = input.orgId;
-    const { rule, rows, snapshot } = yield* sql.withTransaction(
+    const { rule, match, rows, snapshot } = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* owner(people, orgId);
         const snapshot = "ruleId" in input ? yield* one(input) : undefined;
         const rule =
           snapshot === undefined
             ? input
-            : yield* toView(snapshot, yield* Clock.currentTimeMillis, yield* zoneFor(orgId));
+            : toView(snapshot, yield* Clock.currentTimeMillis, yield* zoneFor(orgId));
         if (!("match" in rule)) return yield* notFound;
         if (snapshot?.state === "removed") return yield* notFound;
+        if (rule.match === null) return yield* changed;
         if (!validMatch(rule.match)) return yield* badRule;
         yield* companyMailbox(orgId, rule.connectionId);
         const filter = { connectionId: rule.connectionId, ...rule.match };
         const rows = (yield* candidates(orgId, rule.connectionId)).filter(
           (row) => select(filter, row, undefined, { subject: "defer" }) !== "no_match",
         );
-        return { rule, rows, snapshot };
+        return { rule, match: rule.match, rows, snapshot };
       }),
     );
-    const filter = { connectionId: rule.connectionId, ...rule.match };
-    const hasPhrases = rule.match.subjectHas.length > 0;
+    const filter = { connectionId: rule.connectionId, ...match };
+    const hasPhrases = match.subjectHas.length > 0;
     const checked = hasPhrases ? rows.slice(0, PREVIEW_HEADERS) : rows;
     const headers =
       hasPhrases && checked.length > 0

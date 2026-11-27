@@ -68,7 +68,9 @@ export type KinMailRulePreviewInput = typeof KinMailRulePreviewInput.Type;
 export const KinMailRule = Schema.Struct({
   ...mailbox,
   ruleId: id,
-  match: KinMailRuleMatch,
+  /** Null when the stored words or filters no longer hash to what was tapped; such a rule never runs. */
+  match: Schema.NullOr(KinMailRuleMatch),
+  wordingChanged: Schema.Boolean,
   what: KinMailRuleCreateInput.fields.what,
   agentId: KinAgentId,
   chatId: KinChatId,

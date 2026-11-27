@@ -406,6 +406,11 @@ export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
     const mailboxes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_connections
       WHERE org_id = ${orgId} AND connection_id IN ${sql.in(mailRules.map((row) => row.connectionId))}
       ORDER BY label`;
+    const labels = mailboxes.map(({ label }) => label);
+    const on =
+      labels.length < 2
+        ? (labels[0] ?? "a mailbox")
+        : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
     const message = yield* repo.insertMessage({
       orgId,
       chatId: lead.ownerChatId,
@@ -413,7 +418,10 @@ export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
       messageId: KinMessageId.make(`kin-leaver-mail-rules:${gone.personId}:${removedAt}`),
       author: { _tag: "system" },
       kind: "system",
-      body: `${gone.displayName} left, so ${plural(mailRules.length, "mail rule", "mail rules")} ${gone.displayName} set up ${mailRules.length === 1 ? "is" : "are"} paused on ${mailboxes.map(({ label }) => label).join(", ")}. Resume or remove each from its mailbox in Settings → Connections.`,
+      body:
+        mailRules.length === 1
+          ? `${gone.displayName} left, so the mail rule ${gone.displayName} set up on ${on} is paused. Resume or remove it from its mailbox in Settings → Connections.`
+          : `${gone.displayName} left, so ${mailRules.length} mail rules ${gone.displayName} set up on ${on} are paused. Resume or remove each from its mailbox in Settings → Connections.`,
       intent: null,
       mentions: [],
       replyTo: null,

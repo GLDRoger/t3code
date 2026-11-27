@@ -724,7 +724,7 @@ it.effect("a departing co-owner's mail rules pause and the owner hears once", ()
         [
           {
             chat_id: ctx.ownerChat,
-            body: "Meera left, so 2 mail rules Meera set up are paused on Juniper bills. Resume or remove each from its mailbox in Settings → Connections.",
+            body: "Meera left, so 2 mail rules Meera set up on Juniper bills are paused. Resume or remove each from its mailbox in Settings → Connections.",
           },
         ],
       );

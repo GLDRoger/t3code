@@ -135,6 +135,25 @@ it.effect(
         (yield* rules.runNow(owners, ref).pipe(Effect.flip)).reason,
         "invalid_state",
       );
+      const other = yield* rules.createFromTap(owners, { ...tap, tapId: "second-tap" });
+      const listed = (yield* rules.list(owners, { orgId })).rules;
+      assert.deepStrictEqual(
+        new Map(
+          listed.map(({ ruleId, match, wordingChanged }) => [ruleId, [match, wordingChanged]]),
+        ),
+        new Map([
+          [rule.ruleId, [null, true]],
+          [other.ruleId, [match, false]],
+        ]),
+      );
+      assert.strictEqual((yield* rules.pause(owners, ref)).pausedWhy, "person");
+      assert.strictEqual(
+        (yield* rules.resume(owners, { ...resume, tapId: "changed-resume" }).pipe(Effect.flip))
+          .reason,
+        "invalid_state",
+      );
+      yield* rules.remove(owners, { orgId, ruleId: other.ruleId });
+      yield* sql`UPDATE kin_mail_rules SET state = 'on' WHERE rule_id = ${rule.ruleId}`;
       yield* sql`UPDATE kin_mail_rules SET state = 'paused', what = 'File the bill.', match_json = '{}'`;
       assert.strictEqual(
         (yield* rules.resume(owners, resume).pipe(Effect.flip)).reason,
