@@ -525,7 +525,9 @@ export function applyServerSettingsPatch(
       : kinBackgroundModelSelection;
   const nextWithReplacementsBase = {
     ...next,
-    ...(backgroundModel == null ? {} : { kinBackgroundModelSelection: backgroundModel }),
+    ...(backgroundModel === "default" || backgroundModel === undefined
+      ? {}
+      : { kinBackgroundModelSelection: backgroundModel }),
     favorites,
     providerModelPreferences: nextModelPreferences,
     ...(worktreeCleanupPatch === undefined

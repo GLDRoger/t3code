@@ -8,6 +8,7 @@ import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit
 import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
   EventId,
   MessageId,
   KinWakeupId,
@@ -152,21 +153,19 @@ const blockedBackgroundSelection = {
   ...backgroundSelection,
   instanceId: ProviderInstanceId.make("codex"),
 };
-const backgroundProviders = ProviderRegistryMock.layer([
-  {
-    instanceId: selection.instanceId,
-    driver: ProviderDriverKind.make("claudeAgent"),
-    enabled: true,
-    installed: true,
-    version: "0.0.0",
-    status: "ready",
-    auth: { status: "authenticated" },
-    checkedAt: "2026-11-08T00:00:00.000Z",
-    models: [],
-    slashCommands: [],
-    skills: [],
-  } satisfies ServerProvider,
-]);
+const backgroundProvider = {
+  instanceId: selection.instanceId,
+  driver: ProviderDriverKind.make("claudeAgent"),
+  enabled: true,
+  installed: true,
+  version: "0.0.0",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-11-08T00:00:00.000Z",
+  models: [],
+  slashCommands: [],
+  skills: [],
+} satisfies ServerProvider;
 const decodeCarryStamp = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -1296,41 +1295,66 @@ describe("WakeupRunner", () => {
         );
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
-  it.effect("runs every kind of turn on the agent's one model, so its thread never switches", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const queue = yield* KinEventQueue.KinEventQueue;
-      const sql = yield* SqlClient.SqlClient;
-      const at = { receivedAt: "1970-01-01T00:00:00.000Z" };
-      for (const next of [
-        event("check-in"),
-        decodeEvent({ ...event("quiet-check"), ...at, _tag: "pulse", factKeys: [] }),
-        yield* ownerSays("asked"),
-        decodeEvent({
-          ...event("finding"),
-          ...at,
-          _tag: "watchdog",
-          finding: "Check",
-          itemIds: [],
-        }),
-      ]) {
-        yield* queue.enqueue(next);
-        yield* Fiber.join(yield* run());
-      }
-      assert.deepStrictEqual(
-        yield* sql`SELECT model, COUNT(*) AS turns FROM kin_wakeups WHERE org_id = ${orgId} GROUP BY model`,
-        [{ model: "claude-opus-4-6", turns: 4 }],
-      );
-    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  it.effect(
+    "uses the host default for watchdog only, leaving a person's turn on the agent model",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const at = { receivedAt: "1970-01-01T00:00:00.000Z" };
+        for (const next of [
+          event("check-in"),
+          decodeEvent({ ...event("quiet-check"), ...at, _tag: "pulse", factKeys: [] }),
+          yield* ownerSays("asked"),
+          decodeEvent({
+            ...event("finding"),
+            ...at,
+            _tag: "watchdog",
+            finding: "Check",
+            itemIds: [],
+          }),
+        ]) {
+          yield* queue.enqueue(next);
+          yield* Fiber.join(yield* run());
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, model FROM kin_events JOIN kin_wakeups USING (org_id, wakeup_id)
+          WHERE org_id = ${orgId} ORDER BY event_id`,
+          [
+            { event_id: "asked", model: selection.model },
+            { event_id: "check-in", model: selection.model },
+            { event_id: "finding", model: DEFAULT_KIN_BACKGROUND_MODEL_SELECTION.model },
+            { event_id: "quiet-check", model: selection.model },
+          ],
+        );
+      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect.each([
-    ["configured", backgroundSelection, false, backgroundSelection, true, false],
-    ["absent", undefined, false, selection, false, false],
-    ["mixed with a person's message", backgroundSelection, true, selection, false, false],
-    ["blocked by provider policy", blockedBackgroundSelection, false, selection, false, true],
+    ["configured", backgroundSelection, false, backgroundSelection, true, undefined],
+    ["nothing stored", undefined, false, DEFAULT_KIN_BACKGROUND_MODEL_SELECTION, true, undefined],
+    ["explicitly off", null, false, selection, false, undefined],
+    ["mixed with a person's message", backgroundSelection, true, selection, false, undefined],
+    [
+      "blocked by provider policy",
+      blockedBackgroundSelection,
+      false,
+      selection,
+      false,
+      /turn on Agents on other providers/,
+    ],
+    ["default's provider unavailable", undefined, false, selection, false, /isn't available/],
+    ["default's provider signed out", undefined, false, selection, false, /is signed out/],
   ] as const)(
     "records the model on a bills wake-up: %s",
-    ([, configured, mixed, expected, background, refused]) => {
+    ([name, configured, mixed, expected, background, refusal]) => {
+      const providers = ProviderRegistryMock.layer([
+        name === "default's provider unavailable"
+          ? { ...backgroundProvider, enabled: false }
+          : name === "default's provider signed out"
+            ? { ...backgroundProvider, auth: { status: "unauthenticated" } }
+            : backgroundProvider,
+      ]);
       const contexts: unknown[] = [];
       const reasons: unknown[] = [];
       return Effect.gen(function* () {
@@ -1373,18 +1397,25 @@ describe("WakeupRunner", () => {
           [{ model: expected.model, status: "completed", events: mixed ? 2 : 1 }],
         );
         assert.deepStrictEqual(contexts, [background]);
-        if (refused) assert.match(String(reasons[0]), /turn on Agents on other providers/);
+        if (refusal !== undefined) assert.match(String(reasons[0]), refusal);
         else assert.deepStrictEqual(reasons, []);
+        assert.deepStrictEqual(
+          (yield* settings.getSettings).kinBackgroundModelSelection,
+          configured,
+        );
       }).pipe(
-        Effect.provide(harnessWith({}, backgroundProviders)),
         Effect.provide(
-          Logger.layer([
-            Logger.make(({ message }) => {
-              if (!Array.isArray(message)) return;
-              if (message[0] === "Kin wake-up context.") contexts.push(message[1]?.background);
-              if (message[0] === "Kin background model not used") reasons.push(message[1]?.reason);
-            }),
-          ]),
+          Layer.merge(
+            harnessWith({}, providers),
+            Logger.layer([
+              Logger.make(({ message }) => {
+                if (!Array.isArray(message)) return;
+                if (message[0] === "Kin wake-up context.") contexts.push(message[1]?.background);
+                if (message[0] === "Kin background model not used")
+                  reasons.push(message[1]?.reason);
+              }),
+            ]),
+          ),
         ),
         provideDeterministicTestRuntime,
       );

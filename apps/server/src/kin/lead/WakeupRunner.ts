@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   CommandId,
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
   KinAgentId,
   KinEventId,
   type KinEvent,
@@ -1739,11 +1740,11 @@ const make = Effect.gen(function* () {
               leadModelProblem(hostSettings, providers, candidate, devServer);
             let own = current.model;
             let background = false;
-            const backgroundModel = hostSettings.kinBackgroundModelSelection;
-            if (
-              backgroundModel !== undefined &&
-              backgroundWake(events.map((event) => event._tag))
-            ) {
+            const backgroundModel =
+              hostSettings.kinBackgroundModelSelection === undefined
+                ? DEFAULT_KIN_BACKGROUND_MODEL_SELECTION
+                : hostSettings.kinBackgroundModelSelection;
+            if (backgroundModel !== null && backgroundWake(events.map((event) => event._tag))) {
               const listed = providers?.find(
                 ({ instanceId }) => instanceId === backgroundModel.instanceId,
               );
@@ -1756,9 +1757,11 @@ const make = Effect.gen(function* () {
                 ];
               const reason =
                 problemOf(backgroundModel) ??
-                (refusedAt === undefined
-                  ? undefined
-                  : "The provider previously refused this model.");
+                (refusedAt !== undefined
+                  ? "The provider previously refused this model."
+                  : listed?.auth.status === "unauthenticated"
+                    ? `${listed.displayName ?? listed.instanceId} is signed out.`
+                    : undefined);
               if (reason === undefined) {
                 own = backgroundModel;
                 background = true;
