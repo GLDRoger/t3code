@@ -808,46 +808,53 @@ describe("statement matching", () => {
     ["unequal marks", [1_200, 800], [1_200, 1_200], [true, false]],
     ["single before total", [1_200, 800], [1_200, 2_000], [true, false]],
     ["total before single", [1_200, 800], [2_000, 1_200], [true, false]],
-  ] as const)("assigns %s in day order, not statement order", (_, marks, amounts, expected) => {
-    const debits = amounts.map((amount, index) =>
-      row({
-        index,
-        direction: "debit",
-        date: ["2026-10-07", "2026-10-09", "2026-10-10"][index]!,
-        description: "NEFT DR-ARJUN MEHTA",
-        amountMinor: amount * 100,
-      }),
-    );
-    for (const rows of [debits, debits.toReversed()]) {
-      const matches = matchRows(rows, {
-        currency: "INR",
-        withholdsAtSource: true,
-        invoices: [],
-        expenses: [],
-        payees: [
-          {
-            id: "arjun",
-            name: "Arjun Mehta",
-            repaid: [
-              {
-                currency: "INR",
-                day: "2026-10-06",
-                amountMinor: marks.reduce<number>((sum, mark) => sum + mark * 100, 0),
-                marks: marks.map((mark) => ({ amountMinor: mark * 100, bankRecordId: null })),
-              },
-            ],
-          },
-        ],
-        ownAccounts: [],
-        known: [],
-        bank: null,
-      });
-      assert.deepStrictEqual(
-        matches.map((match) => match.suggestion.why?.includes("repayment already marked") ?? false),
-        rows.map((debit) => expected[debit.index]),
+    ["possible duplicate before a real debit", [1_200], [1_200, 1_200], [false, true], 0],
+  ] as const)(
+    "assigns %s in day order, not statement order",
+    (_, marks, amounts, expected, possibleDuplicate?: 0) => {
+      const debits = amounts.map((amount, index) =>
+        row({
+          index,
+          direction: "debit",
+          date: ["2026-10-07", "2026-10-09", "2026-10-10"][index]!,
+          description: "NEFT DR-ARJUN MEHTA",
+          amountMinor: amount * 100,
+        }),
       );
-    }
-  });
+      for (const rows of [debits, debits.toReversed()]) {
+        const matches = matchRows(rows, {
+          currency: "INR",
+          withholdsAtSource: true,
+          invoices: [],
+          expenses: [],
+          payees: [
+            {
+              id: "arjun",
+              name: "Arjun Mehta",
+              repaid: [
+                {
+                  currency: "INR",
+                  day: "2026-10-06",
+                  amountMinor: marks.reduce<number>((sum, mark) => sum + mark * 100, 0),
+                  marks: marks.map((mark) => ({ amountMinor: mark * 100, bankRecordId: null })),
+                },
+              ],
+            },
+          ],
+          possibleDuplicates: new Set(possibleDuplicate === undefined ? [] : [possibleDuplicate]),
+          ownAccounts: [],
+          known: [],
+          bank: null,
+        });
+        assert.deepStrictEqual(
+          matches.map(
+            (match) => match.suggestion.why?.includes("repayment already marked") ?? false,
+          ),
+          rows.map((debit) => expected[debit.index]),
+        );
+      }
+    },
+  );
 
   it("gives each debit the same mark whatever order the marks and other lines arrive in", () => {
     const filed = (

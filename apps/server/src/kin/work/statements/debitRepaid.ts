@@ -1,4 +1,5 @@
 import type { KinOrgId } from "@t3tools/contracts";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -8,7 +9,7 @@ import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { expenseContests } from "./debitBill.ts";
-import { openEntries } from "./invoiceCredits.ts";
+import { openEntries, openRepaymentDebits } from "./invoiceCredits.ts";
 import { assignRepaidMarks, identifies, repayment, SALARIES, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
@@ -63,28 +64,32 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   const today = dayIn(at, zone);
   const partners = yield* partnerCandidates(orgId, yield* homeCurrency(orgId), zone);
   if (partners.length === 0) return [];
-  const open = yield* openEntries(orgId, def, "debit", "all");
-  const debits = target === undefined ? open : open.filter((debit) => debit.recordId === target);
+  const { payees, debits, open, ownAccounts } = yield* Effect.gen(function* () {
+    const payees = yield* partnerPayees(orgId);
+    const debits = yield* openEntries(
+      orgId,
+      def,
+      "debit",
+      target === undefined ? undefined : { recordId: target },
+    );
+    if (debits.length === 0) return { payees, debits, open: [], ownAccounts: [] };
+    const open = yield* openRepaymentDebits(orgId, def, payees);
+    const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
+      FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
+      ORDER BY account`).map((one) => one.account);
+    return { payees, debits, open, ownAccounts };
+  }).pipe(sql.withTransaction, readOnly);
   if (debits.length === 0) return [];
-  const payees = yield* partnerPayees(orgId);
-  const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
-    FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
-    ORDER BY account`).map((one) => one.account);
   const assigned = assignRepaidMarks(open, payees, ownAccounts);
+  const markedById = new Map(open.map((debit) => [debit.recordId, assigned.get(debit.row)?.day]));
   const states = bankStates(def);
   const setBack = new Set(
     (yield* sql<{ recordId: string }>`SELECT DISTINCT c.record_id AS "recordId"
       FROM kin_record_changes c, json_each(c.fields_json) f
-      WHERE c.org_id = ${orgId} AND c.actor_kind = 'person' AND json_extract(f.value, '$.field') = 'state'
+      WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(debits.map((debit) => debit.recordId))}
+        AND c.actor_kind = 'person' AND json_extract(f.value, '$.field') = 'state'
         AND json_extract(f.value, '$.from') = ${states.explained}
         AND json_extract(f.value, '$.to') = ${states.open}
-        ${
-          target === undefined
-            ? sql`AND c.record_id IN (
-          SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
-            AND r.register_id = ${def.id} AND r.state = ${states.open})`
-            : sql`AND c.record_id = ${target}`
-        }
         AND c.record_id IN (SELECT COALESCE(json_extract(p.plan_json, '$.final.recordId'),
             json_extract(p.plan_json, '$.recordId'))
           FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id
@@ -107,7 +112,7 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const [id, name] = only;
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
-    const marked = assigned.get(debit.row)?.day;
+    const marked = markedById.get(debit.recordId);
     const candidate = repayment(debit.row, partner, 0, true)?.candidate;
     const found = candidate?.repays;
     const repays = found?.flatMap((one) =>
@@ -158,7 +163,7 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   });
 });
 
-/** Every unexplained Bank transactions debit that names one partner the company owes, read at `at`. */
+/** Among the newest 200 unexplained debits, those naming one partner the company owes. */
 export const repaidMatches = Effect.fn("KinDebitRepaid.matches")(function* (
   orgId: KinOrgId,
   at: number,

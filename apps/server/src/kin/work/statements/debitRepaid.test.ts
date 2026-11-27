@@ -6,6 +6,7 @@ import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "@t3tools/contra
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -316,6 +317,82 @@ it.layer(layer)((it) => {
         })),
         [{ debit: "BNK-9", repays: ["EXP-8"] }],
       );
+    }),
+  );
+
+  it.effect.each([
+    [2_000, 0, 0],
+    [2_000, 3, 1],
+    [5_000, 3, 2],
+  ] as const)(
+    "reads only repayment assignment pages with %s open debits and %s marks",
+    ([count, marks, expectedPages]) =>
+      Effect.gen(function* () {
+        const org = KinOrgId.make(`ambermill-assignment-pages-${count}-${marks}`);
+        const kin = yield* company(org);
+        const bank = (yield* findBankList(org))!;
+        yield* kin.expense("EXP-8", 1_200, "2026-09-01", { reimbursement: "owed" });
+        yield* kin.debit("BNK-9", 1_200, "2026-11-20");
+        yield* kin.sql`WITH RECURSIVE seq(n) AS (
+            SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ${count - 1}
+          )
+          INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, date_at, amount_minor, currency, confirmed, created_by_kind,
+            created_by_id, origin_key, created_at, updated_at, fields_json)
+          SELECT ${org}, ${org} || '-filler-' || n, ${bank.id}, 'BNK-' || (100 + n),
+            'Tidewater Freight', 'open', 'person', ${`${org}-rhea`},
+            ${NOW} - ((n - 1) * ${365 * 86_400_000}) / ${count},
+            90000, 'INR', 1, 'person', ${`${org}-rhea`}, 'filler-' || n, 0, 0,
+            '{"direction":"debit"}' FROM seq`;
+        for (const [index, date] of ["2026-11-16", "2026-11-19", "2026-11-22"]
+          .slice(0, marks)
+          .entries())
+          yield* kin.expense(`EXP-${index + 4}`, 1_200, "2026-09-01", {
+            reimbursement: "repaid",
+            repaidOn: date,
+          });
+
+        let pages = 0;
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (time, exit) => {
+              end(time, exit);
+              const query = span.attributes.get("db.query.text");
+              if (
+                span.kind === "client" &&
+                typeof query === "string" &&
+                query.includes("ORDER BY r.date_at DESC, r.record_id DESC") &&
+                !query.includes("AND r.record_id = ?")
+              )
+                pages++;
+            };
+            return span;
+          },
+        });
+        const match = yield* repaidMatch(org, `${org}-BNK-9`, NOW).pipe(Effect.withTracer(tracer));
+        assert.strictEqual(match?.marked, marks === 0 ? undefined : "2026-11-16");
+        assert.strictEqual(pages, expectedPages);
+      }),
+  );
+
+  it.effect("the bank pulse does not raise an old debit beyond the newest 200", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-old-bank-debit");
+      const kin = yield* company(org);
+      yield* kin.expense("EXP-8", 1_200, "2026-09-01", { reimbursement: "owed" });
+      yield* kin.expense("EXP-4", 1_200, "2026-09-01", {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-16",
+      });
+      yield* kin.debit("BNK-9", 1_200, "2026-09-17");
+      for (let index = 0; index < 199; index++)
+        yield* kin.debit(`BNK-${100 + index}`, 900, "2026-11-20", "Tidewater Freight");
+      yield* kin.debit("BNK-10", 1_200, "2026-11-21");
+      yield* kin.debit("BNK-11", 1_200, "2026-11-22");
+
+      assert.deepStrictEqual(yield* kin.told(), ["repaid_seen:BNK-11"]);
     }),
   );
 

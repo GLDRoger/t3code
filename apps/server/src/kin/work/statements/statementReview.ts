@@ -14,6 +14,7 @@ import {
   KinStatementSelection,
   KinWidgetId,
 } from "@t3tools/contracts";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,7 +51,7 @@ import {
   type KnownRow,
   knownRows,
 } from "./bankList.ts";
-import { openEntries } from "./invoiceCredits.ts";
+import { openRepaymentDebits } from "./invoiceCredits.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts";
@@ -529,13 +530,15 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     const had = known.get(row.index);
     return had === undefined || (states !== undefined && had.state === states.open);
   });
-  const matching = yield* candidates(orgId, statement, statementId);
-  const bankDebits =
-    def === undefined ||
-    !open.some((row) => row.direction === "debit") ||
-    !matching.payees.some((one) => one.repaid.length > 0)
-      ? []
-      : yield* openEntries(orgId, def, "debit", "all");
+  const sql = yield* SqlClient.SqlClient;
+  const { matching, bankDebits } = yield* Effect.gen(function* () {
+    const matching = yield* candidates(orgId, statement, statementId);
+    const bankDebits =
+      def === undefined || !open.some((row) => row.direction === "debit")
+        ? []
+        : yield* openRepaymentDebits(orgId, def, matching.payees);
+    return { matching, bankDebits };
+  }).pipe(sql.withTransaction, readOnly);
   const results = matchRows(open, {
     ...matching,
     bankRows: known,

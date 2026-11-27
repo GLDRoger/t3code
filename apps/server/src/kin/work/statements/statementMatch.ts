@@ -1,6 +1,6 @@
 import { kinImpliedRate } from "@t3tools/contracts";
 
-import { currencyDigits, formatMinor } from "../money.ts";
+import { currencyDigits, dayIn, formatMinor } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
@@ -897,8 +897,28 @@ const payeeForMark = (row: StatementRow, payees: ReadonlyArray<PayeeCandidate>) 
     return payee;
 };
 
+const REPAID_WINDOW_DAYS = 10;
+
+export const repaidDateRange = (payees: ReadonlyArray<PayeeCandidate>) => {
+  let earliest = Infinity;
+  let latest = -Infinity;
+  for (const payee of payees)
+    for (const mark of payee.repaid) {
+      const day = dayNumber(mark.day);
+      if (!Number.isFinite(day)) continue;
+      earliest = Math.min(earliest, day);
+      latest = Math.max(latest, day);
+    }
+  if (earliest === Infinity) return undefined;
+  const isoDay = (day: number) => dayIn(day * DAY_MS, "UTC");
+  return {
+    fromDay: isoDay(earliest - REPAID_WINDOW_DAYS),
+    throughDay: isoDay(latest + REPAID_WINDOW_DAYS),
+  };
+};
+
 const inMarkWindow = (row: StatementRow, currency: string, marked: RepaidDay) =>
-  marked.currency === currency && Math.abs(daysBetween(marked.day, row.date)) <= 10;
+  marked.currency === currency && Math.abs(daysBetween(marked.day, row.date)) <= REPAID_WINDOW_DAYS;
 
 const compareDay = (a: StatementRow, b: StatementRow) =>
   a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
