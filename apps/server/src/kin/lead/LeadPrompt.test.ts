@@ -105,6 +105,7 @@ import {
   input,
   event,
   insertLeadMessage,
+  showDispatchListSection,
   task,
   noteBody,
   notes,
@@ -2580,6 +2581,115 @@ it.effect.each([
     line: "A reminder set in this chat is due, but Kin couldn't check this turn who here may read where it was set, so what it says is withheld. In one line, say a reminder set here is due and couldn't be read this turn.",
     turn: "room-reminder",
   },
+  {
+    read: "recent chat",
+    query: "AND seq < ?",
+    line: "Kin couldn't read recent messages this turn, so don't treat this as the start of the conversation: say you couldn't read the earlier messages if the answer depends on them.",
+    turn: "doc",
+  },
+  {
+    read: "recent changes",
+    query: 'SELECT c.wakeup_id AS "wakeupId", c.at, r.key, r.title',
+    line: "Kin couldn't read recent changes this turn, so don't say there is nothing to take back.",
+    turn: "undo",
+  },
+  {
+    read: "open questions",
+    query: "AND q.person_id = ? AND q.state = 'open'",
+    line: "Kin couldn't read open questions this turn, so don't ask again something that may already be waiting.",
+    turn: "doc",
+  },
+  {
+    read: "questions asked for this chat",
+    query: "AND q.for_chat_id = ? AND q.state = 'open'",
+    line: "Kin couldn't read questions asked for this chat this turn, so don't ask again something that may already be waiting.",
+    turn: "doc",
+  },
+  {
+    read: "declined requests",
+    query: "AND h.route_state = 'declined' AND m.chat_id",
+    line: "Kin couldn't read declined requests this turn, so don't assume an earlier request is still waiting.",
+    turn: "member-direct",
+  },
+  {
+    read: "started work",
+    query: "SELECT json_extract(w.state_json, '$.taskId') AS task",
+    line: "Kin couldn't read what you started this turn, so don't say nothing is underway.",
+    turn: "doc",
+  },
+  {
+    read: "weekly section",
+    query: 'SELECT p.record_id AS "recordId", p.key, p.title, p.state',
+    line: "Kin couldn't read the weekly brief details this turn, so don't say there is nothing to report.",
+    turn: "weekly",
+  },
+  {
+    read: "lines left for the check-in",
+    query: "FROM kin_pulse_told t JOIN kin_held_posts h",
+    line: "Kin couldn't read what people left for this check-in this turn, so don't say no one left anything.",
+    turn: "check-in",
+  },
+  {
+    read: "unread messages",
+    query: "SELECT COUNT(*) AS total FROM kin_messages m",
+    line: "Kin couldn't read which of your messages still have no answer or reaction this turn, so don't say they were all answered or reacted to.",
+    turn: "doc",
+  },
+  {
+    read: "drafts sent back",
+    query: "q.approved_at IS NULL AND q.for_chat_id IS NOT NULL",
+    line: "Kin couldn't read which drafts were sent back for changes this turn, so don't say none were sent back.",
+    turn: "doc",
+  },
+  {
+    read: "reply chat",
+    query: "FROM kin_chats WHERE org_id = ? AND chat_id = ?",
+    line: "Kin couldn't read the reply chat details this turn, so don't guess the chat type or who is in it.",
+    turn: "doc",
+    scope: "reply-chat",
+  },
+  {
+    read: "own mailboxes",
+    query: "removed_at IS NULL AND person_id = ?",
+    line: "Kin couldn't read the mailboxes for this chat this turn, so don't guess which mailbox belongs to the person.",
+    turn: "doc",
+  },
+  {
+    read: "group members",
+    query: "ORDER BY handle, person_id",
+    line: "Kin couldn't read who is in this group this turn, so don't guess who is here.",
+    turn: "shared",
+  },
+  {
+    read: "set-up turn",
+    query: 'SELECT seq, client_message_id AS "clientMessageId" FROM kin_messages',
+    line: "Kin couldn't read whether set-up was requested this turn, so don't start setting up the company based on this check.",
+    turn: "set-up",
+  },
+  {
+    read: "connections",
+    query: "removed_at IS NULL AND person_id IS NULL",
+    line: "Kin couldn't read the company's connections this turn, so don't say there are none.",
+    turn: "doc",
+  },
+  {
+    read: "GitHub accounts",
+    query: "FROM kin_github_watch WHERE org_id",
+    line: "Kin couldn't read the company's GitHub accounts this turn, so don't guess which accounts belong to the company.",
+    turn: "doc",
+  },
+  {
+    read: "playbook index",
+    query: "AND r.category = 'playbook'",
+    line: "Kin couldn't read the playbook list this turn, so don't say there are no playbooks.",
+    turn: "doc",
+  },
+  {
+    read: "list sections",
+    query: "AND register_id = ? AND built_in = 0 ORDER BY register_id",
+    line: "Kin couldn't read which lists are shown as sections this turn, so don't say there are none.",
+    turn: "list",
+  },
 ])("keeps building the turn when $read can't be read", ({ read, query, line, turn, scope }) =>
   Effect.gen(function* () {
     const { sharedInput, ownerInput } = yield* richPromptFixture;
@@ -2608,9 +2718,15 @@ it.effect.each([
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
       VALUES ('dc64eb64-9d23-4e37-98f5-2c62223ec5d3', ${orgId}, ${direct}, 'agent', ${agentId}, 'member', ${timestamp})`;
     yield* sql`UPDATE kin_chats SET last_seq = 3 WHERE chat_id = ${direct}`;
-    const author = coOwner ? meera : personId;
-    const member = coOwner ? meeraMember : KinMemberId.make("direct-owner");
-    if (coOwner) {
+    const author = coOwner || turn === "member-direct" ? meera : personId;
+    const member =
+      coOwner || turn === "member-direct" ? meeraMember : KinMemberId.make("direct-owner");
+    const setUpRequested = turn === "set-up" || scope === "reply-chat";
+    if (setUpRequested)
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${agentId}`;
+    if (turn === "list") yield* showDispatchListSection;
+    if (coOwner || turn === "member-direct") {
+      if (!coOwner) yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${meera}`;
       yield* sql`UPDATE kin_chats SET direct_key = ${`${meera}:${agentId}`} WHERE chat_id = ${direct}`;
       yield* sql`UPDATE kin_chat_members SET member_id = ${member}, person_id = ${meera}, role = 'member'
         WHERE chat_id = ${direct} AND member_id = 'direct-owner'`;
@@ -2618,7 +2734,11 @@ it.effect.each([
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
       author_member_id, author_role, kind, body, refs_json, mentions_json, status, created_at)
       VALUES (${messageId}, ${orgId}, ${direct}, 3, 'human', ${author}, ${member},
-        ${coOwner ? "member" : "owner"}, 'text', 'Check the dispatch plan.', ${refs}, '[]', 'posted', ${timestamp})`;
+        ${coOwner || turn === "member-direct" ? "member" : "owner"}, 'text',
+        ${turn === "undo" ? "Undo that." : "Check the dispatch plan."}, ${refs}, '[]', 'posted', ${timestamp})`;
+    if (setUpRequested)
+      yield* sql`UPDATE kin_messages SET client_message_id = ${Chat.storedClientId("send", KIN_SET_UP_MESSAGE_PREFIX + "dispatch")}
+        WHERE org_id = ${orgId} AND message_id = ${messageId}`;
     const asked = decodeUnknownEvent({
       ...system,
       _tag: "chat.message",
@@ -2687,7 +2807,7 @@ it.effect.each([
     const events =
       turn === "work" || turn === "joined"
         ? [work]
-        : turn === "check-in"
+        : turn === "check-in" || turn === "weekly"
           ? [
               decodeUnknownEvent({
                 ...system,
@@ -2696,7 +2816,7 @@ it.effect.each([
                 dedupeKey: null,
                 factKeys: [],
                 checkIn: {
-                  scheduleId: "checkin-afternoon",
+                  scheduleId: turn === "weekly" ? "checkin-weekly" : "checkin-afternoon",
                   title: "Dispatch check-in",
                   what: "Check dispatch.",
                   slot: "s",
@@ -2734,7 +2854,12 @@ it.effect.each([
     });
     const normal = yield* prompt.buildSession(given);
     expect(normal.full).not.toContain(line);
-    if (scope === "roles") expect(normal.full).toContain(PROMPT_HEADINGS.recentChat);
+    if (scope === "roles" || read === "recent chat")
+      expect(normal.full).toContain(PROMPT_HEADINGS.recentChat);
+    if (scope === "reply-chat") expect(normal.full).toContain("your direct chat with the owner");
+    if (read === "group members") expect(normal.full).toContain("In this group:");
+    if (setUpRequested) expect(normal.full).toContain(CHIEF_OF_STAFF_SET_UP);
+    if (turn === "list") expect(normal.full).toContain("Dispatch invoices");
     if (coOwner) expect(normal.message).toContain("> BEGIN QUOTE: co-owner message");
     if (turn === "money") expect(normal.full).toContain(PROMPT_HEADINGS.money);
     if (turn === "doc") expect(normal.message).toContain('"body":"# Lead');
@@ -2760,9 +2885,13 @@ it.effect.each([
                 ? params.includes("memory-item:sch-owner") && injected === 0
                 : scope === "agent-name"
                   ? source.includes("display_name") && !source.includes(" JOIN ")
-                  : scope === "once"
-                    ? injected === 0
-                    : true);
+                  : scope === "reply-chat"
+                    ? params.includes(direct) &&
+                      source.includes('AS "leadAgentId"') &&
+                      injected === 0
+                    : scope === "once"
+                      ? injected === 0
+                      : true);
       if (matches) injected++;
       return Effect.succeed(
         matches ? sql.unsafe("SELECT * FROM missing_prompt_read_fixture") : statement,
@@ -2775,8 +2904,12 @@ it.effect.each([
       .pipe(Effect.provideService(Statement.CurrentTransformer, failRead));
     expect(injected).toBeGreaterThan(0);
     expect(built.full).toContain(PROMPT_HEADINGS.events);
-    expect(built.full).toContain(line);
-    expect(built.delta + built.message + built.standing).toContain(line);
+    expect(built.full.split(line)).toHaveLength(2);
+    expect((built.delta + built.message + built.standing).split(line)).toHaveLength(2);
+    if (read === "recent chat") {
+      expect(built.delta).not.toContain(`${PROMPT_HEADINGS.recentChat}\n\n${NOTHING_NOW}`);
+      expect(built.sections.recentChat).not.toContain("Invented-reacted-plan-zq");
+    }
     if (coOwner) expect(built.message).not.toContain("> BEGIN QUOTE: co-owner message");
     if (query === "SELECT v.body FROM kin_records r")
       expect(built.message).not.toContain("no longer there");
@@ -2787,6 +2920,16 @@ it.effect.each([
     if (roomRun || turn === "feed") expect(built.full).not.toContain("Prepare the dispatch update");
     if (read === "Work giver" || read === "Work stamp" || read === "Work authority")
       expect(built.full).not.toContain("gave you this Work entry to do");
+    if (scope === "reply-chat") {
+      expect(built.full).not.toContain("your direct chat with the owner");
+      expect(built.full).not.toContain(CHIEF_OF_STAFF_SET_UP);
+    }
+    if (read === "group members") {
+      expect(built.full).not.toContain("In this group:");
+      expect(built.full).not.toContain("Invented-before-join-zq");
+    }
+    if (turn === "set-up") expect(built.full).not.toContain(CHIEF_OF_STAFF_SET_UP);
+    if (turn === "list") expect(built.full).not.toContain("Dispatch invoices");
     if (read === "Work entry" || read === "joined Work")
       expect(built.message).toContain(`${JSON.stringify("W-2")}`);
   }).pipe(Effect.provide(layer)),
