@@ -59,7 +59,7 @@ export const ReadInput = Schema.Struct({
     description: "false when it isn't a bill you can read at all.",
   }),
   vendor: Printed(200, "Who was paid, as printed."),
-  date: Schema.optional(KinDay),
+  date: Schema.optional(KinDay).annotate({ description: "The bill's date as YYYY-MM-DD." }),
   amount: Printed(
     60,
     "The total as a plain number, dot for decimals, no symbol or separators: 1200.50.",
