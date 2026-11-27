@@ -536,6 +536,14 @@ const make = Effect.gen(function* () {
           yield* fallbackIn(delivery, now);
           yield* finish("fallback", null);
         });
+        if (row.kind === "card_tap" && event?.state === "failed") {
+          // Failed after a visible step (`finish`'s partway): something may have been done.
+          if (event.wakeupId !== null) return yield* finish("delivered", null);
+          // A card given back must not also run later: a release or Try again requeues failed events.
+          yield* sql`UPDATE kin_events SET state = 'expired'
+            WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'failed'`;
+          lapsed = true;
+        }
         if (event === undefined || event.state === "failed" || event.state === "expired")
           return yield* fallback;
         if (event.state === "claimed") return;

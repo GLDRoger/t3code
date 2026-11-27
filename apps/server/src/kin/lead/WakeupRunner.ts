@@ -355,7 +355,14 @@ const make = Effect.gen(function* () {
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     const cardTaps = yield* cardTapsOf(row.orgId, claimed);
     yield* settleCardTaps(row.orgId, cardTaps);
-    if (cardTaps.length > 0 && cardTaps.length === claimed.length) return;
+    // A tap given back says so itself; one whose turn showed something hears it here.
+    if (
+      cardTaps.length > 0 &&
+      cardTaps.length === claimed.length &&
+      finished.stranded === 0 &&
+      finished.replied === 0
+    )
+      return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
