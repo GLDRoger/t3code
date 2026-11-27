@@ -22,14 +22,19 @@ import {
 } from "./bankList.ts";
 import { authenticationRejection, readApprovedAlert } from "./bankAlertMailReading.ts";
 import {
+  companyAlertMailbox,
+  encodeAccounts,
   HELD_ALERT_WINDOW,
   normalizeAddress,
   noteCandidate,
   sendersOf,
   type ApprovedSender,
 } from "./bankSenderRows.ts";
-import { candidateEndings, type CandidateHint } from "./bankAlertCandidates.ts";
-import { MAIL_PRESETS } from "../../connections/mailProviders.ts";
+import {
+  candidateEndings,
+  type CandidateHint,
+  maskedCandidateEndings,
+} from "./bankAlertCandidates.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
@@ -249,9 +254,8 @@ export const bankAlertMailbox = Effect.fn("KinBankAlerts.companyMailbox")(functi
   connectionId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [mailbox] = yield* sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
-    AND connection_id = ${connectionId} AND person_id IS NULL AND state = 'active'
-    AND removed_at IS NULL AND paused_at IS NULL AND preset IN ${sql.in(MAIL_PRESETS)}`;
+  const [mailbox] = yield* sql`SELECT 1 FROM kin_connections c WHERE c.org_id = ${orgId}
+    AND c.connection_id = ${connectionId} AND ${companyAlertMailbox(sql)}`;
   return mailbox !== undefined;
 });
 
@@ -444,7 +448,20 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
                   seenAt: input.now,
                 })))
             ) {
-              return { ...identity, outcome: "held", account: discovery.accounts[0] };
+              return {
+                ...identity,
+                outcome: "held",
+                account: discovery.accounts[0],
+                // On held rows this stores only card evidence, never a transaction reference.
+                reference: yield* encodeAccounts(
+                  [
+                    ...new Set([
+                      ...discovery.accounts,
+                      ...maskedCandidateEndings(message.text).slice(0, 3),
+                    ]),
+                  ].toSorted(),
+                ),
+              };
             }
           }
           if (refusal !== undefined || reading._tag !== "alert" || authorized === undefined) {

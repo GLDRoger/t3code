@@ -54,11 +54,12 @@ export const candidateGate = Effect.fn("KinBankAlerts.candidateGate")(function* 
   };
 });
 
+export const maskedCandidateEndings = (text: string) =>
+  [...new Set([...text.matchAll(/[xX*•]{2,}(\d{4})(?!\d)/g)].map((match) => match[1]!))].toSorted();
+
 export const candidateEndings = (text: string, accounts: ReadonlySet<string>) =>
   accounts.size === 0
-    ? [
-        ...new Set([...text.matchAll(/[xX*•]{2,}(\d{4})(?!\d)/g)].map((match) => match[1]!)),
-      ].toSorted()
+    ? maskedCandidateEndings(text)
     : [
         ...new Set(
           (text.match(/(?<!\d)\d{4}(?!\d)/g) ?? []).filter((digits) => accounts.has(digits)),

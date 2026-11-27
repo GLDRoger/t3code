@@ -15,6 +15,7 @@ import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { accessSql } from "../people/KinAccess.ts";
+import * as BankSenders from "../work/statements/bankSenders.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { DECLINE_QUIET_MS, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
 import { type RecommendChange, agentNow, connectionNow, limitNow, ruleFor } from "./rules.ts";
@@ -29,6 +30,8 @@ const labelled = (label: string, fallback: string) =>
 /** The verb on Do it, from the stored names. */
 const doLabel = (change: RecommendChange) => {
   switch (change.kind) {
+    case "bank_sender":
+      return labelled(`Yes, it's ${change.bankName}`, "Yes");
     case "lead_access":
       return labelled(
         `Give ${change.personName} direct access to ${change.agentName}`,
@@ -57,6 +60,8 @@ export const RAN_OUT = {
 
 const doLine = (change: RecommendChange) => {
   switch (change.kind) {
+    case "bank_sender":
+      return `Count alerts about accounts ending ${change.accounts.join(", ")}`;
     case "lead_access":
       return `${change.personName} can message ${change.agentName} from now on; nothing is passed on now`;
     case "daily_limit":
@@ -71,7 +76,9 @@ const doLine = (change: RecommendChange) => {
 /** The card's button and the line under it, for each answer: written by Kin. */
 export const recommendShown = (plan: Pick<RecommendPlan, "answer" | "change">) =>
   plan.answer === "not_now"
-    ? { label: NOT_NOW, line: "Leave it as it is" }
+    ? plan.change.kind === "bank_sender"
+      ? { label: "No", line: "Don't count alerts from this address" }
+      : { label: NOT_NOW, line: "Leave it as it is" }
     : { label: doLabel(plan.change), line: doLine(plan.change) };
 
 const isChatError = Schema.is(KinChatError);
@@ -89,6 +96,12 @@ const subjectMoved = Effect.fn("KinRecommendCard.subjectMoved")(function* (
   const sql = yield* SqlClient.SqlClient;
   const renamed = "the names on this card have changed since Kin drew it";
   switch (change.kind) {
+    case "bank_sender": {
+      const sender = (yield* BankSenders.list(orgId)).find((one) => one.address === change.address);
+      return sender?.state === "candidate" && sender.bankName === change.bankName
+        ? null
+        : "this address is no longer waiting for approval";
+    }
     case "lead_access": {
       const [person] = yield* sql<{ name: string; ownerLevel: number }>`SELECT
           p.display_name AS name, ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS "ownerLevel"
@@ -146,7 +159,18 @@ const stillHolds = Effect.fn("KinRecommendCard.stillHolds")(function* (
     one._tag === "fires" ? one.candidate.subject === plan.subject : one.subject === plan.subject,
   );
   if (verdict === undefined) return "it changed";
-  return verdict._tag === "silent" ? verdict.reason : null;
+  if (verdict._tag === "silent") return verdict.reason;
+  if (plan.change.kind === "bank_sender") {
+    const current = verdict.candidate.change;
+    if (
+      current.kind !== "bank_sender" ||
+      current.accounts.join(",") !== plan.change.accounts.join(",")
+    )
+      return "the account endings on this card have changed";
+    if (current.siblingAddress !== plan.change.siblingAddress)
+      return "the other approved addresses for this bank have changed";
+  }
+  return null;
 });
 
 /** The change itself, through the method the setting's own place calls, as the owner who tapped. */
@@ -157,6 +181,9 @@ const make = Effect.fn("KinRecommendCard.make")(function* (
 ) {
   const people = [{ _tag: "person" as const, orgId, personId }];
   switch (change.kind) {
+    case "bank_sender":
+      yield* BankSenders.approve(orgId, personId, change.address, change.accounts);
+      return `Kin will count alerts from ${change.address} about the account endings you approved.`;
     case "lead_access":
       yield* LeadProvision.allow({
         editor: { _tag: "person", personId },
@@ -235,6 +262,14 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
     return { title: "Nothing changed", text: `Nothing changed: ${reason}.` };
   }
   if (plan.answer === "not_now") {
+    if (plan.change.kind === "bank_sender") {
+      yield* BankSenders.decline(orgId, tap.personId, plan.change.address);
+      yield* settle("declined", null);
+      return {
+        title: "No",
+        text: "Kin won't ask about this address again. To count its alerts, add it in Settings under Bank alert addresses.",
+      };
+    }
     const [declined] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
       FROM kin_recommendations WHERE org_id = ${orgId} AND rule = ${row.rule}
         AND subject = ${row.subject} AND state = 'declined'`;

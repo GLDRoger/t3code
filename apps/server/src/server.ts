@@ -899,6 +899,15 @@ const layerCommandReadiness = HttpRouter.middleware(
   { global: true },
 );
 
+const layerBankAlertReaderMiddleware = HttpRouter.middleware<{
+  provides: BankAlertReader.BankAlertReader;
+}>()(
+  Effect.gen(function* () {
+    const reader = yield* BankAlertReader.BankAlertReader;
+    return (effect) => Effect.provideService(effect, BankAlertReader.BankAlertReader, reader);
+  }),
+).layer;
+
 const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -930,7 +939,10 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
-    Ws.layer,
+    Ws.layer.pipe(
+      Layer.provide(layerBankAlertReaderMiddleware),
+      Layer.provide(BankAlertReader.layer),
+    ),
     speechStreamRouteLayer,
   ),
   Kin.mcpLayer(McpHttpServer.layer).pipe(
