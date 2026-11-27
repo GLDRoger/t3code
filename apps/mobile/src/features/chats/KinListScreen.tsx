@@ -952,7 +952,7 @@ function KinDatesBody(props: KinWorkTarget) {
   const calendar = useKinCalendar(props, state._tag === "refused" ? null : window, calendarOn);
   const events = calendar.state._tag === "ready" ? calendar.state.calendar : undefined;
   const eventsDim = calendar.state._tag === "ready" && calendar.state.refreshing;
-  const calendarNotice = kinCalendarNotice(calendar.state);
+  const calendarNotice = kinCalendarNotice(calendar.state, { connectionsInSettings: false });
   const frame = {
     title: KIN_DATES.title,
     onBack: () => navigation.goBack(),

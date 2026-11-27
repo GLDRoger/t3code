@@ -1022,8 +1022,12 @@ export const KIN_MY_MAILBOX_COPY = {
   several: "Kin drafts your follow-ups from these; only you confirm what goes from each.",
   connect: (label: string) => `Connect ${label}`,
   connectAnother: "Connect another mailbox",
-  notReady: (label: string) =>
-    `${label} isn't set up for this company yet. The owner sets it up once in Connections.`,
+  notReady: (label: string, options?: { readonly connectionsInSettings?: boolean }) =>
+    `${label} isn't set up for this company yet. The owner sets it up once ${
+      options?.connectionsInSettings === false
+        ? "in Kin on a computer, under Settings → Connections"
+        : "in Connections"
+    }.`,
   signInAgain: "Sign in again",
   disconnect: "Disconnect",
   loadFailed: "Couldn't load your mailbox",

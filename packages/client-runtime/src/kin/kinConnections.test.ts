@@ -17,6 +17,7 @@ import { AsyncResult } from "effect/reactivity";
 import {
   createKinConnectionActions,
   kinAcceptAll,
+  KIN_MY_MAILBOX_COPY,
   kinConnectionAddCheck,
   kinConnectionDraft,
   kinConnectionStatus,
@@ -536,4 +537,15 @@ describe("kinUseRow", () => {
       if (reason !== null) expect(row.detail).not.toContain(reason);
     },
   );
+});
+
+describe("KIN_MY_MAILBOX_COPY.notReady", () => {
+  it("tells phone readers where Connections lives on their computer while keeping web unchanged", () => {
+    expect(KIN_MY_MAILBOX_COPY.notReady("Google")).toBe(
+      "Google isn't set up for this company yet. The owner sets it up once in Connections.",
+    );
+    expect(KIN_MY_MAILBOX_COPY.notReady("Google", { connectionsInSettings: false })).toBe(
+      "Google isn't set up for this company yet. The owner sets it up once in Kin on a computer, under Settings → Connections.",
+    );
+  });
 });
