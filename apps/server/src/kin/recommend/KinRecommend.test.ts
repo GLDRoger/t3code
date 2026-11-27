@@ -1566,6 +1566,10 @@ it.effect.each([
         });
         const [approved] = yield* BankSenders.list(ctx.orgId);
         assert.include(approved, { state: "approved" });
+        assert.include((yield* BankSenders.list(ctx.orgId, ctx.owner.personId)).rows[0], {
+          state: "approved",
+          askedInChat: false,
+        });
         assert.deepStrictEqual(approved!.accounts, ["4821"]);
         yield* pass;
         yield* pass;
@@ -1641,6 +1645,29 @@ it.each([
   },
 );
 
+it.effect.each([
+  ["Tidewater Freight", "Tidewater Freight LLP", "Kin", "in the Tidewater Freight mailbox"],
+  [null, "Tidewater Freight LLP", "Kin", "in the Tidewater Freight LLP mailbox"],
+  [null, null, "Tidewater Freight", "in the Tidewater Freight mailbox"],
+  [null, null, "", "in the mailbox"],
+] as const)(
+  "bank sender card names the company as Company details does (trade %j, legal %j, org %j)",
+  ([trade, legal, org, phrase]) =>
+    runBank(({ ctx }) =>
+      Effect.gen(function* () {
+        yield* forwardBankMail(ctx, "", "00004821");
+        yield* ctx.sql`UPDATE kin_orgs SET name = ${org} WHERE org_id = ${ctx.orgId}`;
+        yield* ctx.sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.tradeName', ${trade}, '$.legalName', ${legal}) WHERE org_id = ${ctx.orgId}`;
+        assert.include(yield* tick(ctx), { _tag: "posted" });
+        assert.include(
+          (yield* cards(ctx))[0]!.state.detail,
+          `from ${harborAddress} ${phrase} ops@tidewater.example since 24 Nov.`,
+        );
+      }),
+    ),
+);
+
 it.effect(
   "bank sender Settings lists decisions and counts, removes without deleting, and can re-add",
   () =>
@@ -1690,19 +1717,26 @@ it.effect(
           bankName: "Harbor Bank",
           firstSeenAt: BANK_NOW,
         };
-        assert.deepStrictEqual(yield* listSenders(org), {
+        const waiting = (askedInChat: boolean) => ({
           rows: [
             {
               ...item,
-              state: "waiting",
+              state: "waiting" as const,
               accounts: [],
               decidedAt: null,
               decidedBy: null,
               recordedCount: 0,
               heldCount: 1,
+              askedInChat,
             },
           ],
         });
+        assert.deepStrictEqual(yield* listSenders(org), waiting(false));
+        assert.include(yield* tick(ctx), { _tag: "posted" });
+        assert.deepStrictEqual(yield* listSenders(org), waiting(true));
+        // The card's chat was cleared: it stopped taking taps, so nothing waits in chat now.
+        yield* ctx.sql`UPDATE kin_recommendations SET ended_at = ${BANK_NOW} WHERE org_id = ${ctx.orgId}`;
+        assert.deepStrictEqual(yield* listSenders(org), waiting(false));
         yield* BankSenders.decline(ctx.orgId, ctx.owner.personId, harborAddress);
         assert.deepStrictEqual(yield* listSenders(org), {
           rows: [
@@ -1714,6 +1748,8 @@ it.effect(
               decidedBy: "Rhea",
               recordedCount: 0,
               heldCount: 1,
+
+              askedInChat: false,
             },
           ],
         });
@@ -1729,6 +1765,8 @@ it.effect(
               decidedBy: "Rhea",
               recordedCount: 1,
               heldCount: 0,
+
+              askedInChat: false,
             },
           ],
         });

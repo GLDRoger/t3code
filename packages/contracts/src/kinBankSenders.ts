@@ -17,6 +17,8 @@ const Row = Schema.Struct({
   decidedBy: Schema.NullOr(Schema.String),
   recordedCount: NonNegativeInt,
   heldCount: NonNegativeInt,
+  /** Kin's question about this address is open in the owner's chat. Older servers omit it. */
+  askedInChat: Schema.optional(Schema.Boolean),
 });
 export const KinBankSendersResult = Schema.Struct({ rows: Schema.Array(Row) });
 export type KinBankSendersResult = typeof KinBankSendersResult.Type;
