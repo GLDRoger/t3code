@@ -2219,6 +2219,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           fake.addAccount({ provider: service, address, name: "Meera" });
           const connectionId = yield* connectOwn(fake, member, address, service);
           const sql = yield* SqlClient.SqlClient;
+          // The card reads the company's zone; unset, it is the host's, which tests don't fix.
+          yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+              evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+              quiet_hours_json)
+            VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')
+            ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
           yield* sql`DELETE FROM kin_connection_tools
             WHERE connection_id = ${connectionId} AND tool_name = 'calendar_delete_event'`;
           const connections = yield* KinConnections;
