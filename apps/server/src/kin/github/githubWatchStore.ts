@@ -85,6 +85,16 @@ export const isMemoryRepo = (repo: string) =>
 
 const triageKey = (repo: string) => `triage-from:${repo}`;
 
+export const triageIsOn = Effect.fn("KinGitHubWatchStore.triageIsOn")(function* (
+  orgId: KinOrgId,
+  repo: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ outcome: string }>`SELECT outcome FROM kin_github_handled
+    WHERE org_id = ${orgId} AND trigger_key = ${triageKey(repo.toLowerCase())} AND number = 0`;
+  return row?.outcome === "on";
+});
+
 const triageRows = Effect.fn("KinGitHubWatchStore.triageRows")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ repo: string; outcome: "on" | "off"; at: number }>`

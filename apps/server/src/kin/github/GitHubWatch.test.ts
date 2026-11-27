@@ -7,7 +7,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinEvent, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
@@ -113,8 +115,10 @@ const fakeCall =
       };
     });
 
+type BeforeGitHubCall = (path: string) => Effect.Effect<void>;
+
 /** The fake as `gh api` serves it to the watch. */
-const fakeApi = (github: FakeGitHub, signedIn: () => boolean) =>
+const fakeApi = (github: FakeGitHub, signedIn: () => boolean, beforeCall?: BeforeGitHubCall) =>
   Layer.succeed(GitHubWatch.KinGitHubApi, {
     connected: () =>
       Effect.sync(() =>
@@ -124,7 +128,8 @@ const fakeApi = (github: FakeGitHub, signedIn: () => boolean) =>
             ? { login: github.world.user, orgs: ["invented-co", "tidewater"] }
             : { login: github.world.user, orgs: [] },
       ),
-    call: fakeCall(github),
+    call: (request) =>
+      (beforeCall?.(request.path) ?? Effect.void).pipe(Effect.andThen(fakeCall(github)(request))),
   });
 
 const APP_TOKEN = "ghs_watch_test";
@@ -200,6 +205,7 @@ const setup = (
     readonly repo?: string;
     readonly signedIn?: () => boolean;
     readonly chat?: Layer.Layer<KinChatService>;
+    readonly beforeCall?: BeforeGitHubCall;
   } = {},
 ) => {
   const github = new FakeGitHub(emptyWorld("invented-owner", T0));
@@ -208,7 +214,7 @@ const setup = (
   github.addRepo({ full_name: "invented-co/old-fork", fork: true });
   const layer = GitHubWatch.layer.pipe(
     Layer.provideMerge(KinEventQueue.layer),
-    Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true))),
+    Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true), options.beforeCall)),
     Layer.provideMerge(
       options.app === "live"
         ? Layer.effect(KinGitHubApp, makeGitHubApp).pipe(
@@ -1695,6 +1701,75 @@ describe("automatic issue triage", () => {
       assert.lengthOf(github.world.reactions, 1);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect.each(["triage", "triage_reply"] as const)(
+    "does not claim %s when the owner turns triage off during a look",
+    (kind) =>
+      Effect.gen(function* () {
+        const weighed = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        let pause = false;
+        const { github, layer } = setup({
+          repo,
+          beforeCall: (path) =>
+            pause && path.startsWith("search/issues?")
+              ? Deferred.succeed(weighed, undefined).pipe(Effect.andThen(Deferred.await(proceed)))
+              : Effect.void,
+        });
+        yield* Effect.gen(function* () {
+          yield* start(github);
+          const watch = yield* GitHubWatch.KinGitHubWatch;
+          const sql = yield* SqlClient.SqlClient;
+          const number = addIssue(github);
+          if (kind === "triage_reply") {
+            yield* look(github);
+            yield* post(github, number, T0 + MINUTE);
+            github.tick(MINUTE);
+            yield* TestClock.adjust(MINUTE);
+            github.comment({
+              repo,
+              number,
+              author: "zoya",
+              association: "MEMBER",
+              body: "The shipment is delayed.",
+            });
+          }
+          const before = yield* events;
+          const reactions = github.world.reactions.length;
+          pause = true;
+          const looking = yield* watch.look(orgId, repo, number).pipe(Effect.forkScoped);
+          yield* Deferred.await(weighed);
+          yield* setTriage(orgId, repo, false, T0 + 2 * MINUTE);
+          yield* Deferred.succeed(proceed, undefined);
+          yield* Fiber.join(looking);
+
+          assert.deepStrictEqual(
+            yield* events,
+            before,
+            `${kind} woke an agent after triage was off`,
+          );
+          assert.lengthOf(github.world.reactions, reactions);
+          assert.isEmpty(
+            yield* sql`SELECT trigger_key FROM kin_github_handled
+            WHERE org_id = ${orgId} AND repo = ${repo} AND number = ${number}
+            AND trigger_key LIKE ${`${kind}:%`}`,
+          );
+
+          const pull = github.openItem({
+            repo,
+            pull: true,
+            author: "zoya",
+            association: "MEMBER",
+            title: "Fix dispatch report",
+          });
+          yield* watch.look(orgId, repo, pull);
+          assert.deepStrictEqual(
+            (yield* events).filter(({ number }) => number === pull).map(({ kind }) => kind),
+            ["review"],
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+  );
 
   it.effect("limits a flood of teammate issues per repo across single looks and the poll", () => {
     const { github, layer } = setup({ repo });
