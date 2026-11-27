@@ -1403,7 +1403,9 @@ export class KinLeadPrompt extends Context.Service<
                     (event.trigger?.inside === false || event.askedBy !== undefined),
                 )
               ? "github"
-              : undefined,
+              : input.events.some((event) => event._tag === "bills.read")
+                ? "bills.read"
+                : undefined,
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(

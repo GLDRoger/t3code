@@ -274,10 +274,18 @@ describe("bills in bulk", () => {
         assert.strictEqual(first.text, "Reading 3 bills: 0 done.");
         assert.deepStrictEqual(first.awaiting, []);
         // One group of three, queued below anyone's message to Finance.
-        const queued = yield* sql<{ tag: string; priority: string; bills: number }>`SELECT tag,
-            priority, json_array_length(json, '$.bills') AS bills FROM kin_events
+        const queued = yield* sql<{
+          tag: string;
+          priority: string;
+          bills: number;
+          outside: number;
+        }>`SELECT tag,
+            priority, json_array_length(json, '$.bills') AS bills,
+            json_extract(json, '$.outside') AS outside FROM kin_events
           WHERE org_id = ${orgId} ORDER BY event_id`;
-        assert.deepStrictEqual(queued, [{ tag: "bills.read", priority: "P3", bills: 3 }]);
+        assert.deepStrictEqual(queued, [
+          { tag: "bills.read", priority: "P3", bills: 3, outside: 1 },
+        ]);
         assert.deepStrictEqual(
           (yield* billRows).map((row) => row.state),
           ["reading", "reading", "reading"],
@@ -948,7 +956,7 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a bills turn may call bill_read and nothing else; any other turn isn't confined", () =>
+  it.effect("a bills turn admits bill_read and kin_skip and confines other tools", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* Bills.add(
@@ -1008,6 +1016,7 @@ describe("bills in bulk", () => {
       const { wakeupId } = yield* claimTurn(1);
       const bills = { orgId, agentId: finance, wakeupId };
       assert.isTrue(yield* toolAdmitted(bills, "bill_read", {}));
+      assert.isTrue(yield* toolAdmitted(bills, "kin_skip", {}));
       for (const tool of [
         "delegate_task",
         "payment_record",

@@ -404,6 +404,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           provenance: { _tag: "system" },
           chatId: KinChatId.make(first.cardChatId),
           batchId,
+          outside: true,
           bills: hashes,
         })
         .pipe(
@@ -416,7 +417,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
     let reader = KinAgentId.make(first.agentId);
     // A retired reader's bills go to the company's reader now; with none, they can't be read.
     if (!(yield* send(reader))) {
-      const next = yield* readerOf(orgId);
+      const next = yield* billReader(orgId);
       if (next === undefined || next.agentId === reader || !(yield* send(next.agentId))) {
         yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
             read_at = ${now}
