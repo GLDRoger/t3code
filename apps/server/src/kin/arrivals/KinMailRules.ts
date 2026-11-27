@@ -342,7 +342,7 @@ const make = Effect.gen(function* () {
     rule: KinMailRuleMatch & { readonly connectionId: string },
     row: Candidate,
     subject: string | undefined,
-    options: { readonly subject?: "defer"; readonly senderCheck?: "manual" },
+    options: { readonly subject?: "defer" },
   ) =>
     matchMailRule(
       rule,
@@ -458,9 +458,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const { row, filter } = yield* runnable();
         const eligible = (yield* candidates(orgId, filter.connectionId)).filter(
-          (candidate) =>
-            select(filter, candidate, undefined, { subject: "defer", senderCheck: "manual" }) ===
-            "match",
+          (candidate) => select(filter, candidate, undefined, { subject: "defer" }) === "match",
         );
         return { row, filter, eligible };
       }),
@@ -474,7 +472,7 @@ const make = Effect.gen(function* () {
         if (
           header?._tag === "read" &&
           !looksLikeSignInMail(header.arrival.subject, "") &&
-          select(filter, candidate, header.arrival.subject, { senderCheck: "manual" }) === "match"
+          select(filter, candidate, header.arrival.subject, {}) === "match"
         ) {
           chosen = candidate;
           break;
@@ -508,7 +506,7 @@ const make = Effect.gen(function* () {
           AND connection_id = ${current.connectionId}`;
         if (
           stored === undefined ||
-          select(filter, stored, undefined, { subject: "defer", senderCheck: "manual" }) !== "match"
+          select(filter, stored, undefined, { subject: "defer" }) !== "match"
         )
           return {
             status: "no_match",

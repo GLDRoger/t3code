@@ -78,7 +78,7 @@ export const mailRuleHeaderFacts = (
 export const matchMailRule = (
   rule: MailRuleFilters & { readonly connectionId: string },
   mail: Facts,
-  options?: { readonly subject?: "defer"; readonly senderCheck?: "manual" },
+  options?: { readonly subject?: "defer" },
 ): "match" | "held_unverified" | "no_match" => {
   if (
     rule.connectionId !== mail.connectionId ||
@@ -120,10 +120,7 @@ export const matchMailRule = (
       }))
   )
     return "no_match";
-  if (
-    options?.senderCheck !== "manual" &&
-    (mail.senderCheck === "failed" || (rule.from.length > 0 && mail.senderCheck !== "passed"))
-  )
+  if (mail.senderCheck === "failed" || (rule.from.length > 0 && mail.senderCheck !== "passed"))
     return "held_unverified";
   return "match";
 };

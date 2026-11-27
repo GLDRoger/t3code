@@ -289,8 +289,9 @@ it.effect(
       );
       assert.strictEqual(draft.matches[0]?.subject, "Juniper invoice");
       assert.strictEqual(draft.matches.at(-1)?.arrivalId, "a-3");
+      // a-202 is the newest match, but its sender check failed: Run now never picks it.
       const result = yield* rules.runNow(owners, ref);
-      assert.include(result, { status: "queued", arrivalId: "a-202" });
+      assert.include(result, { status: "queued", arrivalId: "a-201" });
       const missed = yield* rules.createFromTap(owners, {
         ...tap,
         tapId: "other-tap",
@@ -302,16 +303,16 @@ it.effect(
       });
       assert.deepStrictEqual(
         calls.slice(1).flat(),
-        Array.from({ length: 50 }, (_, i) => `m-${202 - i}`),
+        Array.from({ length: 50 }, (_, i) => `m-${201 - i}`),
       );
       assert.deepStrictEqual(yield* rules.history(owners, ref), {
         entries: [
           {
             kind: "mail",
-            arrivalId: "a-202",
+            arrivalId: "a-201",
             fromAddress: "bill@juniper.example",
-            receivedAt: 202,
-            noticedAt: 202,
+            receivedAt: 201,
+            noticedAt: 201,
             state: "woke",
             outcome: null,
             eventId: "eventId" in result ? result.eventId : null,
