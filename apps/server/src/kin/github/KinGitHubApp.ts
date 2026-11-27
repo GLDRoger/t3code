@@ -549,7 +549,7 @@ export const make = Effect.gen(function* () {
     }
     return {
       _tag: "ok",
-      ...(coverageUnverified ? { coverageUnverified: true } : {}),
+      ...(coverageUnverified ? { coverageUnverified: true as const } : {}),
       app: {
         id: Number(appId),
         name: about.value.name,

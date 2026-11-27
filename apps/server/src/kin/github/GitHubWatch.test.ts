@@ -216,7 +216,11 @@ const setup = (
               Layer.mergeAll(
                 appHost({ appId: "9001" }),
                 fakeHttp(github),
-                Layer.mock(KinIdentity)({ owner: { _tag: "person", orgId, personId: ownerId } }),
+                Layer.mock(KinIdentity)({
+                  owner: { _tag: "person", orgId, personId: ownerId },
+                  isAgentThread: () => false,
+                  isLeadThread: () => false,
+                }),
                 Layer.succeed(KinRefreshObserver, { touch: () => Effect.void }),
               ),
             ),
@@ -1550,7 +1554,7 @@ describe("automatic issue triage", () => {
       const other = "tidewater/intake";
       github.addRepo({ full_name: other });
       installApp(github, [{ id: 7, account: "tidewater", repos: [other], permissions: {} }]);
-      yield* (yield* KinGitHubApp).lookAgain();
+      yield* Option.getOrThrow(yield* Effect.serviceOption(KinGitHubApp)).lookAgain();
       const number = addIssue(github, "stranger-one");
       yield* look(github);
       yield* (yield* GitHubWatch.KinGitHubWatch).look(orgId, repo, number);
@@ -1565,7 +1569,7 @@ describe("automatic issue triage", () => {
       return Effect.gen(function* () {
         yield* start(github);
         installApp(github, [{ id: 7, account: "tidewater", repos: [repo], permissions: {} }]);
-        const app = yield* KinGitHubApp;
+        const app = Option.getOrThrow(yield* Effect.serviceOption(KinGitHubApp));
         yield* app.lookAgain();
         github.world.failing = [path];
         yield* app.lookAgain();

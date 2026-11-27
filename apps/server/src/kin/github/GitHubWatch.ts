@@ -1164,7 +1164,7 @@ export const make = Effect.gen(function* () {
       repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
     );
     const service = Option.getOrUndefined(app);
-    const appState = yield* service?.state() ?? Effect.succeed(undefined);
+    const appState = yield* service?.state() ?? Effect.undefined;
     const covered = new Set(
       appState?._tag === "ok"
         ? appState.app.installations.flatMap((installation) =>
