@@ -30,11 +30,15 @@ import { readImageDimensions, readJpegOrientation } from "@t3tools/shared/imageD
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
+import * as Stream from "effect/Stream";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 
 import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../../assets/AttachmentUpload.testkit.ts";
@@ -52,12 +56,13 @@ import * as DocumentText from "../../provider/DocumentText.ts";
 import * as AttachmentStore from "../chat/KinAttachmentStore.ts";
 import * as KinChatHub from "../chat/KinChatHub.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
+import * as KinRefreshHub from "../chat/KinRefreshHub.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinFloor from "../floor/KinFloor.ts";
 import { billToolAllowed } from "../lead/billsOnly.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { KinTurnContent } from "../lead/turn/content.ts";
+import { billPhotoMode, KinTurnContent } from "../lead/turn/content.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
 import type { BillBox } from "./billCutterProtocol.ts";
@@ -99,7 +104,7 @@ const documents = Layer.succeed(
   DocumentText.DocumentText,
   DocumentText.DocumentText.of({ ensure: () => Effect.undefined }),
 );
-const layer = Layer.mergeAll(
+const services = Layer.mergeAll(
   KinRecords.layer,
   identity,
   KinChatHub.layer,
@@ -112,6 +117,7 @@ const layer = Layer.mergeAll(
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-bills-" })),
+  Layer.provideMerge(KinRefreshHub.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(NodeServices.layer),
@@ -123,6 +129,8 @@ const layer = Layer.mergeAll(
   ),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
+
+const layer = Bills.previewLayer.pipe(Layer.provideMerge(services));
 
 /** A person's fresh upload, as `attachments.createUploadUrl` and its POST leave one. */
 const upload = (name: string, input: string | Uint8Array, mimeType = "image/png") =>
@@ -212,13 +220,22 @@ const card = (batchId: string) =>
   });
 
 /** The Finance agent's next turn: Kin hands it the queued bills, as the runner claims them. */
-const claimTurn = (n: number, agentId: KinAgentId = finance) =>
+const claimTurn = (n: number, agentId: KinAgentId = finance, { preparePhotos = true } = {}) =>
   Effect.gen(function* () {
     const queue = yield* KinEventQueue.KinEventQueue;
     const sql = yield* SqlClient.SqlClient;
     yield* TestClock.adjust("3 minutes");
     const wakeupId = KinWakeupId.make(`wake-${n}`);
-    const events = yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+    const claimed = yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+    const events = preparePhotos
+      ? (yield* Effect.forEach(
+          claimed,
+          Effect.fnUntraced(function* (event) {
+            if (event._tag !== "bills.read") return event;
+            return yield* Bills.prepareClaimedPhotos(event, wakeupId);
+          }),
+        )).filter((event) => event !== undefined)
+      : claimed;
     // As the runner records the thread and who reads the turn (`turnAudience`).
     yield* sql`UPDATE kin_wakeups SET thread_id = 'finance-thread', audience = 'owner_only'
       WHERE wakeup_id = ${wakeupId}`;
@@ -1613,6 +1630,100 @@ describe("bill_cut", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("answers a twenty-photo add before calling the cutter", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const photo = yield* Effect.promise(() => billPhoto(3200, 2400));
+      const attachments = yield* Effect.forEach(
+        Array.from({ length: 20 }, (_, n) => n),
+        (n) => upload(`bill-${n}.jpg`, Buffer.concat([photo, Buffer.from([n])]), "image/jpeg"),
+      );
+      let cuts = 0;
+      const tracer = Tracer.make({
+        span: (options) => {
+          if (options.name === "KinBills.cutBillPage") cuts++;
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      const added = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments, clientRequestId: "twenty-photos" },
+        TEST_UPLOAD_OWNER,
+      ).pipe(Effect.withTracer(tracer));
+      assert.lengthOf(added.added, 20);
+      assert.strictEqual(cuts, 0);
+      yield* (yield* Bills.KinBillPreviews).drain;
+      const hub = yield* KinRefreshHub.KinRefreshHub;
+      const revisions = Option.getOrThrow(yield* Stream.runHead(hub.changes(orgId)));
+      assert.isAbove(revisions.moneyStatements, 0);
+      const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.lengthOf(
+        bills.filter(({ preview }) => preview !== undefined),
+        20,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads an original when the preview worker was interrupted by a restart", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const entered = yield* Deferred.make<void>();
+      const blockedPreviewWorker = Bills.previewLayer.pipe(
+        Layer.provide(
+          Layer.succeed(FileSystem.FileSystem, {
+            ...fs,
+            open: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+        ),
+      );
+      const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+      const attachment = yield* upload("before-restart.jpg", photo, "image/jpeg");
+      const added = yield* Effect.gen(function* () {
+        const result = yield* addPage(attachment, "preview-restart");
+        yield* Deferred.await(entered);
+        return result;
+      }).pipe(Effect.provide(blockedPreviewWorker));
+
+      const list = Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      const [before] = (yield* list).bills;
+      assert.isUndefined(before!.preview);
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const source = resolveAttachmentPathById({
+        attachmentsDir,
+        attachmentId: before!.file.attachmentId,
+      })!;
+      assert.deepStrictEqual(Buffer.from(yield* fs.readFile(source)), Buffer.from(photo));
+
+      const { wakeupId, events } = yield* claimTurn(1, finance, { preparePhotos: false });
+      assert.strictEqual(billPhotoMode(events), "legacy");
+      const event = events.find((one) => one._tag === "bills.read")!;
+      const ready = (yield* Bills.prepareClaimedPhotos(event, wakeupId))!;
+      const turn = (yield* billTurn(orgId, ready))!;
+      const content = yield* (yield* KinTurnContent).prepare({
+        ...turn,
+        billPhotos: billPhotoMode([ready]),
+      });
+      assert.deepStrictEqual(turn.ids, ["B1"]);
+      assert.deepStrictEqual(
+        content.attachments.map(({ id }) => id),
+        [billPhotoPreviewId(before!.file.attachmentId)],
+      );
+      yield* read({
+        bill: "B1",
+        vendor: "Inkspot Cloud",
+        amount: "42",
+        currency: "INR",
+        date: "2026-11-19",
+      });
+      yield* endTurn(wakeupId);
+      const [after] = (yield* list).bills;
+      assert.strictEqual(after!.state, "read");
+      assert.deepStrictEqual(after!.file, before!.file);
+      assert.strictEqual(after!.preview?.attachmentId, content.attachments[0]?.id);
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("five 6 MiB phone originals are read in one turn, all five shown", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1717,6 +1828,7 @@ describe("bill_cut", () => {
         { orgId, attachments: files, clientRequestId: "photo-previews" },
         TEST_UPLOAD_OWNER,
       );
+      yield* (yield* Bills.KinBillPreviews).drain;
       const list = Bills.list(as(rhea), { orgId, batchId: added.batchId });
       const [photo, original, pdf] = (yield* list).bills;
       const id = billPhotoPreviewId(photo!.file.attachmentId)!;
@@ -1732,7 +1844,7 @@ describe("bill_cut", () => {
       NodeFS.unlinkSync(path);
       assert.isUndefined((yield* list).bills[0]!.preview);
       assert.isFalse(NodeFS.existsSync(path));
-      const { events } = yield* claimTurn(1);
+      const { events } = yield* claimTurn(1, finance, { preparePhotos: false });
       const turn = (yield* billTurn(
         orgId,
         events.find((one) => one._tag === "bills.read")!,
@@ -1758,6 +1870,7 @@ describe("bill_cut", () => {
         },
         TEST_UPLOAD_OWNER,
       );
+      yield* (yield* Bills.KinBillPreviews).drain;
       const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
       const copy = NodePath.join(
         attachmentsDir,

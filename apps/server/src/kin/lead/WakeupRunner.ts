@@ -328,6 +328,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(Repository.KinChatRepository, chatRepository.value),
         Effect.provideService(KinChatHub, chatHub.value),
         Effect.provide(billFiles.value),
+        Effect.provideService(KinRefreshObserver, refresh),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin couldn't settle a bills turn", { cause }),
         ),
@@ -1945,6 +1946,24 @@ const make = Effect.gen(function* () {
             events = yield* Effect.filter(events, (event) =>
               goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
             );
+            if (
+              Option.isSome(billFiles) &&
+              Option.isSome(chatRepository) &&
+              Option.isSome(chatHub) &&
+              events[0]?._tag === "bills.read" &&
+              events.every((event) => event._tag === "bills.read")
+            ) {
+              const prepared = yield* Effect.forEach(events, (event) =>
+                Bills.prepareClaimedPhotos(event, wakeupId),
+              ).pipe(
+                Effect.provide(billFiles.value),
+                Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+                Effect.provideService(KinChatHub, chatHub.value),
+                Effect.provideService(KinRefreshObserver, refresh),
+                provideSql,
+              );
+              events = prepared.filter((event) => event !== undefined);
+            }
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;

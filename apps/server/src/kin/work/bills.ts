@@ -26,6 +26,7 @@ import {
   KinPersonId,
   KinSignedMoney,
   KinWidgetId,
+  type KinWakeupId,
   formatKinWhen,
   isKinCurrency,
   KIN_TEXT_LOCALE,
@@ -37,9 +38,12 @@ import {
   readImageDimensions,
 } from "@t3tools/shared/imageDimensions";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as FiberSet from "effect/FiberSet";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -50,6 +54,7 @@ import * as ServerConfig from "../../config.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { billsOnly } from "../lead/billsOnly.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
@@ -173,6 +178,7 @@ const decodeAnyway = Schema.decodeUnknownEffect(KinBillsAddAnywayResult);
 type Row = {
   readonly sha256: string;
   readonly attachmentId: string;
+  readonly previewId: string | null;
   readonly chatId: string;
   readonly messageId: string;
   readonly name: string;
@@ -196,7 +202,8 @@ type Row = {
   readonly dismissedAt: number | null;
   readonly parentSha256: string | null;
 };
-const COLUMNS = `sha256, attachment_id AS "attachmentId", chat_id AS "chatId",
+const COLUMNS = `sha256, attachment_id AS "attachmentId", preview_id AS "previewId",
+  chat_id AS "chatId",
   message_id AS "messageId", name, file_type AS "fileType", mime_type AS "mimeType",
   size_bytes AS "sizeBytes",
   batch_id AS "batchId", position, agent_id AS "agentId", card_chat_id AS "cardChatId",
@@ -396,19 +403,79 @@ const preparePhotos = Effect.fn("KinBills.preparePhotos")(function* (
   files: Iterable<ChatAttachment>,
 ) {
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
-  const prepared = new Map<string, boolean>();
+  const prepared = new Map<string, ChatAttachment | undefined>();
   for (const file of files) {
     if (photoNeedsPreparation(file) && !prepared.has(file.id))
-      prepared.set(file.id, (yield* billPhotoForModel(attachmentsDir, file)) !== undefined);
+      prepared.set(file.id, yield* billPhotoForModel(attachmentsDir, file));
   }
   return prepared;
 });
+
+const indexPreview = Effect.fn("KinBills.indexPreview")(function* (
+  orgId: KinOrgId,
+  row: RowAttachment & Pick<Row, "sha256">,
+  photo: ChatAttachment | undefined,
+) {
+  if (photo === undefined || photo.id === row.attachmentId) return;
+  const sql = yield* SqlClient.SqlClient;
+  const changed = yield* sql`UPDATE kin_bill_reads SET preview_id = ${photo.id}
+    WHERE org_id = ${orgId} AND sha256 = ${row.sha256}
+      AND attachment_id = ${row.attachmentId} AND preview_id IS NOT ${photo.id}
+    RETURNING sha256`;
+  // Bills and statements share the existing owner-level Money refresh revision.
+  if (changed.length > 0 && photo.sizeBytes < row.sizeBytes)
+    yield* (yield* KinRefreshObserver).touch(orgId, "moneyStatements");
+});
+
+export class KinBillPreviews extends Context.Service<
+  KinBillPreviews,
+  {
+    readonly start: (orgId: KinOrgId, batchId: string) => Effect.Effect<void>;
+    readonly drain: Effect.Effect<void>;
+  }
+>()("t3/kin/work/bills/KinBillPreviews") {}
+
+export const previewLayer = Layer.effect(
+  KinBillPreviews,
+  Effect.gen(function* () {
+    const work = yield* FiberSet.make<void, never>();
+    const services = yield* Effect.context<
+      SqlClient.SqlClient | ServerConfig.ServerConfig | FileSystem.FileSystem
+    >();
+    const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+    const copyBatch = Effect.fn("KinBills.copyBatch")(function* (orgId: KinOrgId, batchId: string) {
+      for (const row of yield* batchRows(orgId, batchId)) {
+        const file = rowAttachment(row);
+        if (!photoNeedsPreparation(file) || row.previewId !== null) continue;
+        yield* billPhotoForModel(attachmentsDir, file).pipe(
+          Effect.flatMap((photo) => indexPreview(orgId, row, photo)),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not save a bill preview", { cause }),
+          ),
+        );
+      }
+    });
+    return KinBillPreviews.of({
+      start: Effect.fn("KinBillPreviews.start")((orgId, batchId) =>
+        copyBatch(orgId, batchId).pipe(
+          Effect.provide(services),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not prepare a batch's previews", { cause }),
+          ),
+          FiberSet.run(work, { startImmediately: false }),
+          Effect.asVoid,
+        ),
+      ),
+      drain: FiberSet.awaitEmpty(work),
+    });
+  }),
+);
 
 /** Queues a batch's waiting bills to its reader, a few a quiet turn, below anyone's message. */
 const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   orgId: KinOrgId,
   batchId: string,
-  prepared: ReadonlyMap<string, boolean>,
+  prepared: ReadonlyMap<string, ChatAttachment | undefined> | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
@@ -423,13 +490,22 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
         read_at = ${now}
       WHERE org_id = ${orgId} AND sha256 IN ${sql.in(unshown.map((row) => row.sha256))}
         AND state = 'waiting'`;
-  const failed = rows.filter((row) => prepared.get(row.attachmentId) === false);
+  const failed = rows.filter(
+    (row) => prepared?.has(row.attachmentId) && prepared.get(row.attachmentId) === undefined,
+  );
   if (failed.length > 0)
     yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
         read_at = ${now}
       WHERE org_id = ${orgId} AND sha256 IN ${sql.in(failed.map((row) => row.sha256))}
         AND state = 'waiting'`;
-  const waiting = rows.filter((row) => isPdf(row) || prepared.get(row.attachmentId) === true);
+  const waiting = rows.filter(
+    (row) =>
+      isPdf(row) ||
+      (prepared === undefined
+        ? photoNeedsPreparation(rowAttachment(row))
+        : prepared.get(row.attachmentId) !== undefined),
+  );
+  for (const row of waiting) yield* indexPreview(orgId, row, prepared?.get(row.attachmentId));
   const groups: Array<Array<Row>> = [];
   let bytes = 0;
   for (const row of waiting) {
@@ -467,7 +543,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           chatId: KinChatId.make(first.cardChatId),
           batchId,
           bills: hashes,
-          photosPrepared: true,
+          ...(prepared !== undefined || group.every(isPdf) ? { photosPrepared: true } : {}),
         })
         .pipe(
           Effect.as(true),
@@ -724,6 +800,7 @@ const insertBills = Effect.fn("KinBills.insertBills")(function* (input: {
       inserted.length > 0
         ? []
         : yield* sql`UPDATE kin_bill_reads AS b SET attachment_id = ${file.attachment.id},
+              preview_id = CASE WHEN b.attachment_id = ${file.attachment.id} THEN preview_id END,
               chat_id = ${file.chatId}, message_id = ${file.messageId},
               name = ${file.attachment.name}, file_type = ${file.attachment.type},
               mime_type = ${file.attachment.mimeType}, size_bytes = ${file.attachment.sizeBytes},
@@ -814,7 +891,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
   readonly cardChatId: KinChatId;
   readonly addedBy: string;
   readonly prepared: Prepared;
-  readonly photos: ReadonlyMap<string, boolean>;
+  readonly photos?: ReadonlyMap<string, ChatAttachment | undefined>;
   /** Files added from Money ride on the card's message; files from chat stay on theirs. */
   readonly source:
     | { readonly _tag: "card" }
@@ -973,12 +1050,7 @@ export const add = Effect.fn("KinBills.add")(function* (
       claimed === undefined || Option.isNone(store) ? Effect.void : store.value.release(claimed),
     ),
   );
-  const photos = yield* preparePhotos(prepared.accepted.map(({ attachment }) => attachment)).pipe(
-    Effect.onInterrupt(() =>
-      claimed === undefined || Option.isNone(store) ? Effect.void : store.value.release(claimed),
-    ),
-  );
-  const result = yield* sql
+  const { result, created } = yield* sql
     .withTransaction(
       Effect.gen(function* () {
         const again = yield* storedAnswer(
@@ -988,7 +1060,7 @@ export const add = Effect.fn("KinBills.add")(function* (
           input.clientRequestId,
           inputHash,
         );
-        if (again !== undefined) return yield* decodeAdded(again);
+        if (again !== undefined) return { result: yield* decodeAdded(again), created: false };
         const made = yield* startBatch({
           orgId: input.orgId,
           batchId,
@@ -996,7 +1068,6 @@ export const add = Effect.fn("KinBills.add")(function* (
           cardChatId: chatId,
           addedBy: person.personId,
           prepared: { accepted: prepared.accepted, refused: [...refused, ...prepared.refused] },
-          photos,
           source: { _tag: "card" },
         });
         yield* keepAnswer(
@@ -1007,7 +1078,7 @@ export const add = Effect.fn("KinBills.add")(function* (
           inputHash,
           made,
         );
-        return made;
+        return { result: made, created: true };
       }),
     )
     .pipe(
@@ -1017,7 +1088,7 @@ export const add = Effect.fn("KinBills.add")(function* (
     );
   if (claimed !== undefined && Option.isSome(store)) {
     // Files whose bytes were already a bill, or twice in this add, are on no message: they go.
-    const kept = new Set(result.added.map((file) => file.sha256));
+    const kept = new Set(created ? result.added.map((file) => file.sha256) : []);
     const onCard = new Map<string, string>();
     for (const file of prepared.accepted)
       if (kept.has(file.sha256) && !onCard.has(file.sha256))
@@ -1028,6 +1099,8 @@ export const add = Effect.fn("KinBills.add")(function* (
     );
     yield* store.value.discardPending(wanted);
   }
+  if (created && result.added.length > 0)
+    yield* (yield* KinBillPreviews).start(input.orgId, batchId);
   return result;
 }, workFailure);
 
@@ -1559,6 +1632,50 @@ export const turnEnded = Effect.fn("KinBills.turnEnded")(function* (
   );
 });
 
+/** Finalize the readable files before the prompt and bill tools number them. */
+export const prepareClaimedPhotos = Effect.fn("KinBills.prepareClaimedPhotos")(function* <
+  Event extends Extract<KinEvent, { readonly _tag: "bills.read" }>,
+>(event: Event, wakeupId: KinWakeupId) {
+  if (event.photosPrepared) return event;
+  const { orgId, eventId } = event;
+  const sql = yield* SqlClient.SqlClient;
+  const reading = sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
+    WHERE org_id = ${orgId} AND event_id = ${eventId} AND state = 'reading'
+    ORDER BY position, sha256`;
+  const photos = yield* preparePhotos((yield* reading).map(rowAttachment));
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const [claimed] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+        AND event_id = ${eventId} AND wakeup_id = ${wakeupId} AND state = 'claimed'`;
+      if (claimed === undefined) return undefined;
+      const keep = new Set<string>();
+      const failed: Array<string> = [];
+      for (const row of yield* reading) {
+        const photo = photos.get(row.attachmentId);
+        if (photos.has(row.attachmentId) && photo === undefined) {
+          failed.push(row.sha256);
+        } else {
+          keep.add(row.sha256);
+          yield* indexPreview(orgId, row, photo);
+        }
+      }
+      if (failed.length > 0) {
+        const now = yield* Clock.currentTimeMillis;
+        yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
+            read_at = ${now}
+          WHERE org_id = ${orgId} AND sha256 IN ${sql.in(failed)}`;
+        yield* refreshCard(orgId, event.batchId);
+      }
+      const bills = event.bills.filter((hash) => keep.has(hash));
+      if (bills.length === 0) return undefined;
+      if (bills.length !== event.bills.length)
+        yield* sql`UPDATE kin_events SET json = json_set(json, '$.bills', json_array(${sql.join(",", false)(bills.map((hash) => sql`${hash}`))}))
+          WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+      return { ...event, bills, photosPrepared: true } as const;
+    }),
+  );
+});
+
 /** Whether a bills event still has a bill to read; one with none starts no turn. */
 export const stillToRead = Effect.fn("KinBills.stillToRead")(function* (
   orgId: KinOrgId,
@@ -1656,7 +1773,9 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
     sha256: row.sha256,
     batchId: row.batchId,
     file,
-    ...(photo === undefined || (photo.id !== row.attachmentId && photo.sizeBytes >= row.sizeBytes)
+    ...(photo === undefined ||
+    (photo.id !== row.attachmentId &&
+      (photo.id !== row.previewId || photo.sizeBytes >= row.sizeBytes))
       ? {}
       : { preview: { ...file, attachmentId: photo.id, mimeType: photo.mimeType } }),
     state: shownState(row, record),

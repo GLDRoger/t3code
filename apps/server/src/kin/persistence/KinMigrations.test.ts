@@ -29,6 +29,7 @@ import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
 import BillReadsMigration from "./migrations/K217_BillReads.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
 import BillCropsMigration from "./migrations/K236_BillCrops.ts";
+import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
 import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -575,6 +576,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_bill_reads_attachment" },
           { name: "idx_kin_bill_reads_batch" },
           { name: "idx_kin_bill_reads_event" },
+          { name: "idx_kin_bill_reads_preview" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chat_pins_source" },
@@ -2376,9 +2378,16 @@ describe("Kin migrations", () => {
           [236, "BillCrops"],
           [237, "CardTapDeliveries"],
           [238, "RemovedRuleCards"],
+          [239, "BillPreviewIds"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
-          { ...before[0], parent_sha256: null, cut_page: null, cut_box_json: null },
+          {
+            ...before[0],
+            parent_sha256: null,
+            cut_page: null,
+            cut_box_json: null,
+            preview_id: billPhotoPreviewId("attachment"),
+          },
         ]);
         yield* sql`UPDATE kin_bill_reads SET parent_sha256 = 'parent', cut_page = 1,
           cut_box_json = '[0,0,50,50]'`;

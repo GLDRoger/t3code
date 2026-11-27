@@ -1,7 +1,6 @@
 import {
   AssetAttachmentNotFoundError,
   AuthKinChatScope,
-  isProviderSendTurnSupportedImageMimeType,
   type AssetResource,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -18,7 +17,6 @@ import * as SessionStore from "../../auth/SessionStore.ts";
 import { logoFile } from "../gendocs/brand.ts";
 import { KinServer } from "../KinServer.ts";
 import { readProfile } from "../work/companyProfile.ts";
-import { billPhotoPreviewId, isBillPdf } from "../work/billPhotoForModel.ts";
 import { commentFileReadable } from "../work/recordComments.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
@@ -34,15 +32,10 @@ const billPhotoSource = Effect.fn("Kin.billPhotoSource")(function* (
   orgIds: ReadonlyArray<KinOrgId>,
   attachmentId: string,
 ) {
-  const photos = yield* sql<{ id: string; name: string; mimeType: string }>`
-    SELECT attachment_id AS id, name, mime_type AS "mimeType" FROM kin_bill_reads
-    WHERE org_id IN ${sql.in(orgIds)} AND file_type = 'image'`;
-  return photos.find(
-    (photo) =>
-      isProviderSendTurnSupportedImageMimeType(photo.mimeType) &&
-      !isBillPdf(photo) &&
-      billPhotoPreviewId(photo.id) === attachmentId,
-  )?.id;
+  const [photo] = yield* sql<{ id: string }>`
+    SELECT attachment_id AS id FROM kin_bill_reads
+    WHERE org_id IN ${sql.in(orgIds)} AND preview_id = ${attachmentId} LIMIT 1`;
+  return photo?.id;
 });
 
 /**

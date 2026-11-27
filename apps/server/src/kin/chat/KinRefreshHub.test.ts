@@ -724,6 +724,7 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      kin_bill_reads: ["work/bills.ts"],
       kin_github_watch: ["github/GitHubWatch.ts"],
       kin_github_branch_guards: ["github/branchGuard.ts"],
       kin_github_owner_uses: [
