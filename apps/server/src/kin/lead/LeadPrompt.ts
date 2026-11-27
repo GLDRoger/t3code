@@ -342,8 +342,7 @@ export const workForText = (names: string) =>
 const readFailed = (warning: string) => (cause: unknown) =>
   Effect.logWarning(warning, cause).pipe(Effect.as(null));
 
-const WORK_UNREADABLE =
-  "Kin couldn't read your Work this turn, so don't say there is none.";
+const WORK_UNREADABLE = "Kin couldn't read your Work this turn, so don't say there is none.";
 const RUN_DETAILS_UNREADABLE =
   "Kin couldn't read this item's latest run this turn, so its details, such as when it is due, may be out of date: don't state them as current.";
 const ITEM_SOURCE_UNREADABLE =
@@ -3201,9 +3200,7 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
       true,
     ),
     ...(facts === null
-      ? [
-          "Kin couldn't read the details for this Work entry this turn, so don't say it has none.",
-        ]
+      ? ["Kin couldn't read the details for this Work entry this turn, so don't say it has none."]
       : viewer === null && !withdrawn
         ? [
             "Kin couldn't check which details of this Work entry may be shown here this turn, so they are left out; don't say there are none.",

@@ -2550,7 +2550,8 @@ it.effect.each([
   },
   {
     read: "Money figures",
-    query: "WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid",
+    query:
+      "WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid",
     line: "Kin couldn't read Money this turn, so it is left out; don't say there is nothing to report.",
     turn: "money",
   },
