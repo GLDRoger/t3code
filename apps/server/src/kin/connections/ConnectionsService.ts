@@ -149,6 +149,7 @@ import {
   type MailActivity,
   type Mailbox,
   type MailChange,
+  type MailAttachment,
   type MailMessage,
   type MailProvider,
   receivedAfter,
@@ -861,6 +862,7 @@ export class KinConnections extends Context.Service<
       orgId: KinOrgId,
       connectionId: string,
       messageIds: ReadonlyArray<string>,
+      partHints?: (arrival: MailArrival) => boolean,
     ) => Effect.Effect<ReadonlyArray<KinMailArrivalRead>, KinChatError>;
     /** Keeps a `changes` cursor once what it named is handled; null starts afresh next read. */
     readonly changesSeen: (
@@ -878,6 +880,19 @@ export class KinConnections extends Context.Service<
       connectionId: string,
       threadId: string,
     ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
+    /** One bill's message. Server use only, never an agent tool. */
+    readonly billMessage: (
+      orgId: KinOrgId,
+      connectionId: string,
+      messageId: string,
+    ) => Effect.Effect<MailMessage | null, KinChatError>;
+    /** One bill's attachment. Server use only, never an agent tool. */
+    readonly billAttachment: (
+      orgId: KinOrgId,
+      connectionId: string,
+      messageId: string,
+      attachmentId: string,
+    ) => Effect.Effect<MailAttachment, KinChatError>;
     readonly tools: (
       scope: McpInvocationScope,
       input: typeof KinConnectionToolsInput.Type,
@@ -2864,6 +2879,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     connectionId: string,
     messageIds: ReadonlyArray<string>,
+    partHints: (arrival: MailArrival) => boolean = () => true,
   ) {
     const row = yield* live(orgId, connectionId);
     const provider = mailProviderOf(row);
@@ -2877,7 +2893,7 @@ const make = Effect.gen(function* () {
     return yield* Effect.forEach(messageIds, (messageId) =>
       withSignIn(orgId, row, (force) =>
         tokenOf(orgId, row, force).pipe(
-          Effect.flatMap((token) => provider.arrival(http, token, messageId)),
+          Effect.flatMap((token) => provider.arrival(http, token, messageId, partHints)),
         ),
       ).pipe(
         Effect.map((arrival): KinMailArrivalRead =>
@@ -2912,6 +2928,54 @@ const make = Effect.gen(function* () {
       ),
     );
     return messages.filter((message) => receivedAfter(message.receivedAt, floor));
+  }, settle);
+
+  const billMailbox = Effect.fn("KinConnections.billMailbox")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (
+      provider === undefined ||
+      row.personId != null ||
+      row.pausedAt !== null ||
+      row.state !== "active" ||
+      !(yield* readableTools(orgId, connectionId)).has(MAIL_TOOL.read)
+    )
+      return yield* notFound;
+    return { row, provider };
+  });
+
+  const billMessage = Effect.fn("KinConnections.billMessage")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    messageId: string,
+  ) {
+    const { row, provider } = yield* billMailbox(orgId, connectionId);
+    const floor = yield* ownUntil(orgId, row.accountLabel).pipe(provideSql);
+    const message = yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.message(http, token, mailboxOf(row), messageId)),
+      ),
+    );
+    return message !== null && receivedAfter(message.receivedAt, floor) ? message : null;
+  }, settle);
+
+  const billAttachment = Effect.fn("KinConnections.billAttachment")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    messageId: string,
+    attachmentId: string,
+  ) {
+    const { row, provider } = yield* billMailbox(orgId, connectionId);
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) =>
+          provider.attachment({ http, token, mailbox: mailboxOf(row) }, messageId, attachmentId),
+        ),
+      ),
+    );
   }, settle);
 
   const changesSeen = Effect.fn("KinConnections.changesSeen")(function* (
@@ -5480,6 +5544,8 @@ const make = Effect.gen(function* () {
     arrivals,
     changesSeen,
     readThread,
+    billMessage,
+    billAttachment,
     tools,
     call,
     offer,

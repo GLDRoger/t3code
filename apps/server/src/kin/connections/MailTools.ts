@@ -671,6 +671,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       call(vendor, { http, token, mailbox }, tool, args, now),
     activity: (http, token, mailbox, since, cursor, now, floor = null) =>
       activity(vendor, { http, token, mailbox }, since, cursor, now, floor),
+    message: (http, token, mailbox, messageId) =>
+      vendor.message({ http, token, mailbox }, messageId),
     // A thread deleted since it was listed has nothing to read; it mustn't hold a pass back.
     messages: (http, token, mailbox, threadId) =>
       vendor.thread({ http, token, mailbox }, threadId, false).pipe(
@@ -684,8 +686,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     mailStart: (http, token, now) => vendor.mailStart({ http, token, mailbox: NO_MAILBOX }, now),
     changes: (http, token, position) =>
       vendor.changes({ http, token, mailbox: NO_MAILBOX }, position),
-    arrival: (http, token, messageId) =>
-      vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
+    arrival: (http, token, messageId, partHints) =>
+      vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId, partHints),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
     calendarEvent: (http, token, mailbox, calendarId, eventId) =>

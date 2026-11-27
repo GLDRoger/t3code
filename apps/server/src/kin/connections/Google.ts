@@ -414,6 +414,7 @@ const hasBillPart = (part: unknown): boolean =>
 const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
   context: MailContext,
   messageId: string,
+  partHints: (arrival: MailArrival) => boolean = () => true,
 ) {
   const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
   const found = yield* api(context, url, {
@@ -454,6 +455,7 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     ...automationOf(message),
     hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
   } satisfies MailArrival;
+  if (!partHints(arrival)) return arrival;
   const billing = billingHint(arrival);
   if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
   const parts = yield* api(context, url, { format: "full", fields: ARRIVAL_PARTS });
@@ -607,6 +609,14 @@ const google: MailVendor = {
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
   attachment: attachmentOf,
+  message: (context, messageId) =>
+    api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, { format: "full" }).pipe(
+      Effect.map(messageOf(context.mailbox.account, true)),
+      Effect.catchIf(
+        (error) => answeredWith(error, 404),
+        () => Effect.succeed(null),
+      ),
+    ),
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
       Effect.map((thread) =>
