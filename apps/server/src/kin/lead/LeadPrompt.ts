@@ -1435,19 +1435,20 @@ export class KinLeadPrompt extends Context.Service<
                 ],
           // One rule with the check-in's: text from someone who can't write to the repo is outside.
           // A review someone asked for in Kin runs as one too: their ask never gets a shell.
-          shows: input.events.some(
-            (event) =>
-              event._tag === "pulse" &&
-              (event.rule !== undefined || (event.outside?.length ?? 0) > 0),
-          )
-            ? "check-in"
+          // A mail rule's run is outside-read the same way; its cards say it was a rule's run.
+          shows: input.events.some((event) => event._tag === "pulse" && event.rule !== undefined)
+            ? "mail-rule"
             : input.events.some(
-                  (event) =>
-                    event._tag === "github" &&
-                    (event.trigger?.inside === false || event.askedBy !== undefined),
+                  (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
                 )
-              ? "github"
-              : undefined,
+              ? "check-in"
+              : input.events.some(
+                    (event) =>
+                      event._tag === "github" &&
+                      (event.trigger?.inside === false || event.askedBy !== undefined),
+                  )
+                ? "github"
+                : undefined,
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(

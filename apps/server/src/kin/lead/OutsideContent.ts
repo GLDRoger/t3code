@@ -207,13 +207,17 @@ export type OutsideReadItem = { readonly id?: string; readonly own?: string } & 
   | { readonly k: "coding-agent"; readonly name?: string }
 );
 
-/** A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `github`, …. */
+/**
+ * A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `mail-rule`,
+ * `github`, ….
+ */
 export const stampKey = (stamp: string) => stamp.split(READABLE, 1)[0]!;
 
 const CODING_AGENT_SOURCE = "coding-agent:";
 /** The read a bare key names, as stamps before reads were stored carry it. */
 const keyRead = (key: string): OutsideReadItem => {
   if (key === "check-in") return { k: "check-in" };
+  if (key === "mail-rule") return { k: "mail" };
   if (key === "github") return { k: "github" };
   if (key === "web search") return { k: "web" };
   if (key.startsWith("web:")) return { k: "web", host: key.slice("web:".length) };

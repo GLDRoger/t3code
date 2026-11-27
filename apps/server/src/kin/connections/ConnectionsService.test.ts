@@ -637,6 +637,7 @@ describe("KinConnections", () => {
         );
         // A stamp stored before reads were named still reads as its key says.
         assert.strictEqual(renderSource("check-in", true), "outside text in a check-in");
+        assert.strictEqual(renderSource("mail-rule", true), "a mail");
         assert.strictEqual(renderSource("conn-1", true), "text from a connected service");
         assert.strictEqual(renderSource("conn-1\tnot json", false), "a connected service");
       }),
@@ -2707,6 +2708,37 @@ describe("KinConnections sending", () => {
         assert.lengthOf(vendor.vendor.sent, 0);
       }),
     ),
+  );
+
+  it.effect(
+    "a card names the outside text its turn read: a check-in, a mail rule run, or none",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          yield* connectGoogle(vendor);
+          const sql = yield* SqlClient.SqlClient;
+          const drafted = Effect.fn("test.drafted")(function* (key: string | undefined) {
+            yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = ${turn.wakeupId}`;
+            if (key !== undefined) yield* markOutside(turn, key);
+            const subject = `Order ${cards.length}`;
+            yield* sendCall("mail_send", {
+              to: ["ana@client.example"],
+              subject,
+              body: "Received.",
+            });
+            return cards.at(-1)!.question;
+          });
+          // A person's own turn, then a check-in's (unchanged), then a mail rule's run.
+          assert.deepStrictEqual(
+            [yield* drafted(undefined), yield* drafted("check-in"), yield* drafted("mail-rule")],
+            [
+              "Send this email from Gmail?",
+              "Send this email from Gmail? Drafted after reading outside text in a check-in, so check it before you confirm.",
+              "Send this email from Gmail? Drafted after reading outside mail in a mail rule run, so check it before you confirm.",
+            ],
+          );
+        }),
+      ),
   );
 
   it.effect("sends an email only on the owner's Confirm, with exactly what the card showed", () =>

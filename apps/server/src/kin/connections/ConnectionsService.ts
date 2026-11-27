@@ -631,6 +631,7 @@ export const confirmRefusal = Effect.fn("KinConnections.confirmRefusal")(functio
 const outsideLabel = Effect.fnUntraced(function* (orgId: KinOrgId, source: string) {
   const key = stampKey(source);
   if (key === "check-in") return "outside text in a check-in";
+  if (key === "mail-rule") return "outside mail in a mail rule run";
   if (key === "github") return "text from GitHub";
   if (key.startsWith("social:")) return `text from ${key.slice("social:".length)}`;
   const connection = yield* connectionEverById(orgId, key);
