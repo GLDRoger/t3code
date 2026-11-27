@@ -222,7 +222,26 @@ function clearUpdatesOf(environmentId: EnvironmentId): PubSub.PubSub<boolean> {
     pubsub = Effect.runSync(PubSub.unbounded<boolean>());
     clearUpdatesByEnvironment.set(environmentId, pubsub);
   }
+  clearUpdatesTabs();
   return pubsub;
+}
+
+// Other tabs of this browser hear a saved flip too; the phone has no BroadcastChannel.
+let clearUpdatesChannel: BroadcastChannel | undefined;
+function clearUpdatesTabs(): BroadcastChannel | undefined {
+  if (clearUpdatesChannel !== undefined || typeof BroadcastChannel === "undefined") {
+    return clearUpdatesChannel;
+  }
+  clearUpdatesChannel = new BroadcastChannel("kin-clear-updates");
+  (clearUpdatesChannel as { unref?: () => void }).unref?.();
+  clearUpdatesChannel.addEventListener("message", (event: MessageEvent) => {
+    const { environmentId, clearUpdates } = (event.data ?? {}) as Record<string, unknown>;
+    const pubsub = clearUpdatesByEnvironment.get(environmentId as EnvironmentId);
+    if (pubsub !== undefined && typeof clearUpdates === "boolean") {
+      Effect.runSync(PubSub.publish(pubsub, clearUpdates));
+    }
+  });
+  return clearUpdatesChannel;
 }
 
 /**
@@ -235,7 +254,10 @@ export async function applyKinClearUpdatesSave(
   save: () => Promise<boolean>,
 ): Promise<boolean> {
   const saved = await save();
-  if (saved) Effect.runSync(PubSub.publish(clearUpdatesOf(environmentId), clearUpdates));
+  if (saved) {
+    Effect.runSync(PubSub.publish(clearUpdatesOf(environmentId), clearUpdates));
+    clearUpdatesTabs()?.postMessage({ environmentId, clearUpdates });
+  }
   return saved;
 }
 

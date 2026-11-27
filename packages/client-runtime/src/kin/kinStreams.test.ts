@@ -1203,6 +1203,17 @@ describe("Kin streams", () => {
         );
         expect((yield* Queue.take(views1)).value.clearUpdates).toBe(true);
         expect((yield* Queue.take(views2)).value.clearUpdates).toBe(true);
+
+        // A flip saved in another tab of this browser reaches the open chat too, for its host only.
+        const otherTab = new BroadcastChannel("kin-clear-updates");
+        for (const host of ["other-host", environmentId]) {
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no target origin
+          otherTab.postMessage({ environmentId: host, clearUpdates: false });
+        }
+        otherTab.close();
+        expect((yield* Queue.take(views1)).value.clearUpdates).toBe(false);
+        expect((yield* Queue.take(views2)).value.clearUpdates).toBe(false);
+        expect([yield* Queue.size(views1), yield* Queue.size(views2)]).toEqual([0, 0]);
         yield* Fiber.interrupt(f1);
         yield* Fiber.interrupt(f2);
       }),
