@@ -45,3 +45,5 @@ On 2026-11-26, against `fix/kin-foreign-credit-asks-which-invoice` at `520ec082b
 **Re-confirmed 2026-11-27** against `feat/kin-skip` at `be1eb8934dc` (on kin `171d8fd2e67`) (no spec change; not rerun here, as the spec is unchanged). The one covered file it changes, `Handoff.ts` (`alreadyShown`), only rewords the note a handed-off request's turn reads: "If you have nothing to add, end with kin_skip." in place of the marker word. No check-in's schedule, held line, delivery, told ledger or catch-up changes.
 
 **Re-confirmed 2026-11-27** at kin `8b1438e4482` (#931), run (no spec change; all 13 rules hold over 94,217,978 states in 1,289 s; 17/17 variants caught). Of the covered files, only `Handoff.ts` changed since `05a004ebfc8` (`be1eb8934dc`): `alreadyShown` ends "If you have nothing to add, end with kin_skip." in place of "write exactly NO_REPLY.", how a quiet turn ends, never when a check-in is queued, held or told.
+
+**Re-confirmed 2026-11-27** on `d89236440b` with the TLC scratch cleanup (no spec change). All 13 rules hold over 94,217,978 states in 1,596.239 s.
