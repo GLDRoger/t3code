@@ -107,9 +107,8 @@ export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
 /**
  * Everyone who has funded a Paid expense, owed or not, with repaid amounts lacking a statement
- * row as totals per currency and day, and the share tied to each live Bank transactions entry
- * on the same day. A statement line naming one is never a new expense. A mark with no Repaid on
- * day counts on the day it was written, in the owner's zone.
+ * row as totals and individual marks per currency and day. A mark with no Repaid on day counts
+ * on the day it was written, in the owner's zone.
  */
 export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
@@ -147,15 +146,17 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
       FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`).map((one) => [one.id, one.name]),
   );
-  type BankTotals = { bankDay: string; amounts: Map<string, bigint> };
+  type RepaidDay = {
+    amountMinor: bigint;
+    marks: Array<{ amountMinor: number; bankRecordId: string | null }>;
+  };
   const payees = new Map<
     string,
     {
       name: string;
       id: string;
       ids: Array<string>;
-      repaid: Map<string, bigint>;
-      tied: Map<string, BankTotals>;
+      repaid: Map<string, RepaidDay>;
     }
   >();
   for (const row of rows) {
@@ -170,39 +171,32 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
           : (names.get(funding.personId) ?? "a former teammate"),
       id,
       ids: funding.personId === null ? [funding.unmatched!] : [],
-      repaid: new Map<string, bigint>(),
-      tied: new Map<string, BankTotals>(),
+      repaid: new Map<string, RepaidDay>(),
     };
     if (funding.state === "repaid" && row.linked === 0) {
       const markedDay = funding.repaidOn ?? dayIn(row.markedAt, zone);
       const at = `${row.currency} ${markedDay}`;
-      const minor = BigInt(row.minor);
-      payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + minor);
+      const repaid: RepaidDay = payee.repaid.get(at) ?? { amountMinor: 0n, marks: [] };
       const bankDay = row.bankDateAt === null ? null : dayIn(row.bankDateAt, zone);
-      if (row.bankRecordId !== null && bankDay === markedDay) {
-        const tied = payee.tied.get(row.bankRecordId) ?? {
-          bankDay,
-          amounts: new Map<string, bigint>(),
-        };
-        tied.amounts.set(at, (tied.amounts.get(at) ?? 0n) + minor);
-        payee.tied.set(row.bankRecordId, tied);
-      }
+      repaid.amountMinor += BigInt(row.minor);
+      repaid.marks.push({
+        amountMinor: row.minor,
+        bankRecordId: bankDay === markedDay ? row.bankRecordId : null,
+      });
+      payee.repaid.set(at, repaid);
     }
     payees.set(id, payee);
   }
-  const total = ([at, minor]: [string, bigint]) => ({
-    currency: at.slice(0, at.indexOf(" ")),
-    day: at.slice(at.indexOf(" ") + 1),
-    amountMinor: Number(minor),
-  });
   return [...payees.values()].map((payee) => ({
     name: payee.name,
     id: payee.id,
     ids: payee.ids,
-    repaid: [...payee.repaid].map(total),
-    tied: [...payee.tied].flatMap(([bankRecordId, { bankDay, amounts }]) =>
-      [...amounts].map((entry) => ({ bankRecordId, bankDay, ...total(entry) })),
-    ),
+    repaid: [...payee.repaid].map(([at, { amountMinor, marks }]) => ({
+      currency: at.slice(0, at.indexOf(" ")),
+      day: at.slice(at.indexOf(" ") + 1),
+      amountMinor: Number(amountMinor),
+      marks,
+    })),
   }));
 });
 
