@@ -275,6 +275,9 @@ export function kinSettledNotificationIds(
   });
 }
 
+// expo-notifications gives iOS's delivery date in seconds and Android's in milliseconds.
+const deliveredMs = (date: number) => (date < 1e11 ? date * 1000 : date);
+
 /** This host's delivered notifications that name what they are about, by org. */
 export function kinDeliveredTopics(
   presented: ReadonlyArray<unknown>,
@@ -301,7 +304,7 @@ export function kinDeliveredTopics(
             orgId: data.orgId,
             topic: data.topic,
             version: data.version ?? 0,
-            date: typeof date === "number" ? date : undefined,
+            date: typeof date === "number" ? deliveredMs(date) : undefined,
           },
         ]
       : [];
