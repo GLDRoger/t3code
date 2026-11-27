@@ -6,6 +6,7 @@ import {
   KIN_BANK_SENDERS,
   KIN_BANK_SENDER_METHODS,
   kinBankSenderAddInput,
+  kinBankSenderAddNotice,
   kinBankSenderAddressParts,
   kinBankSenderKnownBanks,
   kinBankSenderPermissions,
@@ -124,6 +125,43 @@ describe("kinBankSenderAddInput", () => {
         accounts: KIN_BANK_SENDERS.accountsRequired,
       },
     });
+  });
+});
+
+describe("kinBankSenderAddNotice", () => {
+  const rows = [
+    makeRow({ address: "alerts@harborbank.example", accounts: ["4821"] }),
+    makeRow({ address: "multi@harborbank.example", accounts: ["4821", "7310"] }),
+    makeRow({ address: "notices@harborbank.example", state: "waiting", accounts: [] }),
+    makeRow({ address: "old@harborbank.example", state: "declined", accounts: [] }),
+  ];
+
+  it.each([
+    [
+      " Alerts@HarborBank.example ",
+      "Rhea",
+      "Kin already counts this address as Harbor Bank's for the account ending 4821, and adding it here replaces that with the bank name and endings below.",
+    ],
+    [
+      "multi@harborbank.example",
+      "Rhea",
+      "Kin already counts this address as Harbor Bank's for the accounts ending 4821 and 7310, and adding it here replaces that with the bank name and endings below.",
+    ],
+    [
+      "notices@harborbank.example",
+      "Rhea",
+      "This address is waiting for Rhea's answer in chat, and adding it here counts its alerts now.",
+    ],
+    [
+      "notices@harborbank.example",
+      null,
+      "This address is waiting for the owner's answer in chat, and adding it here counts its alerts now.",
+    ],
+    ["old@harborbank.example", "Rhea", null],
+    ["new@harborbank.example", "Rhea", null],
+    ["", "Rhea", null],
+  ])("says before submit what adding %j does", (address, ownerName, expected) => {
+    expect(kinBankSenderAddNotice(address, rows, ownerName)).toBe(expected);
   });
 });
 

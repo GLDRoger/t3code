@@ -46,6 +46,11 @@ const ENDING_RE = /^\d{4}$/;
 const MAX_ADDRESS_LEN = 254;
 const MAX_BANK_NAME_LEN = 160;
 
+const endingsPhrase = (endings: ReadonlyArray<string>) =>
+  endings.length === 1
+    ? `the account ending ${endings[0]}`
+    : `the accounts ending ${endings.slice(0, -1).join(", ")} and ${endings[endings.length - 1]}`;
+
 export const KIN_BANK_SENDERS = {
   title: "Bank alert addresses",
   description: "Addresses whose bank alert emails Kin counts as Bank transactions.",
@@ -88,6 +93,12 @@ export const KIN_BANK_SENDERS = {
   declinedBy: (by: string) => `Declined by ${by}`,
   declinedOn: (date: string) => `Declined on ${date}`,
   firstSeen: (date: string) => `First seen ${date}`,
+  addReplaces: (bankName: string, endings: ReadonlyArray<string>) =>
+    `Kin already counts this address as ${bankName}'s for ${endingsPhrase(endings)}, and adding it here replaces that with the bank name and endings below.`,
+  addWaiting: (ownerName: string | null) => {
+    const name = ownerName?.trim() ?? "";
+    return `This address is waiting for ${name === "" ? "the owner" : name}'s answer in chat, and adding it here counts its alerts now.`;
+  },
   carriedOver: "Carried over from earlier alerts",
   addressLabel: "Alert email address",
   addressPlaceholder: "alerts@bank.example",
@@ -180,6 +191,22 @@ export function kinBankSenderAddInput(
 
   if (Object.keys(problems).length > 0 || accounts === null) return { ok: false, problems };
   return { ok: true, input: { orgId, address, bankName, accounts } };
+}
+
+/** What Add will do to an address already on the list, said before submit; null when it only adds. */
+export function kinBankSenderAddNotice(
+  address: string,
+  rows: ReadonlyArray<Pick<KinBankSenderRow, "address" | "bankName" | "state" | "accounts">>,
+  ownerName: string | null,
+): string | null {
+  const typed = address.trim().toLowerCase();
+  if (typed === "") return null;
+  const row = rows.find((candidate) => candidate.address.toLowerCase() === typed);
+  if (row === undefined) return null;
+  if (row.state === "approved" && row.accounts.length > 0)
+    return KIN_BANK_SENDERS.addReplaces(row.bankName, row.accounts);
+  if (row.state === "waiting") return KIN_BANK_SENDERS.addWaiting(ownerName);
+  return null;
 }
 
 const zoneOf = (words: KinBankSenderWords) =>

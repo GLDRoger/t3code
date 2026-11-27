@@ -1,10 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_BANK_SENDERS,
   KIN_BANK_SENDER_EMPTY_DRAFT,
   kinBankSenderAddInput,
+  kinBankSenderAddNotice,
   kinBankSenderKnownBanks,
   kinBankSenderPermissions,
   kinBankSenderRows,
@@ -16,8 +17,8 @@ import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
-import { useState } from "react";
-import { View } from "react-native";
+import { useEffect, useEffectEvent, useState } from "react";
+import { AppState, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -68,6 +69,7 @@ export function KinBankSendersSection(props: KinWorkTarget) {
     environmentId,
   );
   const { state, refresh } = useKinBankSenders(props, gate === null);
+  useRefreshWhenShown(refresh, gate === null, state._tag === "ready");
   const { held: profiles } = useKinProfiles(environmentId, orgId);
   const removeCommand = useAtomCommand(kinClient.bankSendersRemove, { reportFailure: false });
   const [removing, setRemoving] = useState<string | null>(null);
@@ -185,6 +187,26 @@ export function KinBankSendersSection(props: KinWorkTarget) {
       ) : null}
     </ListSection>
   );
+}
+
+/** Nothing pushes a change to this list, so read it again whenever the screen or the app comes back. */
+function useRefreshWhenShown(refresh: () => void, enabled: boolean, cached: boolean) {
+  const again = useEffectEvent(() => refresh());
+  const cachedAtStart = useEffectEvent(() => cached);
+  const focused = useIsFocused();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the list again when this screen regains focus, e.g. after a card was answered in chat
+  useEffect(() => {
+    // A list cached from an earlier visit may be out of date; a first load is already fresh.
+    if (enabled && focused && cachedAtStart()) again();
+  }, [enabled, focused]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to AppState; a card answered on another device changes the list without a push
+  useEffect(() => {
+    if (!enabled) return;
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") again();
+    });
+    return () => subscription.remove();
+  }, [enabled]);
 }
 
 function BankSenderMobileRow(props: {
@@ -312,6 +334,7 @@ function AddForm(
   const addCommand = useAtomCommand(kinClient.bankSendersAdd, { reportFailure: false });
   const companyProfile = useKinCompanyProfile(props, true);
   const senders = useKinBankSenders(props, true);
+  const { held: profiles } = useKinProfiles(environmentId, orgId);
 
   const [initial] = useState<KinBankSenderDraft>(() => ({
     ...KIN_BANK_SENDER_EMPTY_DRAFT,
@@ -363,6 +386,15 @@ function AddForm(
     navigation.goBack();
   };
 
+  const ownerName =
+    profiles?.profiles.find((person) => person.personId === profiles.ownerPersonId)?.displayName ??
+    null;
+  const notice = kinBankSenderAddNotice(
+    draft.address,
+    senders.state._tag === "ready" ? senders.state.value.rows : [],
+    ownerName,
+  );
+
   const firstFieldProblem = problems.address ?? problems.bankName ?? problems.accounts ?? null;
 
   return (
@@ -392,7 +424,7 @@ function AddForm(
           placeholder={KIN_BANK_SENDERS.addressPlaceholder}
           keyboard="email"
           disabled={saving}
-          hint={problems.address ?? KIN_BANK_SENDERS.addressHelp}
+          hint={problems.address ?? notice ?? KIN_BANK_SENDERS.addressHelp}
           onChangeText={(value) => edit("address", value)}
         />
         <KinWorkTextField

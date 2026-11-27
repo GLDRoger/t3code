@@ -4,6 +4,7 @@ import {
   KIN_BANK_SENDERS,
   KIN_BANK_SENDER_EMPTY_DRAFT,
   kinBankSenderAddInput,
+  kinBankSenderAddNotice,
   kinBankSenderKnownBanks,
   kinBankSenderPermissions,
   kinBankSenderRows,
@@ -16,7 +17,7 @@ import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import { Badge } from "../../components/ui/badge";
@@ -59,6 +60,7 @@ export function KinBankSendersSection(props: KinWorkTarget) {
   );
 
   const { state, refresh } = useKinBankSenders(props, gate === null);
+  useRefreshWhenShown(refresh, gate === null, state._tag === "ready");
   const companyProfile = useKinCompanyProfile(props, gate === null);
   const profilesResult = useKinProfiles(environmentId, orgId);
   const removeCommand = useAtomCommand(kinClient.bankSendersRemove, { reportFailure: false });
@@ -215,12 +217,35 @@ export function KinBankSendersSection(props: KinWorkTarget) {
           orgId={orgId}
           initial={adding}
           knownBanks={knownBanks}
+          rows={state.value.rows}
+          ownerName={ownerName}
           onAdded={refresh}
           onClose={() => setAdding(null)}
         />
       )}
     </>
   );
+}
+
+/** Nothing pushes a change to this list, so read it again whenever Settings comes back into view. */
+function useRefreshWhenShown(refresh: () => void, enabled: boolean, cached: boolean) {
+  const again = useEffectEvent(() => refresh());
+  const cachedAtStart = useEffectEvent(() => cached);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the page's visibility and focus; a card answered elsewhere changes the list without a push
+  useEffect(() => {
+    if (!enabled) return;
+    // A list cached from an earlier visit may be out of date; a first load is already fresh.
+    if (cachedAtStart()) again();
+    const shown = () => {
+      if (document.visibilityState === "visible") again();
+    };
+    document.addEventListener("visibilitychange", shown);
+    window.addEventListener("focus", shown);
+    return () => {
+      document.removeEventListener("visibilitychange", shown);
+      window.removeEventListener("focus", shown);
+    };
+  }, [enabled]);
 }
 
 function BankSenderRow(props: {
@@ -277,6 +302,8 @@ function AddBankSenderDialog(
   props: KinWorkTarget & {
     readonly initial: KinBankSenderDraft;
     readonly knownBanks: ReadonlyArray<string>;
+    readonly rows: Parameters<typeof kinBankSenderAddNotice>[1];
+    readonly ownerName: string | null;
     readonly onAdded: () => void;
     readonly onClose: () => void;
   },
@@ -289,6 +316,7 @@ function AddBankSenderDialog(
   );
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const notice = kinBankSenderAddNotice(draft.address, props.rows, props.ownerName);
 
   const edit = (field: KinBankSenderFieldId, value: string) => {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -333,7 +361,7 @@ function AddBankSenderDialog(
         label={KIN_BANK_SENDERS.addressLabel}
         help={
           problems.address === undefined ? (
-            KIN_BANK_SENDERS.addressHelp
+            (notice ?? KIN_BANK_SENDERS.addressHelp)
           ) : (
             <span className="text-destructive-foreground">{problems.address}</span>
           )
