@@ -1407,7 +1407,7 @@ export const ServerSettings = Schema.Struct({
   fastWorktreeCheckout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Kin, experimental: agents may also run on Codex models, confined to their tools in every chat. */
   kinNonClaudeAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  kinTriggerSendOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinTriggerSendOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   kinSessionCarry: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionUpkeep: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionCompactAtTokens: KinSessionCompactAtTokens.pipe(

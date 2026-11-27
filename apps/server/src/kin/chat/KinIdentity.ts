@@ -23,6 +23,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpThreadCaller, McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { newCompanyProfileJson } from "../work/companyProfile.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
+import { KIN_NUDGE_MESSAGE_PREFIX } from "./wakeupRuns.ts";
 
 export class KinIdentityConfig extends Context.Service<
   KinIdentityConfig,
@@ -57,17 +58,20 @@ type IdentityError = KinChatRepository.RepositoryError;
 /**
  * Lead-thread message ids only Kin's server sends, always as `system`/`server`. A wake-up owns
  * its root run and adopts the later runs its runner or reply bridge started: a steer that
- * landed after the turn ended, and the rescue turn (see `hasRunningWakeup`).
+ * landed after the turn ended, and the rescue or nudge (see `hasRunningWakeup`).
  */
 export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wakeupId}`;
 export const steerMessagePrefix = (wakeupId: KinWakeupId) => `kin-steer-msg:${wakeupId}:`;
 export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
   `${steerMessagePrefix(wakeupId)}${n}`;
 export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
+export const nudgeMessageId = (wakeupId: KinWakeupId) => `${KIN_NUDGE_MESSAGE_PREFIX}${wakeupId}`;
 export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
   messageId.startsWith(steerMessagePrefix(wakeupId));
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
-  messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
+  messageId === rescueMessageId(wakeupId) ||
+  messageId === nudgeMessageId(wakeupId) ||
+  isSteerMessage(wakeupId, messageId);
 // A host holds one company: bootstrap makes org `kin-default` and refuses any other. `orgId`
 // stays on every identity and row as a seam; new code needs no per-org loops or maps.
 export type PersonIdentity = {

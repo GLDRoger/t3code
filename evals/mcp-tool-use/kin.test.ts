@@ -294,6 +294,7 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.include(upFront, "mcp__t3-code__records_query");
   assert.include(upFront, "mcp__t3-code__record_create");
   assert.include(upFront, "mcp__t3-code__kin_skip");
+  assert.include(upFront, "mcp__t3-code__kin_send");
   assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
@@ -754,43 +755,61 @@ const skipBase = () => {
   return { ...base, nativeTools: [...base.nativeTools, tool], t3: [...base.t3, tool] };
 };
 
-it.effect("ends a Claude Kin sample immediately after a successful skip", () =>
-  Effect.gen(function* () {
-    let requests = 0;
-    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
-    const result = yield* runSample(replyCase(pulseQuote), skipConfig, skipBase(), {
-      usage: { ...usage },
-      shellUsage: { ...usage },
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          NodeServices.layer,
-          PlatformNodeCrypto.layer,
-          Layer.succeed(
-            HttpClient.HttpClient,
-            HttpClient.make((request) => {
-              const first = requests++ === 0;
-              return Effect.succeed(
-                HttpClientResponse.fromWeb(
-                  request,
-                  new Response(
-                    JSON.stringify({
-                      content: first ? [skipUse] : [replyBlock("This request should never run.")],
-                      stop_reason: first ? "tool_use" : "end_turn",
-                      usage: { input_tokens: 0, output_tokens: 0 },
-                    }),
+it.effect.each(["skip", "send"] as const)(
+  "ends a Claude Kin sample immediately after a successful %s",
+  (kind) =>
+    Effect.gen(function* () {
+      let requests = 0;
+      const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+      const words = "Tidewater Freight booked the loading slot.";
+      const use =
+        kind === "skip"
+          ? skipUse
+          : {
+              type: "tool_use",
+              id: "send",
+              name: "mcp__t3-code__kin_send",
+              input: { text: words, level: "quiet" },
+            };
+      const result = yield* runSample(replyCase(pulseQuote), skipConfig, kinBase(), {
+        usage: { ...usage },
+        shellUsage: { ...usage },
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            PlatformNodeCrypto.layer,
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make((request) => {
+                const first = requests++ === 0;
+                return Effect.succeed(
+                  HttpClientResponse.fromWeb(
+                    request,
+                    new Response(
+                      JSON.stringify({
+                        content: first ? [use] : [replyBlock("This request should never run.")],
+                        stop_reason: first ? "tool_use" : "end_turn",
+                        usage: { input_tokens: 0, output_tokens: 0 },
+                      }),
+                    ),
                   ),
-                ),
-              );
-            }),
+                );
+              }),
+            ),
           ),
         ),
-      ),
-    );
-    assert.equal(requests, 1);
-    assert.equal(result.calls[0]?.output, "Nothing sent; this turn is over.");
-    assert.equal(result.deliveredText, "");
-  }),
+      );
+      assert.equal(requests, 1);
+      if (kind === "skip") {
+        assert.equal(result.calls[0]?.output, "Nothing sent; this turn is over.");
+        assert.equal(result.deliveredText, "");
+      } else {
+        assert.isFalse(result.calls[0]?.failed);
+        assert.equal(result.deliveredText, words);
+        assert.equal(result.deliveredLevel, "quiet");
+      }
+    }),
 );
 
 it.effect("refuses the default Kin skip mock while a person waits for words", () =>

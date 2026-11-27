@@ -1,5 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import { KIN_TEAM_ROOM_TEAM_ID, KinMessageId, type KinAuthor, KinEvent } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  KIN_TEAM_ROOM_TEAM_ID,
+  KinMessageId,
+  type KinAuthor,
+  KinEvent,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -7,6 +13,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { directKey } from "./LeadAccess.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { voiceFor } from "../reply/turnVoice.ts";
 import {
   agentId,
   chatId,
@@ -169,7 +176,15 @@ it.effect.each(Object.keys(TURN_KINDS) as Array<keyof typeof TURN_KINDS>)(
       const prompt = yield* KinLeadPrompt;
       const given: KinLeadPromptInput = {
         ...input,
-        lane: { chatId, mode: turn.mode },
+        // The voice the runner's lane carries with the switch at its default (`replyLane.ts`).
+        lane: {
+          chatId,
+          mode: turn.mode,
+          voice: voiceFor({
+            tags: [event._tag],
+            sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+          }),
+        },
         events: [event],
       };
       const built = yield* prompt.build(given);

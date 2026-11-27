@@ -122,6 +122,7 @@ const WOKEN_PRIVATE_TOOLS: ReadonlySet<string> = new Set([
   "kin_ask",
   "kin_ask_close",
   "kin_react",
+  "kin_send",
   "kin_skip",
   "kin_chart",
   "kin_visual",

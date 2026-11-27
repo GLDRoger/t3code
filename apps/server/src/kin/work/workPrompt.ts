@@ -332,4 +332,4 @@ export const MONEY_RULE =
 
 /** The event line for an open entry the owner closed or took back while this lead held it. */
 export const WITHDRAWN_WORK =
-  "The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Tell the owner in one line only if something about it needs knowing; otherwise end with kin_skip.";
+  "The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Send the owner one line only if something about it needs knowing; otherwise end with kin_skip.";

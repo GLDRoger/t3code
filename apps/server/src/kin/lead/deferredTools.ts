@@ -22,6 +22,7 @@ export const KIN_CLAUDE_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "doc_create",
   "record_create",
   "kin_ask",
+  "kin_send",
   "kin_skip",
 ]);
 
