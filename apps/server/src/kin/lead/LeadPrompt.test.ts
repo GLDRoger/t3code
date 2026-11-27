@@ -3988,6 +3988,7 @@ const markedMemory = Layer.succeed(
         items: markedNotes,
         bodies: new Map(markedNotes.map((head) => [head.path, "Invented zqmark note body.\n"])),
       }),
+    checkoutPaths: () => Effect.die("Unused"),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
