@@ -1,6 +1,6 @@
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { useAtomValue } from "@effect/atom-react";
-import { LegendList } from "@legendapp/list/react-native";
+import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
@@ -149,6 +149,8 @@ export function KinTasksList(
       readonly bar: Pick<React.ComponentProps<typeof AppBar>, "actions" | "menus">;
       /** False while the project's section is off: no New task under it. */
       readonly adds: boolean;
+      /** Optional handle to scroll this list to a section in its header. */
+      readonly listRef?: React.RefObject<LegendListRef | null>;
     };
   },
 ) {
@@ -394,6 +396,7 @@ export function KinTasksList(
       <ScreenContent surface="screen">
         {/* Hundreds of tasks stay cheap: only the rows in view mount. */}
         <LegendList<KinTasksItem<KinRecord>>
+          ref={within?.listRef}
           renderScrollComponent={NativeScrollView}
           getItemType={(item) => item.type}
           className="flex-1"

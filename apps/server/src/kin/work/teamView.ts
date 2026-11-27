@@ -890,6 +890,10 @@ const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
     AND (r.register_id NOT IN ${sql.in(DRAFT_LISTS)} OR r.state = 'open')
     AND ${inLedProject(sql, personId)})`;
 
+export const projectOpensFor = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
+  sql`(r.register_id = 'projects' AND r.sensitive = 0
+    AND ${projectPerson(sql, personId, sql`r.record_id`)})`;
+
 /** Whether this person leads, is a member of, or holds a task in this unlabelled project. */
 export const inProject = Effect.fn("KinTeamView.inProject")(function* (
   orgId: KinOrgId,
@@ -898,8 +902,7 @@ export const inProject = Effect.fn("KinTeamView.inProject")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
-    AND r.record_id = ${projectId} AND r.register_id = 'projects' AND r.sensitive = 0
-    AND ${projectPerson(sql, personId, sql`r.record_id`)}`;
+    AND r.record_id = ${projectId} AND ${projectOpensFor(sql, personId)}`;
   return row !== undefined;
 });
 
@@ -1628,10 +1631,17 @@ const TEAM_FIELDS = new Set([
   "repeat",
 ]);
 export const teamSeesField = (field: string) => TEAM_FIELDS.has(field);
-export const teamSeesChange = (sql: SqlClient.SqlClient) =>
+/** A field of `c` (`f`) a teammate reads: a list's private one stays out without Money (`listEntryFor`). */
+const teamField = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  sql`(f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS])} AND (${listMoneySeenBy(sql, viewer)} = 1
+    OR NOT ${privateListField(sql, sql`f.value ->> '$.field'`)}))`;
+export const teamSeesChange = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
   sql`(c.kind = 'created' OR (c.kind = 'updated' AND EXISTS (
-    SELECT 1 FROM json_each(c.fields_json) f WHERE f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS])}
-  )))`;
+    SELECT 1 FROM json_each(c.fields_json) f WHERE ${teamField(sql, viewer)})))`;
+/** Those fields' names, comma-separated: each is one of `TEAM_FIELDS`. */
+export const teamChangeFields = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  sql`(SELECT group_concat(f.value ->> '$.field', ',') FROM json_each(c.fields_json) f
+    WHERE ${teamField(sql, viewer)})`;
 
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {

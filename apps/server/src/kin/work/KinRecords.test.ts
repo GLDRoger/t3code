@@ -1856,6 +1856,7 @@ it.effect(
         "kin.work.summary",
         "kin.work.list",
         "kin.work.get",
+        "kin.work.looked",
         "kin.work.subscribe",
         "kin.work.create",
         "kin.work.assign",
@@ -1893,7 +1894,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 57);
+      assert.lengthOf(methods, 58);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

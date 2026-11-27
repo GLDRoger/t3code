@@ -54,6 +54,8 @@ import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
+import * as Looks from "./looks.ts";
 import { fieldText, LISTS, parseFields } from "./lists.ts";
 import {
   OFFERINGS_ORIGIN,
@@ -293,12 +295,14 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
   ref: { readonly key: string } | { readonly recordId: string },
   viewer: KinViewer,
   readerId: KinPersonId,
-  version?: number,
+  options: { readonly version?: number | undefined; readonly withLooks?: boolean } = {},
 ) {
+  const { version, withLooks } = options;
   const records = yield* KinRecords;
   const row = yield* Docs.docRow(orgId, ref, viewer);
   const latest = yield* Docs.versionOf(orgId, row.recordId);
-  const found = yield* Docs.versionOf(orgId, row.recordId, version);
+  const found =
+    version === undefined ? latest : yield* Docs.versionOf(orgId, row.recordId, version);
   const seen = yield* Docs.versionsSeen(orgId, viewer, row);
   const shown = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* unavailable;
@@ -318,6 +322,12 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       const seen = yield* teamVisible(orgId, person, ids);
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
+  const mark =
+    withLooks === true ? yield* Looks.lookedAt(orgId, readerId, row.recordId) : undefined;
+  const sinceLooked =
+    mark == null
+      ? undefined
+      : yield* Docs.versionsSinceLooked(orgId, readerId, row, viewer, mark, shown.version);
   return {
     ...docRowOf(
       row,
@@ -327,6 +337,8 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       yield* marksOf(orgId, viewer, [row]),
     ),
     version: Docs.toVersion(shown),
+    ...(mark === undefined ? {} : { lookedAt: mark === null ? null : iso(mark) }),
+    ...(sinceLooked === undefined ? {} : { sinceLooked }),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
     links:
@@ -489,7 +501,14 @@ export const get = Effect.fn("KinDocs.get")(
       "key" in input ? { key: input.key } : { recordId: input.recordId },
       options.keyed === true ? keyedViewer(base) : base,
       personId,
-      input.version,
+      {
+        version: input.version,
+        withLooks:
+          input.version === undefined &&
+          !("key" in input && input.card !== undefined) &&
+          options.keyed !== true &&
+          (yield* CodingAgentCall) === undefined,
+      },
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
@@ -625,7 +644,7 @@ export const editSection = Effect.fn("KinDocs.editSection")(
       { key: input.key },
       team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
       personId,
-      written.version.version,
+      { version: written.version.version },
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),

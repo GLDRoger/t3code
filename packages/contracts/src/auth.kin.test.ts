@@ -3,12 +3,14 @@ import { expect, it } from "vite-plus/test";
 import {
   AuthEnvironmentScope,
   AuthKinChatScope,
+  AuthKinTasksScope,
   AuthStandardClientScopes,
+  sessionGrantsScope,
   sessionIsChatOnly,
 } from "./auth.ts";
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { KinBankSenderRpcs } from "./kinBankSenders.ts";
-import { kinRpcAccess } from "./kinRpcs.ts";
+import { KIN_RPC_AGGREGATES, KIN_RPC_SCOPES, kinRpcAccess } from "./kinRpcs.ts";
 
 it("calls a session chat-only when it reaches Kin chats and none of the coding app", () => {
   const granted = (permissions: ReadonlyArray<AuthEnvironmentScope>) => ({
@@ -31,3 +33,14 @@ it.each(KinBankSenderRpcs)(
     expect(kinRpcAccess(_tag)).toBe("owner_level");
   },
 );
+
+it("requires the person scope for kin.work.looked even in the kin-work aggregate", () => {
+  const method = "kin.work.looked";
+  expect(kinRpcAccess(method)).toBe("person");
+  expect(KIN_RPC_AGGREGATES[method]).toBe("kin-work");
+  const scope = KIN_RPC_SCOPES[method];
+  expect(scope).toBe(AuthKinChatScope);
+  expect(sessionGrantsScope({ authenticated: true, scopes: [AuthKinTasksScope] }, scope)).toBe(
+    false,
+  );
+});

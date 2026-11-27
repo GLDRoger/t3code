@@ -153,6 +153,7 @@ import BankSenders from "./migrations/K229_BankSenders.ts";
 import WaitingMessageIndex from "./migrations/K230_WaitingMessageIndex.ts";
 import MailRules from "./migrations/K231_MailRules.ts";
 import ConversationMessageIndex from "./migrations/K232_ConversationMessageIndex.ts";
+import Looks from "./migrations/K233_Looks.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -387,6 +388,7 @@ const migrations = {
   "230_WaitingMessageIndex": WaitingMessageIndex,
   "231_MailRules": MailRules,
   "232_ConversationMessageIndex": ConversationMessageIndex,
+  "233_Looks": Looks,
 };
 const loader = Migrator.fromRecord(migrations);
 

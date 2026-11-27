@@ -6,6 +6,9 @@ import {
   KinAccessMeResult,
   KIN_REFRESH_TOPICS,
   KinAgentId,
+  KinDocsRpcs,
+  KinWorkLookedInput,
+  KinWorkRpcs,
   KinChatHistoryResult,
   KinChatListEvent,
   KinChatSummary,
@@ -66,6 +69,7 @@ import * as Docs from "./work/docs.ts";
 import * as Numbers from "./numbers/KinNumbers.ts";
 import * as Goals from "./work/goals.ts";
 import * as KinRecords from "./work/KinRecords.ts";
+import * as Clients from "./work/ownerClients.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
 import { demandOfTick, makeMoneyStream } from "./work/moneyStream.ts";
 import * as Money from "./work/ownerMoney.ts";
@@ -629,6 +633,72 @@ const numbersBytes = Effect.fn("KinWireBudget.numbers")(function* () {
   };
 });
 
+const looksBytes = Effect.fn("KinWireBudget.looks")(function* () {
+  const people = as(ownerId);
+  const editing = as(coOwnerId);
+  const project = yield* Clients.createProject(people, {
+    orgId,
+    name: "Tidewater Freight",
+    clientRequestId: "01KAK0XMVCXC4FF969979K33DA",
+  });
+  const task = yield* Work.create(people, {
+    orgId,
+    title: "Check the packing list",
+    project: project.key,
+    clientRequestId: "01KAK0XMVCXC4FF969979K33DB",
+  });
+  const doc = yield* Docs.create(
+    orgId,
+    ownerWriter,
+    {},
+    {
+      title: "Juniper Cold Chain packing list",
+      body: "Confirm the packing list.",
+      owner: ownerWriter.actor,
+      summary: "Created the packing list",
+      originKey: "wire-budget:looks",
+    },
+  );
+  const entry = Work.get(people, { orgId, key: task.key });
+  const document = OwnerDocs.get(people, { orgId, key: doc.row.key });
+  const page = Clients.project(people, { orgId, key: project.key });
+  const first = { entry: yield* entry, document: yield* document, project: yield* page };
+  const payload = { orgId, recordId: task.recordId, upTo: first.project.asOf };
+  for (const recordId of [task.recordId, first.document.recordId, project.recordId])
+    yield* Work.looked(people, { ...payload, recordId });
+  for (const notes of ["Check loading", "Update the label", "Verify the route", "Call the depot"]) {
+    yield* TestClock.adjust(1);
+    const { rev } = yield* Work.get(editing, { orgId, key: task.key });
+    yield* Work.update(editing, { orgId, key: task.key, rev, notes });
+    yield* Docs.edit(
+      orgId,
+      { ...ownerWriter, actor: { _tag: "person", personId: coOwnerId } },
+      {},
+      { key: doc.row.key },
+      { operations: [{ op: "append", text: notes }], summary: notes, originKey: `looks:${notes}` },
+    );
+  }
+  const current = { entry: yield* entry, document: yield* document, project: yield* page };
+  const schemas = {
+    entry: successOf(KinWorkRpcs, "kin.work.get"),
+    document: successOf(KinDocsRpcs, "kin.docs.get"),
+    project: successOf(KinWorkRpcs, "kin.work.project"),
+  };
+  expect(current.document.sinceLooked?.total).toBe(4);
+  expect(current.document.sinceLooked?.versions).toHaveLength(3);
+  expect(current.project.sinceLooked?.total).toBe(4);
+  expect(current.project.sinceLooked?.items).toHaveLength(3);
+  return {
+    "looks.entry.first.bytes": wireBytes(schemas.entry, first.entry),
+    "looks.entry.return.bytes": wireBytes(schemas.entry, current.entry),
+    "looks.doc.first.bytes": wireBytes(schemas.document, first.document),
+    "looks.doc.return.bytes": wireBytes(schemas.document, current.document),
+    "looks.project.first.bytes": wireBytes(schemas.project, first.project),
+    "looks.project.return.bytes": wireBytes(schemas.project, current.project),
+    "looks.write.bytes": wireBytes(KinWorkLookedInput, payload),
+  };
+});
+
 /** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
 const pinned = (chat: boolean) =>
   Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
@@ -681,6 +751,7 @@ withLayer(Layer.merge(layer, connections))("Kin wire budget", (it) => {
       Object.assign(measured, chatList());
       Object.assign(measured, yield* numbersBytes());
       Object.assign(measured, yield* accessBytes().pipe(Effect.provide(KinShell.layer)));
+      Object.assign(measured, yield* looksBytes());
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

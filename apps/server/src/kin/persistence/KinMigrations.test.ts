@@ -114,6 +114,7 @@ const tableNames = [
   "kin_lead_tool_calls",
   "kin_leads",
   "kin_list_proposals",
+  "kin_looks",
   "kin_mail_rules",
   "kin_memory_heads",
   "kin_memory_labels",
@@ -3703,6 +3704,7 @@ const legacyBankAlerts = Effect.gen(function* () {
   yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
   yield* sql`DROP TABLE kin_bank_alerts`;
   yield* LegacyBankAlerts;
+  yield* sql`DROP TABLE IF EXISTS kin_looks`;
   yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 229`;
   yield* sql`INSERT INTO kin_orgs VALUES
     ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
@@ -3729,6 +3731,30 @@ const bankAlertIndexes = (sql: SqlClient.SqlClient) =>
   sql<{ name: string; partial: number; columns: string }>`SELECT l.name, l.partial,
     (SELECT group_concat(i.name, ',') FROM pragma_index_info(l.name) i) AS columns
     FROM pragma_index_list('kin_bank_alerts') l ORDER BY l.name`;
+
+it.effect("Looks upgrades K232 with one mark per org, person and record", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    yield* sql`DROP TABLE IF EXISTS kin_looks`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id > 232`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[233, "Looks"]]);
+    assert.deepStrictEqual(
+      yield* sql`PRAGMA table_info(kin_looks)`.pipe(
+        Effect.map((columns) =>
+          columns.map((column) => [column.name, column.type, column.notnull, column.pk]),
+        ),
+      ),
+      [
+        ["org_id", "TEXT", 1, 1],
+        ["person_id", "TEXT", 1, 2],
+        ["record_id", "TEXT", 1, 3],
+        ["looked_at", "INTEGER", 1, 0],
+      ],
+    );
+    assert.deepStrictEqual(yield* runKinMigrations(), []);
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
 
 it.effect("K229 carries only companies and endings with existing bank alerts", () =>
   Effect.gen(function* () {
