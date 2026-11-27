@@ -1,13 +1,24 @@
 import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinPlaceInDock } from "@t3tools/client-runtime/kin/kinShell";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { Atom } from "effect/reactivity";
 
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import type { KinWorkTarget } from "./useKinWork";
 import { readKinIsHome } from "./kinHome";
+
+/** Whether a place has its tab in the home's dock; one the company took out opens as a page. */
+const kinTabInDock = (target: KinWorkTarget, place: KinWorkPlace) =>
+  place === "tasks" ||
+  kinPlaceInDock(
+    appAtomRegistry.get(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.shell,
+    place,
+  );
 
 export interface KinTasksNarrow {
   readonly party: KinWorkRef | null;
@@ -31,7 +42,7 @@ export const kinHomeTabAtom = Atom.make<{
 export function useKinOpenPlace(target: KinWorkTarget) {
   const navigation = useNavigation();
   return (place: KinWorkPlace, narrow?: KinTasksNarrow) => {
-    if (readKinIsHome()) {
+    if (readKinIsHome() && kinTabInDock(target, place)) {
       const held = appAtomRegistry.get(kinHomeTabAtom);
       appAtomRegistry.set(kinHomeTabAtom, {
         tab: place,
@@ -72,7 +83,12 @@ export function useKinOpenPlaceList(target: KinWorkTarget) {
     };
     const state = navigation.getState();
     const home = state?.routes[0];
-    if (!readKinIsHome() || state === undefined || home === undefined) {
+    if (
+      !readKinIsHome() ||
+      !kinTabInDock(target, place) ||
+      state === undefined ||
+      home === undefined
+    ) {
       navigation.dispatch(StackActions.push("KinList", params));
       return;
     }
