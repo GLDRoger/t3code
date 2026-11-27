@@ -1,5 +1,6 @@
 import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -398,6 +399,18 @@ export const followsCodingAgent = Effect.fn("KinOutsideContent.followsCodingAgen
 export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
   outsideStamp(turn).pipe(Effect.map((source) => source !== undefined));
 
+export type OutsideMark = {
+  readonly turn: Pick<Turn, "orgId" | "wakeupId">;
+  readonly source: string;
+  readonly reads: ReadonlyArray<OutsideReadItem> | undefined;
+  readonly scope: "wakeup" | "wakeup-and-events";
+};
+/** Set while a read tool runs on a reader (`mcp/readTools.ts`), which writes these after it. */
+export const heldOutsideMarks = Context.Reference<Array<OutsideMark> | undefined>(
+  "t3/kin/lead/OutsideContent/heldOutsideMarks",
+  { defaultValue: () => undefined },
+);
+
 /**
  * Marks the turn outside-read, before the outside text reaches it. The events it claimed carry
  * the stamp too, so a retry that requeues them starts marked. `source` is a key or a whole stamp.
@@ -409,6 +422,11 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   reads?: ReadonlyArray<OutsideReadItem>,
   scope: "wakeup" | "wakeup-and-events" = "wakeup-and-events",
 ) {
+  const held = yield* heldOutsideMarks;
+  if (held !== undefined) {
+    held.push({ turn: { orgId: turn.orgId, wakeupId: turn.wakeupId }, source, reads, scope });
+    return;
+  }
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
   yield* Effect.gen(function* () {

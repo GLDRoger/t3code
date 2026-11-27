@@ -6,12 +6,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { KinServer } from "../KinServer.ts";
+import { heldOutsideMarks, markOutside, type OutsideMark } from "../lead/OutsideContent.ts";
 import { heldSensitiveMarks, sensitiveShown, type SensitiveMark } from "../work/sensitiveReads.ts";
 
 /**
  * Agents' read tools, served on SQLite's reader pool so an agent's turn and a person's save don't
  * wait on each other. None may write (a write on a reader fails as readonly), except the turn's
- * "shown something sensitive" mark, held and written on the writer before the answer goes back.
+ * sensitive and outside marks, held and written on the writer before the answer goes back.
  * `readTools.test.ts` runs each on a database with readers.
  */
 const READS = [
@@ -39,15 +40,28 @@ export const layer = McpHttpServer.toolCallAround((effect, { target }) =>
     ? effect
     : Effect.gen(function* () {
         const marks: Array<SensitiveMark> = [];
+        const outside: Array<OutsideMark> = [];
         const exit = yield* Effect.exit(
-          NodeSqliteClient.readOnly(Effect.provideService(effect, heldSensitiveMarks, marks)),
+          NodeSqliteClient.readOnly(
+            effect.pipe(
+              Effect.provideService(heldSensitiveMarks, marks),
+              Effect.provideService(heldOutsideMarks, outside),
+            ),
+          ),
         );
-        if (marks.length > 0) {
+        if (marks.length > 0 || outside.length > 0) {
           const kin = yield* Effect.serviceOption(KinServer);
           const services = Option.flatMap(kin, (one) => one.services);
           // No answer without its mark: one that can't be written fails the call.
           if (Option.isNone(services)) return yield* Effect.die("Kin is unavailable.");
-          yield* Effect.forEach(marks, sensitiveShown, { discard: true }).pipe(
+          yield* Effect.all([
+            Effect.forEach(marks, sensitiveShown, { discard: true }),
+            Effect.forEach(
+              outside,
+              (mark) => markOutside(mark.turn, mark.source, mark.reads, mark.scope),
+              { discard: true },
+            ),
+          ]).pipe(
             Effect.provideService(
               SqlClient.SqlClient,
               Context.get(services.value, SqlClient.SqlClient),
