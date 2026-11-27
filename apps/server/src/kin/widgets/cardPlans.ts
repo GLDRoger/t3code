@@ -301,10 +301,6 @@ const RecommendPlan = Schema.Struct({
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
 export type RecommendChange = typeof RecommendChange.Type;
-/**
- * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
- * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
- */
 const MailRulePlan = Schema.Struct({
   kind: Schema.Literal("mail_rule"),
   personId: KinPersonId,
@@ -318,6 +314,10 @@ const MailRulePlan = Schema.Struct({
 });
 export type MailRulePlan = typeof MailRulePlan.Type;
 
+/**
+ * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
+ * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
+ */
 const AnsweredPlan = Schema.Struct({
   kind: Schema.Literals(["undo_answer", "keep_answer"]),
   questionId: Schema.String,

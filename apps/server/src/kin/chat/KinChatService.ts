@@ -223,10 +223,6 @@ export type ChoiceAnswerHandler = (input: {
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
-/**
- * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
- * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
- */
 export type MailRuleTapHandler = (input: {
   readonly identity: PersonIdentity;
   readonly widget: KinWidget;
@@ -234,6 +230,10 @@ export type MailRuleTapHandler = (input: {
   readonly action: (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
   readonly tapId: KinMessageId;
 }) => Effect.Effect<KinMailRuleCardState, KinChatError | SqlError.SqlError>;
+/**
+ * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
+ * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
+ */
 export type ChoiceDismissHandler = (input: {
   readonly orgId: KinOrgId;
   readonly widget: KinWidget;
@@ -254,10 +254,10 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
-    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachMailRuleTap: (
       handler: MailRuleTapHandler,
     ) => Effect.Effect<void, never, Scope.Scope>;
+    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
       refused?: ChoiceRefusedHandler,
