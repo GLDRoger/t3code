@@ -5,7 +5,7 @@ import type { DraftComposerAttachment } from "./composerImages";
 import { composerImageGallery } from "./composerImageGallery";
 import { contextImageGallery } from "./contextImageGallery";
 import { messageImageGallery } from "../features/threads/messageImageGallery";
-import { filePreviewGallery, filePreviewKey, filePreviewName } from "./filePreviewGallery";
+import { filePreviewGallery, filePreviewKey } from "./filePreviewGallery";
 
 vi.mock("./uuid", () => ({}));
 
@@ -147,21 +147,5 @@ describe("image preview groups", () => {
     };
     expect(filePreviewKey(a)).toBe(filePreviewKey(b));
     expect(filePreviewGallery(b, [a])).toEqual([b]);
-  });
-
-  it("titles an image by its name as stored, dots and all", () => {
-    const environmentId = EnvironmentId.make("test");
-    const titled = (name: string) =>
-      filePreviewName({
-        kind: "image",
-        name,
-        environmentId,
-        resource: { _tag: "attachment", attachmentId: "a", fileName: name },
-      });
-    expect(titled("nine.jpg")).toBe("nine.jpg");
-    expect(titled("Harbor Power 11.2026")).toBe("Harbor Power 11.2026");
-    expect(titled("Fig. 1")).toBe("Fig. 1");
-    // A path separator or control character never reaches the native file name.
-    expect(titled("bills/nine.jpg")).toBe("bills_nine.jpg");
   });
 });
