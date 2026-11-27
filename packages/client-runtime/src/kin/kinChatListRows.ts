@@ -1,12 +1,16 @@
 import {
+  KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS,
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   kinIsPeopleChat,
   type KinAgentId,
   type KinChatId,
   type KinChatMembersResult,
+  type KinChatsSettleAfterHours,
   type KinChatSummary,
+  type KinPersonProfile,
 } from "@t3tools/contracts";
+import { msg } from "gt-i18n";
 
 import { KIN_RETIRED_LABEL, kinRetiredDirectAgentId } from "./kinAgentRetire.ts";
 import { kinAttachmentSummary } from "./kinAttachments.ts";
@@ -139,20 +143,33 @@ export interface KinChatListFold {
   readonly fixed: ReadonlySet<KinChatId>;
 }
 
+const HOUR_MS = 3_600_000;
+
+/** Hours after a chat's newest message before a read chat settles: 12 unless chosen otherwise. */
+export const kinChatsSettleAfterHours = (
+  profile: Pick<KinPersonProfile, "chatsSettleAfterHours"> | null | undefined,
+): KinChatsSettleAfterHours =>
+  profile?.chatsSettleAfterHours ?? KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS;
+
 /**
- * The few chats on top and the rest settled. A chat comes up while it has unread words (muted or
- * not), waits on the viewer or has an agent working, and stays up while its id is in `keptUp`,
- * so a list on screen never moves a row from under a finger. The main agent is the host's team
- * agent (`teamAgentId`), never matched by name.
+ * The few chats on top and the rest settled. A chat stays up while unread, waiting, working,
+ * younger than `settleAfterHours`, or in `keptUp` (so nothing moves under a finger). The main
+ * agent is the host's `teamAgentId`, never matched by name.
  */
 export function kinChatListFold(
   rows: ReadonlyArray<KinChatListRow>,
   options: {
     readonly mainAgentId: KinAgentId | null;
     readonly keptUp?: ReadonlySet<KinChatId>;
+    /** Epoch ms used to measure each chat's newest message age. */
+    readonly now: number;
+    /** Hours after a chat's newest message before a read chat settles; defaults to 12. */
+    readonly settleAfterHours?: KinChatsSettleAfterHours;
   },
 ): KinChatListFold {
-  const { mainAgentId } = options;
+  const { mainAgentId, now } = options;
+  const settleWindowMs =
+    (options.settleAfterHours ?? KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS) * HOUR_MS;
   const main = (row: KinChatListRow) =>
     mainAgentId !== null &&
     row.chat.kind === "direct" &&
@@ -172,11 +189,17 @@ export function kinChatListFold(
     .flatMap((row) => (row.pinnedAt === null ? [] : [{ row, at: row.pinnedAt }]))
     .sort((a, b) => a.at.localeCompare(b.at))
     .map(({ row }) => row);
+  const recent = (row: KinChatListRow) => {
+    if (settleWindowMs <= 0 || row.view.sentAt === null) return false;
+    const sentMs = Date.parse(row.view.sentAt);
+    return !Number.isNaN(sentMs) && now - sentMs < settleWindowMs;
+  };
   const comesUp = (row: KinChatListRow) =>
     row.view.unread > 0 ||
     row.quietNew ||
     row.needsYou ||
     row.working ||
+    recent(row) ||
     options.keptUp?.has(row.chat.chatId) === true;
   const loose = rest.filter((row) => row.pinnedAt === null);
   const up = [...fixed, ...pinned, ...loose.filter(comesUp)];
@@ -189,6 +212,27 @@ export function kinChatListFold(
       }
     : { up, settled, fixed: fixedIds };
 }
+
+/** Choices for when a read chat moves under Settled, shared by web and phone. */
+export const KIN_CHATS_SETTLE_OPTIONS: ReadonlyArray<{
+  readonly hours: KinChatsSettleAfterHours;
+  readonly label: string;
+}> = [
+  { hours: 0, label: msg("Right away") },
+  { hours: 6, label: msg("After 6 hours") },
+  { hours: 12, label: msg("After 12 hours") },
+  { hours: 24, label: msg("After 24 hours") },
+];
+
+/** Settings copy for when a read chat moves under Settled, shared by web and phone. */
+export const KIN_CHATS_SETTLE = {
+  section: msg("Chats", { $context: "settings section for chat list preferences" }),
+  label: msg("Settle read chats"),
+  hint: msg(
+    "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  ),
+  failed: msg("Couldn't save that."),
+} as const;
 
 /**
  * Who stays up while the list is on screen: who was up when it came into view, and anyone that

@@ -11759,7 +11759,6 @@
   "f2bf529f85e05494": "공유 및 액세스",
   "7cf24feddad00a5e": "환경설정",
   "58058320796d28f6": "코드",
-  "8478d0e5c2bd1aef": "Kin",
   "d8cd577c915539bd": "{label} 계정 및 토큰",
   "a5ea998202be1fbc": "{label} 자격 증명",
   "8f636f473e42e657": "모든 로컬 파일 커밋하지 않은 변경 사항 편집된 추적 파일 무시된 env 빌드 출력 정리",
@@ -12735,5 +12734,16 @@
   "99d51127f573296b": "다른 계정",
   "8ec2c57414669b79": "두 번째 {tracker} 워크스페이스 또는 사용자를 연결합니다.",
   "99963c0142e17f00": "새 {tracker} 계정용입니다.",
-  "6d8e4ebc889bace9": "계정 추가"
+  "6d8e4ebc889bace9": "계정 추가",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "0e8f3321924ca223": "Deals",
+  "3df9c49976cb55bf": "Sections",
+  "67508b5a9a7db096": "Profile"
 }

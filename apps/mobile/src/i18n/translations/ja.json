@@ -5587,5 +5587,14 @@
   "856812e7e1fc445e": "チャット内のツール呼び出し",
   "8d545d54c0a9e950": "エージェントが実行するコマンド、編集、検索を非表示にします。「成功したものを非表示」では失敗は表示されます。Zen では最終的な回答だけを表示します。承認、質問、エラーは常に表示されます。",
   "99d51127f573296b": "別のアカウント",
-  "8ec2c57414669b79": "2つ目の {tracker} ワークスペースまたはユーザーを接続します。"
+  "8ec2c57414669b79": "2つ目の {tracker} ワークスペースまたはユーザーを接続します。",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "bfbcb7fa64c13d58": "Add an environment to load projects and start coding sessions."
 }

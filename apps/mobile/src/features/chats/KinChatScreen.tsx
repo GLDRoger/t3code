@@ -1100,6 +1100,7 @@ function KinChatFeed(props: {
     direct: props.direct,
     formatTime: NO_HEAD_TIME,
     landOn,
+    caughtUp: props.chat.live,
     ownsLead: props.ownsLead,
     agentName: props.agentName,
     retired: props.retired !== null,
