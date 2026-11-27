@@ -3353,6 +3353,7 @@ const foreignCredit = Effect.fn("test.foreignCredit")(function* (
     currency?: string;
     rate?: string;
     financeOwner?: "meera" | "zoya";
+    bankMinor?: number;
   } = {},
 ) {
   const kin = yield* ambermill;
@@ -3378,12 +3379,13 @@ const foreignCredit = Effect.fn("test.foreignCredit")(function* (
     number: string,
     issueDaysAgo: number,
     currency = input.currency ?? "USD",
+    clientId = client.recordId,
   ) {
     const { row } = yield* records.create(orgId, ownerWrites, {
       list: "invoices",
       title: number,
       owner,
-      partyId: client.recordId,
+      partyId: clientId,
       amount: { minor: 100_000, currency },
       originKey: number,
     });
@@ -3401,7 +3403,7 @@ const foreignCredit = Effect.fn("test.foreignCredit")(function* (
       list: bankList.id,
       title: input.narration ?? "Wire TIDEWATER FREIGHT",
       owner,
-      amount: { minor: 8_350_000, currency: "INR" },
+      amount: { minor: input.bankMinor ?? 8_350_000, currency: "INR" },
       dateAt: MON - DAY_MS,
       fields: { direction: "credit", reference: "TW202611150001" },
       originKey: "TW202611150001",
@@ -3832,6 +3834,281 @@ it.effect.each([
       assert.isEmpty(yield* kin.cards());
       const fact = yield* kin.fact();
       assert.exists(fact);
+    }),
+  ),
+);
+
+it.effect.each([
+  { name: "names one client without an exact amount", expected: true },
+  { name: "has a client clue without an ordinary offer", expected: true },
+  { name: "names two clients", expected: false },
+  { name: "names a client with no open invoice", expected: false },
+  { name: "is already explained", expected: false },
+  { name: "equals one invoice exactly", expected: false },
+  { name: "cites one invoice", expected: false },
+  { name: "has a payment already recorded", expected: false },
+])("a same-currency credit $name", ({ name, expected }) =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({
+        currency: "INR",
+        bankMinor: name === "equals one invoice exactly" ? 100_000 : 60_000,
+        ...(name === "names two clients"
+          ? { narration: "Wire TIDEWATER FREIGHT JUNIPER COLD CHAIN" }
+          : name === "cites one invoice"
+            ? { narration: "Wire TIDEWATER FREIGHT TW/001" }
+            : name === "has a client clue without an ordinary offer"
+              ? { narration: "Wire TIDEWATER" }
+              : {}),
+      });
+      const { orgId, records, ownerWrites, owner, invoice, bank } = kin;
+      const second = yield* kin.invoiceOf("TW/002", 2);
+      switch (name) {
+        case "names two clients": {
+          const { row: other } = yield* records.create(orgId, ownerWrites, {
+            list: "clients",
+            title: "Juniper Cold Chain",
+            owner,
+            originKey: "juniper",
+          });
+          yield* kin.invoiceOf("JC/001", 2, "USD", other.recordId);
+          break;
+        }
+        case "names a client with no open invoice":
+          for (const row of [invoice, second])
+            yield* records.update(orgId, ownerWrites, row.key, { state: "dropped" });
+          break;
+        case "is already explained":
+          yield* records.update(orgId, ownerWrites, bank.key, { state: "done" });
+          break;
+        case "has a payment already recorded": {
+          const earlier = yield* kin.invoiceOf("TW/PAID", 5);
+          yield* records.pay(orgId, ownerWrites, earlier.key, {
+            amount: { minor: 60_000, currency: "INR" },
+            paidOn: "2026-11-15",
+            originKey: "already-recorded",
+          });
+          break;
+        }
+      }
+      const match = yield* creditMatch(orgId, bank.recordId);
+      assert.strictEqual(match?.choice !== undefined, expected);
+      if (name === "has a client clue without an ordinary offer") assert.isEmpty(match?.first);
+      if (name === "equals one invoice exactly")
+        assert.strictEqual(match?.first[0]?.candidate.fit, "exact");
+      yield* kin.tick();
+      assert.lengthOf(yield* kin.cards(), expected ? 1 : 0);
+    }),
+  ),
+);
+
+// Tax a client withheld is the bank's amount explained: the ordinary offer records it, a choice can't.
+it.effect("a same-currency credit less withheld tax keeps the ordinary offer", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ currency: "INR", bankMinor: 90_000 });
+      yield* kin.invoiceOf("TW/002", 2);
+      const match = yield* creditMatch(kin.orgId, kin.bank.recordId);
+      assert.strictEqual(match?.first[0]?.candidate.fit, "tds");
+      assert.isUndefined(match?.choice);
+      yield* kin.tick();
+      assert.isEmpty(yield* kin.cards());
+      assert.include((yield* kin.fact())?.consequence, "tax the client withheld");
+    }),
+  ),
+);
+
+it.effect.each(["part", "split", "declined", "edited"] as const)(
+  "a same-currency invoice choice is shown and handled once when %s",
+  (answer) =>
+    foreignCreditTest(
+      Effect.gen(function* () {
+        const kin = yield* foreignCredit({
+          currency: "INR",
+          bankMinor: answer === "part" ? 60_000 : 240_000,
+          financeOwner: "meera",
+        });
+        const { orgId, ownerWrites, records, sql, bank, invoice } = kin;
+        const first = yield* kin.invoiceOf("TW/002", 2);
+        const second = yield* kin.invoiceOf("TW/003", 2);
+        const later = yield* kin.invoiceOf("TW/004", 0);
+        const asked = yield* kin.ask();
+        const state = card(asked);
+        const fact = yield* kin.fact();
+        assert.strictEqual(fact?.key, kin.factKey);
+        assert.strictEqual(
+          fact?.consequence,
+          `${bank.key}, ₹${answer === "part" ? "600" : "2,400"} received 15 Nov, names Tidewater Freight, and Kin can't tell which of Tidewater Freight's open invoices it pays: ${[first, second, invoice].map((row) => `${row.title} (${row.key}) (₹1,000 owed)`).join("; ")}. Nothing is recorded until an owner or co-owner chooses.`,
+        );
+        assert.strictEqual(
+          state.detail?.split("\n")[0],
+          `${bank.key}: ₹${answer === "part" ? "600" : "2,400"}.00 received 15 Nov from Tidewater Freight. It names no invoice; each option says what Kin will record.`,
+        );
+        assert.deepStrictEqual(
+          state.options.map(({ label }) => label),
+          [
+            ...[first, second, invoice].map((row) => `${row.title} (${row.key})`),
+            ...(answer === "part" ? [] : ["Split across invoices"]),
+            "None of these",
+          ],
+        );
+        assert.include(
+          state.options[0]?.action?.line,
+          answer === "part"
+            ? `Records ₹600.00 toward the ₹1,000.00 owed on ${first.key}.`
+            : `Records ₹2,400.00: ₹1,000.00 settles ${first.key} and ₹1,400.00 stays as the client's credit.`,
+        );
+        yield* TestClock.adjust(60_000);
+        yield* kin.tick();
+        assert.lengthOf(yield* kin.cards(), 1);
+        const payments = () => sql`SELECT record_id AS id, amount_minor AS minor, currency
+          FROM kin_record_payments WHERE org_id = ${orgId} AND voided_at IS NULL ORDER BY record_id`;
+        const receipts =
+          () => sql`SELECT key, amount_minor AS minor, party_id AS "clientId", currency
+          FROM kin_records WHERE org_id = ${orgId} AND register_id = 'receipts'
+            AND origin_key LIKE ${`bank-credit:${bank.recordId}:%:left`}`;
+        assert.isEmpty(yield* payments());
+        assert.isEmpty(yield* receipts());
+        if (answer === "edited")
+          yield* records.update(orgId, ownerWrites, second.key, {
+            notes: "Updated freight details.",
+          });
+
+        const person = kin.person("meera");
+        const option = state.options[answer === "part" ? 0 : answer === "declined" ? 4 : 3]!;
+        if (answer === "split")
+          assert.strictEqual(
+            option.action?.line,
+            `Records ₹2,400.00: ₹1,000.00 settles ${first.key}, ₹1,000.00 settles ${second.key}, and ₹400.00 goes toward the ₹1,000.00 owed on ${invoice.key}.`,
+          );
+        yield* kin.tap(person, asked.widgetId, option.optionId, "invoice-choice");
+        if (answer === "declined" || answer === "edited") {
+          assert.isEmpty(yield* payments());
+          assert.isEmpty(yield* receipts());
+          assert.strictEqual((yield* records.get(orgId, bank.key))?.state, "open");
+          if (answer === "declined") {
+            yield* records.update(orgId, ownerWrites, bank.key, {
+              title: "Wire TIDEWATER FREIGHT TW/001",
+            });
+            assert.isUndefined(yield* kin.fact());
+          } else {
+            assert.strictEqual(
+              card(yield* kin.widget(asked.widgetId)).outcome?.title,
+              "Nothing was done",
+            );
+          }
+        } else {
+          assert.strictEqual((yield* records.get(orgId, bank.key))?.state, "done");
+          assert.isUndefined(yield* kin.fact());
+          assert.sameDeepMembers(
+            [...(yield* payments())],
+            answer === "part"
+              ? [{ id: first.recordId, minor: 60_000, currency: "INR" }]
+              : [
+                  { id: first.recordId, minor: 100_000, currency: "INR" },
+                  { id: second.recordId, minor: 100_000, currency: "INR" },
+                  { id: invoice.recordId, minor: 40_000, currency: "INR" },
+                ],
+          );
+          assert.isEmpty(yield* receipts());
+          if (answer === "split") {
+            yield* records.undoCreditPayment(orgId, ownerWrites, bank.key);
+            assert.strictEqual((yield* records.get(orgId, bank.key))?.state, "open");
+            yield* kin.invoiceOf("TW/005", 3);
+            assert.isUndefined(yield* kin.fact());
+          }
+        }
+        yield* TestClock.adjust(60_000);
+        yield* kin.tick();
+        assert.lengthOf(yield* kin.cards(), answer === "edited" ? 2 : 1);
+        if (answer === "split" || answer === "declined") {
+          yield* kin.chats.clear(person, { chatId: asked.chatId });
+          assert.isEmpty(yield* kin.cards());
+          assert.isUndefined(yield* kin.fact());
+        }
+      }),
+    ),
+);
+
+it.effect("an agent's same-currency split card leaves the rest as the client's credit", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ currency: "INR", bankMinor: 340_000 });
+      const { orgId, ownerWrites, records, sql, bank, invoice } = kin;
+      const second = yield* kin.invoiceOf("TW/002", 2);
+      const untouched = yield* kin.invoiceOf("TW/003", 1);
+      yield* kin.turn("finance", kin.chatOf("finance"), "Which invoices did that wire pay?");
+      const asked = yield* callAs("finance", "kin_ask", {
+        question: "Pay these two freight invoices?",
+        options: [
+          {
+            label: "Record it",
+            action: { kind: "record_payment", target: `${bank.key} ${invoice.key} ${second.key}` },
+          },
+          {
+            label: "Pay the first invoice",
+            action: { kind: "record_payment", target: `${bank.key} ${invoice.key}` },
+          },
+        ],
+        default: "none",
+      });
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const widget = yield* kin.widget(asked.value.widgetId);
+      assert.include(
+        card(widget).options[0]?.action?.line,
+        "₹1,400.00 stays as Tidewater Freight's credit",
+      );
+      assert.deepStrictEqual(
+        card(widget).options.map(({ label }) => label),
+        ["Record ₹3,400.00 on TW/001, TW/002", "Record ₹3,400.00 on TW/001"],
+      );
+      const unnamed = yield* callAs("finance", "kin_ask", {
+        question: "Record the freight wire?",
+        options: [
+          { label: "Record it", action: { kind: "record_payment", target: bank.key } },
+          { label: "Leave it" },
+        ],
+        default: "none",
+      });
+      assert.isFalse(unnamed.ok);
+      assert.include(
+        JSON.stringify(unnamed.value),
+        `Kin can't tell which invoice ${bank.key} pays: name one or more after it, such as ${bank.key} `,
+      );
+      const { row: stranger } = yield* records.create(orgId, ownerWrites, {
+        list: "clients",
+        title: "Juniper Cold Chain",
+        owner: kin.owner,
+        originKey: "juniper",
+      });
+      const elsewhere = yield* kin.invoiceOf("JC/001", 2, "INR", stranger.recordId);
+      const outside = yield* callAs("finance", "kin_ask", {
+        question: "Record the freight wire on Juniper's invoice?",
+        options: [
+          {
+            label: "Record it",
+            action: { kind: "record_payment", target: `${bank.key} ${elsewhere.key}` },
+          },
+          { label: "Leave it" },
+        ],
+        default: "none",
+      });
+      assert.isFalse(outside.ok);
+      assert.include(
+        JSON.stringify(outside.value),
+        "Each invoice must be Tidewater Freight's, still owed, in INR, and issued by 15 Nov.",
+      );
+      yield* kin.tap(kin.owner, widget.widgetId, "option-1", "record-split");
+      for (const part of [invoice, second])
+        assert.strictEqual((yield* records.get(orgId, part.key))?.paid, 100_000);
+      assert.strictEqual((yield* records.get(orgId, untouched.key))?.paid, 0);
+      const credits = yield* sql`SELECT amount_minor AS minor, currency
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'receipts'
+          AND origin_key LIKE ${`bank-credit:${bank.recordId}:%:left`}`;
+      assert.deepStrictEqual(credits, [{ minor: 140_000, currency: "INR" }]);
+      assert.strictEqual((yield* records.get(orgId, bank.key))?.state, "done");
+      yield* records.undoCreditPayment(orgId, ownerWrites, bank.key);
+      assert.isUndefined(yield* kin.fact());
     }),
   ),
 );
