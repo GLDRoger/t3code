@@ -205,6 +205,27 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: VisualCard.VisualInput,
     success: VisualCard.VisualResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_send", {
+    ...shared,
+    description:
+      'Post your message to the chat on the "Your reply goes to" line, and end the turn: call it last, after your other tools. Where the turn says a trigger started it, this is the only way your words reach anyone; in a turn a person started, plain text does the same. Once per turn: nothing you write after it is posted. Nothing anyone needs: end with kin_skip instead. A refusal says why and sent nothing.',
+    parameters: Schema.Struct({
+      text: KinAgentMessageBody.annotate({
+        description: "The whole message, written exactly as a reply: a bubble or a page.",
+      }),
+      level: Schema.Literals(["now", "quiet", "check_in"]).annotate({
+        description:
+          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings.",
+      }),
+    }),
+    success: Schema.Union([
+      Schema.Struct({ sent: Schema.Literal(true), messageId: KinMessageId }),
+      Schema.Struct({ held: Schema.Literal(true), when: Schema.String }),
+    ]),
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
+  })
+    .annotate(EndsClaudeTurn, true)
+    .annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_skip", {
     ...shared,
     description:

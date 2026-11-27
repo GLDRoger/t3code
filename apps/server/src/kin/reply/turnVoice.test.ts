@@ -1,4 +1,4 @@
-import { KinEvent } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, KinEvent } from "@t3tools/contracts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { expect } from "vite-plus/test";
@@ -22,5 +22,8 @@ it.effect.each([
   Effect.sync(() => {
     expect(startedBy(tags)).toBe(started);
     expect(voiceFor({ tags, sendOnly: false })).toBe("text");
+    expect(voiceFor({ tags, sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly })).toBe(
+      started === "person" ? "text" : "send",
+    );
   }),
 );

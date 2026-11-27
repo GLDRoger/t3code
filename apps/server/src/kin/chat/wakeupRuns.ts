@@ -2,9 +2,11 @@ import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { Fragment } from "effect/sql/Statement";
 
+export const KIN_NUDGE_MESSAGE_PREFIX = "kin-nudge-msg:";
+
 /**
  * The wake-up whose turn one of the `start` runs is, by exact provenance only: the wake-up's own
- * run, a late steer or rescue Kin sent after it, or T3's finished-task notice in the run it took
+ * run, a late steer or follow-up Kin sent after it, or T3's finished-task notice in the run it took
  * over, each followed back through server-authored continuation links. Never a thread's latest
  * wake-up. `start` selects `run_id, thread_id, ordinal, payload_json`; `where` filters `w`.
  */
@@ -46,8 +48,9 @@ export const wakeupOfRuns = (
             AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
           ORDER BY first.ordinal LIMIT 1
         )))
-        -- A late steer or the rescue turn, sent after this wake-up's own run (KinIdentity).
-        OR ((json_extract(root.payload_json, '$.userMessageId') = 'kin-rescue-msg:' || w.wakeup_id
+        -- A late steer or follow-up, sent after this wake-up's own run (KinIdentity).
+        OR ((json_extract(root.payload_json, '$.userMessageId') IN (
+              'kin-rescue-msg:' || w.wakeup_id, ${KIN_NUDGE_MESSAGE_PREFIX} || w.wakeup_id)
             OR substr(json_extract(root.payload_json, '$.userMessageId'), 1, length(w.wakeup_id) + 15)
               = 'kin-steer-msg:' || w.wakeup_id || ':')
           AND root.ordinal > (SELECT own.ordinal FROM orchestration_v2_projection_runs own
