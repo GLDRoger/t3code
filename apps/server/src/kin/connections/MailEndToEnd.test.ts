@@ -2206,7 +2206,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* callTool(MEERA, "mail_read_thread", { threadId: mail.threadId });
         yield* callTool(MEERA, "mail_save_attachment", {
           messageId: mail.id,
-          attachmentId: `${mail.id}-a0`,
+          attachmentId: "part:1",
         });
         const seen = (person: string) =>
           sql<{ seen: number }>`SELECT ${personSees(sql, KinPersonId.make(person))} AS seen

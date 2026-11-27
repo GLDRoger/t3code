@@ -472,20 +472,21 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")
     const problem = checkMailFile(part);
     if (problem !== undefined) return yield* problem;
     const name = safeMailFileName(part.name);
-    const data = part.inline
-      ? part.data
-      : text(
-          field(
-            yield* api(
-              context,
-              `${url}/attachments/${encodeURIComponent(attachmentId)}`,
-              {},
-              undefined,
-              attachmentJsonLimit(name),
+    const data =
+      part.fetchId === undefined
+        ? part.data
+        : text(
+            field(
+              yield* api(
+                context,
+                `${url}/attachments/${encodeURIComponent(part.fetchId)}`,
+                {},
+                undefined,
+                attachmentJsonLimit(name),
+              ),
+              "data",
             ),
-            "data",
-          ),
-        );
+          );
     return {
       name,
       mimeType: part.type,

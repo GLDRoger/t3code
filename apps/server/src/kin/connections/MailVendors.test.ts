@@ -153,7 +153,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
     ],
     [
       "reads a thread oldest first, with each file's id, name, type and size",
-      ({ fake, call }) =>
+      ({ fake, call, provider }) =>
         Effect.gen(function* () {
           const first = fake.deliver({
             to: BILLING,
@@ -187,7 +187,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
           assert.strictEqual(thread.messages[0].messageId, first.id);
           assert.deepStrictEqual(thread.messages[0].attachments, [
             {
-              attachmentId: `${first.id}-a0`,
+              attachmentId: provider.preset === "google" ? "part:1" : `${first.id}-a0`,
               name: "brief.pdf",
               type: "application/pdf",
               bytes: 17,

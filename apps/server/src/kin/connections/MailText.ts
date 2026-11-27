@@ -99,12 +99,13 @@ const walk = (part: unknown, out: Array<Part>, depth = 0) => {
   if (Array.isArray(parts)) for (const child of parts) walk(child, out, depth + 1);
 };
 
+// Gmail gives an attachment a new attachmentId on every read of its message; its partId stays.
 const attachmentIdOf = (part: Part) =>
-  typeof part.body?.attachmentId === "string" && part.body.attachmentId !== ""
-    ? part.body.attachmentId
-    : typeof part.partId === "string" && typeof part.body?.data === "string"
-      ? `part:${part.partId}`
-      : undefined;
+  typeof part.partId === "string" &&
+  ((typeof part.body?.attachmentId === "string" && part.body.attachmentId !== "") ||
+    typeof part.body?.data === "string")
+    ? `part:${part.partId}`
+    : undefined;
 const isAttachment = (part: Part) => typeof part.filename === "string" && part.filename !== "";
 const fileOf = (part: Part) => {
   const attachmentId = attachmentIdOf(part);
@@ -124,7 +125,8 @@ export const attachmentPart = (payload: unknown, id: string) => {
     : {
         ...fileOf(part),
         data: typeof part.body?.data === "string" ? part.body.data : undefined,
-        inline: typeof part.body?.attachmentId !== "string",
+        /** This read's own download id, good for this payload only. */
+        fetchId: typeof part.body?.attachmentId === "string" ? part.body.attachmentId : undefined,
       };
 };
 

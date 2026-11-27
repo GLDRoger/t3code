@@ -1965,10 +1965,13 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
   };
   const bearer = (request: Request) =>
     request.headers.get("authorization") === `Bearer ${vendor.access}`;
+  // As Gmail does, every read of a message gives its attachments new ids; the part's id stays.
+  let fetches = 0;
   const attachment = (id: string, name: string, type: string, size: number) => ({
+    partId: id,
     filename: name,
     mimeType: type,
-    body: { attachmentId: id, size },
+    body: { attachmentId: `${id}-fetch-${++fetches}`, size },
   });
   const thread = (format: string | null) => ({
     id: "t1",
@@ -2140,7 +2143,7 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
         if (path.endsWith("/users/me/messages/m1")) return json(thread("full").messages[0]);
-        if (path.endsWith("/users/me/messages/m1/attachments/g-file"))
+        if (/\/users\/me\/messages\/m1\/attachments\/g-file-fetch-\d+$/.test(path))
           return json({ size: 12, data: Buffer.from("body secret!").toString("base64url") });
         if (path.endsWith("/calendars/team%40group.calendar.example"))
           return json({ id: "team@group.calendar.example", summary: "Invented team" });
@@ -3799,7 +3802,7 @@ describe("Mail attachment to Docs", () => {
     {
       service: "google",
       messageId: "m1",
-      attachmentId: "g-file",
+      attachmentId: "part:g-file",
       fileName: "Invoice.txt",
       threadId: "t1",
     },
@@ -3862,11 +3865,11 @@ describe("Mail attachment to Docs", () => {
             });
           if (service === "google") {
             assert.strictEqual(
-              (yield* askSave("g-large").pipe(Effect.flip)).message,
+              (yield* askSave("part:g-large").pipe(Effect.flip)).message,
               "'Large.txt' exceeds the 50 MB attachment limit.",
             );
             assert.strictEqual(
-              (yield* askSave("g-type").pipe(Effect.flip)).message,
+              (yield* askSave("part:g-type").pipe(Effect.flip)).message,
               "'Odd.jxl' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.",
             );
           }
