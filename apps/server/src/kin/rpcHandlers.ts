@@ -1,3 +1,4 @@
+import { makeKinMailRuleHandlers } from "./arrivals/rpcHandlers.ts";
 import { makeKinPeopleHandlers } from "./people/rpcHandlers.ts";
 import {
   AuthKinChatScope,
@@ -145,6 +146,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinWorkHandlers(session)),
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
+    ...(yield* makeKinMailRuleHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
     ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
