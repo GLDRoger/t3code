@@ -106,7 +106,6 @@ function OpenAiAgents(props: KinWorkTarget) {
   const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
   return (
     <KinSettingsSection title={KIN_OTHER_PROVIDER_AGENTS.section}>
-      <BackgroundModel {...props} />
       <KinSettingsRow
         title={KIN_OTHER_PROVIDER_AGENTS.row}
         wrap
@@ -291,6 +290,7 @@ function CompanyDefault(props: KinWorkTarget) {
         openLabel={KIN_AGENTS_PAGE.defaultsTitle}
         {...(base === null ? {} : { onOpen: () => setEditing(true) })}
       />
+      <BackgroundModel {...props} />
       {editing && base !== null ? (
         <DefaultsDialog
           {...props}
