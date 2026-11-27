@@ -189,15 +189,43 @@ describe("kinDeferralCardView", () => {
     );
   });
 
-  it("treats Kin's own note as bookkeeping, but not a card that needs a decision", () => {
+  it("treats Kin's own note as bookkeeping, but keeps a card the owner acted on", () => {
+    // An older host's note: no phase and no taps listed, open or closed.
     expect(kinDeferralIsBookkeeping(deferral({ onDue: "remind" }))).toBe(true);
-    expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(true);
-    expect(kinDeferralIsBookkeeping(deferral({ phase: "started", actions: [] }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({}, { closedAt: DUE }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }))).toBe(false);
-    expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }, { closedAt: DUE }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }))).toBe(false);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "heads_up" }))).toBe(false);
-    expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }, { closedAt: DUE }))).toBe(true);
+
+    // Start now: the host's next revision, with no taps left.
+    const started = deferral({
+      phase: "started",
+      text: "Asked Finance to start it.",
+      actions: [],
+      agent: "Finance",
+    });
+    expect(kinDeferralIsBookkeeping(started)).toBe(false);
+    expect(view(started).lines).toEqual(["Asked Finance to start it."]);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(false);
+
+    // Monday: the confirm card again, at the new time, with Undo.
+    const moved = deferral({
+      dueAt: "2026-11-16T09:00:00.000Z",
+      text: "Deferred to Mon, Nov 16, 9:00 AM. I'll ask you to start it then.",
+      actions: ["undo"],
+    });
+    expect(kinDeferralIsBookkeeping(moved)).toBe(false);
+    expect(view(moved).lines).toEqual([
+      "Set for Mon, Nov 16, 9:00 AM. I'll ask you to start it then.",
+    ]);
+
+    // Cancel, Undo, or the item lapsing: the host closes the card and writes no words.
+    const cancelled = deferral({ phase: "asked", actions: [] }, { closedAt: DUE });
+    const undone = deferral({ actions: ["undo"] }, { closedAt: DUE });
+    for (const closed of [cancelled, undone]) {
+      expect(kinDeferralIsBookkeeping(closed)).toBe(false);
+      expect(view(closed).lines).toEqual(["Closed."]);
+    }
   });
 
   it("refuses state that isn't a deferral card", () => {
