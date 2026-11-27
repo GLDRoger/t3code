@@ -39,6 +39,8 @@ const settingsIndex = argv.indexOf("--settings");
 if (settingsIndex === -1 || JSON.parse(argv[settingsIndex + 1]).disableAllHooks !== true) {
   fail("text generation must disable hooks", 10);
 }
+const settingsLog = process.env.T3_FAKE_CLAUDE_SETTINGS_LOG;
+if (settingsLog) NodeFS.writeFileSync(settingsLog, argv[settingsIndex + 1]);
 const cwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
 if (cwdMustNotBe && NodeFS.realpathSync(process.cwd()) === NodeFS.realpathSync(cwdMustNotBe)) {
   fail("text generation ran in the project directory", 11);

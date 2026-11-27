@@ -700,6 +700,30 @@ export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function
   return settingsEnv;
 });
 
+const decodeSettingsRecord = Schema.decodeUnknownEffect(
+  fromLenientJson(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+/** Claude's user settings file as written; undefined when it is missing or not a JSON object. */
+export const readClaudeUserSettings = Effect.fn("readClaudeUserSettings")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  cwd: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<Record<string, unknown> | undefined, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const instanceHome =
+    (yield* HostProcess.Platform) === "win32" ? environment.USERPROFILE : environment.HOME;
+  const resolveDir = resolveClaudeConfigDirPath(config, environment, cwd);
+  const configDirPath = yield* instanceHome && config.homePath.trim().length === 0
+    ? resolveDir.pipe(Effect.provideService(HostProcess.HomeDirectory, instanceHome))
+    : resolveDir;
+  return yield* fileSystem.readFileString(path.join(configDirPath, "settings.json")).pipe(
+    Effect.flatMap(decodeSettingsRecord),
+    Effect.orElseSucceed(() => undefined),
+  );
+});
+
 /** The host of an `ANTHROPIC_BASE_URL` that is not Anthropic's own API. */
 export function customClaudeApiEndpointHost(baseUrl: string | undefined): string | undefined {
   const endpoint = URL.parse(baseUrl?.trim() ?? "");

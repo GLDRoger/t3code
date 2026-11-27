@@ -20,7 +20,7 @@ import {
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
-import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import { isClaudeSignInEnvName, makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -41,7 +41,7 @@ function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
       new URL("./testing/ClaudeTextGeneration.fixture.mjs", import.meta.url),
     );
     const source = yield* fs.readFileString(fixturePath);
-    writeFakeCli({
+    return writeFakeCli({
       directory: binDir,
       name: "claude",
       platform,
@@ -50,7 +50,6 @@ function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
           ? source
           : `process.on("SIGTERM", () => {}); ${processProbeSource(lifecyclePort)}`,
     });
-    return binDir;
   });
 }
 
@@ -69,6 +68,9 @@ function withFakeClaudeEnv<A, E, R>(
     imageAttemptLog?: string;
     configDirMustBe?: string;
     cwdMustNotBe?: string;
+    configDir?: string | null;
+    homeDirectory?: string;
+    settingsLog?: string;
     claudeConfig?: Partial<ClaudeSettings>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
@@ -76,8 +78,7 @@ function withFakeClaudeEnv<A, E, R>(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const binDir = yield* makeFakeClaudeBinary(tempDir, input.lifecyclePort);
-    const pathDelimiter = (yield* HostProcess.isWindows) ? ";" : ":";
+    const binaryPath = yield* makeFakeClaudeBinary(tempDir, input.lifecyclePort);
     const hostEnv = yield* HostProcess.Environment;
     const fakeClaudeEnv: Record<string, string | undefined> = {
       T3_FAKE_CLAUDE_OUTPUT: input.output,
@@ -94,6 +95,7 @@ function withFakeClaudeEnv<A, E, R>(
       T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG: input.imageAttemptLog,
       T3_FAKE_CLAUDE_CWD_MUST_NOT_BE: input.cwdMustNotBe,
       T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE: input.configDirMustBe,
+      T3_FAKE_CLAUDE_SETTINGS_LOG: input.settingsLog,
     };
     const environment: NodeJS.ProcessEnv = {
       ...Object.fromEntries(
@@ -102,10 +104,12 @@ function withFakeClaudeEnv<A, E, R>(
       ...Object.fromEntries(
         Object.entries(fakeClaudeEnv).filter(([, value]) => value !== undefined),
       ),
-      PATH: `${binDir}${pathDelimiter}${hostEnv.PATH ?? ""}`,
+      CLAUDE_CONFIG_DIR: input.configDir === null ? undefined : (input.configDir ?? tempDir),
+      HOME: input.homeDirectory ?? tempDir,
+      USERPROFILE: input.homeDirectory ?? tempDir,
     };
 
-    const config = decodeClaudeSettings(input.claudeConfig ?? {});
+    const config = decodeClaudeSettings({ binaryPath, ...input.claudeConfig });
     const textGeneration = yield* makeClaudeTextGeneration(
       config,
       environment,
@@ -115,29 +119,198 @@ function withFakeClaudeEnv<A, E, R>(
   }).pipe(Effect.scoped);
 }
 
+const syntheticSignInEnv = {
+  ANTHROPIC_BASE_URL: "https://gateway.example",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "example-sonnet",
+};
+const syntheticUserSettings = JSON.stringify({
+  apiKeyHelper: "example-user-helper",
+  env: { ...syntheticSignInEnv, ANTHROPIC_BAD_TYPE: 1, UNRELATED: "ignore-me" },
+  hooks: { SessionStart: [] },
+  mcpServers: { example: { command: "example-mcp" } },
+  permissions: { allow: ["Read"] },
+});
+const syntheticSignInSettings = {
+  apiKeyHelper: "example-user-helper",
+  env: syntheticSignInEnv,
+};
+const structuredRequest = {
+  cwd: process.cwd(),
+  prompt: "Synthetic input only.",
+  outputSchema: Schema.Struct({ kind: Schema.Literal("other") }),
+  modelSelection: createModelSelection(
+    ProviderInstanceId.make("claudeAgent"),
+    SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+  ),
+};
+
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
-  it.effect("reads JSON without tools, ambient settings, or a saved session", () =>
+  it("requires exact sign-in names or a full prefix", () => {
+    const nearMisses = ["ANTHROPIC", "AWS", "CLAUDE_CODE_USE", "HTTPS_PROXY_URL", "https_proxy"];
+    expect(nearMisses.filter(isClaudeSignInEnvName)).toEqual([]);
+  });
+
+  it.effect.each([
+    { label: "missing settings", expected: {} },
+    { label: "invalid settings JSON", userSettings: "{invalid", expected: {} },
+    { label: "unreadable settings", userSettings: null, expected: {} },
+    {
+      label: "only user sign-in keys",
+      userSettings: syntheticUserSettings,
+      expected: syntheticSignInSettings,
+    },
+    {
+      label: "sign-in keys under the instance home",
+      userSettings: syntheticUserSettings,
+      useInstanceHome: true,
+      expected: syntheticSignInSettings,
+    },
+    {
+      label: "launch-argument overrides per key",
+      userSettings: syntheticUserSettings,
+      launchArgs: `--settings '${JSON.stringify({
+        apiKeyHelper: "example-instance-helper",
+        env: {
+          ANTHROPIC_BASE_URL: "https://instance.example",
+          AWS_REGION: "example-region",
+          CLAUDE_CODE_USE_BEDROCK: "1",
+          CLOUD_ML_REGION: "example-region",
+          HTTPS_PROXY: "https://proxy.example",
+          HTTP_PROXY: "http://proxy.example",
+          NO_PROXY: "localhost",
+          NODE_EXTRA_CA_CERTS: "example.pem",
+          CLAUDE_CODE_ENTRYPOINT: "ignore-me",
+        },
+        disableAllHooks: false,
+        enabledPlugins: { example: true },
+      })}'`,
+      expected: {
+        apiKeyHelper: "example-instance-helper",
+        env: {
+          ...syntheticSignInEnv,
+          ANTHROPIC_BASE_URL: "https://instance.example",
+          AWS_REGION: "example-region",
+          CLAUDE_CODE_USE_BEDROCK: "1",
+          CLOUD_ML_REGION: "example-region",
+          HTTPS_PROXY: "https://proxy.example",
+          HTTP_PROXY: "http://proxy.example",
+          NO_PROXY: "localhost",
+          NODE_EXTRA_CA_CERTS: "example.pem",
+        },
+      },
+    },
+    {
+      label: "an unreadable launch settings file",
+      userSettings: syntheticUserSettings,
+      launchArgs: "--settings missing-settings.json",
+      expected: syntheticSignInSettings,
+    },
+  ])("reads JSON without tools or a saved session, with $label", (row) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-settings-" });
+      const userDir = path.join(tempDir, row.useInstanceHome ? ".claude" : "config");
+      const userSettingsPath = path.join(userDir, "settings.json");
+      const settingsLog = path.join(tempDir, "settings-arg.json");
+      yield* fs.makeDirectory(userDir);
+      if (row.userSettings === null) {
+        yield* fs.makeDirectory(userSettingsPath);
+      } else if (row.userSettings !== undefined) {
+        yield* fs.writeFileString(userSettingsPath, row.userSettings);
+      }
+      yield* withFakeClaudeEnv(
+        {
+          output: JSON.stringify({ result: '{"kind":"other"}' }),
+          argsMustContain: "--safe-mode --setting-sources  --disallowedTools mcp__*",
+          argsMustNotContain: "--json-schema",
+          stdinMustContain: structuredRequest.prompt,
+          configDir: row.useInstanceHome ? null : userDir,
+          homeDirectory: tempDir,
+          settingsLog,
+          ...(row.launchArgs === undefined ? {} : { claudeConfig: { launchArgs: row.launchArgs } }),
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const result = yield* textGeneration.generateStructuredText!({
+              ...structuredRequest,
+              cwd: tempDir,
+            });
+            expect(result).toEqual({ kind: "other" });
+          }),
+      );
+      expect(yield* fs.readFileString(settingsLog)).toBe(
+        JSON.stringify({ ...row.expected, disableAllHooks: true }),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  const signedOut = "Not logged in · Please run /login";
+  const errorPrefix = "Claude text generation failed with code 1";
+  const longError = `${signedOut}${"x".repeat(160 - signedOut.length)}`;
+  it.effect.each([
+    {
+      label: "CLI error",
+      output: { is_error: true, result: signedOut },
+      expected: `${errorPrefix}: ${signedOut}`,
+    },
+    {
+      label: "long CLI error",
+      output: { is_error: true, result: `${longError} should not be reported` },
+      expected: `${errorPrefix}: ${longError}`,
+    },
+    {
+      label: "a successful result on nonzero exit",
+      output: { is_error: false, result: '{"kind":"other"}' },
+      expected: `${errorPrefix}.`,
+    },
+    {
+      label: "a CLI error echoing a sign-in setting",
+      output: { is_error: true, result: "Invalid key: synthetic-credential" },
+      launchArgs: `--settings '{"env":{"ANTHROPIC_API_KEY":"synthetic-credential"}}'`,
+      expected: `${errorPrefix}.`,
+    },
+  ])("reports only safe CLI diagnostics for tool-free generation: $label", (row) =>
     withFakeClaudeEnv(
       {
-        output: JSON.stringify({ result: '{"kind":"other"}' }),
-        argsMustContain: "--safe-mode --setting-sources  --disallowedTools mcp__*",
-        argsMustNotContain: "--json-schema",
-        stdinMustContain: "Synthetic input only.",
+        output: JSON.stringify(row.output),
+        stderr: "Ignored stderr",
+        exitCode: 1,
+        ...(row.launchArgs === undefined ? {} : { claudeConfig: { launchArgs: row.launchArgs } }),
       },
       (textGeneration) =>
         Effect.gen(function* () {
-          const result = yield* textGeneration.generateStructuredText!({
-            cwd: process.cwd(),
-            prompt: "Synthetic input only.",
-            outputSchema: Schema.Struct({ kind: Schema.Literal("other") }),
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_CAPABLE_MODEL,
-            ),
-          });
-          expect(result).toEqual({ kind: "other" });
+          const error = yield* Effect.flip(
+            textGeneration.generateStructuredText!(structuredRequest),
+          );
+          expect(error.detail).toBe(row.expected);
         }),
     ),
+  );
+
+  it.effect("does not expose process arguments in a tool-free spawn error", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-missing-" });
+      yield* withFakeClaudeEnv(
+        {
+          output: "",
+          claudeConfig: {
+            binaryPath: path.join(tempDir, "missing-claude"),
+            launchArgs: `--settings '{"env":{"ANTHROPIC_API_KEY":"synthetic-credential"}}'`,
+          },
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              textGeneration.generateStructuredText!(structuredRequest),
+            );
+            expect(error.detail).toContain("Claude");
+            expect(error.cause).toBeUndefined();
+          }),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect("loads only user settings when generating review guides", () =>
@@ -394,7 +567,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             title: "Use instance settings",
           },
         }),
-        argsMustContain: `"env":{"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-a"}`,
+        argsMustContain: `--settings {"env":{"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-a"},"disableAllHooks":true} --tools`,
         claudeConfig: {
           launchArgs: `--settings '{"env":{"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-a"}}'`,
         },
