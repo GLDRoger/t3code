@@ -68,6 +68,13 @@ export function instanceOf(name: string): Instance {
   return { name, home, userdata, meta: NodePath.join(home, "verify") };
 }
 
+export const playwrightArtifactsDir = (instance: Instance) =>
+  NodePath.join(instance.meta, "playwright-artifacts");
+
+export const parseSsListenerPids = (output: string): Array<number> => [
+  ...new Set(Array.from(output.matchAll(/\bpid=(\d+)\b/g), ([, pid]) => Number(pid))),
+];
+
 export const readJson = <A>(path: string): A | undefined => {
   try {
     return JSON.parse(NodeFS.readFileSync(path, "utf8")) as A;
