@@ -815,6 +815,27 @@ it.effect(
     ),
 );
 
+it.effect("a leaver's pins stay in their chats and their own looks stay theirs", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { orgId, sql } = ctx;
+      yield* sql`INSERT INTO kin_chat_pins (org_id, chat_id, record_id, pinned_by_person_id, pinned_at, pin_id)
+        VALUES (${orgId}, ${ctx.ownerChat}, 'record-tallmoor', ${meeraId}, 1, 'pin-meera')`;
+      yield* sql`INSERT INTO kin_looks (org_id, person_id, record_id, looked_at)
+        VALUES (${orgId}, ${meeraId}, 'record-tallmoor', 1)`;
+      const held = sql`SELECT p.pin_id AS pin, person.display_name AS "pinnedBy", l.looked_at AS looked
+        FROM kin_chat_pins p JOIN kin_people person ON person.org_id = p.org_id
+          AND person.person_id = p.pinned_by_person_id
+        JOIN kin_looks l ON l.org_id = p.org_id AND l.person_id = p.pinned_by_person_id
+        WHERE p.org_id = ${orgId}`;
+      const before = yield* held;
+      assert.lengthOf(before, 1);
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      assert.deepStrictEqual(yield* held, before);
+    }),
+  ),
+);
+
 it.effect("a co-owner's bank sender decision stays company history after access is removed", () =>
   run((ctx) =>
     Effect.gen(function* () {

@@ -27,16 +27,19 @@ describe("cutBillPage", () => {
   it.effect("uses an EXIF 6 photo's upright frame for the preview and crop", () =>
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(() => rotatedJpeg());
+      const { outcome: preview } = yield* cutBillPage({ ...photo(bytes), boxes: [] });
       const { outcome } = yield* cutBillPage(photo(bytes));
       expect(outcome._tag).toBe("cut");
       if (outcome._tag !== "cut") return;
       expect(outcome.frame).toMatchObject({ width: 100, height: 200 });
-      expect(outcome.preview).toBeDefined();
+      expect(preview._tag).toBe("cut");
+      if (preview._tag !== "cut") return;
+      expect(preview.preview).toBeDefined();
       const crop = yield* Effect.promise(() =>
         loadImage(NodeBuffer.Buffer.from(outcome.crops[0]!)),
       );
       expect([crop.width, crop.height]).toEqual([49, 98]);
-      for (const jpeg of [outcome.preview!, outcome.crops[0]!]) {
+      for (const jpeg of [preview.preview!, outcome.crops[0]!]) {
         const image = yield* Effect.promise(() => loadImage(NodeBuffer.Buffer.from(jpeg)));
         const sheet = createCanvas(image.width, image.height);
         const context = sheet.getContext("2d");
@@ -51,7 +54,7 @@ describe("cutBillPage", () => {
   it.effect("draws an upright preview for a half-turn with unchanged dimensions", () =>
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(() => rotatedJpeg(3));
-      const { outcome } = yield* cutBillPage(photo(bytes));
+      const { outcome } = yield* cutBillPage({ ...photo(bytes), boxes: [] });
       expect(outcome).toMatchObject({
         _tag: "cut",
         frame: { width: 200, height: 100 },
@@ -75,7 +78,11 @@ describe("cutBillPage", () => {
         "hex",
       );
       const { outcome } = yield* cutBillPage(photo(bytes));
-      expect(outcome).toMatchObject({ _tag: "refused", reason: "photo_pixels" });
+      expect(outcome).toMatchObject({
+        _tag: "refused",
+        reason: "photo_pixels",
+        problem: "This photo is too large to cut: take it under 50 megapixels.",
+      });
     }),
   );
 

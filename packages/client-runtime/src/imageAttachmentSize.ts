@@ -1,9 +1,6 @@
-/**
- * Anthropic rejects an image over 2000px on a side once a request holds more than 20 images, and
- * Claude Code forwards images sent into a running turn unchanged, so one large paste breaks
- * every later request in that thread.
- */
-export const IMAGE_ATTACHMENT_MAX_EDGE = 2000;
+import { IMAGE_ATTACHMENT_MAX_EDGE } from "@t3tools/shared/imageDimensions";
+
+export { IMAGE_ATTACHMENT_MAX_EDGE };
 
 export type DownscalableImageMimeType = "image/png" | "image/jpeg";
 

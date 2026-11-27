@@ -1,3 +1,7 @@
+import {
+  isProviderSendTurnSupportedImageMimeType,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+} from "@t3tools/contracts";
 import { isHeicImageFile } from "@t3tools/shared/image";
 export { isHeicImageFile } from "@t3tools/shared/image";
 import {
@@ -5,6 +9,7 @@ import {
   fitImageAttachmentSize,
   IMAGE_ATTACHMENT_MAX_EDGE,
 } from "@t3tools/client-runtime/image-attachment-size";
+import { fitBillPhotoSize } from "@t3tools/client-runtime/kin/billPhotoSize";
 import {
   IMAGE_DIMENSIONS_HEADER_BYTES,
   readImageDimensions,
@@ -445,13 +450,19 @@ async function renderComposerImageThumbnailFromBitmap(
 async function encodeWithinBudget(
   bitmap: ImageBitmap,
   colorSpace: PredefinedColorSpace,
-  maxDimension: number,
+  maxDimension: number | ImageSize,
   budgetChars: number,
   preferredMimeType?: "image/jpeg",
 ): Promise<{ blob: Blob; mimeType: string; imageSize: ImageSize } | null> {
-  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
-  const width = Math.max(1, Math.round(bitmap.width * scale));
-  const height = Math.max(1, Math.round(bitmap.height * scale));
+  let size = maxDimension;
+  if (typeof size === "number") {
+    const scale = Math.min(1, size / Math.max(bitmap.width, bitmap.height));
+    size = {
+      width: Math.max(1, Math.round(bitmap.width * scale)),
+      height: Math.max(1, Math.round(bitmap.height * scale)),
+    };
+  }
+  const { width, height } = size;
   const target = createCanvas(width, height, colorSpace);
   if (!target) return null;
 
@@ -642,6 +653,15 @@ const heicPreparations = new WeakMap<
 // Preparing tiles share full-size decodes, so keep only one HEIC bitmap alive at a time.
 let heicPreparationQueue = Promise.resolve();
 
+function queueHeicImage(convert: () => Promise<CompressImageFileResult>) {
+  const image = heicPreparationQueue.then(convert);
+  heicPreparationQueue = image.then(
+    () => undefined,
+    () => undefined,
+  );
+  return image;
+}
+
 function prepareHeicImage(file: File) {
   const cached = heicPreparations.get(file);
   if (cached) return cached;
@@ -649,12 +669,8 @@ function prepareHeicImage(file: File) {
   const thumbnail = new Promise<string | null>((resolve) => {
     resolveThumbnail = resolve;
   });
-  const image = heicPreparationQueue
-    .then(() => convertHeicImage(file, resolveThumbnail))
-    .finally(() => resolveThumbnail(null));
-  heicPreparationQueue = image.then(
-    () => undefined,
-    () => undefined,
+  const image = queueHeicImage(() => convertHeicImage(file, resolveThumbnail)).finally(() =>
+    resolveThumbnail(null),
   );
   const preparation = { image, thumbnail };
   heicPreparations.set(file, preparation);
@@ -675,6 +691,7 @@ async function readPixelsAsDisplayP3(
 async function convertHeicImage(
   file: File,
   onThumbnail: (src: string | null) => void,
+  forBill = false,
 ): Promise<CompressImageFileResult> {
   if (file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) {
     return { ok: false, reason: "too-large" };
@@ -692,6 +709,14 @@ async function convertHeicImage(
     if (!bitmap) {
       const { heicTo } = await import("heic-to/csp");
       bitmap = await heicTo({ blob: file, type: "bitmap" });
+    }
+    if (forBill) {
+      return await encodeBillPhoto(
+        file,
+        bitmap,
+        metadata.displayP3 ? "display-p3" : "srgb",
+        !decodedNatively && metadata.displayP3,
+      );
     }
     const imageSize = fitImageAttachmentSize(bitmap) ?? {
       width: bitmap.width,
@@ -722,6 +747,71 @@ async function convertHeicImage(
       recompressed: true,
       imageSize,
     };
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  } finally {
+    bitmap?.close();
+  }
+}
+
+async function encodeBillPhoto(
+  file: File,
+  bitmap: ImageBitmap,
+  colorSpace: PredefinedColorSpace,
+  reinterpretDisplayP3 = false,
+): Promise<CompressImageFileResult> {
+  const size = fitBillPhotoSize(bitmap, file.size) ?? bitmap;
+  const budget = Math.floor(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / 3) * 4;
+  for (const scale of [1, ...FALLBACK_SCALE_STEPS]) {
+    const target = {
+      width: Math.max(1, Math.floor(size.width * scale)),
+      height: Math.max(1, Math.floor(size.height * scale)),
+    };
+    const corrected = reinterpretDisplayP3
+      ? await readPixelsAsDisplayP3(bitmap, target)
+      : undefined;
+    if (reinterpretDisplayP3 && corrected === undefined) return { ok: false, reason: "unreadable" };
+    try {
+      const encoded = await encodeWithinBudget(
+        corrected ?? bitmap,
+        colorSpace,
+        target,
+        budget,
+        "image/jpeg",
+      );
+      if (encoded)
+        return {
+          ok: true,
+          file: new File([encoded.blob], fileNameForMimeType(file.name, encoded.mimeType), {
+            type: encoded.mimeType,
+            lastModified: file.lastModified,
+          }),
+          recompressed: true,
+          imageSize: encoded.imageSize,
+        };
+    } finally {
+      corrected?.close();
+    }
+  }
+  return { ok: false, reason: "too-large" };
+}
+
+export async function prepareImageForBill(file: File): Promise<CompressImageFileResult> {
+  if (file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) return { ok: false, reason: "too-large" };
+  if (isHeicImageFile(file)) return queueHeicImage(() => convertHeicImage(file, () => {}, true));
+  if (!isProviderSendTurnSupportedImageMimeType(file.type))
+    return { ok: false, reason: "unreadable" };
+  let bitmap: ImageBitmap | undefined;
+  try {
+    const header = readImageDimensions(
+      new Uint8Array(await file.slice(0, IMAGE_DIMENSIONS_HEADER_BYTES).arrayBuffer()),
+    );
+    if (header && fitBillPhotoSize(header, file.size) === null)
+      return { ok: true, file, recompressed: false };
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    if (fitBillPhotoSize(bitmap, file.size) === null)
+      return { ok: true, file, recompressed: false };
+    return await encodeBillPhoto(file, bitmap, await readImageColorSpace(file));
   } catch {
     return { ok: false, reason: "unreadable" };
   } finally {
