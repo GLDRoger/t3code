@@ -88,7 +88,10 @@ const addressOf = (who: string | null) => {
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const AUTOMATED_SENDER =
-  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?)(?:[+._-]|@)/i;
+  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?|receipts|billing|invoices?|payments|orders|statements)(?:[+._-]|@)/i;
+// Allow up to two words between the code label and digits, but don't split IDs like PIN-2041.
+const CODE_SUBJECT =
+  /(?<![\p{L}\p{M}\p{N}_./-])\d{4,8}(?:\s+[\p{L}\p{M}'’-]+){0,2}(?:\s*[:=]\s*|\s+)(?:code|passcode|pin)(?![\p{L}\p{M}\p{N}_])|(?<![\p{L}\p{M}\p{N}_])(?:code|passcode|pin)(?:\s+[\p{L}\p{M}'’-]+){0,2}(?:\s*[:=]\s*|\s+)\d{4,8}(?![\p{L}\p{M}\p{N}_/-]|\.[\p{L}\p{N}])/iu;
 const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply)(?:[+._-]|@)/i;
 const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
@@ -170,7 +173,7 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
   const cc = mail.cc.map((address) => address.toLowerCase());
   if (from !== "" && rows.own.has(from))
     return { class: "own", reason: "from one of our addresses" };
-  if (looksLikeSignInMail(mail.subject, ""))
+  if (looksLikeSignInMail(mail.subject, "") || CODE_SUBJECT.test(mail.subject))
     return { class: "sign_in", reason: "sign-in or security mail; Kin doesn't read these" };
   const sender = rows.sentThreads.get(mail.threadId);
   if (sender !== undefined)
