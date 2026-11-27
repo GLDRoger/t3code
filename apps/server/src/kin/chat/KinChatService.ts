@@ -3049,6 +3049,10 @@ const make = Effect.gen(function* () {
                 _tag: "reset",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
+                presence: Option.match(presence, {
+                  onNone: () => [],
+                  onSome: (live) => live.lines(identity.orgId, input.chatId),
+                }),
                 ...(resumed.cleared === true ? { cleared: true } : {}),
                 ...clearedAt(resumed.clearedSeq),
               }

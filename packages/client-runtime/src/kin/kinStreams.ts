@@ -36,6 +36,7 @@ import {
   type KinChatClosedReason,
   type KinInboxEvent,
 } from "./kinInboxModel.ts";
+import { kinHeldAskCards } from "./kinLive.ts";
 
 /**
  * Forgets a chat's cached record when the viewer leaves it or loses access. Clients with a device
@@ -343,7 +344,10 @@ const kinCachedPartChanged = (a: KinChatState, b: KinChatState) =>
   a.reads !== b.reads ||
   a.reactions !== b.reactions ||
   a.needsHistoryReload !== b.needsHistoryReload ||
-  a.clearUpdates !== b.clearUpdates;
+  a.clearUpdates !== b.clearUpdates ||
+  (a.presence !== b.presence &&
+    kinHeldAskCards(a.messages, a.presence)?.readThroughSeq !==
+      kinHeldAskCards(b.messages, b.presence)?.readThroughSeq);
 
 /** Reads one page of `kin.chat.history`; the client wires in its scope-checked command. */
 export type KinReadHistory<E, R> = (
@@ -402,7 +406,7 @@ export function makeKinChatStream<E, R>(
           shownClosed = false;
           const savedAt = nowIso();
           shownAt = savedAt;
-          // Drafts and presence are never cached, so their frames don't schedule a save.
+          // Live state is not cached, but a presence change can release the cached tail.
           if (next !== state && kinCachedPartChanged(state, next)) save(next, savedAt);
           state = next;
           live = true;

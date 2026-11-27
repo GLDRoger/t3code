@@ -7,6 +7,7 @@ import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KIN_TEAM_ROOM_TEAM_ID,
   KinOrgId,
   KinPersonId,
   KinAgentId,
@@ -33,6 +34,7 @@ import * as Tracer from "effect/Tracer";
 import * as Repository from "./KinChatRepository.ts";
 
 const decodeMessage = Schema.decodeSync(KinMessage);
+const encodeMessage = Schema.encodeSync(KinMessage);
 const decodeMessageId = Schema.decodeSync(KinMessageId);
 const decodeMemberId = Schema.decodeSync(KinMemberId);
 const decodePersonId = Schema.decodeSync(KinPersonId);
@@ -231,6 +233,97 @@ describe("KinChatRepository", () => {
           assert.isTrue(Option.isNone(yield* repo.attachmentChat("kin-chat-first-html")));
         }
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("only an ordinary same-lane ask carries its wait flag to the reader", () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const wakeupId = KinWakeupId.make("tidewater-turn");
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+      const key = `kin-ask:${wakeupId}:12345678901234567890123456789012`;
+      const author = {
+        _tag: "agent",
+        agentId,
+        memberId: agentMemberId,
+        ownerPersonId: personId,
+        threadId,
+      } as const;
+      const cases = [
+        { id: "ordinary", clientId: key, widget: "choice:ordinary", wait: true },
+        { id: "mail", clientId: "kin-connection-ask:mail", widget: "choice:mail" },
+        { id: "money", clientId: null, widget: "choice:card-kin-receipt:money" },
+        {
+          id: "money-ask",
+          clientId: `kin-ask:${wakeupId}:abcdef0123456789abcdef0123456789`,
+          widget: "choice:money-ask",
+          action: true,
+        },
+        { id: "approval", clientId: null, widget: "kin-approval:approval" },
+        {
+          id: "control",
+          clientId: `kin-quiet-run:${wakeupId}:1`,
+          widget: "choice:control",
+          host: true,
+        },
+        { id: "chart", clientId: "kin-chart:chart", widget: "chart:chart" },
+        { id: "out-of-lane", clientId: "kin-ask-for:out-of-lane", widget: "choice:out-of-lane" },
+        {
+          id: "other-wake",
+          clientId: key.replace(wakeupId, "another-turn"),
+          widget: "choice:other-wake",
+        },
+        { id: "human", clientId: key, widget: "choice:human", human: true },
+      ] as const;
+      for (const card of cases) {
+        const human = "human" in card;
+        const host = "host" in card;
+        const anchor = yield* repo.insertMessage({
+          ...message(card.id, human ? { body: "" } : { body: "", author, intent: "question" }),
+          ...(human || host ? {} : { wakeupId }),
+          ...(host ? { serverPosted: true } : {}),
+          clientMessageId: card.clientId === null ? null : { kind: "send", id: card.clientId },
+        });
+        yield* repo.insertWidget({
+          ...widget,
+          messageId: anchor.messageId,
+          widgetId: KinWidgetId.make(card.widget),
+          type: card.widget.startsWith("choice:") ? "choice" : card.id,
+          state: {
+            question: "Record the Tidewater Freight payment?",
+            detail: null,
+            options: [
+              {
+                optionId: "option-1",
+                label: "Record the payment",
+                ...("action" in card ? { action: { line: "Record payment on INV-1" } } : {}),
+              },
+              { optionId: "option-2", label: "Leave it open" },
+            ],
+            answer: null,
+          },
+          audience: "chat",
+        });
+      }
+      const result = yield* repo.resume({ ...scope, afterSeq: 0 });
+      const decoded = result.messages.map((row) => decodeMessage(encodeMessage(row)));
+      assert.deepStrictEqual(
+        decoded.map((row) => [row.messageId, row.ordinaryTurnAsk, row.clientMessageId]),
+        cases.map((card) => [
+          card.id,
+          "wait" in card ? card.wait : undefined,
+          "human" in card ? key : undefined,
+        ]),
+      );
+      yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+      const team = yield* repo.resume({ ...scope, afterSeq: 0 });
+      assert.isUndefined(
+        team.messages.find((row) => row.messageId === "ordinary")?.ordinaryTurnAsk,
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

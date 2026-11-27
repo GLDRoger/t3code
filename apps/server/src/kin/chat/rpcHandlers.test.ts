@@ -25,6 +25,7 @@ import {
   KinWaitingId,
   AuthStandardClientScopes,
   KinAgentId,
+  KinWakeupId,
   KinChatId,
   KinMessageId,
   KinChatAndBudgetRpcs,
@@ -63,6 +64,7 @@ import * as Chat from "./layer.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
+import * as Presence from "../reply/KinPresence.ts";
 import { decodeKinAfterAccess, makeKinHandlers } from "../rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
@@ -110,7 +112,7 @@ const seed = Effect.gen(function* () {
     createdAt: "1970-01-01T00:00:00.000Z",
   });
   const direct = yield* chat.createDirect(person, { ...person, agentId });
-  return { identity, chat, repo, person, direct, context };
+  return { identity, chat, repo, person, direct, context, agentId };
 });
 
 // A client that sends whatever it is handed, as a raw socket can.
@@ -641,7 +643,18 @@ it.effect("keeps transport handlers out of persistence", () =>
 
 it.effect("resets large backlogs and bounds a resume to the current snapshot", () =>
   Effect.gen(function* () {
-    const { chat, person, direct, repo, context } = yield* seed;
+    const { chat, person, direct, repo, context, agentId } = yield* seed;
+    const presence = yield* Presence.KinPresence;
+    const at = "1970-01-01T00:00:00.000Z";
+    const line = {
+      agentId,
+      wakeupId: KinWakeupId.make("tidewater-turn"),
+      state: "working",
+      label: null,
+      startedAt: at,
+      since: at,
+    } as const;
+    yield* presence.set(person.orgId, direct.chatId, line);
     for (let i = 0; i < 201; i++)
       yield* chat.send(person, {
         chatId: direct.chatId,
@@ -652,8 +665,9 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       Option.getOrThrow(
         yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 0 })),
       ),
-      { _tag: "reset", lastSeq: 201, lastChangeSeq: 201 },
+      { _tag: "reset", lastSeq: 201, lastChangeSeq: 201, presence: [line] },
     );
+    yield* presence.clear(person.orgId, direct.chatId, agentId);
     const resume = Option.getOrThrow(
       yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 1 })),
     );
@@ -675,7 +689,7 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
           }),
         ),
       ),
-      { _tag: "reset", lastSeq: 201, lastChangeSeq: 402 },
+      { _tag: "reset", lastSeq: 201, lastChangeSeq: 402, presence: [] },
     );
     // A client keeps its change cursor frozen while live, so the stream must refresh it.
     const events = yield* Stream.toQueue(

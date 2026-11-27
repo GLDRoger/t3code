@@ -12,6 +12,12 @@ import {
   EnvironmentId,
   KIN_CHAT_WS_METHODS,
   KinChatError,
+  KinAgentId,
+  KinMemberId,
+  KinPersonId,
+  KinWakeupId,
+  KinWidgetId,
+  ThreadId,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatListEvent,
@@ -693,6 +699,87 @@ describe("Kin streams", () => {
         contiguousSeq: 2,
         changeSeq: 9,
       });
+    }),
+  );
+
+  it.effect("replays a cached ask only after reconnect, but caches it after a wordless end", () =>
+    Effect.gen(function* () {
+      const rows = new Map<string, string>();
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      const subs = yield* Queue.unbounded<KinChatSubscribeInput>();
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(
+            fakeSession({
+              chat: (input) =>
+                Stream.fromQueue(events).pipe(Stream.onStart(Queue.offer(subs, input))),
+              inbox: Stream.never,
+            }),
+          ),
+        ),
+        rows,
+      );
+      const watch = makeKinChatStream(() => Effect.die("Unexpected history request"))({
+        chatId,
+      }).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+      const agentId = KinAgentId.make("lead");
+      const wakeupId = KinWakeupId.make("tidewater-turn");
+      const ask: KinMessage = {
+        ...message(2, ""),
+        ordinaryTurnAsk: true,
+        sourceWakeupId: wakeupId,
+        widgetId: KinWidgetId.make("choice:m2"),
+        author: {
+          _tag: "agent",
+          agentId,
+          threadId: ThreadId.make("thread"),
+          memberId: KinMemberId.make("lead-member"),
+          ownerPersonId: KinPersonId.make("rhea"),
+        },
+      };
+      const presence = {
+        agentId,
+        wakeupId,
+        state: "working",
+        label: null,
+        startedAt: at,
+        since: at,
+      } as const;
+      const first = yield* watch;
+      expect(yield* Queue.take(subs)).toEqual({ chatId });
+      yield* Queue.offer(events, {
+        _tag: "backlog",
+        messages: [message(1), ask],
+        widgets: [],
+        lastSeq: 2,
+        lastChangeSeq: 5,
+        presence: [presence],
+      });
+      expect((yield* Queue.take(views)).value.messages).toHaveLength(2);
+      yield* Fiber.interrupt(first);
+      const cached = () => decodeCachedChat(rows.get(chatRowKey) ?? "").chat;
+      expect(cached()).toMatchObject({ messages: [message(1)], contiguousSeq: 1 });
+      const reopened = yield* watch;
+      expect((yield* Queue.take(views)).value.messages).toHaveLength(1);
+      expect(yield* Queue.take(subs)).toEqual({ chatId, afterSeq: 1, afterChangeSeq: 5 });
+      yield* Queue.offer(events, {
+        _tag: "backlog",
+        messages: [ask],
+        widgets: [],
+        lastSeq: 2,
+        lastChangeSeq: 5,
+        presence: [presence],
+      });
+      expect((yield* Queue.take(views)).value.presence).toEqual([presence]);
+      yield* Queue.offer(events, { _tag: "presence", agentId, presence: null });
+      expect((yield* Queue.take(views)).value.presence).toEqual([]);
+      yield* Fiber.interrupt(reopened);
+      expect(cached()).toMatchObject({ messages: [message(1), ask], contiguousSeq: 2 });
     }),
   );
 

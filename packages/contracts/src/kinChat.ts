@@ -350,6 +350,8 @@ export const KinMessage = Schema.Struct({
   form: Schema.optional(Schema.Literal("brief")),
   // An agent's progress update during a turn whose reply still comes; absent on everything else.
   progress: Schema.optional(Schema.Literal(true)),
+  // A plain kin_ask card in its own turn's chat, not the Team room or a confirmation.
+  ordinaryTurnAsk: Schema.optional(Schema.Boolean),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -886,6 +888,8 @@ export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The first event can be a reset instead of a backlog; history needs the same running lines.
+    presence: Schema.optional(Schema.Array(KinPresence)),
     // The chat was cleared: nothing held from before is kept, drafts and reactions included.
     cleared: Schema.optional(Schema.Boolean),
     clearedSeq: Schema.optional(NonNegativeInt),
