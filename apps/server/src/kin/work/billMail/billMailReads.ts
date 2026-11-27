@@ -248,10 +248,8 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
       );
 
   const read = Effect.gen(function* () {
-    const [refreshed] = yield* connections.arrivals(orgId, connectionId, [messageId], () => false);
-    if (refreshed === undefined || refreshed._tag === "gone") return yield* skip("gone");
-    if (refreshed._tag === "unreadable") return yield* wait(backoff);
-    const { arrival } = refreshed;
+    const arrival = yield* connections.billHeaders(orgId, connectionId, messageId);
+    if (arrival === null) return yield* skip("gone");
     // Bills take the relaxed verdict (aligned DKIM and SPF without DMARC): a bill can only make a suggestion a person must keep, where a bank alert writes facts.
     if (verifiedBillingAddress(arrival) !== address) return yield* skip("unverified");
     if (!(yield* claimOnce(arrival))) return;

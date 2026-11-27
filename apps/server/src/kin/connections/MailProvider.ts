@@ -295,7 +295,12 @@ export interface MailVendor {
   /** A page of threads: the inbox when `query` is null, else what the vendor's search found. */
   readonly threads: (
     context: MailContext,
-    page: { readonly query: string | null; readonly max: number; readonly pageToken?: string },
+    page: {
+      readonly query: string | null;
+      readonly max: number;
+      readonly pageToken?: string;
+      readonly headersOnly?: true;
+    },
   ) => Call<{ readonly threads: MailThreads; readonly nextPage: string | null }>;
   /** A thread's messages, oldest first, bodies included; none when the account hasn't it. */
   readonly attachment: (
@@ -446,6 +451,15 @@ export interface MailProvider {
     mailbox: Mailbox,
     messageId: string,
   ) => Call<MailMessage | null>;
+  /** Server use only: one page of search hits, with header and receipt metadata. */
+  readonly search: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    query: string,
+    max: number,
+    pageToken?: string,
+  ) => ReturnType<MailVendor["threads"]>;
   /** Server use only: a thread's messages with their text, as `mail_read_thread` reads them. */
   readonly messages: (
     http: HttpClient.HttpClient,

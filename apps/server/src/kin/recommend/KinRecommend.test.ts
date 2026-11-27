@@ -9,7 +9,7 @@ import {
   AuthStandardClientScopes,
   KinAgentId,
   KinConnectionId,
-  type KinPersonId,
+  KinPersonId,
   type KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -1829,6 +1829,10 @@ it.effect(
           state.detail,
           "Approving lets mail from this exact address, when its mail server vouches for it, become suggested expenses.",
         );
+        assert.include(
+          state.detail,
+          "Approving also reads the mail Kin held from it in the last 30 days.",
+        );
         assert.include(state.detail, "Nothing counts in Money until you keep it.");
         assert.deepStrictEqual(
           state.options.map(({ label }) => label),
@@ -1946,6 +1950,13 @@ it.effect(
           (yield* Effect.flip(zoya["kin.billSenders.list"](org)))._tag,
           "EnvironmentAuthorizationError",
         );
+        const agent = yield* callsAs(KinPersonId.make("agent:finance"));
+        for (const client of [zoya, agent]) {
+          const error = yield* Effect.flip(
+            client["kin.billSenders.readSince"]({ ...ref, since: "2026-11-16" }),
+          );
+          assert.strictEqual(error._tag, "EnvironmentAuthorizationError");
+        }
         const meera = yield* callsAs(ctx.devId);
         const refresh = (personId: KinPersonId) =>
           Stream.runHead(subscribeRefreshes([{ _tag: "person", ...org, personId }], org)).pipe(
@@ -2070,6 +2081,11 @@ it.effect(
         assert.deepStrictEqual(yield* states(), waiting);
         yield* setAccess(ctx.devId, "co_owner");
         yield* setAccess(ctx.owner.personId, "owner");
+        yield* ctx.sql`INSERT INTO kin_bill_sender_mail
+          (org_id, mail_key, address, connection_id, message_id, thread_id, received_at)
+          VALUES
+            (${ctx.orgId}, 'held-current', ${harbor!.address}, 'company', 'current', 'thread', ${now}),
+            (${ctx.orgId}, 'held-expired', ${harbor!.address}, 'company', 'expired', 'thread', ${now - 31 * 86_400_000})`;
         // The sender row is the record of the decision: no lead wakes, no memory item claims it.
         const decisions: Array<string> = [];
         const recorded = yield* Deferred.make<void>();
@@ -2102,6 +2118,10 @@ it.effect(
         yield* BillSenders.decide(ctx.orgId, ctx.devId, "bills@inkspot.example", "declined");
         yield* Effect.exit(tap(ctx, inkspot!.widgetId, "option-1"));
         assert.strictEqual((yield* states())[1]?.state, "declined");
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT message_id, state FROM kin_bill_mail WHERE org_id = ${ctx.orgId}`,
+          [{ message_id: "current", state: "waiting" }],
+        );
       }),
     ),
 );

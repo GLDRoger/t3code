@@ -703,6 +703,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.billSenders.decline": "stays in the app: 5 (host, company sections and settings)",
   "kin.billSenders.remove": "stays in the app: 5 (host, company sections and settings)",
   "kin.billSenders.add": "stays in the app: 5 (host, company sections and settings)",
+  "kin.billSenders.readSince": "stays in the app: 5 (host, company sections and settings)",
   "kin.recommendations.list": "not a person action (screens only: Settings → Recommendations)",
   "kin.recommendations.askAgain": "stays in the app: 5 (host, company sections and settings)",
   "kin.host.status": "not a person action (screens only: host screen)",

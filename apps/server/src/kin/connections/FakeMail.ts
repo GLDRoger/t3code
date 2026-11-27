@@ -443,7 +443,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const matches = (message: FakeMailMessage, words: string) =>
     words
       .split(/\s+/)
-      .filter((word) => word !== "" && !/^(?:in|after|before):/.test(word))
+      .filter((word) => word !== "" && !/^(?:(?:in|after|before):|received>=)/.test(word))
       .every((word) => {
         const from = /^from:(.+)$/.exec(word)?.[1];
         return from !== undefined
@@ -860,14 +860,22 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const conversation = odata(filter, "conversationId");
         const internet = odata(filter, "internetMessageId");
         const search = url.searchParams.get("$search")?.replace(/^"|"$/g, "");
+        if (search !== undefined) {
+          const found = mine.filter((one) => matches(one, search)).toSorted((a, b) => b.at - a.at);
+          const page = pageOf(found, url.searchParams.get("$top"), url.searchParams.get("$skip"));
+          const nextLink = new URL(url);
+          nextLink.searchParams.set("$skip", page.next ?? "");
+          return json({
+            value: page.items.map(graphMessage),
+            ...(page.next === undefined ? {} : { "@odata.nextLink": nextLink.href }),
+          });
+        }
         return json({
           value: mine
             .filter((one) =>
               conversation !== undefined
                 ? one.threadId === conversation
-                : internet !== undefined
-                  ? one.messageId === internet
-                  : search === undefined || matches(one, search),
+                : internet === undefined || one.messageId === internet,
             )
             .map(graphMessage),
         });
