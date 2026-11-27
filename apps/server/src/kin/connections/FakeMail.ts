@@ -590,6 +590,20 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           ...(page.next === undefined ? {} : { nextPageToken: page.next }),
         });
       }
+      const attachment = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(
+        path,
+      );
+      if (attachment !== null) {
+        const message = mine.find((one) => one.id === decodeURIComponent(attachment[1]!));
+        const id = decodeURIComponent(attachment[2]!);
+        const file = message?.files?.find((_, index) => id === `${message.id}-a${index}`);
+        return file === undefined
+          ? json({ error: { code: 404 } }, 404)
+          : json({
+              size: sizeOf(file),
+              data: Buffer.from(file.data, "base64").toString("base64url"),
+            });
+      }
       const single = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
       if (single !== undefined && request.method === "GET") {
         const one = mine.find((message) => message.id === decodeURIComponent(single));
@@ -597,6 +611,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const failed = unreadable.get(one.id);
         if (failed !== undefined) return json({ error: { code: failed } }, failed);
         const full = gmailMessage(one);
+        if (url.searchParams.get("format") === "full") return json(full);
         const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
         const headers = [
           ...full.payload.headers,
@@ -827,20 +842,27 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           ],
         });
       }
-      const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
-      if (attachmentsOf !== undefined) {
-        const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf));
-        if (message === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
-        return json({
-          value: (message.files ?? []).map((file, index) => ({
-            "@odata.type": "#microsoft.graph.fileAttachment",
-            id: `${message.id}-a${index}`,
-            name: file.name,
-            contentType: file.mimeType,
-            size: sizeOf(file),
-            contentBytes: file.data,
-          })),
-        });
+      const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments(?:\/([^/]+))?$/.exec(
+        path,
+      );
+      if (attachmentsOf !== null) {
+        const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf[1]!));
+        const missing = () => json({ error: { code: "ErrorItemNotFound" } }, 404);
+        if (message === undefined) return missing();
+        const select = url.searchParams.get("$select")?.split(",");
+        const found = (message.files ?? []).map((file, index) => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: `${message.id}-a${index}`,
+          name: file.name,
+          contentType: file.mimeType,
+          size: sizeOf(file),
+          ...(select === undefined || select.includes("contentBytes")
+            ? { contentBytes: file.data }
+            : {}),
+        }));
+        if (attachmentsOf[2] === undefined) return json({ value: found });
+        const attachment = found.find((file) => file.id === decodeURIComponent(attachmentsOf[2]!));
+        return attachment === undefined ? missing() : json(attachment);
       }
       const mime = () => Buffer.from(text, "base64").toString("utf8");
       if (path === `${GRAPH}/messages` && request.method === "POST") {

@@ -49,6 +49,9 @@ describe("Kin chat file URLs", () => {
       yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
       yield* fs.writeFileString(`${config.attachmentsDir}/${kinFileId}.png`, "pixels");
       yield* fs.writeFileString(`${config.attachmentsDir}/${threadFileId}.png`, "pixels");
+      const mailId = "kin-chat-mail-11111111-1111-4111-8111-111111111111-html";
+      const mailedHtml = "<!doctype html><title>Mailed</title>";
+      yield* fs.writeFileString(`${config.attachmentsDir}/${mailId}.html`, mailedHtml);
       const visualId = "kin-chat-33333333-3333-4333-8333-333333333333-html";
       const visualHtml = `<!doctype html><title>t</title><img src="kin-file:${kinFileId}"><img src="kin-file:kin-chat-elsewhere"><script>fetch("https://evil.example.com")</script>`;
       yield* fs.writeFileString(`${config.attachmentsDir}/${visualId}.html`, visualHtml);
@@ -78,7 +81,7 @@ describe("Kin chat file URLs", () => {
           Layer.mock(KinChatService)({
             attachmentReadable: (people, attachmentId) =>
               Effect.succeed(
-                (attachmentId === kinFileId || attachmentId === visualId) &&
+                [kinFileId, visualId, mailId].includes(attachmentId) &&
                   Array.isArray(people) &&
                   people.some((person) => inChat.has(person.personId)),
               ),
@@ -241,6 +244,12 @@ describe("Kin chat file URLs", () => {
       const widened = (yield* page("?frame=1", { "sec-fetch-dest": "iframe" })).policy ?? "";
       expect(widened).toBe(kinVisualContentSecurityPolicy("page", ["tiles.example.com"]));
       expect(widened).toContain("script-src 'unsafe-inline' 'unsafe-eval' 'self';");
+      const mailUrl = yield* mint(mailId, member, "text/html");
+      const mailed = yield* client.execute(HttpClientRequest.get(mailUrl));
+      expect(mailed.status).toBe(200);
+      expect(mailed.headers["content-disposition"]).toContain("attachment");
+      expect(mailed.headers["content-security-policy"]).toBe("default-src 'none'; sandbox");
+      expect(yield* mailed.text).toBe(mailedHtml);
       // Someone outside the chat gets neither document.
       const strangerUrl = yield* mint(visualId, outsider, "text/html");
       expect((yield* fetch("GET", strangerUrl)).status).toBe(404);

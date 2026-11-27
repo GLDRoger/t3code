@@ -81,7 +81,12 @@ export const senderCheck = (results: ReadonlyArray<string>) => {
 type Part = {
   readonly mimeType?: unknown;
   readonly filename?: unknown;
-  readonly body?: { readonly data?: unknown; readonly size?: unknown };
+  readonly partId?: unknown;
+  readonly body?: {
+    readonly data?: unknown;
+    readonly size?: unknown;
+    readonly attachmentId?: unknown;
+  };
   readonly parts?: unknown;
 };
 
@@ -94,13 +99,41 @@ const walk = (part: unknown, out: Array<Part>, depth = 0) => {
   if (Array.isArray(parts)) for (const child of parts) walk(child, out, depth + 1);
 };
 
+const attachmentIdOf = (part: Part) =>
+  typeof part.body?.attachmentId === "string" && part.body.attachmentId !== ""
+    ? part.body.attachmentId
+    : typeof part.partId === "string" && typeof part.body?.data === "string"
+      ? `part:${part.partId}`
+      : undefined;
+const isAttachment = (part: Part) => typeof part.filename === "string" && part.filename !== "";
+const fileOf = (part: Part) => {
+  const attachmentId = attachmentIdOf(part);
+  return {
+    name: String(part.filename),
+    type: typeof part.mimeType === "string" ? part.mimeType : "unknown",
+    bytes: typeof part.body?.size === "number" ? part.body.size : null,
+    ...(attachmentId === undefined ? {} : { attachmentId }),
+  };
+};
+export const attachmentPart = (payload: unknown, id: string) => {
+  const parts: Array<Part> = [];
+  walk(payload, parts);
+  const part = parts.find((item) => isAttachment(item) && attachmentIdOf(item) === id);
+  return part === undefined
+    ? undefined
+    : {
+        ...fileOf(part),
+        data: typeof part.body?.data === "string" ? part.body.data : undefined,
+        inline: typeof part.body?.attachmentId !== "string",
+      };
+};
+
 /** A message payload's text, and the attachments it names (never fetched). */
 export const messageBody = (payload: unknown) => {
   const parts: Array<Part> = [];
   walk(payload, parts);
   const data = (part: Part) =>
     typeof part.body?.data === "string" ? fromBase64Url(part.body.data) : undefined;
-  const isAttachment = (part: Part) => typeof part.filename === "string" && part.filename !== "";
   const plain = parts.find((part) => part.mimeType === "text/plain" && !isAttachment(part));
   const html = parts.find((part) => part.mimeType === "text/html" && !isAttachment(part));
   const plainText = plain === undefined ? undefined : data(plain);
@@ -111,10 +144,6 @@ export const messageBody = (payload: unknown) => {
       : htmlText !== undefined
         ? htmlToText(htmlText)
         : "";
-  const attachments = parts.filter(isAttachment).map((part) => ({
-    name: String(part.filename),
-    type: typeof part.mimeType === "string" ? part.mimeType : "unknown",
-    bytes: typeof part.body?.size === "number" ? part.body.size : null,
-  }));
+  const attachments = parts.filter(isAttachment).map(fileOf);
   return { text, attachments };
 };

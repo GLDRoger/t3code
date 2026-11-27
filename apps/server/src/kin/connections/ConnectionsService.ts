@@ -1,3 +1,4 @@
+import { McpSchema } from "effect/ai";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- random ids for rows and secret names.
 import * as NodeCrypto from "node:crypto";
 import {
@@ -44,11 +45,11 @@ import {
   KIN_CHOICE_CARD_ACTION,
   KinChoiceCardState,
   KinPersonId,
+  KinWorkerId,
   KinWakeupId,
   KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
-import { McpSchema } from "effect/ai";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -58,6 +59,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
@@ -80,8 +82,9 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { type AgentIdentity, KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KIN_MAIL_FILE_OWNER } from "../chat/KinAttachmentStore.ts";
 import { chatShared } from "../chat/sharing.ts";
-import { turnChat } from "../lead/Audience.ts";
+import { peopleBehind, turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import {
@@ -144,7 +147,13 @@ import type { Memory } from "../memory/Memory.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import { mailSenderVoices } from "./mailSenderVoice.ts";
 import * as OAuth from "./OAuth.ts";
-import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
+import {
+  instructionsDigest,
+  type ListedTool,
+  pinDigest,
+  reconcile,
+  suggestedMode,
+} from "./Pinning.ts";
 import {
   CUSTOM_REACH,
   DEFAULT_KEY_HEADER,
@@ -184,6 +193,8 @@ import {
   subjectOff,
 } from "./Sending.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
+import * as Docs from "../work/docs.ts";
+import { attachmentFileExtension, createDeterministicAttachmentId } from "../../attachmentStore.ts";
 import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
 import { readCallArguments } from "./callArguments.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
@@ -944,6 +955,12 @@ type PendingSignIn = {
 /** Kin's own mail tools that send are never marked Read. */
 const alwaysAsk = (row: Pick<ConnectionRow, "kind">, tool: string) =>
   row.kind === "builtin" && MAIL_SEND_TOOL_NAMES.has(tool);
+const mailToolMode = (builtin: boolean, tool: ListedTool) =>
+  builtin && tool.name === MAIL_TOOL.saveAttachment ? "read" : suggestedMode(tool.definition);
+const saveReadRequired = fail(
+  "not_allowed",
+  "Turn on Read for both mail_read_thread and mail_save_attachment before saving a file.",
+);
 const usable = (tool: Parameters<typeof callable>[0]) =>
   callable(tool) && (tool.mode === "read" || tool.mode === "ask");
 
@@ -967,7 +984,7 @@ const make = Effect.gen(function* () {
   const secrets = yield* KinConnectionSecrets;
   const gateway = yield* KinMcpGateway;
   const levelGate = yield* KinLevelGate;
-  const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+  const files = yield* Effect.context<FileSystem.FileSystem | Path.Path | ServerConfig>();
   const http = yield* HttpClient.HttpClient;
   const signInAddress = yield* Config.String("KIN_SIGN_IN_ADDRESS").pipe(
     Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
@@ -1353,12 +1370,12 @@ const make = Effect.gen(function* () {
         for (const tool of listed.tools) {
           const json = toJson(tool.definition);
           const digest = pinDigest(tool.definition);
-          const mode = own ? suggestedMode(tool.definition) : "off";
+          const mode = own ? mailToolMode(true, tool) : "off";
           yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
               definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at,
               accepted_json, accepted_digest, accepted_at)
             VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${json}, ${digest}, ${mode},
-              ${suggestedMode(tool.definition)}, ${tool.openWorld ? 1 : 0}, ${now},
+              ${mailToolMode(mailProviderOf(row) !== undefined, tool)}, ${tool.openWorld ? 1 : 0}, ${now},
               ${own ? json : null}, ${own ? digest : null}, ${own ? now : null})
             ON CONFLICT (org_id, connection_id, tool_name) DO NOTHING`;
         }
@@ -1416,15 +1433,18 @@ const make = Effect.gen(function* () {
           const json = toJson(tool.definition);
           const digest = pinDigest(tool.definition);
           const open = tool.openWorld ? 1 : 0;
-          if (change._tag === "added")
+          if (change._tag === "added") {
+            const ownSave = ours && row.personId != null && tool.name === MAIL_TOOL.saveAttachment;
             yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
-                definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
-              VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${json}, ${digest}, 'off',
-                ${suggestedMode(tool.definition)}, ${open}, ${now})
+                definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at,
+                accepted_json, accepted_digest, accepted_at)
+              VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${json}, ${digest}, ${ownSave ? "read" : "off"},
+                ${mailToolMode(ours, tool)}, ${open}, ${now}, ${ownSave ? json : null},
+                ${ownSave ? digest : null}, ${ownSave ? now : null})
               ON CONFLICT (org_id, connection_id, tool_name) DO NOTHING`;
-          else
+          } else
             yield* sql`UPDATE kin_connection_tools SET definition_json = ${json},
-                pin_digest = ${digest}, suggested_mode = ${suggestedMode(tool.definition)},
+                pin_digest = ${digest}, suggested_mode = ${mailToolMode(mailProviderOf(row) !== undefined, tool)},
                 open_world = ${open}, removed_at = NULL,
                 changed_at = ${change._tag === "changed" ? now : sql`changed_at`},
                 accepted_digest = ${ours ? sql`CASE WHEN accepted_digest IS NULL THEN NULL ELSE ${digest} END` : sql`accepted_digest`},
@@ -2902,6 +2922,157 @@ const make = Effect.gen(function* () {
     if (own !== null) yield* markPrivate(turn, own);
   }, provideSql);
 
+  const saveAttachment = Effect.fn("KinConnections.saveAttachment")(function* (
+    turn: Turn,
+    row: ConnectionRow,
+    provider: MailProvider,
+    args: Readonly<Record<string, unknown>>,
+  ) {
+    const { orgId } = turn;
+    const validId = (value: unknown): value is string =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= 1024 &&
+      value !== "." &&
+      value !== ".." &&
+      /^[!-~]+$/.test(value);
+    const messageId = args["messageId"];
+    const attachmentId = args["attachmentId"];
+    if (Object.keys(args).length !== 2 || !validId(messageId) || !validId(attachmentId))
+      return yield* fail(
+        "invalid_state",
+        "Use messageId and attachmentId from mail_read_thread on this mailbox.",
+      );
+    const admit = Effect.gen(function* () {
+      const reach = yield* turnMailboxes(turn);
+      const current = reach.rows.find((one) => one.connectionId === row.connectionId);
+      if (
+        current === undefined ||
+        current.personId !== row.personId ||
+        current.signInGen !== row.signInGen ||
+        current.pausedAt !== null ||
+        current.state === "needs_sign_in"
+      )
+        return yield* fail("not_allowed", "Kin can no longer read this mailbox.");
+      const reads = yield* readable(orgId, current);
+      if (
+        !reads.some((tool) => tool.name === MAIL_TOOL.read) ||
+        !reads.some((tool) => tool.name === MAIL_TOOL.saveAttachment)
+      )
+        return yield* saveReadRequired;
+      const [person, ...others] = (yield* peopleBehind(turn))?.askers ?? [];
+      if (person === undefined || others.length > 0)
+        return yield* fail("not_allowed", "One person must ask to save a mail attachment.");
+      return { person, company: reach.company };
+    }).pipe(provideSql);
+    const asker = yield* admit;
+    const origin =
+      "mail-attachment:" +
+      NodeCrypto.createHash("sha256")
+        .update(
+          toJson([
+            row.connectionId,
+            row.accountLabel,
+            row.personId ?? null,
+            messageId,
+            attachmentId,
+          ]),
+        )
+        .digest("hex");
+    const docServices = <A, E>(effect: Effect.Effect<A, E, KinRecords | SqlClient.SqlClient>) =>
+      effect.pipe(provideSql, Effect.provideService(KinRecords, records));
+    const answer = (doc: Docs.Written) =>
+      new McpSchema.CallToolResult({
+        content: [
+          {
+            type: "text",
+            text: toJson({ key: doc.row.key, title: doc.row.title, created: doc.created }),
+          },
+        ],
+      });
+    const mark = shown(turn, row.connectionId, { k: "service", label: row.label });
+    const retry = docServices(Docs.savedFile(orgId, origin));
+    const existing = yield* retry;
+    if (existing !== undefined) return answer(existing);
+
+    const file = yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) =>
+          provider.attachment({ http, token, mailbox: mailboxOf(row) }, messageId, attachmentId),
+        ),
+      ),
+    );
+    const fileSystem = yield* FileSystem.FileSystem.pipe(Effect.provide(files));
+    const path = yield* Path.Path.pipe(Effect.provide(files));
+    const config = yield* ServerConfig.pipe(Effect.provide(files));
+    const extension = attachmentFileExtension(file.name);
+    const sha256 = NodeCrypto.createHash("sha256").update(file.bytes).digest("hex");
+    const base = createDeterministicAttachmentId(
+      KIN_MAIL_FILE_OWNER,
+      toJson([orgId, origin, sha256]),
+    );
+    if (base === null) return yield* unavailable;
+    const storedId = `${base}-${extension.slice(1)}`;
+    const target = path.join(config.attachmentsDir, `${storedId}${extension}`);
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* admit;
+        if (current.person !== asker.person || current.company !== asker.company)
+          return yield* fail("not_allowed", "Kin can no longer read this mailbox.");
+        const again = yield* retry;
+        if (again !== undefined) return answer(again);
+        yield* mark;
+        const chat = yield* turnChat(turn).pipe(provideSql);
+        const draft = row.personId != null;
+        const written = yield* docServices(
+          Docs.fileVersion(
+            orgId,
+            {
+              actor: { _tag: "agent", agentId: turn.agentId },
+              via: "lead",
+              wakeupId: turn.wakeupId,
+              askedBy: asker.person,
+              ...(chat === undefined ? {} : { chatId: KinChatId.make(chat.chatId) }),
+            },
+            { audience: asker.company ? "owner_only" : "shared" },
+            {
+              docOrigin: origin,
+              originKey: origin,
+              title: file.name,
+              summary: "Saved from a mail attachment.",
+              owner: { _tag: "person", personId: asker.person },
+              sensitive: !draft,
+              file: {
+                attachmentId: storedId,
+                name: file.name,
+                mimeType: file.mimeType,
+                bytes: file.bytes.byteLength,
+                sha256,
+                pages: null,
+                recipe: null,
+                inputsHash: sha256,
+                workerId: KinWorkerId.make(base),
+                number: null,
+                draft: false,
+                source: {
+                  kind: "mail",
+                  from: file.from,
+                  date: file.date,
+                  untrusted: true,
+                  ...(row.personId == null ? {} : { privateTo: asker.person }),
+                },
+              },
+            },
+          ),
+        );
+        // There is no upload to claim or extract; the file becomes readable only at the SQL commit.
+        yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fileSystem.writeFile(target, file.bytes);
+        return answer(written);
+      }),
+    );
+  });
+
   /** One connection's tool, called or put on a card, with its row in the call log. */
   const callOn = Effect.fn("KinConnections.callOn")(function* (
     turn: Turn,
@@ -2947,6 +3118,9 @@ const make = Effect.gen(function* () {
           `${tool.name} changed and waits for the owner's review before it can be called.`,
         ),
       );
+    const provider = input.tool === MAIL_TOOL.saveAttachment ? mailProviderOf(row) : undefined;
+    if (provider !== undefined && tool.mode !== "read")
+      return yield* refuse(turn, entry, saveReadRequired);
     // After outside text, what may reach the open world is only drafted, whatever its mode.
     const outside = yield* outsideStamp(turn).pipe(provideSql);
     if (
@@ -2959,16 +3133,25 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
     );
     const started = yield* Clock.currentTimeMillis;
-    const result = yield* callFor(turn.orgId, row, definition, args).pipe(Effect.result);
+    const result = yield* (
+      provider === undefined
+        ? callFor(turn.orgId, row, definition, args)
+        : saveAttachment(turn, row, provider, args).pipe(settle)
+    ).pipe(Effect.result);
     const durationMs = (yield* Clock.currentTimeMillis) - started;
     if (result._tag === "Failure") {
       yield* record(turn, {
         ...entry,
         status: "error",
-        refusedReason: result.failure.message,
+        refusedReason:
+          provider === undefined
+            ? result.failure.message
+            : "Kin couldn't save that mail attachment.",
         durationMs,
       });
-      return yield* fail("unavailable", result.failure.message);
+      return yield* provider !== undefined && isChatError(result.failure)
+        ? result.failure
+        : fail("unavailable", result.failure.message);
     }
     const text = resultText({
       label: row.label,
@@ -3044,8 +3227,8 @@ const make = Effect.gen(function* () {
         connectionId: null,
         toolName: input.tool,
         mode: null,
-        args,
-        reason: input.reason,
+        args: input.tool === MAIL_TOOL.saveAttachment ? undefined : args,
+        reason: input.tool === MAIL_TOOL.saveAttachment ? undefined : input.reason,
       };
       if (!ownerOnly && reach.person === null) return yield* refuse(turn, base, unreached(reach));
       const found = resolveAmong(reach.rows, input.connection);

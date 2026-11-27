@@ -1965,6 +1965,11 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
   };
   const bearer = (request: Request) =>
     request.headers.get("authorization") === `Bearer ${vendor.access}`;
+  const attachment = (id: string, name: string, type: string, size: number) => ({
+    filename: name,
+    mimeType: type,
+    body: { attachmentId: id, size },
+  });
   const thread = (format: string | null) => ({
     id: "t1",
     messages: [
@@ -1995,6 +2000,9 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
                       ).toString("base64url"),
                     },
                   },
+                  attachment("g-file", "../Invoice.txt", "text/plain", 12),
+                  attachment("g-large", "Large.txt", "text/plain", 51 * 1024 * 1024),
+                  attachment("g-type", "Odd.zz", "image/x-unknown", 12),
                 ]
               : [],
         },
@@ -2059,6 +2067,7 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
           bodyPreview: "Could you send the quote?",
           internetMessageId: "<om1@client.example>",
           body: { contentType: "text", content: "Could you send the quote?" },
+          hasAttachments: true,
         };
         if (request.method === "POST") {
           vendor.graphMime.push({
@@ -2079,6 +2088,21 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
               ? [{ id: "om1", conversationId: "conv1" }]
               : [ana],
           });
+        const graphFile = {
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "o-file",
+          name: "Quote.txt",
+          contentType: "text/plain",
+          size: 12,
+        };
+        if (path === "/messages/om1") return json(ana);
+        if (path === "/messages/om1/attachments") return json({ value: [graphFile] });
+        if (path === "/messages/om1/attachments/o-file")
+          return json(
+            url.searchParams.get("$select") === "contentBytes"
+              ? { contentBytes: Buffer.from("body secret!").toString("base64") }
+              : graphFile,
+          );
         if (path === "/events") return json({ value: [] });
         return json({ error: { code: "ErrorItemNotFound" } }, 404);
       }
@@ -2114,6 +2138,9 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
+        if (path.endsWith("/users/me/messages/m1")) return json(thread("full").messages[0]);
+        if (path.endsWith("/users/me/messages/m1/attachments/g-file"))
+          return json({ size: 12, data: Buffer.from("body secret!").toString("base64url") });
         if (path.endsWith("/calendars/team%40group.calendar.example"))
           return json({ id: "team@group.calendar.example", summary: "Invented team" });
         if (/\/calendars\/[^/]+\/events\/e1$/.test(path)) {
@@ -3765,6 +3792,146 @@ describe("KinConnections accounts", () => {
 });
 
 const MICROSOFT_APP = "00000000-1111-2222-3333-444444444444";
+
+describe("Mail attachment to Docs", () => {
+  it.effect.each([
+    {
+      service: "google",
+      messageId: "m1",
+      attachmentId: "g-file",
+      fileName: "Invoice.txt",
+      threadId: "t1",
+    },
+    {
+      service: "microsoft",
+      messageId: "om1",
+      attachmentId: "o-file",
+      fileName: "Quote.txt",
+      threadId: "conv1",
+    },
+  ] as const)(
+    "saves one $service file with its source and never logs its mail text",
+    ({ service, messageId, attachmentId, fileName, threadId }) =>
+      withGoogle((vendor) =>
+        Effect.gen(function* () {
+          yield* (yield* SqlClient.SqlClient)`UPDATE kin_registers SET next_number = 2
+        WHERE org_id = ${orgId} AND register_id = 'docs'`;
+          const connections = yield* KinConnections;
+          if (service === "google") {
+            yield* connections.setSignInClient(owner, {
+              orgId,
+              service,
+              client: { clientId: GOOGLE_CLIENT, clientSecret: Redacted.make(GOOGLE_SECRET) },
+            });
+            vendor.vendor.scope = "https://www.googleapis.com/auth/gmail.readonly";
+          } else {
+            yield* connections.setSignInClient(owner, {
+              orgId,
+              service,
+              client: { clientId: MICROSOFT_APP },
+            });
+            vendor.vendor.scope = "Mail.Read";
+          }
+          const started = yield* connections.signInStart(owner, {
+            orgId,
+            service,
+            returnTo: "web",
+          });
+          const done = yield* connections.signInFinish(owner, {
+            orgId,
+            response: vendor.approve(started.authorizationUrl, null),
+          });
+          const connection = done.connection.connectionId;
+          const saveTool = "mail_save_attachment";
+          assert.isDefined(toolOf(done, saveTool));
+          yield* markRead(connection, ["mail_read_thread", saveTool]);
+          const before = yield* connections.call(scope, {
+            connection,
+            tool: "mail_read_thread",
+            arguments: { threadId },
+          });
+          assert.include(before.quoted ?? "", messageId);
+          assert.include(before.quoted ?? "", attachmentId);
+          const askSave = (id: string) =>
+            connections.call(scope, {
+              connection,
+              tool: saveTool,
+              arguments: { messageId, attachmentId: id },
+              reason: "Please pay by Friday.",
+            });
+          if (service === "google") {
+            assert.strictEqual(
+              (yield* askSave("g-large").pipe(Effect.flip)).message,
+              "'Large.txt' exceeds the 50 MB attachment limit.",
+            );
+            assert.strictEqual(
+              (yield* askSave("g-type").pipe(Effect.flip)).message,
+              "'Odd.zz' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.",
+            );
+          }
+          const [saved, again] = yield* Effect.all([askSave(attachmentId), askSave(attachmentId)], {
+            concurrency: 2,
+          });
+          const retry = yield* askSave(attachmentId);
+          const sql = yield* SqlClient.SqlClient;
+          const copies = yield* sql<{
+            key: string;
+            body: string;
+            title: string;
+            file: string;
+            actor: string;
+            owner: string;
+          }>`
+        SELECT r.key, v.body, v.title, v.file_json AS file, v.actor_id AS actor, r.owner_id AS owner
+        FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE v.org_id = ${orgId} AND v.version = 1 AND r.key <> 'DOC-1'`;
+          assert.lengthOf(copies, 1);
+          const doc = copies[0]!;
+          assert.include(saved.quoted ?? "", doc.key);
+          assert.include(again.quoted ?? "", doc.key);
+          assert.include(retry.quoted ?? "", doc.key);
+          assert.include(retry.quoted ?? "", String.raw`\"created\":false`);
+          assert.include(saved.quoted ?? "", "untrusted");
+          assert.notInclude(saved.quoted ?? "", "body secret!");
+          assert.deepInclude(doc, { body: "", title: fileName, actor: lead, owner: ownerId });
+          const file = JSON.parse(doc.file);
+          assert.deepInclude(file, { name: fileName, bytes: 12, mimeType: "text/plain" });
+          assert.deepStrictEqual(file.source, {
+            kind: "mail",
+            from: "ana@client.example",
+            date: "2026-11-15T09:00:00.000Z",
+            untrusted: true,
+          });
+          const fs = yield* FileSystem.FileSystem;
+          const config = yield* ServerConfig;
+          assert.strictEqual(
+            yield* fs.readFileString(`${config.attachmentsDir}/${file.attachmentId}.txt`),
+            "body secret!",
+          );
+          yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+          const shared = yield* askSave(attachmentId).pipe(Effect.flip);
+          assert.strictEqual(shared.message, Connections.SHARED_CONNECTIONS);
+          yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+          yield* sql`UPDATE kin_connections SET person_id = ${mateId} WHERE connection_id = ${connection}`;
+          const refused = yield* askSave("not-yours").pipe(Effect.flip);
+          assert.strictEqual(refused.reason, "not_found");
+          assert.lengthOf(yield* sql`SELECT 1 FROM kin_doc_versions WHERE org_id = ${orgId}`, 2);
+          const log = JSON.stringify(
+            yield* sql`SELECT * FROM kin_connection_calls WHERE tool_name = ${saveTool}`,
+          );
+          for (const outside of [
+            "Invoice for November",
+            "Please pay by Friday.",
+            "Quote for December",
+            "Could you send the quote?",
+          ]) {
+            assert.notInclude(log, outside);
+            assert.notInclude(saved.quoted ?? "", outside);
+          }
+        }),
+      ),
+  );
+});
 
 describe("KinConnections Microsoft", () => {
   it.effect("connects Outlook without a secret, reads it, and replies in its conversation", () =>

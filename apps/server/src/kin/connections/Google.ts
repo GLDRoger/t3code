@@ -16,8 +16,20 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText, messageBody } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
+import {
+  answeredWith,
+  attachmentBytes,
+  attachmentJsonLimit,
+  checkMailFile,
+  failure,
+  mailDate,
+  mailFileMimeType,
+  mailProvider,
+  unreached,
+  safeMailFileName,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
@@ -81,6 +93,7 @@ const api = Effect.fn("KinGoogle.api")(function* (
   url: string,
   params: Readonly<Record<string, string | ReadonlyArray<string> | undefined>> = {},
   write?: { readonly method: "POST" | "PATCH"; readonly json: unknown },
+  limit?: ReturnType<typeof attachmentJsonLimit>,
 ) {
   const base =
     write === undefined
@@ -98,7 +111,7 @@ const api = Effect.fn("KinGoogle.api")(function* (
     ),
   );
   const response = yield* http.execute(request).pipe(Effect.mapError(() => unreached(GOOGLE)));
-  return yield* vendorAnswer(GOOGLE, response);
+  return yield* vendorAnswer(GOOGLE, response, limit);
 });
 
 const headerValues = (message: unknown, name: string) =>
@@ -126,6 +139,7 @@ const receivedOf = (message: unknown) => {
 const messageOf =
   (full: boolean, watch = false) =>
   (message: unknown): MailMessage => ({
+    providerMessageId: text(field(message, "id")) ?? "",
     threadId: text(field(message, "threadId")) ?? "",
     from: header(message, "From"),
     fromAddress: addressesIn(header(message, "From"))[0] ?? null,
@@ -438,6 +452,47 @@ const saveEvent = Effect.fn("KinGoogle.saveEvent")(function* (
   return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
 });
 
+const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")(
+  function* (context, messageId, attachmentId) {
+    const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
+    const message = yield* api(
+      context,
+      url,
+      { format: "full", fields: "internalDate,payload" },
+      undefined,
+      attachmentJsonLimit("Attachment"),
+    );
+    const found = attachmentPart(field(message, "payload"), attachmentId);
+    if (found === undefined)
+      return yield* failure("protocol", "Kin couldn't find that mail attachment.");
+    const part = { ...found, type: mailFileMimeType(found.type) };
+    const problem = checkMailFile(part);
+    if (problem !== undefined) return yield* problem;
+    const name = safeMailFileName(part.name);
+    const data = part.inline
+      ? part.data
+      : text(
+          field(
+            yield* api(
+              context,
+              `${url}/attachments/${encodeURIComponent(attachmentId)}`,
+              {},
+              undefined,
+              attachmentJsonLimit(name),
+            ),
+            "data",
+          ),
+        );
+    return {
+      name,
+      mimeType: part.type,
+      bytes: yield* attachmentBytes(data, part, "base64url"),
+      from: addressesIn(header(message, "From"))[0] ?? null,
+      date: mailDate(header(message, "Date"), receivedOf(message)),
+    };
+  },
+);
+
 const google: MailVendor = {
   preset: "google",
   name: GOOGLE.name,
@@ -464,6 +519,7 @@ const google: MailVendor = {
       max: page.max,
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
+  attachment: attachmentOf,
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
       Effect.map((thread) => list(field(thread, "messages")).map(messageOf(true))),

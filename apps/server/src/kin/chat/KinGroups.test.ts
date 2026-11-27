@@ -523,10 +523,25 @@ it.effect(
           file_attachment_id, worker_id)
         VALUES (${orgId}, 'doc-record', 1, 'file', 'Report', 'created', 'Made', '[]', 'agent',
           ${tech}, 'worker', 'kin-doc-job:wk-doc:report.pdf', 0, 'kin-chat-docfile', 'wk-doc')`;
+      for (const [id, person] of [
+        ["kin-chat-mail-company", null],
+        ["kin-chat-mail-personal", priya.personId],
+      ] as const) {
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, title, kind,
+          summary, operations_json, actor_kind, actor_id, via, origin_key, created_at,
+          file_attachment_id, worker_id, file_json)
+        VALUES (${orgId}, ${id}, 1, 'file', 'Report', 'created', 'Saved', '[]', 'agent',
+          ${tech}, 'lead', ${id}, 0, ${id}, ${id},
+          ${JSON.stringify({ source: { kind: "mail", ...(person === null ? {} : { privateTo: person }) } })})`;
+      }
       yield* sql`PRAGMA foreign_keys = ON`;
       assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-docfile"));
       for (const who of [priya, sam])
         assert.isFalse(yield* chats.attachmentReadable([who], "kin-chat-docfile"));
+      assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-mail-company"));
+      assert.isFalse(yield* chats.attachmentReadable([priya], "kin-chat-mail-company"));
+      assert.isTrue(yield* chats.attachmentReadable([priya], "kin-chat-mail-personal"));
+      assert.isFalse(yield* chats.attachmentReadable([owner, sam], "kin-chat-mail-personal"));
       // A picture's file is read by whoever reads the reply it was posted on, until redrawn
       // where only the owner reads.
       const posted = (version: number, image: string) =>
