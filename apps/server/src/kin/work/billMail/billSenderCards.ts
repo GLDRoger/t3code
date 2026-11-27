@@ -90,6 +90,7 @@ export const offer = Effect.fn("KinBillSenders.offerCards")(function* (
               seen,
               ...(knownBiller === 1 ? ["Kin filed a bill from this sender before."] : []),
               "Approving lets mail from this exact address, when its mail server vouches for it, become suggested expenses.",
+              "Approving also reads the mail Kin held from it in the last 30 days.",
               "Nothing counts in Money until you keep it.",
             ].join(" "),
             options: plans.map((plan) => ({ label: decisionLabel(plan.state) })),
