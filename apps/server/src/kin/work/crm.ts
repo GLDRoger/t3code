@@ -802,6 +802,17 @@ const capped = Effect.fn("KinCrm.capped")(function* (
   return { records: rows.map((row) => toRecord(row, now)), total: count?.total ?? 0 };
 });
 
+const CLIENT_LINES = new Set([
+  "address",
+  "source",
+  "tags",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+]);
+
 /**
  * One timeline from the change logs of an anchor and everything pointing at it: a client's
  * contacts, projects and entries, or a project's entries. Newest first, before `beforeSeq`.
@@ -824,6 +835,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
       ? sql`r.project_id = ${anchor.recordId}`
       : sql`r.party_id = ${anchor.recordId}`;
   const teammateProject = viewer._tag === "people" && listOf(anchor.registerId) === "projects";
+  const teammateClient = viewer._tag === "people" && anchor.registerId === "clients";
   const filter = sql.and([
     sql`r.org_id = ${orgId}`,
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
@@ -857,37 +869,46 @@ export const history = Effect.fn("KinCrm.history")(function* (
   }>`SELECT c.seq, c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId", c.via, c.kind,
       c.fields_json AS "fieldsJson", r.record_id AS "recordId", r.key, r.title,
       r.register_id AS "registerId", c.asked_by_person_id AS "askedBy"
-      ${teammateProject ? sql`, ${teamChangeFields(sql, viewer)} AS "teamFields"` : sql``}
+      ${teammateProject || teammateClient ? sql`, ${teamChangeFields(sql, viewer)} AS "teamFields"` : sql``}
       ${input.sinceAt === undefined ? sql`` : sql`, (SELECT COUNT(*) ${from}) AS total`}
     ${from} ORDER BY c.seq DESC LIMIT ${input.limit}`;
   const stages = rows.some((row) => row.registerId === "deals")
     ? (yield* stagesOf(orgId)).stages
     : [];
-  const items = rows.map((row): KinWorkHistoryItem => ({
-    seq: row.seq,
-    at: iso(row.at),
-    by: actorOf(row.actorKind, row.actorId),
-    ...(input.excludeBy !== undefined && row.askedBy !== null
-      ? { askedBy: KinPersonId.make(row.askedBy) }
-      : {}),
-    via: row.via,
-    kind: row.kind,
-    fields: parseChanges(row.fieldsJson)
-      .filter((change) =>
-        row.teamFields === undefined
-          ? change.field.trim() !== ""
-          : (row.teamFields ?? "").split(",").includes(change.field),
-      )
-      // A deal's stage is the company's id; the line reads its name.
-      .map((change) =>
-        row.registerId === "deals" && change.field === "stage" ? stageLine(stages, change) : change,
-      ),
-    record: {
-      ...ref(row.recordId, row.key, row.title),
-      list: workListOf(row.registerId),
-      ...listNameOf(row.registerId),
-    },
-  }));
+  const items = rows.map((row): KinWorkHistoryItem => {
+    const allFields =
+      row.teamFields === undefined || (teammateClient && row.registerId === "deals");
+    const clientFields =
+      teammateClient && (row.recordId === anchor.recordId || row.registerId === "contacts");
+    const teamFields = row.teamFields?.split(",") ?? [];
+    return {
+      seq: row.seq,
+      at: iso(row.at),
+      by: actorOf(row.actorKind, row.actorId),
+      ...(input.excludeBy !== undefined && row.askedBy !== null
+        ? { askedBy: KinPersonId.make(row.askedBy) }
+        : {}),
+      via: row.via,
+      kind: row.kind,
+      fields: parseChanges(row.fieldsJson)
+        .filter((change) =>
+          allFields
+            ? change.field.trim() !== ""
+            : teamFields.includes(change.field) || (clientFields && CLIENT_LINES.has(change.field)),
+        )
+        // A deal's stage is the company's id; the line reads its name.
+        .map((change) =>
+          row.registerId === "deals" && change.field === "stage"
+            ? stageLine(stages, change)
+            : change,
+        ),
+      record: {
+        ...ref(row.recordId, row.key, row.title),
+        list: workListOf(row.registerId),
+        ...listNameOf(row.registerId),
+      },
+    };
+  });
   const total = input.sinceAt === undefined ? undefined : (rows[0]?.total ?? 0);
   return { items, total };
 });

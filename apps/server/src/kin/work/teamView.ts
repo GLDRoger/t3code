@@ -394,18 +394,26 @@ export const clientDocMoneySeen = (
  * `personSees` shows them, less anything labelled itself or through its client or project, tasks
  * included, and less money without the Money switch. Tasks keeps `personSees`.
  */
-export const crmSees = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
+export const crmSees = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId,
+  includeSharedLists = false,
+) =>
   sql`(${personSees(sql, personId)} AND NOT ${keySensitive(sql)}
-    AND ${clientMoneySeen(sql, personId)})`;
+    AND (${clientMoneySeen(sql, personId)}${includeSharedLists ? sql` OR ${onTeamList(sql)}` : sql``}))`;
 
 /** `crmSees` for every one of a viewer's people; the owner level reads everything. */
-export const crmSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+export const crmSeenBy = (
+  sql: SqlClient.SqlClient,
+  viewer: KinViewer,
+  { includeSharedLists = false } = {},
+) =>
   sql`(${
     viewer._tag === "ownerLevel"
       ? sql`1 = 1`
       : viewer.people.length === 0
         ? sql`0 = 1`
-        : sql.and(viewer.people.map((person) => crmSees(sql, person)))
+        : sql.and(viewer.people.map((person) => crmSees(sql, person, includeSharedLists)))
   } AND ${keyedAs(sql, viewer)})`;
 
 /** `crmSees` over another alias of `kin_records`, such as the directory's `c`. */

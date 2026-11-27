@@ -5003,14 +5003,101 @@ const places = (clients: number, docs: number, money: number) =>
 const flipped = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
   Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message]));
 
+it.effect("a member's client history uses the shared list's field permissions", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${ownerId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya' WHERE person_id = ${mateId}`;
+    yield* places(1, 0, 0);
+    const client = yield* OwnerClients.createParty([rhea], {
+      orgId,
+      name: "Juniper Cold Chain",
+      clientRequestId: "juniper",
+    });
+    const hidden = yield* OwnerClients.createProject([rhea], {
+      orgId,
+      party: client.key,
+      name: "Juniper Cold Chain private project",
+      sensitive: true,
+      clientRequestId: "juniper-private-project",
+    });
+    const privateFields = [
+      "confirmed",
+      "handedBack",
+      "alsoOn",
+      "dueAllDay",
+      "email",
+      "phone",
+      "address",
+    ];
+    const def = presetDefinition("expenses", "INR");
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'dispatches', 'Dispatches', 'DSP', 0, 0, ${JSON.stringify({
+        ...def,
+        fields: privateFields.map((key) => ({ key, label: key, type: "text", sensitive: true })),
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+    const row = yield* ownerTask("Juniper Cold Chain dispatch", {
+      list: "dispatches",
+      partyId: client.recordId,
+      owner: { _tag: "person", personId: mateId },
+    });
+    const fields = Object.fromEntries(privateFields.map((field) => [field, `Private ${field}`]));
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: row.key,
+      rev: row.rev,
+      title: "Juniper Cold Chain dispatch reviewed",
+      fields,
+    });
+    const input = { orgId, key: client.key };
+    const history = yield* OwnerClients.history([zoya], input);
+    const updateFields = (items: typeof history.items) =>
+      items.find((item) => item.record.key === row.key && item.kind === "updated")?.fields;
+    const ownerHistory = yield* OwnerClients.history([rhea], input);
+    assert.include(
+      ownerHistory.items.map((item) => item.record.key),
+      hidden.key,
+    );
+    assert.notInclude(
+      history.items.map((item) => item.record.key),
+      hidden.key,
+    );
+    assert.sameMembers(
+      updateFields(ownerHistory.items)!.map((field) => field.field),
+      ["title", ...privateFields],
+    );
+    const sheet = yield* OwnerWork.get([zoya], { orgId, key: row.key });
+    const sheetFields = sheet.changes.find((change) => change.kind === "updated")?.fields;
+    assert.deepStrictEqual(
+      sheetFields?.map((field) => field.field),
+      ["title"],
+    );
+    yield* places(1, 0, 1);
+    const withMoney = yield* OwnerClients.history([zoya], input);
+    assert.sameMembers(
+      updateFields(withMoney.items)!.map((field) => field.field),
+      ["title", "confirmed", "handedBack", "alsoOn", "dueAllDay"],
+    );
+    assert.deepStrictEqual(updateFields(history.items), sheetFields);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a member sees a place only while it is on, and nothing of it while it is off", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
     const client = (yield* records.create(orgId, ownerWrites, {
       list: "clients",
       originKey: "client",
-      title: "Invented Acme",
+      title: "Juniper Cold Chain",
       owner: { _tag: "person", personId: ownerId },
       fields: { terms: "Invented net 30" },
     })).row;
@@ -5020,7 +5107,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       title: "Invented Priya",
       owner: { _tag: "person", personId: ownerId },
       partyId: client.recordId,
-      fields: { email: "priya@acme.example" },
+      fields: { email: "priya@juniper.example" },
     });
     yield* records.create(orgId, ownerWrites, {
       list: "clients",
@@ -5065,16 +5152,32 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     const parties = yield* OwnerClients.parties([mate], { orgId });
     assert.deepStrictEqual(
       parties.parties.map((party) => party.name),
-      ["Invented Acme"],
+      ["Juniper Cold Chain"],
     );
     assert.strictEqual(parties.parties[0]!.lastContactAt, null);
     const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
     assert.deepStrictEqual(
       page.contacts.map((one) => [one.name, one.email]),
-      [["Invented Priya", "priya@acme.example"]],
+      [["Invented Priya", "priya@juniper.example"]],
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES (${meera.personId}, ${orgId}, 'meera', 'Meera', 'co_owner', ${at})`;
+    yield* OwnerClients.updateContact([meera], {
+      orgId,
+      key: priya.row.key,
+      rev: priya.row.rev,
+      email: "dispatch@juniper.example",
+    });
+    const history = yield* OwnerClients.history([mate], { orgId, key: client.key });
+    assert.deepInclude(
+      history.items.find((item) => item.record.key === priya.row.key && item.kind === "updated"),
+      {
+        by: { _tag: "person", personId: meera.personId },
+        fields: [{ field: "email", from: "priya@juniper.example", to: "dispatch@juniper.example" }],
+      },
+    );
     // Search finds the contact with its client, whose page opens for it.
     assert.deepStrictEqual(
       (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
@@ -5113,7 +5216,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     yield* records.create(orgId, ownerWrites, {
       list: "projects",
       originKey: "acme project",
-      title: "Invented Acme app",
+      title: "Juniper Cold Chain app",
       owner: { _tag: "person", personId: mateId },
       partyId: client.recordId,
     });
@@ -5129,11 +5232,10 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     const named = yield* OwnerWork.get([mate], { orgId, key: priya.row.key });
     assert.strictEqual(named.title, "Invented Priya");
-    assert.notInclude(JSON.stringify(named), "priya@acme");
+    assert.notInclude(JSON.stringify(named), "priya@juniper");
     // Run 4: Money counted a lead's coming-up dates, then refused to list them. One read, one
     // rule: the list holds what the count counted, and not the owner's own dates. Money's dates
     // are money's: a task due as soon is on neither.
-    const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
       VALUES (${orgId}, 'dates', 'Dates', 'DT', 0, 0, ${JSON.stringify(presetDefinition("dates", "INR"))})`;
