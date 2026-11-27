@@ -17,7 +17,11 @@ type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
 export const MARKED_BILL_PAID = "Marked paid";
 export const billPaidFactKey = (bankKey: string) => `bill_paid_seen:${bankKey}`;
 
-const openBills = Effect.fn("KinDebitBill.openBills")(function* (orgId: KinOrgId, def: ListDef) {
+const eligibleExpenses = Effect.fn("KinDebitBill.eligibleExpenses")(function* (
+  orgId: KinOrgId,
+  def: ListDef,
+  amounts?: ReadonlyArray<number>,
+) {
   const sql = yield* SqlClient.SqlClient;
   const home = yield* homeCurrency(orgId);
   const zone = yield* ownerZone(orgId);
@@ -31,14 +35,19 @@ const openBills = Effect.fn("KinDebitBill.openBills")(function* (orgId: KinOrgId
     dueAt: number | null;
     vendor: string | null;
     repeats: number;
+    state: string;
     rev: number;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.rev,
+  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.rev, r.state,
       COALESCE(r.currency, ${home}) AS currency, r.amount_minor AS "amountMinor",
       r.date_at AS "dateAt", COALESCE(r.due_at, r.date_at) AS "dueAt",
       json_extract(r.fields_json, '$.vendor') AS vendor, (r.repeat_json IS NOT NULL) AS repeats
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'open'
-      AND r.amount_minor IS NOT NULL AND ${keptEntry(sql)} AND NOT ${partnerFunded(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
+      ${
+        amounts === undefined
+          ? sql`AND r.state = 'open' AND r.amount_minor IS NOT NULL`
+          : sql`AND r.state IN ('open', 'done') AND r.amount_minor IN ${sql.in(amounts)}`
+      } AND ${keptEntry(sql)} AND NOT ${partnerFunded(sql)}
       AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
         WHERE e.org_id = r.org_id AND e.target_record_id = r.record_id)
       AND NOT EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_records b
@@ -57,12 +66,40 @@ const openBills = Effect.fn("KinDebitBill.openBills")(function* (orgId: KinOrgId
     repeats: row.repeats === 1,
     day: day(row.dateAt),
     due: day(row.dueAt),
-    open: true,
+    open: row.state === "open",
     rev: row.rev,
   }));
 });
 
 const amountKey = (currency: string, minor: number) => `${currency}:${minor}`;
+
+export const expenseContests = Effect.fn("KinDebitBill.expenseContests")(function* (
+  orgId: KinOrgId,
+  def: ListDef,
+  repayments: ReadonlyArray<{ debit: OpenDebit; score: number }>,
+) {
+  const contests = new Map<string, Effect.Success<ReturnType<typeof eligibleExpenses>>[number]>();
+  if (repayments.length === 0) return contests;
+  const amounts = [...new Set(repayments.map(({ debit }) => debit.amountMinor))];
+  const byAmount = Map.groupBy(yield* eligibleExpenses(orgId, def, amounts), (expense) =>
+    amountKey(expense.currency, expense.amountMinor),
+  );
+  for (const { debit, score } of repayments) {
+    const ranked = (byAmount.get(amountKey(debit.currency, debit.amountMinor)) ?? [])
+      .flatMap((expense) => {
+        const candidate = expenseCandidate(debit.row, expense, debit.currency);
+        return candidate === undefined ? [] : [{ expense, score: candidate.score }];
+      })
+      .sort((a, b) => b.score - a.score);
+    const first = ranked[0];
+    if (
+      first !== undefined &&
+      levelWithBest([Math.max(first.score, score), first.score], (value) => value).length === 2
+    )
+      contests.set(debit.recordId, first.expense);
+  }
+  return contests;
+});
 
 const matchAll = Effect.fn("KinDebitBill.matchAll")(function* (
   orgId: KinOrgId,
@@ -73,7 +110,7 @@ const matchAll = Effect.fn("KinDebitBill.matchAll")(function* (
   if (debits.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
   const today = dayIn(at, yield* ownerZone(orgId));
-  const bills = yield* openBills(orgId, def);
+  const bills = yield* eligibleExpenses(orgId, def);
   if (bills.length === 0) return [];
   const byAmount = Map.groupBy(bills, (one) => amountKey(one.currency, one.amountMinor));
   const states = bankStates(def);

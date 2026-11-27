@@ -8,6 +8,7 @@ import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
+import { expenseContests } from "./debitBill.ts";
 import { openEntries } from "./invoiceCredits.ts";
 import {
   daysBetween,
@@ -37,6 +38,13 @@ export type RepaidMatch = {
   readonly owedCount: number;
   readonly repays: ReadonlyArray<RepaidItem> | undefined;
   readonly marked: string | undefined;
+  readonly expense?: {
+    readonly recordId: string;
+    readonly key: string;
+    readonly rev: number;
+    readonly open: boolean;
+    readonly day: string | null;
+  };
   /** It adds up to nothing and can't have repaid anything: older than what they are owed, or a salary. */
   readonly noLine: boolean;
   /** A card marked it repaid and a person set it back to Unexplained: the owner's no. */
@@ -85,7 +93,8 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
             AND json_extract(w.state_json, '$.outcome.title') = ${MARKED_REPAID})
       ORDER BY c.record_id`).map((one) => one.recordId),
   );
-  return debits.flatMap((debit): Array<RepaidMatch> => {
+  const offers: Array<{ debit: OpenDebit; score: number }> = [];
+  const matches = debits.flatMap((debit): Array<RepaidMatch> => {
     const plain = suggest(debit.row, { ownAccounts, known: [], bank: null });
     // A move between the company's own accounts that names a partner repays nobody.
     if (plain.action === "transfer") return [];
@@ -113,7 +122,8 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
       const amountMinor = one.amountMinor - (tiedElsewhere.get(one.day) ?? 0);
       return amountMinor !== 0 && markedByHand(debit.row, debit.currency, { ...one, amountMinor });
     })?.day;
-    const found = repayment(debit.row, partner, 0, true)?.candidate.repays;
+    const candidate = repayment(debit.row, partner, 0, true)?.candidate;
+    const found = candidate?.repays;
     const repays = found?.flatMap((one) =>
       one.day === undefined || one.rev === undefined
         ? []
@@ -129,6 +139,14 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     );
     const exact = repays !== undefined && repays.length === found?.length ? repays : undefined;
     const oldest = partner.owed[0]!.day;
+    if (
+      candidate !== undefined &&
+      exact !== undefined &&
+      marked === undefined &&
+      !setBack.has(debit.recordId) &&
+      debit.date <= today
+    )
+      offers.push({ debit, score: candidate.score });
     return [
       {
         debit,
@@ -144,6 +162,13 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
         ahead: debit.date > today,
       },
     ];
+  });
+  const contests = yield* expenseContests(orgId, def, offers);
+  return matches.map((match): RepaidMatch => {
+    const expense = contests.get(match.debit.recordId);
+    if (expense === undefined) return match;
+    const { recordId, key, rev, open, day } = expense;
+    return { ...match, expense: { recordId, key, rev, open, day } };
   });
 });
 
