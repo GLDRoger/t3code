@@ -28,9 +28,11 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
+import * as Scheduler from "effect/Scheduler";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -307,6 +309,7 @@ const identity = Layer.mock(KinIdentity)({
 type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & { readonly widgetId: string };
 /** What a test runs once: as the gate is asked for a card, before it is bound; before the next key is stored; before the next sign-in is read. */
 type Hooks = {
+  readonly memorySignIns?: boolean;
   beforeCard?: Effect.Effect<void> | undefined;
   beforeKey?: Effect.Effect<void> | undefined;
   beforeSignInRead?: Effect.Effect<void> | undefined;
@@ -323,12 +326,21 @@ const secretsFor = (hooks: Hooks) =>
     ConnectionSecrets.KinConnectionSecrets,
     Effect.gen(function* () {
       const real = yield* ConnectionSecrets.KinConnectionSecrets;
+      const signIns = new Map<string, Redacted.Redacted<ConnectionSecrets.SignInSecret>>();
+      const getSignIn = hooks.memorySignIns
+        ? (id: string) => Effect.sync(() => Option.fromNullishOr(signIns.get(id)))
+        : real.getSignIn;
+      const setSignIn = hooks.memorySignIns
+        ? (id: string, secret: Redacted.Redacted<ConnectionSecrets.SignInSecret>) =>
+            Effect.sync(() => void signIns.set(id, secret))
+        : real.setSignIn;
       return ConnectionSecrets.KinConnectionSecrets.of({
         ...real,
         set: (connectionId, key) =>
           once(hooks, "beforeKey").pipe(Effect.andThen(real.set(connectionId, key))),
         getSignIn: (connectionId) =>
-          once(hooks, "beforeSignInRead").pipe(Effect.andThen(real.getSignIn(connectionId))),
+          once(hooks, "beforeSignInRead").pipe(Effect.andThen(getSignIn(connectionId))),
+        setSignIn,
       });
     }),
   ).pipe(Layer.provide(ConnectionSecrets.layer));
@@ -2202,7 +2214,7 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
 };
 
 const withVendor = <A, E>(
-  options: { readonly s256?: boolean },
+  options: { readonly s256?: boolean; readonly memorySignIns?: boolean },
   body: (
     vendor: ReturnType<typeof makeVendor>,
     cards: Array<Card>,
@@ -2213,7 +2225,7 @@ const withVendor = <A, E>(
     const fake = yield* makeFake(BASE);
     const vendor = makeVendor(fake, options);
     const cards: Array<Card> = [];
-    const hooks: Hooks = {};
+    const hooks: Hooks = options;
     return yield* Effect.gen(function* () {
       yield* seed;
       return yield* body(vendor, cards, hooks);
@@ -2355,6 +2367,56 @@ describe("KinConnections sign-in", () => {
     ),
   );
 
+  it.effect("refreshes another connection while a refresh is held", () =>
+    withVendor({ memorySignIns: true }, (vendor) =>
+      Effect.gen(function* () {
+        const { connection } = yield* signInSentry(vendor);
+        const google = yield* connectGoogle(vendor);
+        yield* markRead(connection.connectionId, ["query"]);
+        yield* markRead(google.connectionId, ["mail_search"]);
+        yield* TestClock.adjust("2 hours");
+
+        const arrived = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const released = Promise.withResolvers<void>();
+        yield* Deferred.await(release).pipe(
+          Effect.andThen(Effect.sync(() => released.resolve())),
+          Effect.forkChild,
+        );
+        vendor.vendor.hold = {
+          arrived: () => Deferred.doneUnsafe(arrived, Effect.void),
+          release: released.promise,
+          refuse: true,
+        };
+        const first = yield* call(connection.connectionId, "query").pipe(
+          Effect.flip,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(arrived);
+        const read = yield* Deferred.make<string>();
+        const second = yield* sendCall("mail_search", { query: "invoice" }).pipe(
+          Effect.tap((answer) => Deferred.succeed(read, answer.quoted ?? "")),
+          Effect.provideService(Scheduler.Scheduler, new Scheduler.MixedScheduler("sync")),
+          Effect.forkChild({ startImmediately: true }),
+        );
+
+        // The fake HTTP and SQLite complete on this turn's microtask queue.
+        yield* Effect.callback((resume) => {
+          setImmediate(() => resume(Effect.void));
+        });
+        const readBeforeRelease = yield* Deferred.isDone(read);
+        yield* Deferred.succeed(release, undefined);
+        assert.isTrue(
+          readBeforeRelease,
+          "Google finished reading while Sentry was still refreshing",
+        );
+        assert.include(yield* Deferred.await(read), "Invoice for November");
+        yield* Fiber.join(second);
+        assert.include((yield* Fiber.join(first)).message, "sign in again");
+      }),
+    ),
+  );
+
   it.effect("refreshes once for calls made together, and asks to sign in again when refused", () =>
     withVendor({}, (vendor, cards, hooks) =>
       Effect.gen(function* () {
@@ -2367,6 +2429,12 @@ describe("KinConnections sign-in", () => {
           concurrency: "unbounded",
         });
         assert.strictEqual(vendor.vendor.refreshes, 1);
+        assert.deepStrictEqual(
+          vendor.vendor.tokenForms
+            .filter((form) => form.get("grant_type") === "refresh_token")
+            .map((form) => form.get("refresh_token")),
+          ["rt-0"],
+        );
         for (const result of both) assert.include(result.quoted ?? "", "pageviews: 42");
 
         vendor.vendor.revoked = true;

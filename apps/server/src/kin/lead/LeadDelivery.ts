@@ -32,7 +32,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { sendClientMessageId } from "../reply/turnVoice.ts";
-import { decodeCardTapAnswer } from "./cardTapDeliveries.ts";
+import { cardTapFailureId, decodeCardTapAnswer } from "./cardTapDeliveries.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 
 export type DeliveryKind = "reminder" | "routine" | "scheduled_task" | "card_tap";
@@ -259,13 +259,17 @@ const make = Effect.gen(function* () {
   const hub = yield* Effect.serviceOption(KinChatHub);
   const cards = yield* makeCardWriter;
 
-  const record = Effect.fn("KinLeadDelivery.record")(function* (delivery: Delivery, now: number) {
+  const record = Effect.fn("KinLeadDelivery.record")(function* (
+    delivery: Delivery,
+    now: number,
+    status: "pending" | "fallback" = "pending",
+  ) {
     const state = yield* encodeJson(delivery.widget.state);
     yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id, widget_id,
         widget_type, state_json, fallback_body, deadline_at, status, message_id, created_at, updated_at)
       VALUES (${delivery.orgId}, ${delivery.eventId}, ${delivery.kind}, ${delivery.agentId},
         ${delivery.chatId}, ${delivery.widget.widgetId}, ${delivery.widget.type}, ${state},
-        ${delivery.fallbackBody}, ${delivery.deadlineAt}, 'pending', NULL, ${now}, ${now})
+        ${delivery.fallbackBody}, ${delivery.deadlineAt}, ${status}, NULL, ${now}, ${now})
       ON CONFLICT (org_id, event_id) DO NOTHING`;
   });
 
@@ -290,7 +294,7 @@ const make = Effect.gen(function* () {
     if (delivery.kind === "card_tap") {
       if (Option.isNone(chat)) return;
       const answer = yield* decodeCardTapAnswer(delivery.widget.state);
-      const messageId = KinMessageId.make(`kin-card-tap-failed:${delivery.eventId}`);
+      const messageId = cardTapFailureId(delivery.eventId);
       if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
       const reopened = yield* chat.value.reopenAnswered({
         ...answer,
@@ -513,7 +517,9 @@ const make = Effect.gen(function* () {
     let lapsed = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        const [pending] = yield* sql`SELECT 1 FROM kin_lead_deliveries
+        const [pending] = yield* sql<{
+          rowId: number;
+        }>`SELECT rowid AS "rowId" FROM kin_lead_deliveries
           WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND status = 'pending'
           ORDER BY event_id`;
         if (pending === undefined) return;
@@ -529,9 +535,24 @@ const make = Effect.gen(function* () {
           FROM kin_events e
           LEFT JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
           WHERE e.org_id = ${orgId} AND e.event_id = ${row.eventId} ORDER BY e.event_id`;
-        const finish = (status: "delivered" | "fallback", messageId: string | null) =>
-          sql`UPDATE kin_lead_deliveries SET status = ${status}, message_id = ${messageId},
+        const finish = Effect.fnUntraced(function* (
+          status: "delivered" | "fallback",
+          messageId: string | null,
+        ) {
+          yield* sql`UPDATE kin_lead_deliveries SET status = ${status}, message_id = ${messageId},
             updated_at = ${now} WHERE org_id = ${orgId} AND event_id = ${row.eventId}`;
+          if (status !== "delivered" || row.kind !== "card_tap" || Option.isNone(chat)) return;
+          // Several taps can be recorded in the same millisecond. Row IDs reflect insertion order.
+          const earlier = yield* sql<{ eventId: KinEventId }>`SELECT event_id AS "eventId"
+            FROM kin_lead_deliveries WHERE org_id = ${orgId} AND chat_id = ${row.chatId}
+              AND widget_id = ${row.widgetId} AND kind = 'card_tap' AND status = 'fallback'
+              AND rowid < ${pending.rowId}`;
+          yield* chat.value.dismissCardTapFailures({
+            orgId,
+            chatId: delivery.chatId,
+            eventIds: earlier.map(({ eventId }) => eventId),
+          });
+        });
         const fallback = Effect.gen(function* () {
           yield* fallbackIn(delivery, now);
           yield* finish("fallback", null);
@@ -682,7 +703,13 @@ const make = Effect.gen(function* () {
     ),
     fallback: Effect.fn("KinLeadDelivery.fallback")((delivery) =>
       Effect.gen(function* () {
-        yield* fallbackIn(delivery, yield* Clock.currentTimeMillis);
+        const now = yield* Clock.currentTimeMillis;
+        const fallback = fallbackIn(delivery, now);
+        if (delivery.kind === "card_tap")
+          yield* sql.withTransaction(
+            fallback.pipe(Effect.andThen(record(delivery, now, "fallback"))),
+          );
+        else yield* fallback;
       }).pipe(wrap(delivery.orgId)),
     ),
     settle,
