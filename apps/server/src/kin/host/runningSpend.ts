@@ -72,7 +72,7 @@ const runningSpendNotice = (input: {
   const correction =
     input.correctedFrom === undefined
       ? ""
-      : `This corrects the earlier estimate of ${input.correctedFrom} units. `;
+      : `An earlier notice put it at ${input.correctedFrom} units; that count was too high. `;
   return `${input.task ? `A task ${input.agent} started` : input.agent} has used ${share} ${day} in one go\n\n${what} has been running ${lasted(input.ranMs)} and has used at least ${input.units} units so far, ${input.step.words} ${day} for ${whose}${input.limitSet ? "" : " (you have set no daily limit)"}. ${correction}It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open ${input.task ? `its card in ${input.agent}'s chat` : `${input.agent}'s chat`}.`;
 };
 

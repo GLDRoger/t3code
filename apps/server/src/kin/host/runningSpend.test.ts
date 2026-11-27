@@ -200,6 +200,9 @@ it.effect(
       const figures = (yield* notices).slice(-2);
       assert.include(figures[0]?.body, "has used at least 400k units so far");
       assert.include(figures[1]?.body, "has used at least 350k units so far");
-      assert.include(figures[1]?.body, "This corrects the earlier estimate of 400k units.");
+      assert.include(
+        figures[1]?.body,
+        "An earlier notice put it at 400k units; that count was too high.",
+      );
     }).pipe(Effect.provide(services)),
 );
