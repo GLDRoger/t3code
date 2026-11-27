@@ -4100,7 +4100,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       const notYet = yield* Effect.flip(askHerself(early, "Tidewater: one survey day", "C-8"));
       // Her turns are told of a draft waiting on her redraft only while one does.
       const WAITING = "# Drafts back from Changes first (not redrafted yet)";
-      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card.`;
+      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card and tells Zoya Sheikh itself, so nothing needs relaying to Zoya Sheikh.`;
       assert.notInclude(yield* team.promptOf(early.wakeupId, chatOf("chief")), WAITING);
       assert.strictEqual(
         notYet.message,
