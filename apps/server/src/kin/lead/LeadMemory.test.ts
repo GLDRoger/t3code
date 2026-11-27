@@ -1064,7 +1064,7 @@ it.live(
               supersedes: KinMemoryItemId.make("no-such-item"),
             })
             .pipe(Effect.flip)).message,
-          "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item.",
+          "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item; then your reply says the old one still stands beside it.",
         );
         assert.strictEqual(
           (yield* service

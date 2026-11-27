@@ -1,8 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`every seat's options match Kin byte for byte > bills 1`] = `"11321abce0cec0b4c78aecd8288fa772f3da5098a1c3defbbbeab64d8c7be343"`;
+exports[`every seat's options match Kin byte for byte > bills 1`] = `"ae2c8c0f02058541e85788a8b2f45fb5ec312c905110dd16388444c545fa0616"`;
 
-exports[`every seat's options match Kin byte for byte > bills without lookup 1`] = `"b71cf6739fb5c43b52dfdf059b0cb30be4c6e3c767b438e63db23143b879b075"`;
+exports[`every seat's options match Kin byte for byte > bills without lookup 1`] = `"30a3e21d0cc4529505f6c9c0d55a15d9887faa008b8b879cd7acc365272d800b"`;
 
 exports[`every seat's options match Kin byte for byte > delegated 1`] = `"bedb0c0da98aea45f5f50134e988ae1cb0ce4d632d04fc107b0f4a95171ce0a1"`;
 
@@ -10,17 +10,17 @@ exports[`every seat's options match Kin byte for byte > delegated without lookup
 
 exports[`every seat's options match Kin byte for byte > dream 1`] = `"7a15b18823863542dfbb28ceb5fbb88fde6a2f57d15b70d911ac1f4d0e5854e6"`;
 
-exports[`every seat's options match Kin byte for byte > owner with lookup 1`] = `"95a56b43ee15630331f987af8ca83ff41bead8ab684b535358a9749442de24c6"`;
+exports[`every seat's options match Kin byte for byte > owner with lookup 1`] = `"f5ddffe63b7eb6da440b754623b6d96ccfa519d72cbf78b380cf83b8a06929c1"`;
 
-exports[`every seat's options match Kin byte for byte > owner without lookup 1`] = `"cfa6171ffaacd17a0583c66ea49ea780c4d19dcb3fc65e7149793f380f30c1da"`;
+exports[`every seat's options match Kin byte for byte > owner without lookup 1`] = `"08c18efb24e0a9614a3ed50569264791f8a566b9930cba9c95715bed3abe47bb"`;
 
 exports[`every seat's options match Kin byte for byte > review 1`] = `"e8bf99c959c5de4e4e266edc91de2feffb029a57afc8ea2bf3d0cd45b706d024"`;
 
 exports[`every seat's options match Kin byte for byte > review without lookup 1`] = `"ebd1ded9ba7e50f62d9d98ad6be9b9befaa704b3caf6d94a496573f71007672e"`;
 
-exports[`every seat's options match Kin byte for byte > shared 1`] = `"ed87bd5bfd2a34bd3dba5b76ba366f66d5c356f56b00d8b30b81a731a0a72390"`;
+exports[`every seat's options match Kin byte for byte > shared 1`] = `"63b837db7a611c54a0491b81b8a7072263c299fe577cf0d9144e9906eb598628"`;
 
-exports[`every seat's options match Kin byte for byte > shared without lookup 1`] = `"938dff4cbe31a2a04ae8d12d679330600085173366edda3fa651c31b599e4d80"`;
+exports[`every seat's options match Kin byte for byte > shared without lookup 1`] = `"1efda249ef8203e767f49f8cde52c7d3ee23ca1064574fae5372d1894a3e4281"`;
 
 exports[`every seat's options match Kin byte for byte > triage 1`] = `"1defebe09b6d04791f7f341cf716949e6ca0b3f538064db58b73f02d2d9cf959"`;
 
