@@ -1,4 +1,5 @@
 import { scanKinDocFences } from "./kinDocFences.ts";
+import { KIN_FIGURE_SCHEME } from "./kinEmbed.ts";
 
 /**
  * How an agent's message is laid out, read from its own text so web, phone, the chat list and
@@ -23,6 +24,7 @@ const BOLD_LINE = /^\s{0,3}(?:\*\*|__)(.+?)(?:\*\*|__)\s*:?\s*$/;
 const LABEL_LINE = /^\s{0,3}([A-Za-z][A-Za-z ]{1,30}):\s*$/;
 const LIST_ITEM = /^\s{0,3}(?:[-*+]|\d+[.)])\s+\S/;
 const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+const QUOTE_LINE = /^\s{0,3}>/;
 const GREETING =
   /^(?:good (?:morning|afternoon|evening)|morning|afternoon|evening|hi|hello|hey)\b[^\n]{0,60}$/i;
 
@@ -84,6 +86,34 @@ export function kinPageShape(body: string): KinPageShape {
   }
   if (items >= 4) return "page";
   return body.length > 600 && paragraphs >= 3 ? "page" : "bubble";
+}
+
+/** A reply with more paragraphs than this stays in one message. */
+export const KIN_REPLY_BUBBLES_MAX = 4;
+
+/** A finished reply's plain paragraphs, or its whole text when it reads as a page. */
+export function kinReplyBubbles(body: string): ReadonlyArray<string> {
+  const text = body.trim();
+  if (text === "") return [];
+  if (/^(?:\t| {4})[ \t]*\S/m.test(body)) return [body.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd()];
+  if (scanKinDocFences(text).found.length > 0 || text.includes(KIN_FIGURE_SCHEME)) return [text];
+  for (const line of text.split("\n")) {
+    if (
+      FENCE.test(line) ||
+      TABLE_RULE.test(line) ||
+      LIST_ITEM.test(line) ||
+      QUOTE_LINE.test(line) ||
+      line.startsWith("Subject:") ||
+      headingOf(line) !== null
+    )
+      return [text];
+  }
+  const parts = text
+    .split(/\r?\n(?:[ \t]*\r?\n)+/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+  if (parts.some((part) => part.endsWith(":") || /^[^\n]{1,39},$/.test(part))) return [text];
+  return parts.length >= 2 && parts.length <= KIN_REPLY_BUBBLES_MAX ? parts : [text];
 }
 
 /**

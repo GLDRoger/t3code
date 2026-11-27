@@ -101,10 +101,10 @@ const kinServices = Layer.unwrap(
   }),
 );
 const layer = Layer.mergeAll(
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
-  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
-  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
-  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers, { kin: true }),
   SalesMcp.registration,
   KinToolGate.layer,
 ).pipe(

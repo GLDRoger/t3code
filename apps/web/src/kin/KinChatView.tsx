@@ -57,9 +57,12 @@ import {
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinChatReadOnlyLine } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
-  kinPresenceLine,
+  createKinLabelHold,
+  kinMayStopAgent,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
+  kinWorkingLines,
+  type KinWorkingLine,
 } from "@t3tools/client-runtime/kin/kinLive";
 import { KIN_MESSAGE_MAX_LENGTH, KIN_COMPOSER_COPY } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
@@ -99,12 +102,13 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, XIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, CircleStopIcon, XIcon } from "lucide-react";
 import {
   useEffect,
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
@@ -164,6 +168,7 @@ import {
   KinFoldRow,
   KinRelayRow,
   KinMessageRow,
+  KinReplyFooter,
   KinPendingRow,
   KinSystemRow,
 } from "./KinMessageRows";
@@ -218,6 +223,7 @@ export function KinChatView(props: {
   const chatResult = useAtomValue(chatAtom);
   const inbox = useAtomValue(inboxAtom);
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   const state: KinChatScreenState =
     chatId === null ? { _tag: "gone", reason: "not_found" } : kinChatScreenState(host, chatResult);
   const viewer = kinFeedViewer(
@@ -293,8 +299,8 @@ export function KinChatView(props: {
 
   const presence =
     state._tag === "ready" && state.connected && state.chat.live
-      ? state.chat.value.presence.at(-1)
-      : undefined;
+      ? state.chat.value.presence
+      : NO_PRESENCE;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
   const pairProfile =
     pairWith === null || profiles === null
@@ -393,11 +399,15 @@ export function KinChatView(props: {
           mentionable={screen.mentionable}
           unread={kinUnreadToMark(summary)}
           presence={presence}
+          mayStop={kinMayStopAgent({
+            canInterrupt,
+            direct: summary?.kind === "direct",
+            ownedAgentId,
+            retired: screen.retired !== null,
+            ownerLevel,
+          })}
           stopLead={
-            summary === undefined ||
-            ownedAgentId === null ||
-            !canInterrupt ||
-            screen.retired !== null
+            summary === undefined
               ? null
               : (wakeupId) =>
                   runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
@@ -564,6 +574,7 @@ function KinChatStateView(props: {
 const offlineTime = kinWhenFormat("time");
 
 type StopState = "idle" | "stopping" | "failed";
+const NO_PRESENCE: ReadonlyArray<KinPresence> = [];
 
 function KinChatFeed(props: {
   readonly orgId: string;
@@ -580,7 +591,9 @@ function KinChatFeed(props: {
   readonly onRetry: () => void;
   readonly viewer: KinFeedViewer;
   readonly unread: number | null;
-  readonly presence: KinPresence | undefined;
+  readonly presence: ReadonlyArray<KinPresence>;
+  /** Whether the viewer may stop this agent's run here; the host still decides. */
+  readonly mayStop: (agentId: string) => boolean;
   readonly stopLead: ((wakeupId: string) => Promise<boolean>) | null;
   /** What the owner wrote this lead is for; the intro shows it before the first message. */
   readonly charter: string | null;
@@ -616,10 +629,8 @@ function KinChatFeed(props: {
   const [follow, setFollow] = useState(() =>
     initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
   );
-  const [stop, setStop] = useState<{ readonly wakeupId: string; readonly state: StopState }>({
-    wakeupId: "",
-    state: "idle",
-  });
+  // Per wake-up, so a new run starts with a fresh Stop and one agent's Stop never shows on another.
+  const [stops, setStops] = useState<ReadonlyMap<string, StopState>>(new Map());
 
   const live = props.chat.value;
   const paging = kinActivePaging(heldPaging, live);
@@ -681,21 +692,19 @@ function KinChatFeed(props: {
   // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
   const [markDone, setMarkDone] = useState<string | null>(null);
 
-  const { presence, stopLead } = props;
-  const wakeupId = presence?.wakeupId ?? null;
-  // A new wake-up starts with a fresh Stop.
-  const stopState = wakeupId !== null && stop.wakeupId === wakeupId ? stop.state : "idle";
+  const { stopLead } = props;
+  const setStopState = (wakeupId: string, state: StopState) =>
+    setStops((current) => new Map(current).set(wakeupId, state));
   const onStop =
-    stopLead === null || wakeupId === null
+    stopLead === null
       ? null
-      : () => {
-          setStop({ wakeupId, state: "stopping" });
+      : (wakeupId: string) => {
+          if (stops.get(wakeupId) === "stopping") return;
+          setStopState(wakeupId, "stopping");
           // Stopping holds until the wake-up's presence clears.
-          void stopLead(wakeupId).then((sent) =>
-            setStop((current) =>
-              current.wakeupId === wakeupId && !sent ? { wakeupId, state: "failed" } : current,
-            ),
-          );
+          void stopLead(wakeupId).then((sent) => {
+            if (!sent) setStopState(wakeupId, "failed");
+          });
         };
 
   const { earlierPage, latestSeq, showIntro } = feed;
@@ -970,6 +979,17 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message":
         return renderMessage(item);
+      case "footer":
+        return (
+          <KinReplyFooter
+            standalone
+            message={item.message}
+            buttons={item.buttons}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            connected={props.connected}
+          />
+        );
       case "cards":
         return renderMessage(item.first, item);
       case "system": {
@@ -1176,10 +1196,13 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine
+          <KinPresenceLines
             environmentId={props.environmentId}
             presence={props.presence}
-            stop={stopState}
+            showName={!props.direct}
+            mayStop={props.mayStop}
+            stops={stops}
+            agentNames={props.viewer.agentNames}
             onStop={onStop}
           />
         }
@@ -1245,47 +1268,120 @@ function KinChatFeed(props: {
 }
 
 /**
- * What the lead is doing, with its pebble, in one line under the feed. Its row keeps its height
- * when empty, so a reply landing never shifts the feed. Static text: it changes on 15 s ticks.
+ * What each working agent is doing, with its pebble, one line each under the feed. The row keeps
+ * its height when empty, so a reply landing never shifts the feed. Static text: it changes on
+ * 15 s ticks.
  */
+function KinPresenceLines(props: {
+  readonly environmentId: EnvironmentId;
+  readonly presence: ReadonlyArray<KinPresence>;
+  readonly showName: boolean;
+  readonly mayStop: (agentId: string) => boolean;
+  readonly stops: ReadonlyMap<string, StopState>;
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly onStop: ((wakeupId: string) => void) | null;
+}) {
+  const now = useKinPresenceNow(props.presence.some(kinPresenceNeedsClock));
+  const [hold] = useState(createKinLabelHold);
+  const held = useSyncExternalStore(hold.subscribe, hold.snapshot, hold.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- arms or cancels a single expiry timer per working line so brief tool labels stay readable
+  useEffect(() => {
+    hold.sync(props.presence);
+  }, [hold, props.presence]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels any pending label-hold timers on unmount
+  useEffect(() => () => hold.dispose(), [hold]);
+  const rows = kinWorkingLines(
+    props.presence,
+    now,
+    props.onStop === null ? noStop : props.mayStop,
+    held,
+  );
+  if (rows.length === 0) return <div className="h-9" />;
+  return rows.map((row) => (
+    <KinPresenceLine
+      key={row.presence.agentId}
+      environmentId={props.environmentId}
+      row={row}
+      name={props.agentNames.get(row.presence.agentId) ?? null}
+      showName={props.showName}
+      stop={
+        row.presence.wakeupId === null ? "idle" : (props.stops.get(row.presence.wakeupId) ?? "idle")
+      }
+      onStop={props.onStop}
+    />
+  ));
+}
+
+const noStop = () => false;
+
 function KinPresenceLine(props: {
   readonly environmentId: EnvironmentId;
-  readonly presence: KinPresence | undefined;
-  readonly onStop: (() => void) | null;
+  readonly row: KinWorkingLine;
+  readonly name: string | null;
+  readonly showName: boolean;
   readonly stop: StopState;
+  readonly onStop: ((wakeupId: string) => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const line = kinPresenceLine(props.presence, now);
-  const timerStart = kinPresenceTimerStart(props.presence);
-  const { onStop } = props;
-  const stoppable = line?.stalled === true && onStop !== null;
+  const { presence, line } = props.row;
+  const timerStart = kinPresenceTimerStart(presence);
+  const { onStop, stop } = props;
+  const wakeupId = presence.wakeupId;
+  const stoppable = props.row.stop !== "none" && onStop !== null && wakeupId !== null;
+  const press = () => {
+    if (wakeupId !== null) onStop?.(wakeupId);
+  };
+  const stopName = props.name ?? "the agent";
+  const showName = props.showName && props.name !== null;
   return (
     <div className="mx-auto flex h-9 w-full max-w-3xl items-center gap-2 px-5 text-muted-foreground text-xs">
-      {line === null || props.presence === undefined ? null : (
-        <KinAvatar avatar={kinAgentAvatar(props.presence.agentId)} size="xs" />
-      )}
-      <p role="status" aria-live="polite" className="truncate">
-        {line === null ? "" : line.text}
+      <div className="shrink-0">
+        <KinAvatar avatar={kinAgentAvatar(presence.agentId)} size="xs" />
+      </div>
+      <p role="status" aria-live="polite" className="flex min-w-0 items-center gap-1.5">
+        {showName ? (
+          <>
+            <span className="max-w-44 truncate font-medium text-foreground">{props.name}</span>
+            <span aria-hidden="true" className="shrink-0">
+              ·
+            </span>
+          </>
+        ) : null}
+        <span className="min-w-0 truncate">{line.text}</span>
       </p>
       {timerStart === null ? null : (
         // The timer ticks on its own; screen readers hear the presence text, not every second.
-        <span aria-hidden="true">
+        <span aria-hidden="true" className="shrink-0">
           <KinWorkingTimer createdAt={timerStart} environmentId={props.environmentId} />
         </span>
       )}
       {stoppable ? (
         <>
-          {props.stop === "idle" ? null : (
-            <span role={props.stop === "failed" ? "alert" : undefined}>
-              {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
+          {stop === "idle" ? null : (
+            <span role={stop === "failed" ? "alert" : undefined} className="shrink-0">
+              {stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </span>
           )}
-          <KinStopButton
-            label={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
-            tooltip={props.stop === "failed" ? KIN_RETRY : "Stop"}
-            disabled={props.stop === "stopping"}
-            onClick={onStop}
-          />
+          <div className="shrink-0">
+            {props.row.stop === "urgent" ? (
+              <KinStopButton
+                label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                tooltip={stop === "failed" ? KIN_RETRY : "Stop"}
+                disabled={stop === "stopping"}
+                onClick={press}
+              />
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                disabled={stop === "stopping"}
+                onClick={press}
+              >
+                <CircleStopIcon />
+                {stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
+              </Button>
+            )}
+          </div>
         </>
       ) : null}
     </div>

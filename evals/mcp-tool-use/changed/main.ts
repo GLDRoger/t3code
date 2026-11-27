@@ -74,12 +74,11 @@ const rows = read(NodePath.join(baseline, "results.jsonl"))
     const row = JSON.parse(line) as { id: string; pass: boolean; error?: string };
     return { id: row.id, pass: row.pass, ...(row.error === undefined ? {} : { error: row.error }) };
   });
-const effort = values.effort ?? "high";
 const after = await Effect.runPromise(
   surfaceOf({
     cases: readCases(caseFiles),
     model: values.model as Parameters<typeof surfaceOf>[0]["model"],
-    effort,
+    effort: values.effort,
     shellModel: values["shell-model"],
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer))),
 );

@@ -1371,17 +1371,19 @@ export const unsetOwnerZone = () => {
   return validZone(host) ? host : "UTC";
 };
 
-/** The owner's IANA zone, for all-day due dates; the host's until he sets one. */
-export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: KinOrgId) {
+/** The owner's IANA zone, for all-day due dates; the host's when no valid zone is set. */
+export const readOwnerZone = Effect.fn("KinRecords.readOwnerZone")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   // oxlint-disable-next-line t3code/kin-zoned-time -- this is the one owner-zone read
   const [row] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
-    FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
-    Effect.orElseSucceed(() => []),
-  );
-  const zone = row?.zone ?? unsetOwnerZone();
-  return validZone(zone) ? zone : unsetOwnerZone();
+    FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
+  const zone = row?.zone;
+  return zone != null && validZone(zone) ? zone : unsetOwnerZone();
 });
+
+export const ownerZone = Effect.fn("KinRecords.ownerZone")((orgId: KinOrgId) =>
+  readOwnerZone(orgId).pipe(Effect.orElseSucceed(unsetOwnerZone)),
+);
 const validZone = (zone: string) => {
   try {
     return canonicalTimeZone(zone) !== "";

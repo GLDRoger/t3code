@@ -32,12 +32,13 @@ import {
   teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
-import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
+import { CODING_T3_TOOLS, LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import {
   billPaidConsequence,
   overpaymentConsequence,
+  repaidShortLine,
 } from "../../apps/server/src/kin/pulse/senses/bank.ts";
 import {
   billDueConsequence,
@@ -91,7 +92,7 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
@@ -106,14 +107,15 @@ import {
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
-  formatKinMoney,
+  DEFAULT_SERVER_SETTINGS,
+  kinReplyBubbles,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
   KinMoneySummary,
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
-import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { KIN_CLAUDE_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
@@ -228,12 +230,22 @@ import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/
 import {
   CAPTION_PROMPT,
   classifySegment,
+  replyNextForTool,
   repeats,
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
+import {
+  followUpFor,
+  replyNudgePrompt,
+  sendRescuePrompt,
+  isPersonTag,
+  startedBy,
+  TRIGGER_TAGS,
+  voiceFor,
+} from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
-import type { McpToolUseCase } from "./run.ts";
+import type { Call, McpToolUseCase } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
 
@@ -278,6 +290,8 @@ export type KinSeatOptions = {
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
+  readonly kinEngineering?: boolean;
+  readonly kinGitHub?: boolean;
   readonly kinShared?: boolean;
   /** The lead's remit is social media, so Social's tools join (AgentSession). */
   readonly kinSocial?: boolean;
@@ -288,6 +302,7 @@ export type KinSeatOptions = {
 const names = (...toolkits: ReadonlyArray<{ readonly tools: object }>) =>
   new Set(toolkits.flatMap((toolkit) => Object.keys(toolkit.tools)));
 const LEAD_T3: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
+const CODING_T3: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
 const CHAT = names(KinChatToolkit);
 const LEAD = names(
   KinLeadToolkit,
@@ -316,11 +331,15 @@ const ANY_KIN = names(
 );
 
 /** Whether a T3 tool, by bare name, is listed to this turn as far as Kin decides (AgentSession). */
-export const kinToolVisible = (name: string, options: KinSeatOptions) => {
+export const kinToolVisible = (name: string, options: KinSeatOptions, claude = false) => {
   if (options.kinBills === true) return BILLS_TOOLS.has(name);
   // A turn others read runs on a shared thread, which lists only what it may run.
   if (options.kinShared === true && !listedOnSharedThread(name)) return false;
   if (options.kinAgent !== true && options.kinLead !== true) return !ANY_KIN.has(name);
+  if (claude && options.kinLead === true) {
+    if (CODING_T3.has(name) && options.kinEngineering !== true) return false;
+    if (name.startsWith("kin_github_") && options.kinGitHub !== true) return false;
+  }
   // An owner-only turn's session: T3's lead tools join.
   return (
     (options.kinSession === true && LEAD_T3.has(name)) ||
@@ -347,6 +366,19 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
         !KIN_BILLS_PROMPT.test(prompt);
 };
 
+/** Existing GitHub fixtures model a connected login by supplying a trigger or a GitHub tool result. */
+export const kinGitHubOf = ({ setup }: McpToolUseCase) =>
+  setup.world?.githubTrigger != null ||
+  Object.keys(setup.mocks ?? {}).some((name) => name.startsWith("kin_github_")) ||
+  (setup.priorTurns ?? []).some((turn) =>
+    turn.toolCalls?.some(({ tool }) => tool.startsWith("kin_github_")),
+  );
+
+const ownerNative: ReadonlySet<string> = new Set(OWNER_SEAT_NATIVE_TOOLS);
+
+const TOOL_SEARCH_DESCRIPTION =
+  'Fetches full schema definitions for deferred tools so they can be called.\n\nDeferred tools appear by name in a message from the system. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools\' complete JSONSchema definitions inside a <functions> block. Once a tool\'s schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.\n\nResult format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.\n\nQuery forms:\n- "select:Read,Edit,Grep" — fetch these exact tools by name\n- "notebook jupyter" — keyword search, up to max_results best matches\n- "+slack send" — require "slack" in the name, rank by remaining terms';
+
 /**
  * A lead's request as Kin plans its session (`lead/turn/session.ts`): its instructions are the
  * whole system prompt and only Kin's core loads up front; every other tool waits behind ToolSearch. A turn
@@ -363,23 +395,25 @@ export const kinLeadBase = <M, E>(input: {
   readonly deferredHeader: string | undefined;
   readonly nativeDeferred: ReadonlyArray<string>;
   readonly nativeSchema: (name: string) => object;
-  readonly normalizeToolName: (name: string) => string;
 }) => {
   const { options, t3 } = input;
   const ownerSeat =
     options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
-    (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
+    (tool) => !KIN_CLAUDE_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
-  const ownerTools: ReadonlySet<string> = new Set(OWNER_SEAT_NATIVE_TOOLS);
-  const toolSearch = input.templateTools.filter((tool) => tool.name.endsWith("ToolSearch"));
+  const toolSearch = input.templateTools
+    .filter((tool) => tool.name === "ToolSearch")
+    .map((tool) => ({ ...tool, description: TOOL_SEARCH_DESCRIPTION }));
   // As a real owner-seat Kin turn sends them: Claude Code's own deferred tools are only named.
   const deferredNative = ownerSeat
     ? input.nativeDeferred
-        .filter((name) => ownerTools.has(input.normalizeToolName(name)))
-        .map((name): ApiTool => ({ name, ...input.nativeSchema(input.normalizeToolName(name)) }))
+        .filter((name) => ownerNative.has(name))
+        .map((name): ApiTool => ({ name, ...input.nativeSchema(name) }))
     : [];
-  const deferred = [...deferredNative, ...deferredKin];
+  const deferred = [...deferredNative, ...deferredKin].toSorted((a, b) =>
+    a.name === b.name ? 0 : a.name < b.name ? -1 : 1,
+  );
   return {
     model: input.model,
     system: [
@@ -389,15 +423,17 @@ export const kinLeadBase = <M, E>(input: {
           : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
       ),
     ],
-    reminders:
+    kinClaude: true as const,
+    deferredAnnouncement:
       deferred.length > 0 && input.deferredHeader !== undefined
-        ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
-        : [],
+        ? `${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}`
+        : undefined,
+    reminders: [] as Block[],
     gitStatusAt: undefined,
     environment: input.environment,
     nativeTools: [
       ...(ownerSeat
-        ? input.templateTools.filter((tool) => ownerTools.has(input.normalizeToolName(tool.name)))
+        ? input.templateTools.filter((tool) => ownerNative.has(tool.name))
         : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
           // for bills.
           options.kinBills === true
@@ -540,11 +576,14 @@ export const kinDated = <
     ...base,
     environment: { ...base.environment, date: day },
     // A lead's request carries no captured reminders; Claude Code sends the date after its list.
-    reminders: hasLine
-      ? base.reminders.map(dated)
-      : base.codex === undefined
-        ? [...base.reminders, text(`${line}.`)]
-        : base.reminders,
+    reminders:
+      "kinClaude" in base
+        ? base.reminders
+        : hasLine
+          ? base.reminders.map(dated)
+          : base.codex === undefined
+            ? [...base.reminders, text(`${line}.`)]
+            : base.reminders,
   };
 };
 
@@ -558,7 +597,7 @@ const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tool
   (tool: Tool.Any) => ({
     name: `${KIN_KEY_PREFIX}${tool.name}`,
     description: Tool.getDescription(tool) ?? "",
-    input_schema: advertisedJsonSchema(tool),
+    input_schema: advertisedJsonSchema(tool, { kin: true }),
   }),
 );
 const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
@@ -593,7 +632,7 @@ export const kinLoadedBefore = <T extends ApiTool>(
 ) =>
   deferred.filter((tool) => {
     const bare = tool.name.replace(T3_PREFIX, "");
-    return !KIN_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
+    return !KIN_CLAUDE_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
   });
 
 // Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.
@@ -606,34 +645,120 @@ export const unredact = (value: unknown): unknown =>
         ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unredact(item)]))
         : value;
 
-/** What follows a text block, as Kin's bridge reads it (`classifySegment`). */
-const nextAfter = (blocks: ReadonlyArray<unknown>, index: number) => {
-  const following = blocks.slice(index + 1).find((next) => isText(next) || isToolUse(next));
-  return following === undefined ? "end" : isText(following) ? "text" : "tool";
-};
-/**
- * The text a chat shows from a turn's responses: every text block, status lines included, less
- * one that only repeats the reply so far, which Kin's bridge drops (`repeats`).
- */
-export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
+const replyText = (
+  responses: ReadonlyArray<ReadonlyArray<unknown>>,
+  includeNotes = false,
+  person = false,
+) => {
+  const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
   const said: Array<string> = [];
   let reply = "";
   blocks.forEach((block, index) => {
     if (!isText(block) || (reply !== "" && repeats(block.text, reply))) return;
-    said.push(block.text);
-    if (classifySegment(block.text, nextAfter(blocks, index)) === "post")
-      reply = reply === "" ? block.text : `${reply}\n\n${block.text}`;
+    const text = block.text.trim();
+    if (text === "") return;
+    const next = blocks[index + 1];
+    const post =
+      classifySegment(
+        text,
+        isToolUse(next) ? replyNextForTool(next.name) : next === undefined ? "end" : "text",
+        person,
+      ) === "post";
+    if (post || includeNotes) said.push(includeNotes ? block.text : text);
+    if (post) reply = reply === "" ? text : `${reply}\n\n${text}`;
   });
   return said.join("\n\n");
 };
-/** Whether any text block posts as a message: short text before a tool is a status line. */
-const postsText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
-  return blocks.some(
-    (block, index) =>
-      isText(block) && classifySegment(block.text, nextAfter(blocks, index)) === "post",
-  );
+
+export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) =>
+  replyText(responses, true);
+
+type ReplySample = {
+  readonly testCase: McpToolUseCase;
+  readonly responses: ReadonlyArray<ReadonlyArray<unknown>>;
+  readonly calls: ReadonlyArray<Call>;
+};
+
+const PERSON_MESSAGE = /^(?:owner|co-owner|member human|guest human|agent|system) message\b/;
+const HANDOFF_BACK = /^agent message\b/;
+const REACTION_LINE = /^Owner (?:reacted|changed their reaction) .+\(a reaction, not text\)/m;
+const quoteLabels = (prompt: string) =>
+  [...prompt.matchAll(/^>?[ \t]*BEGIN QUOTE: (.+)$/gm)].map((match) => match[1]!);
+
+const eventTag = (value: string): value is Contracts.KinEvent["_tag"] =>
+  isPersonTag(value) || Object.hasOwn(TRIGGER_TAGS, value);
+
+const eventDataTags = (prompt: string) =>
+  [...prompt.matchAll(/^>.*"(?:type|tag|_tag)":\s*"([^"]+)"/gm)]
+    .map((match) => match[1]!)
+    .filter(eventTag);
+
+const promptTags = (
+  prompt: string,
+  world?: McpToolUseCase["setup"]["world"],
+): ReadonlyArray<Contracts.KinEvent["_tag"]> => {
+  const labels = quoteLabels(prompt);
+  const tags = new Set(eventDataTags(prompt));
+  if (labels.some((label) => PERSON_MESSAGE.test(label))) tags.add("chat.message");
+  if (
+    labels.some((label) => /^(?:reaction|chat\.reaction)\b/.test(label)) ||
+    REACTION_LINE.test(prompt)
+  )
+    tags.add("chat.reaction");
+  if (
+    labels.some((label) => /^(?:tap|widget\.action)\b/.test(label)) ||
+    /"kind":\s*"widget_action"/.test(prompt)
+  )
+    tags.add("widget.action");
+  if (labels.includes("pulse")) tags.add("pulse");
+  if (labels.includes("reminder (data)")) tags.add("deferral.due");
+  if (
+    world?.githubTrigger !== undefined ||
+    labels.some((label) => label.startsWith("GitHub event"))
+  )
+    tags.add("github");
+  return [...tags];
+};
+
+const caseTags = ({ prompt, setup }: McpToolUseCase) => promptTags(prompt, setup.world);
+
+export const isReplyEnding = (name: string) => name === "kin_send" || name === "kin_skip";
+const replyEnding = (calls: ReadonlyArray<Call>) =>
+  calls.find((call) => isReplyEnding(call.tool) && call.failed === false);
+
+const replyVoice = (sample: ReplySample, sendOnly: boolean) =>
+  voiceFor({ tags: caseTags(sample.testCase), sendOnly });
+
+export const deliveredText = (
+  sample: ReplySample,
+  sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+) => {
+  const ending = replyEnding(sample.calls);
+  if (
+    ending?.tool === "kin_send" &&
+    isRecord(ending.input) &&
+    typeof ending.input.text === "string"
+  )
+    return ending.input.text.trim();
+  if (replyVoice(sample, sendOnly) === "send") return "";
+  if (ending?.tool === "kin_skip" && startedBy(caseTags(sample.testCase)) === "trigger") return "";
+  return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
+};
+
+export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
+  if (sample.testCase.setup.world?.kinLead !== true) return {};
+  const text = deliveredText(sample, sendOnly);
+  const labels = quoteLabels(sample.testCase.prompt);
+  const page =
+    labels.some((label) =>
+      /^(?:morning|weekly|evening|left for this check-in|routine facts|Team room turn)\b/.test(
+        label,
+      ),
+    ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
+  return {
+    deliveredText: text,
+    deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
+  };
 };
 
 /**
@@ -842,6 +967,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{REPLY_NUDGE}}", () => replyNudgePrompt(promptTags(prompt, world)))
     .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
     // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
     // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
@@ -886,8 +1012,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
     })
-    // repaid_seen's line for a partner debit that doesn't add up to their oldest owed expenses
-    // (`pulse/senses/bank.ts` repaidSeenSenses, which builds it inline; mirrored word for word).
+    // repaid_seen's line for a partner debit that may not match their oldest owed expenses,
+    // rendered by the server's own `repaidShortLine` (`pulse/senses/bank.ts`).
     .replace(
       /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
       (
@@ -900,7 +1026,15 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         owed: string,
         count: string,
       ) =>
-        `${key}, ${formatKinMoney(Number(minor), currency)} paid ${shortDay(day)}, names ${partner} but doesn't add up to their oldest owed expenses (${formatKinMoney(Number(owed), currency)} over ${count} expense${count === "1" ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+        repaidShortLine({
+          key,
+          amountMinor: Number(minor),
+          currency,
+          date: day,
+          partner,
+          owedMinor: Number(owed),
+          owedCount: Number(count),
+        }),
     );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
@@ -1373,8 +1507,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     sent: true,
     note: leftNote(input.to, input, input.asker),
   }),
-  // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
-  suggestedRows: (input: { records: unknown; first: number; zone: string }) => {
+  // record_create's answer for new tasks and milestones, kept at once, keys from `first` (`leadWork.ts` createRow).
+  savedRows: (input: { records: unknown; first: number; zone: string }) => {
     const asked = (Array.isArray(input.records) ? input.records : []).map((row: unknown) => {
       const one: Readonly<Record<string, unknown>> = isRecord(row) ? row : {};
       return {
@@ -1391,9 +1525,6 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         key: `${one.list === "milestones" ? "M" : "W"}-${input.first + index}`,
         title: typeof one.title === "string" ? one.title : "",
         created: true,
-        state: "open",
-        stateLabel: suggestedStateLabel(one.list, "open"),
-        suggested: true,
         ...(one.list === "work" && Number.isFinite(at)
           ? { shows: dueShows(at, day, input.zone) }
           : {}),
@@ -1872,54 +2003,132 @@ const ANSWERS_IN_CHAT = new Set([
 // tool shows its doc as a card only when asked to (`card`); otherwise it posts nothing.
 const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
 const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
-/**
- * Every teammate message of the turn passed on by kin_hand_off (its mocked results, in call
- * order): Kin's own line in the chat answers each, so the turn owes no words (`answered`).
- */
-const passedOnEach = (testCase: McpToolUseCase, used: ReadonlyArray<{ readonly tool: string }>) => {
+const personMessages = (testCase: McpToolUseCase) =>
+  quoteLabels(testCase.prompt).filter((label) => PERSON_MESSAGE.test(label));
+
+/** Kin's own line answers each teammate message the tool passed on. */
+const passedOnEach = (testCase: McpToolUseCase, used: ReadonlyArray<Call>) => {
   if (!testCase.prompt.includes("your direct chat with a teammate")) return false;
-  const asked = testCase.prompt.match(/BEGIN QUOTE: member human message/g)?.length ?? 0;
-  const mock = testCase.setup.mocks?.kin_hand_off;
-  const results = isRecord(mock) && Array.isArray(mock.$sequence) ? mock.$sequence : [mock];
-  const passed = used
-    .filter((one) => one.tool === "kin_hand_off")
-    .filter((_, n) => {
-      const result: unknown = results[Math.min(n, results.length - 1)];
-      return isRecord(result) && result.passed === true;
-    });
-  return asked > 0 && passed.length >= asked;
+  const messages = personMessages(testCase);
+  if (messages.length === 0 || !messages.every((label) => label.startsWith("member human message")))
+    return false;
+  const passed = used.filter((call) => {
+    if (call.tool !== "kin_hand_off" || call.failed !== false || call.output === undefined)
+      return false;
+    const result = safeJson(call.output);
+    return isRecord(result) && result.passed === true;
+  });
+  return passed.length >= messages.length;
 };
-/**
- * What Kin asks a lead whose finished turn left a person's message without words
- * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
- * chart, visual or file, or undefined when the turn answered. `normalize` is the grading name.
- */
-export const rescuePrompt = (
-  sample: {
-    readonly testCase: McpToolUseCase;
-    readonly responses: ReadonlyArray<ReadonlyArray<unknown>>;
-  },
-  normalize: (name: string) => string,
+
+const quietAllowed = (testCase: McpToolUseCase, used: ReadonlyArray<Call>) => {
+  const tags = caseTags(testCase);
+  if (startedBy(tags) === "trigger") return true;
+  const messages = personMessages(testCase);
+  if (tags.includes("widget.action")) return false;
+  if (messages.length === 0) return tags.includes("chat.reaction");
+  return (
+    (messages.every((label) => HANDOFF_BACK.test(label)) &&
+      /"(?:answerFrom)"|handoff-back-/.test(testCase.prompt)) ||
+    passedOnEach(testCase, used)
+  );
+};
+
+export const defaultReplyMock = (
+  sample: ReplySample,
+  name: string,
+  input: Record<string, unknown>,
 ) => {
-  if (sample.testCase.setup.world?.kinLead !== true) return undefined;
-  if (
-    !/BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt)
-  )
+  if (sample.testCase.setup.world?.kinLead !== true || !isReplyEnding(name)) return undefined;
+  const ending = replyEnding(sample.calls);
+  if (name === "kin_skip") {
+    if (
+      ending?.tool !== "kin_send" &&
+      replyText(sample.responses, false, true) === "" &&
+      !quietAllowed(sample.testCase, sample.calls)
+    )
+      return {
+        $error: "Not ended: someone here is waiting on your answer; write it as plain text.",
+      };
+    return "Nothing sent; this turn is over.";
+  }
+  if (ending?.tool === "kin_skip")
+    return { $error: "Nothing was sent: this turn already ended with kin_skip." };
+  if (ending?.tool === "kin_send")
+    return { $error: "This turn's message is already sent; end the turn" };
+  if (typeof input.text !== "string" || input.text.trim() === "")
+    return { $error: "Nothing was sent: pass the text to send." };
+  const { prompt } = sample.testCase;
+  if (/^This turn is in the Team room, chat /m.test(prompt))
+    return { $error: "Nothing was sent: use team_say to speak in the Team room." };
+  if (!["now", "quiet", "check_in"].some((level) => input.level === level))
+    return { $error: "Nothing was sent: pass a valid level." };
+  if (input.level === "check_in" && !caseTags(sample.testCase).includes("deferral.due")) {
+    if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
+      return { $error: "Nothing was sent: check_in is only for the owner's own chat." };
+    return { held: true, when: "At the next check-in." };
+  }
+  return { sent: true, messageId: "kin-send:eval-turn" };
+};
+
+/** What Kin asks once after a turn that owes an answer or has an unsent final message. */
+export const replyFollowUp = (
+  sample: ReplySample,
+  finalText: string,
+  sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+): { kind: "rescue" | "nudge"; prompt: string } | undefined => {
+  const { testCase, calls } = sample;
+  if (testCase.setup.world?.kinLead !== true || testCase.prompt.includes("{{REPLY_NUDGE}}"))
     return undefined;
-  if (postsText(sample.responses)) return undefined;
-  const used = sample.responses
-    .flat()
-    .filter(isToolUse)
-    .map((block) => ({
-      tool: normalize(block.name),
-      card: isRecord(block.input) && block.input.card === true,
-    }));
-  if (passedOnEach(sample.testCase, used)) return undefined;
-  const shows = ({ tool, card }: (typeof used)[number]) =>
-    SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
-  if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
-    return undefined;
-  return used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT;
+  const used = calls.filter((call) => call.failed === false);
+  const tags = caseTags(testCase);
+  const voice = replyVoice(sample, sendOnly);
+  const owed =
+    personMessages(testCase).some((label) =>
+      /^(?:owner|co-owner|member human|guest human) message\b/.test(label),
+    ) ||
+    tags.includes("widget.action") ||
+    tags.includes("task.finished") ||
+    quoteLabels(testCase.prompt).includes("work given to you (data)");
+  const shows = (call: Call) =>
+    SHOWS_ONLY.has(call.tool) ||
+    (DOC_TOOLS.has(call.tool) && isRecord(call.input) && call.input.card === true);
+  const ending = replyEnding(calls);
+  const sent = ending?.tool === "kin_send";
+  const skipped = ending?.tool === "kin_skip";
+  const answered =
+    sent ||
+    skipped ||
+    (voice === "text" &&
+      (replyText(sample.responses, false, startedBy(tags) === "person") !== "" ||
+        passedOnEach(testCase, used) ||
+        used.some(
+          (call) => ANSWERS_IN_CHAT.has(call.tool) && !DOC_TOOLS.has(call.tool) && !shows(call),
+        )));
+  const state = {
+    voice,
+    owed,
+    answered,
+    withheld: false,
+    sent,
+    skipped,
+    finalText: finalText.trim() !== "",
+  };
+  const followUp = followUpFor(state);
+  switch (followUp) {
+    case "nudge":
+      return { kind: "nudge", prompt: replyNudgePrompt(tags) };
+    case "rescue": {
+      if (voice === "text")
+        return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };
+      const asker =
+        /^>.*"(?:askedBy|assignee)":\s*"([^"]+)"/m.exec(testCase.prompt)?.[1] ??
+        "The person who asked";
+      return { kind: "rescue", prompt: sendRescuePrompt(asker) };
+    }
+    default:
+      return undefined;
+  }
 };
 
 /**
@@ -2123,7 +2332,7 @@ export const kinAnswer = (
 ) => (isKinTool(name) ? fillKinMock(mock, input, world) : mock);
 const unmocked = (testCase: McpToolUseCase, tool: string) => {
   const mock = testCase.setup.mocks?.[tool];
-  return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");
+  return KIN_TOOLS.has(tool) && !isReplyEnding(tool) && (mock === undefined || mock === "default");
 };
 /** The Kin tools a sample called that its case has no mock for, each once. */
 export const kinUnmocked = (

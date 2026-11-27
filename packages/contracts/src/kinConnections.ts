@@ -710,6 +710,7 @@ export const KinGitHubRepo = Schema.Struct({
   fork: Schema.Boolean,
   /** An @-mention of the owner's own login here calls an agent too. */
   mentions: Schema.Boolean,
+  triage: Schema.optional(Schema.Boolean),
   /** Who agents work as here: Kin's GitHub App where it reaches the repo, else the owner. */
   agentsAs: Schema.optional(Schema.Literals(["app", "owner"])),
   /** Watched repos once Kin has read them; an older server sends none. */
@@ -794,6 +795,7 @@ export const KinGitHubRepoSetInput = Schema.Struct({
   repo: Schema.NullOr(TrimmedNonEmptyString),
   watched: Schema.optional(Schema.Boolean),
   mentions: Schema.optional(Schema.Boolean),
+  triage: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubRepoSetInput = typeof KinGitHubRepoSetInput.Type;
 

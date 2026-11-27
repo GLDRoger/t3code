@@ -13,6 +13,7 @@ import { type ApiAnswer, DIFF_CAP, pieceEnd, refusedFor } from "./GitHubWatch.ts
 import { isMemoryRepo, memoryRepos } from "./githubWatchStore.ts";
 import { gitHubApp, type KinGitHubAppRead } from "./KinGitHubApp.ts";
 import * as Reach from "../lead/Reach.ts";
+import { boundIssue } from "./boundIssue.ts";
 import { boundReview } from "./boundReview.ts";
 import { askerOf, maySee } from "./reviewAsk.ts";
 
@@ -68,6 +69,9 @@ export const ReadResult = Schema.Struct({
   next: Schema.String,
 });
 
+// Words under eval: change them only with the triage cases.
+const issueOnly = (repo: string) =>
+  `This turn answers an issue in ${repo}, so it reads only ${repo}.`;
 const NOTHING = "Nothing was read.";
 export const READ_REFUSAL = {
   noApp: `Reading a repo needs Kin's GitHub App: the owner connects it in Settings, Connections, GitHub. ${NOTHING}`,
@@ -266,10 +270,13 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   const searching = input.search !== undefined && input.search.trim() !== "";
   if (searching && input.ref !== undefined && input.ref.trim() !== "")
     return yield* refuse(READ_REFUSAL.searchRef);
+  const named = input.repo.trim();
+  const issue = yield* boundIssue(lead);
+  if (issue !== undefined && issue.repo.toLowerCase() !== named.toLowerCase())
+    return yield* refuse(issueOnly(issue.repo));
   const app = Option.getOrUndefined(yield* gitHubApp);
   if (app?.reader === undefined || (yield* app.state())._tag !== "ok")
     return yield* refuse(READ_REFUSAL.noApp);
-  const named = input.repo.trim();
   if (yield* isMemoryRepo(named)) return yield* refuse(READ_REFUSAL.memory(named));
   // A review someone asked for reads its pull request's repo, and no other, before it posts.
   const review = yield* boundReview(lead);
@@ -327,7 +334,8 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   const sql = yield* SqlClient.SqlClient;
   const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
-  const first = shared ? yield* askerOf(lead) : undefined;
+  const triageOutside = issue?.outside === true;
+  const first = shared && !triageOutside ? yield* askerOf(lead) : undefined;
   const readFor = first?.name;
   /**
    * Whether this turn may still be given the repo: run once before reading and again just before
@@ -337,7 +345,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     const [running] = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
       AND wakeup_id = ${lead.wakeupId} AND status = 'running'`;
     if (running === undefined) return yield* refuse(READ_REFUSAL.ended);
-    const asker = yield* askerOf(lead);
+    const asker = triageOutside ? undefined : yield* askerOf(lead);
     if (first !== undefined) {
       if (asker?.personId !== first.personId) return yield* refuse(READ_REFUSAL.gone(first.name));
       if (
@@ -354,6 +362,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     const still = now.status === 200 ? decodeRepo(now.body) : Option.none();
     if (Option.isNone(still)) return yield* failed(now);
     if (still.value.id !== repoId) return yield* refuse(READ_REFUSAL.moved(repo));
+    if (triageOutside) return;
     const himself =
       asker !== undefined && isOwnerHimself({ personId: agent?.owner ?? "" }, asker.personId);
     const may = yield* maySee(get, repo, { himself, login: asker?.login ?? null });
@@ -367,11 +376,12 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
             : READ_REFUSAL.notCollaborator(repo, asker.name),
       );
   });
-  if (shared) yield* entitled();
+  const checkEntitlement = shared || triageOutside;
+  if (checkEntitlement) yield* entitled();
   // GitHub text is outside content for the rest of the turn, as a pull request's diff is; in a
   // shared turn, the turn then only reads and answers there (`REPO_READ_TOOLS`).
   const shown = <A>(result: A) =>
-    (shared ? entitled() : Effect.void).pipe(
+    (checkEntitlement ? entitled() : Effect.void).pipe(
       Effect.andThen(
         markOutside(
           lead,

@@ -209,6 +209,46 @@ const teamSectionOff = (sql: SqlClient.SqlClient) =>
       WHERE sh.org_id = g.org_id AND json_extract(section.value, '$.id') = 'money'
         AND json_type(section.value, '$.on') = 'false'))`;
 
+export const linkRecordGrants = (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) =>
+  sql`SELECT 'list' AS kind, json_array(g.register_id,
+      json_extract(g.definition_json, '$.teamSince'),
+      CASE WHEN g.register_id NOT IN ('dates', 'subscriptions')
+        AND json_type(g.definition_json, '$.payments') IS 'true' THEN 1 ELSE 0 END) AS grant_id
+    FROM kin_registers g WHERE g.org_id = ${orgId} AND ${teamRegister(sql)}
+    UNION ALL
+    SELECT 'listDefaultLabel', g.register_id FROM kin_registers g
+      WHERE g.org_id = ${orgId} AND g.built_in = 0
+        AND json_extract(g.definition_json, '$.sensitive') = 1
+    UNION ALL
+    SELECT 'listPrivateNumber', r.register_id FROM kin_registers r
+      WHERE r.org_id = ${orgId} AND ${privateListField(sql, "number")}
+    UNION ALL
+    SELECT 'ledProject', json_array(r.record_id, r.party_id) FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'projects'
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+    UNION ALL
+    SELECT 'projectMember', r.record_id FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'projects'
+        AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.members') m
+          WHERE m.value = 'person:' || ${personId})
+    UNION ALL
+    SELECT DISTINCT 'projectTaskHolder', r.project_id FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.project_id IS NOT NULL
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+    UNION ALL
+    SELECT 'task', r.record_id FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+        AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+          OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)})
+    UNION ALL
+    SELECT 'docDraft', r.record_id FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+        AND json_extract(r.fields_json, '$.draftFor') = ${personId}`;
+
 export const teamLists = Effect.fn("KinTeamView.lists")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ id: string }>`SELECT g.register_id AS id FROM kin_registers g
@@ -259,9 +299,10 @@ export const ownMoneyDraft = (
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
  * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
+ * Never NULL: callers negate it to find what a person can't see, and `NOT NULL` would skip the row.
  */
 const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
+  sql`COALESCE((CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   WHEN r.register_id = 'goals' AND ${targetless(sql)}
     THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
   ELSE ((r.register_id = 'work' AND NOT ${inheritedSensitive(sql)}
@@ -286,7 +327,7 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
   OR ${ownMoneyDraft(sql, personId)}
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
-  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
+  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END), 0)`;
 
 /** A team list adds its unlabelled entries from its opening on; it takes nothing the older rule gives. */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>

@@ -14,8 +14,13 @@ import { KinEnabled, layer as kinEnabledLayer } from "../../KinEnabled.ts";
 import { KinServer } from "../../KinServer.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
 import { BILLS_REFUSAL, BILLS_THREAD_PREFIX } from "../billsOnly.ts";
+import {
+  TRIAGE_REFUSAL,
+  TRIAGE_SEAT_INSTRUCTIONS,
+  TRIAGE_THREAD_PREFIX,
+} from "../outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX } from "../outsideReview.ts";
-import { KIN_ALWAYS_LOADED } from "../deferredTools.ts";
+import { KIN_ALWAYS_LOADED, KIN_CLAUDE_ALWAYS_LOADED } from "../deferredTools.ts";
 import { instructions } from "../instructions.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
 
@@ -118,11 +123,13 @@ export const kinInstructions = (
 
 /** What a lead's own thread is told, as `plan` decides it for that thread. */
 export const leadThreadInstructions = (threadId: ThreadId, driver: string) =>
-  threadId.startsWith(REVIEW_THREAD_PREFIX)
-    ? REVIEW_SEAT_INSTRUCTIONS
-    : threadId.startsWith(BILLS_THREAD_PREFIX)
-      ? kinInstructions("confined", driver, false)
-      : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
+  threadId.startsWith(TRIAGE_THREAD_PREFIX)
+    ? TRIAGE_SEAT_INSTRUCTIONS
+    : threadId.startsWith(REVIEW_THREAD_PREFIX)
+      ? REVIEW_SEAT_INSTRUCTIONS
+      : threadId.startsWith(BILLS_THREAD_PREFIX)
+        ? kinInstructions("confined", driver, false)
+        : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
 
 /**
  * Decides, once and for every provider, what a Kin session is: which turn it serves, what it may
@@ -224,7 +231,7 @@ export class KinSessions extends Context.Service<
         const base = {
           thread,
           toolSearch: input.toolLookup,
-          kinUpFront: KIN_ALWAYS_LOADED,
+          kinUpFront: input.driver === "claudeAgent" ? KIN_CLAUDE_ALWAYS_LOADED : KIN_ALWAYS_LOADED,
           nativeSearch: true,
         };
         if (delegated && Option.isSome(policy))
@@ -262,7 +269,8 @@ export class KinSessions extends Context.Service<
           } satisfies KinSessionPlan;
         const bills = thread.startsWith(BILLS_THREAD_PREFIX);
         const review = thread.startsWith(REVIEW_THREAD_PREFIX);
-        const nativeSearch = !bills && !review;
+        const triage = thread.startsWith(TRIAGE_THREAD_PREFIX);
+        const nativeSearch = !bills && !triage && !review;
         const confined = {
           ...base,
           seat: "confined",
@@ -278,6 +286,14 @@ export class KinSessions extends Context.Service<
             refusal: Effect.succeed(BILLS_REFUSAL),
             webSearch: Effect.succeed(BILLS_REFUSAL),
             webRead: () => Effect.succeed(BILLS_REFUSAL),
+          } satisfies KinSessionPlan;
+        if (triage)
+          return {
+            ...confined,
+            instructions: TRIAGE_SEAT_INSTRUCTIONS,
+            refusal: Effect.succeed(TRIAGE_REFUSAL),
+            webSearch: Effect.succeed(TRIAGE_REFUSAL),
+            webRead: () => Effect.succeed(TRIAGE_REFUSAL),
           } satisfies KinSessionPlan;
         if (review)
           return {

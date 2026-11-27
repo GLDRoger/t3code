@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { shownAsPicture } from "../lead/turn/content.ts";
-import { SILENT_REPLY } from "../reply/classify.ts";
 import { listDef, PRESETS } from "./registers.ts";
 
 /**
@@ -67,5 +66,5 @@ export const billTurnText = (
   const named = files.map(({ id, image: isImage, name }) =>
     isImage ? `${id} is image ${++image}` : `${id} is "${name}"`,
   );
-  return `Bills someone added to read in the background: ${named.join(", ")}. Answer each with bill_read once, with only what it prints: leave a blank blank, and leave out currency when none is printed. Expenses' categories: ${categories.join(", ")}. Record nothing else, then write exactly ${SILENT_REPLY}.`;
+  return `Bills someone added to read in the background: ${named.join(", ")}. Answer each with bill_read once, with only what it prints: leave a blank blank, and leave out currency when none is printed. Expenses' categories: ${categories.join(", ")}. Record nothing else, then end with kin_skip.`;
 };

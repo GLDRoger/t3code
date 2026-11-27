@@ -16,7 +16,7 @@ import { ownerLevelSql } from "../people/KinAccess.ts";
 import * as Questions from "../questions/openQuestions.ts";
 import type { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { KinChatHub } from "./KinChatHub.ts";
-import { KinChatRepository } from "./KinChatRepository.ts";
+import { isContinuation, KinChatRepository, replyGroupKey } from "./KinChatRepository.ts";
 import { encodeNames, nameKeys, nameThreads } from "./messageLinks.ts";
 import { historyFloor } from "./sharing.ts";
 
@@ -180,6 +180,7 @@ type Stored = {
   threadId: string | null;
   wakeupId: string | null;
   withdrawn: string | null;
+  clientKey: string | null;
 };
 
 type Turn = {
@@ -201,7 +202,7 @@ const ownMessage = Effect.fnUntraced(function* (
         AS carried, m.status, m.seq, m.body,
       NOT (${wordsOnly(sql)}) AS payload, m.created_at AS "createdAt",
       m.author_thread_id AS "threadId", m.source_wakeup_id AS "wakeupId",
-      json_extract(m.withdrawn_json, '$.why') AS withdrawn
+      m.client_message_id AS "clientKey", json_extract(m.withdrawn_json, '$.why') AS withdrawn
     FROM kin_messages m WHERE m.org_id = ${input.orgId} AND m.message_id = ${input.messageId}`;
   if (row === undefined) return yield* refuse(OWN_MESSAGE_REFUSALS.unknown, "not_found");
   if (row.authorKind === "human" || row.carried === 1)
@@ -231,13 +232,39 @@ const ownMessage = Effect.fnUntraced(function* (
   return { ...row, chatId: KinChatId.make(row.chatId), reader: reader?.name };
 });
 
-/** The cards on a message. */
-const cardsOf = Effect.fnUntraced(function* (orgId: KinOrgId, messageId: KinMessageId) {
+const ownReply = Effect.fnUntraced(function* (input: Turn & { readonly messageId: KinMessageId }) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = yield* ownMessage(input);
+  const base = replyGroupKey(row.clientKey);
+  if (row.wakeupId === null || base === null)
+    return { lead: row, leadId: input.messageId, continued: [], payload: row.payload === 1 };
+
+  const group = yield* sql<{ id: KinMessageId; key: string; status: string; payload: number }>`
+    SELECT m.message_id AS id, m.client_message_id AS key, m.status, NOT (${wordsOnly(sql)}) AS payload
+    FROM kin_messages m WHERE m.org_id = ${input.orgId} AND m.chat_id = ${row.chatId}
+      AND m.source_wakeup_id = ${row.wakeupId} AND m.author_kind = 'agent'
+      AND m.author_agent_id = ${input.agentId} AND m.author_thread_id IS ${row.threadId}
+      AND (m.client_message_id = ${base} OR
+        (${isContinuation(sql, "m")} AND substr(m.client_message_id, 1, length(${base}) + 2) = ${base} || '~b'))
+    ORDER BY m.seq`;
+  const leadId = group.find((part) => part.key === base)?.id ?? input.messageId;
+  const lead =
+    leadId === input.messageId ? row : yield* ownMessage({ ...input, messageId: leadId });
+  const continued = group.filter((part) => part.id !== leadId && part.status === "posted");
+  return {
+    lead,
+    leadId,
+    continued: continued.map((part) => part.id),
+    payload: lead.payload === 1 || continued.some((part) => part.payload === 1),
+  };
+});
+
+const cardsOf = Effect.fnUntraced(function* (orgId: KinOrgId, ids: ReadonlyArray<KinMessageId>) {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ widgetId: string; type: string }>`SELECT g.widget_id AS "widgetId", g.type
-    FROM kin_widgets g WHERE g.org_id = ${orgId} AND (g.message_id = ${messageId}
-      OR g.widget_id = (SELECT widget_id FROM kin_messages WHERE org_id = ${orgId}
-        AND message_id = ${messageId}))
+    FROM kin_widgets g WHERE g.org_id = ${orgId} AND (g.message_id IN ${sql.in(ids)}
+      OR g.widget_id IN (SELECT widget_id FROM kin_messages WHERE org_id = ${orgId}
+        AND message_id IN ${sql.in(ids)}))
     ORDER BY g.widget_id`;
 });
 
@@ -299,6 +326,17 @@ const told = Effect.fnUntraced(function* (
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
+const removeContinuations = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  ids: ReadonlyArray<KinMessageId>,
+) {
+  if (ids.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_messages SET status = 'deleted', lapsed_question_json = NULL
+    WHERE org_id = ${orgId} AND message_id IN ${sql.in(ids)} AND status = 'posted'`;
+  for (const id of ids) yield* told(orgId, id, []);
+});
+
 /**
  * `message_withdraw`, inside `KinLevelGate.amend`'s transaction. The words stay stored; people see
  * one line with `why`. Its own open question, on a card or in its words, goes with it. A retry
@@ -315,16 +353,16 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const why = input.why.replace(/\s+/g, " ").trim();
-  const row = yield* ownMessage(input);
+  const { lead: row, leadId, continued, payload } = yield* ownReply(input);
   if (row.status !== "posted") {
     if (row.withdrawn === why) return { messageId: input.messageId, withdrawn: true } as const;
     return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
   }
   if (row.reader !== undefined) return yield* refuse(OWN_MESSAGE_REFUSALS.read(row.reader));
-  const cards = yield* cardsOf(input.orgId, input.messageId);
+  const cards = yield* cardsOf(input.orgId, [leadId, ...continued]);
   if (cards.some((card) => card.type === "approval"))
     return yield* refuse(OWN_MESSAGE_REFUSALS.confirm);
-  if (row.payload === 1) return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
+  if (payload) return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
   const ids = cards.map((card) => card.widgetId);
   const asked =
     ids.length === 0
@@ -348,19 +386,20 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
     );
   const at = iso(input.now);
   const changed = yield* sql`UPDATE kin_messages SET status = 'deleted',
-      withdrawn_json = json_object('why', ${why}, 'at', ${at})
-    WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND status = 'posted'
+      withdrawn_json = json_object('why', ${why}, 'at', ${at}), lapsed_question_json = NULL
+    WHERE org_id = ${input.orgId} AND message_id = ${leadId} AND status = 'posted'
     RETURNING message_id`;
   if (changed.length === 0) return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
   const settled = yield* sql<{ waitingId: string }>`UPDATE kin_waiting
     SET resolved_at = ${at}, resolution = 'withdrawn'
-    WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND resolved_at IS NULL
+    WHERE org_id = ${input.orgId} AND message_id = ${leadId} AND resolved_at IS NULL
     RETURNING waiting_id AS "waitingId"`;
   yield* told(
     input.orgId,
-    input.messageId,
+    leadId,
     settled.map((one) => one.waitingId),
   );
+  yield* removeContinuations(input.orgId, continued);
   return { messageId: input.messageId, withdrawn: true } as const;
 });
 
@@ -377,14 +416,13 @@ export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const row = yield* ownMessage(input);
+  const { lead: row, leadId, continued, payload } = yield* ownReply(input);
   if (row.status !== "posted") return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
   if (row.reader !== undefined) return yield* refuse(OWN_MESSAGE_REFUSALS.read(row.reader));
-  const cards = yield* cardsOf(input.orgId, input.messageId);
+  const cards = yield* cardsOf(input.orgId, [leadId, ...continued]);
   if (cards.some((card) => card.type === "approval"))
     return yield* refuse(OWN_MESSAGE_REFUSALS.confirm);
-  if (row.payload === 1 || cards.length > 0)
-    return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
+  if (payload || cards.length > 0) return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
   if ((yield* textQuestionOf(input.orgId, input.agentId, row)) !== undefined)
     return yield* refuse(OWN_MESSAGE_REFUSALS.openQuestion);
   const named = yield* nameKeys(
@@ -392,17 +430,19 @@ export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
     row.chatId,
     yield* nameThreads(input.orgId, row.chatId, input.body.trim()),
   );
-  if (named.body === row.body)
+  if (named.body === row.body && continued.length === 0)
     return { messageId: input.messageId, replaced: true, changed: false } as const;
-  yield* sql`UPDATE kin_messages SET body = ${named.body}, edited_at = ${iso(input.now)}
-    WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND status = 'posted'`;
+  yield* sql`UPDATE kin_messages SET body = ${named.body}, edited_at = ${iso(input.now)},
+      lapsed_question_json = NULL
+    WHERE org_id = ${input.orgId} AND message_id = ${leadId} AND status = 'posted'`;
   yield* named.names.length === 0
     ? sql`DELETE FROM kin_message_names WHERE org_id = ${input.orgId}
-        AND message_id = ${input.messageId}`
+        AND message_id = ${leadId}`
     : sql`INSERT INTO kin_message_names (org_id, message_id, names_json)
-        VALUES (${input.orgId}, ${input.messageId}, ${encodeNames(named.names)})
+        VALUES (${input.orgId}, ${leadId}, ${encodeNames(named.names)})
         ON CONFLICT (org_id, message_id) DO UPDATE SET names_json = excluded.names_json`;
-  yield* told(input.orgId, input.messageId, []);
+  yield* told(input.orgId, leadId, []);
+  yield* removeContinuations(input.orgId, continued);
   return { messageId: input.messageId, replaced: true, changed: true } as const;
 });
 

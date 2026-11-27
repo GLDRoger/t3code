@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -106,6 +106,8 @@ export const KinMemoryListResult = Schema.Struct({
   items: Schema.Array(KinMemoryListItem),
   /** Agents use what the team can know in chats with teammates. Absent from an older host. */
   teamMemory: Schema.optional(Schema.Boolean),
+  /** The last nightly update that landed left this many new items out (it could not keep them as written); absent when it left none out, or none has landed. Absent from older hosts. */
+  nightlyLeftOut: Schema.optional(Schema.Struct({ ownerDate: Schema.String, count: PositiveInt })),
 });
 export type KinMemoryListResult = typeof KinMemoryListResult.Type;
 

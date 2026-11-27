@@ -54,64 +54,9 @@ export function setupFailureIn(
 }
 
 /** A pre-tool segment up to this long, in one paragraph, is a status note, not a message. */
-export const NOTE_MAX_CHARS = 160;
+const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
-/** A notice wake-up's word for "nothing worth saying"; a segment containing it anywhere never posts. */
-export const SILENT_REPLY = "NO_REPLY";
-/** Models append the marker to a sentence about having nothing to say, so its presence anywhere wins. */
-const hasSilentReply = (text: string) => text.includes(SILENT_REPLY);
-/** A draft's trailing start of the marker ("…\nNO_RE") is held back until it is known. */
-const silentReplyTail = new RegExp(`(?:^|\\s|[*\`_])N(?:O(?:_(?:R(?:E(?:P(?:L)?)?)?)?)?)?\\s*$`);
-/** Parenthetical asides a lead appends when it means to say nothing; they never reach a chat. */
-export const SILENCE_MARKERS = [
-  "no reply needed",
-  "no response needed",
-  "nothing to add",
-  "staying quiet",
-  "silent",
-] as const;
-
-const markerPattern = SILENCE_MARKERS.map((marker) => marker.replace(/ /g, "\\s+")).join("|");
-const trailingMarker = new RegExp(`[ \\t]*\\(\\s*(?:${markerPattern})\\s*\\)\\s*$`, "i");
-const markersOnly = new RegExp(`^(?:\\s*\\(\\s*(?:${markerPattern})\\s*\\))+\\s*$`, "i");
-const normalizePhrase = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ");
-
-/** The whole text is only silence markers; bare (unparenthesized) counts only as the whole text. */
-function isSilenceOnly(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed === "") return false;
-  if ((SILENCE_MARKERS as ReadonlyArray<string>).includes(normalizePhrase(trimmed))) return true;
-  return markersOnly.test(trimmed);
-}
-
-/** Removes silence markers that end a reply, as the last parenthetical or on their own final line. */
-export function stripTrailingSilenceMarker(text: string): string {
-  let result = text;
-  while (trailingMarker.test(result)) result = result.replace(trailingMarker, "").trimEnd();
-  return result;
-}
-
-const isMarkerPrefix = (fragment: string) => {
-  const normalized = normalizePhrase(fragment);
-  return SILENCE_MARKERS.some((marker) => marker === normalized || marker.startsWith(normalized));
-};
-
-/**
- * What a streaming draft may show: a trailing marker is stripped, and a trailing fragment
- * that could still become one (`(no reply nee`, or the whole text so far) is held back.
- */
-export function draftReplyText(text: string): string {
-  if (hasSilentReply(text)) return "";
-  const stripped = stripTrailingSilenceMarker(text.replace(silentReplyTail, ""));
-  if (isSilenceOnly(stripped)) return "";
-  const whole = normalizePhrase(stripped);
-  if (whole !== "" && isMarkerPrefix(whole)) return "";
-  const open = stripped.lastIndexOf("(");
-  if (open >= 0 && !stripped.slice(open).includes(")") && isMarkerPrefix(stripped.slice(open + 1)))
-    return stripped.slice(0, open).trimEnd();
-  return stripped;
-}
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
 export const RESCUE_PROMPT =
@@ -147,10 +92,7 @@ const restates = (sentence: string, earlier: ReadonlySet<string>) => {
 const SENTENCE_BREAK = /((?<=[.?!])[ \t]+|\n+)/;
 const sentencesOf = (text: string) =>
   text.split(SENTENCE_BREAK).filter((part, index) => index % 2 === 0 && part.trim() !== "");
-/**
- * The segment says again, word for word, what the reply already said: nearly all of its text is
- * sentences the reply has. A model that repeats its answer at the end of a turn sends this.
- */
+// The eval grader still uses segment-level comparison for its historical status-inclusive view.
 export const repeats = (text: string, said: string) => {
   const earlier = new Set(sentencesOf(said).map(comparable));
   const parts = sentencesOf(text);
@@ -158,6 +100,33 @@ export const repeats = (text: string, said: string) => {
   const repeated = length(parts.filter((part) => earlier.has(comparable(part))));
   return parts.length > 0 && repeated >= 0.8 * length(parts);
 };
+export function uniqueParagraphs(text: string): string {
+  const seen = new Set<string>();
+  const parts = text.split(/(\r?\n(?:[ \t]*\r?\n)+)/);
+  const kept: Array<string> = [];
+  let fence: string | undefined;
+  for (let index = 0; index < parts.length; index += 2) {
+    const part = parts[index]!;
+    // Blank lines inside code fences do not separate prose paragraphs.
+    let code = fence !== undefined;
+    for (const [, marker, tail] of part.matchAll(/^ {0,3}(`{3,}|~{3,})(.*)$/gm)) {
+      if (fence === undefined) {
+        if (marker![0] === "`" && tail!.includes("`")) continue;
+        fence = marker;
+      } else if (marker![0] === fence[0] && marker!.length >= fence.length && tail!.trim() === "") {
+        fence = undefined;
+      }
+      code = true;
+    }
+    const key = normalized(part);
+    if (!code && (key === "" || seen.has(key))) continue;
+    if (!code) seen.add(key);
+    if (kept.length > 0) kept.push(parts[index - 1]!);
+    kept.push(part);
+  }
+  return kept.join("");
+}
+
 /** A reply less the sentences that repeat or restate a card's question, which the card asks. */
 export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
   const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
@@ -182,9 +151,9 @@ export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => 
   return dropped ? kept.join("").trim() : text;
 };
 
-/** What follows a segment in its run (`end`: nothing, the run ended): a short one before a tool is status. */
-export type SegmentNext = "tool" | "text" | "end";
-export type SegmentClass = "post" | "note" | "silent" | "empty";
+/** What follows a segment in its run. */
+export type SegmentNext = "ask" | "tool" | "text" | "end";
+export type SegmentClass = "post" | "note" | "empty";
 
 const isStructured = (text: string) =>
   text.length > NOTE_MAX_CHARS ||
@@ -194,16 +163,19 @@ const isStructured = (text: string) =>
 
 /**
  * Plain code decides what a segment is, so a model can't misroute it. Long or structured text
- * is content wherever it sits; short single-paragraph text right before a tool call is status.
+ * is content wherever it sits. Short text before a tool is status, except before a person's question card.
  */
-export function classifySegment(text: string, next: SegmentNext | null): SegmentClass | null {
+export function classifySegment(
+  text: string,
+  next: SegmentNext | null,
+  startedByPerson = false,
+): SegmentClass | null {
   const trimmed = text.trim();
   if (trimmed === "") return "empty";
-  if (hasSilentReply(trimmed) || isSilenceOnly(trimmed)) return "silent";
   if (isStructured(trimmed)) return "post";
   // Unknown yet: a short segment waits for the next item or the run's end.
   if (next === null) return null;
-  return next === "tool" ? "note" : "post";
+  return next === "tool" || (next === "ask" && !startedByPerson) ? "note" : "post";
 }
 
 export function cutLabel(text: string): string {
@@ -224,6 +196,13 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
 
+const ASK_TOOL = /(?:^|__|\.)kin_ask$/;
+const SKIP_TOOL = /(?:^|__|\.)kin_skip$/;
+export const replyNextForTool = (name: string): "ask" | "tool" | "end" =>
+  SKIP_TOOL.test(name) ? "end" : ASK_TOOL.test(name) ? "ask" : "tool";
+export const toolNext = (item: OrchestrationV2TurnItem) =>
+  replyNextForTool(item.type === "dynamic_tool" ? (item.toolName ?? "") : "");
+
 // The presence line's only words, as a colleague would say them: fixed text, never tool
 // arguments or model text, and never a tool's name or how Kin works inside.
 export const PHASE_LABELS = {
@@ -231,7 +210,7 @@ export const PHASE_LABELS = {
   held: "Waiting until tomorrow",
   preparing: "Catching up",
   thinking: "Thinking",
-  writing: "Writing",
+  writing: "Writing a reply",
   tool: "Working",
   attachments: "Looking at what you sent",
 } as const;
@@ -253,7 +232,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)pulse_read$/, "Checking what needs attention"],
   [/(?:^|__|\.)pulse_handle$/, null],
   [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
-  [/(?:^|__|\.)kin_ask$/, "Writing a question"],
+  [ASK_TOOL, "Writing a question"],
   [/(?:^|__|\.)kin_ask_close$/, "Closing a question"],
   [/(?:^|__|\.)message_withdraw$/, "Taking back a message"],
   [/(?:^|__|\.)message_replace$/, "Updating a message"],
@@ -273,11 +252,76 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],
-  [/(?:^|__|\.)(?:kin_react|kin_journal)$/, null],
+  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_skip)$/, null],
+  [
+    /(?:^|__|\.)(?:records_query|record_get|client_read|pipeline_read|deal_stages|dates_query)$/,
+    "Reading records",
+  ],
+  [/(?:^|__|\.)record_create$/, "Adding a record"],
+  [/(?:^|__|\.)record_comment$/, "Commenting on a record"],
+  [/(?:^|__|\.)record_\w+$/, "Updating a record"],
+  [/(?:^|__|\.)touch_log$/, "Logging a contact"],
+  [/(?:^|__|\.)project_note$/, "Noting it on the project"],
+  [/(?:^|__|\.)list_define$/, "Setting up a list"],
+  [/(?:^|__|\.)payment_record$/, "Recording a payment"],
+  [/(?:^|__|\.)number_record$/, "Recording a number"],
+  [/(?:^|__|\.)numbers_(?:read|watch)$/, "Checking the numbers"],
+  [/(?:^|__|\.)money_\w+$/, "Checking the money"],
+  [/(?:^|__|\.)budget_set$/, "Setting a budget"],
+  [/(?:^|__|\.)company_\w+$/, "Reading the company profile"],
+  [/(?:^|__|\.)(?:doc_create|kin_document)$/, "Making a doc"],
+  [/(?:^|__|\.)(?:doc_read|doc_history)$/, "Reading a doc"],
+  [/(?:^|__|\.)docs_search$/, "Searching docs"],
+  [/(?:^|__|\.)doc_\w+$/, "Editing a doc"],
+  [/(?:^|__|\.)bills_add$/, "Adding a bill"],
+  [/(?:^|__|\.)bill_read$/, "Reading bills"],
+  [/(?:^|__|\.)statement_\w+$/, "Reading a statement"],
+  [/(?:^|__|\.)kin_recipes$/, "Checking how files are made"],
+  [/(?:^|__|\.)kin_recipe_undo$/, "Undoing a change"],
+  [/(?:^|__|\.)kin_issue$/, "Issuing an invoice"],
+  [/(?:^|__|\.)kin_receipt$/, "Making a receipt"],
+  [/(?:^|__|\.)web_page$/, "Reading a web page"],
+  [/(?:^|__|\.)social_draft$/, "Drafting a post"],
+  [/(?:^|__|\.)(?:social_week|social_pack)$/, "Putting posts together"],
+  [/(?:^|__|\.)social_\w+$/, "Checking social posts"],
+  [/(?:^|__|\.)kin_connection_tools$/, "Checking connected apps"],
+  [/(?:^|__|\.)kin_connection_offer$/, "Asking you to connect an app"],
+  [/(?:^|__|\.)kin_connection_note$/, "Noting what an account is for"],
 ];
+// A connected app's call reads by what it touches: its tool name picks the words, never shows.
+const CONNECTION_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^(?:mail_send|mail_reply)$/, "Writing an email"],
+  [/^mail_/, "Reading mail"],
+  [/^calendar_/, "Checking the calendar"],
+];
+const TYPE_LABELS: Partial<Record<OrchestrationV2TurnItem["type"], string>> = {
+  file_search: "Checking my notes",
+  command_execution: "Working in a terminal",
+  file_change: "Editing files",
+  web_search: "Searching the web",
+};
+const CONNECTION_CALL = /(?:^|__|\.)kin_connection_call$/;
+const connectionLabel = (input: unknown) => {
+  const tool =
+    typeof input === "object" && input !== null && "tool" in input && typeof input.tool === "string"
+      ? input.tool
+      : "";
+  return CONNECTION_LABELS.find(([pattern]) => pattern.test(tool))?.[1] ?? "Using a connected app";
+};
 export function toolLabel(item: OrchestrationV2TurnItem): string | null {
-  if (item.type === "file_search") return "Checking my notes";
+  const byType = TYPE_LABELS[item.type];
+  if (byType !== undefined) return byType;
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
+  if (item.type === "dynamic_tool" && CONNECTION_CALL.test(name))
+    return connectionLabel(item.input);
+  return listedToolLabel(name);
+}
+
+export function toolNameLabel(name: string): string | null {
+  return CONNECTION_CALL.test(name) ? connectionLabel(undefined) : listedToolLabel(name);
+}
+
+function listedToolLabel(name: string): string | null {
   const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
   return found === undefined ? PHASE_LABELS.tool : found[1];
 }

@@ -53,7 +53,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -617,6 +617,52 @@ it.effect("advertises the compact input schema for every registered tool", () =>
     }
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("lists every Kin argument but validates bounds not sent to the model", () => {
+  const parameters = Schema.Struct({
+    text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
+    rows: Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(2)),
+    count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(2), Schema.isLessThanOrEqualTo(8)),
+    bare: Schema.String.annotate({ description: "Bare." }),
+    due: Schema.optional(Schema.NullOr(Schema.String).annotate({ description: "Due date." })),
+  });
+  const tools = Toolkit.make(
+    Tool.make("probe", {
+      parameters,
+      success: parameters,
+    }).annotate(AdvertisedDescriptions, [{ path: [], keys: ["text", "rows", "count", "due"] }]),
+  );
+  const registration = McpHttpServer.toolkitRegistration(
+    tools,
+    McpToolAccess.toLayer(tools, { probe: McpToolAccess.reads(Effect.succeed) }),
+    { kin: true },
+  ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer));
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(server.tools[0]?.tool.inputSchema.properties?.bare).toEqual({ type: "string" });
+    const good = { text: "one", rows: ["a"], count: 2, bare: "kept", due: null };
+    const call = (params: Record<string, unknown>) => callTool("probe", { ...good, ...params });
+    expect(yield* call({})).toMatchObject({ isError: false, structuredContent: good });
+    const unknown = yield* Effect.flip(call({ typo: 1 }));
+    expect(unknown).toBeInstanceOf(McpSchema.InvalidParams);
+    expect(unknown.message).toContain(
+      'Unknown argument "typo". Accepted arguments: text, rows, count, bare, due.',
+    );
+    for (const bad of [
+      { bare: 1 },
+      { text: "" },
+      { text: "x".repeat(301) },
+      { rows: [] },
+      { rows: ["a", "b", "c"] },
+      { count: 1 },
+      { count: 9 },
+    ]) {
+      const refused = yield* Effect.flip(call(bad));
+      expect(refused, JSON.stringify(bad)).toBeInstanceOf(McpSchema.InvalidParams);
+      expect(refused.message).not.toContain("Unknown argument");
+    }
+  }).pipe(Effect.provide(registration));
+});
 
 it.effect("checks each preview_act action against that action's own input", () =>
   Effect.scoped(

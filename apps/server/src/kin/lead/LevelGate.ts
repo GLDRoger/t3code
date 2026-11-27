@@ -48,7 +48,9 @@ import { unreadableBy } from "../work/teamView.ts";
 
 type PostInput = KinMessagesSendInput & {
   readonly intent: KinAgentIntent;
-  readonly placeReplyFigures?: true;
+  readonly placeReplyFigures?: true | "named";
+  readonly reply?: true;
+  readonly silent?: true;
 };
 type PostToInput = PostInput & {
   /** Why it can't wait for their quiet hours: logged, and it posts now. */
@@ -89,6 +91,12 @@ export class KinLevelGate extends Context.Service<
       input: PostInput,
       bind?: (message: KinMessage) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinMessage, KinChatError>;
+    readonly postReply: (
+      agent: AgentIdentity,
+      chatId: KinChatId,
+      parts: ReadonlyArray<Omit<PostInput, "chatId">>,
+      bind: Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<ReadonlyArray<KinMessage>, KinChatError>;
     /**
      * A message written for one teammate, in their own direct chat with the lead. An owner-level
      * turn may send it, though they are not the owner, when its text holds nothing they can't
@@ -100,7 +108,7 @@ export class KinLevelGate extends Context.Service<
       personId: KinPersonId,
       input: PostToInput,
     ) => Effect.Effect<(KinMessage & { readonly replaced?: number }) | HeldPost, KinChatError>;
-    /** The turn's one reply grows by its next segment, gated like the post that began it. */
+    /** Adds to an existing message under the same gate as a post. */
     readonly extend: (
       agent: AgentIdentity,
       input: Parameters<KinChatService["Service"]["extendReply"]>[1],
@@ -512,6 +520,16 @@ const make = Effect.gen(function* () {
           : chat.send(agent, input).pipe(Effect.tap(bind)),
       ),
     ),
+    postReply: Effect.fn("KinLevelGate.postReply")((agent, chatId, parts, bind) =>
+      gated(
+        "gated reply group",
+        agent,
+        chatId,
+        Effect.forEach(parts, (part) => chat.send(agent, { ...part, chatId })).pipe(
+          Effect.tap(() => bind),
+        ),
+      ),
+    ),
     // Words only: a file or a doc reference could carry what the text check can't read.
     postTo: Effect.fn("KinLevelGate.postTo")((agent, personId, input) =>
       gated(
@@ -523,12 +541,15 @@ const make = Effect.gen(function* () {
           const replaced =
             input.urgent === undefined
               ? 0
-              : yield* urgentNow({
-                  ...where,
-                  agentId: agent.agentId,
-                  wakeupId: agent.wakeupId,
-                  reason: input.urgent,
-                });
+              : yield* urgentNow(
+                  {
+                    ...where,
+                    agentId: agent.agentId,
+                    wakeupId: agent.wakeupId,
+                    reason: input.urgent,
+                  },
+                  chat,
+                );
           const held =
             input.urgent === undefined
               ? yield* holdFor({ ...where, notBefore: input.notBefore })

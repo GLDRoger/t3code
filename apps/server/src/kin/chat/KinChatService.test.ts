@@ -32,6 +32,7 @@ import {
   KinKeyThumbprint,
   KinMemberId,
   type KinChatListEvent,
+  type KinChatStreamEvent,
   KinActionId,
   KinMessageId,
   KinMessagesSendInput,
@@ -75,6 +76,8 @@ import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LevelGate from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
 import {
@@ -224,15 +227,17 @@ const kinRowCounts = Effect.gen(function* () {
     counts[name] = (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM ${sql(name)}`)[0]!.n;
   return counts;
 });
-const identityLayer = Identity.KinIdentity.layer.pipe(
-  Layer.provide(
-    Layer.succeed(Identity.KinIdentityConfig, {
-      orgName: "Kin",
-      ownerHandle: "owner",
-      ownerDisplayName: "Owner",
-    }),
-  ),
-);
+const namedIdentityLayer = (ownerDisplayName: string) =>
+  Identity.KinIdentity.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Identity.KinIdentityConfig, {
+        orgName: "Kin",
+        ownerHandle: "owner",
+        ownerDisplayName,
+      }),
+    ),
+  );
+const identityLayer = namedIdentityLayer("Owner");
 const session: AuthenticatedSession = {
   sessionId: Schema.decodeSync(AuthSessionId)("session"),
   subject: "browser",
@@ -266,10 +271,15 @@ const state = Schema.decodeSync(KinTaskCardState)({
   lastError: null,
   updatedAt: timestamp,
 });
-const seed = Effect.fn("test.seed")(function* (notice = false) {
+const seed = Effect.fn("test.seed")(function* (
+  notice = false,
+  names?: { readonly owner: string; readonly agent: string },
+) {
   const repo = yield* Repository.KinChatRepository;
   const service = yield* Service.KinChatService;
-  const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+  const identity = yield* Identity.KinIdentity.pipe(
+    Effect.provide(names === undefined ? identityLayer : namedIdentityLayer(names.owner)),
+  );
   yield* pairSession(session.sessionId);
   const [person] = yield* identity.resolve(session);
   assert.isDefined(person);
@@ -277,7 +287,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
     orgId: person.orgId,
     agentId,
     ownerPersonId: person.personId,
-    displayName: "Lead",
+    displayName: names?.agent ?? "Lead",
     role: "lead",
     createdAt: timestamp,
   });
@@ -285,7 +295,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
   const chat = yield* service.createDirect(person, { orgId: person.orgId, agentId });
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-    VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+    VALUES (${agentId}, ${person.orgId}, ${names?.agent ?? "Lead"}, 0, '{}', '[]', ${chat.chatId})`;
   const prompt = notice
     ? undefined
     : yield* service.send(person, {
@@ -305,6 +315,37 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
 });
 
 describe("KinChatService", () => {
+  it.effect("a reply group spends the last available notice once", () =>
+    Effect.gen(function* () {
+      const { service, person, agent, chat } = yield* seed(true);
+      const sql = yield* SqlClient.SqlClient;
+      for (let n = 0; n < 9; n++) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${`prior-${n}`}, ${person.orgId}, ${chat.chatId}, ${1000 + n}, 'system',
+            'member', 'text', 'Earlier notice', '[]', 'posted', ${timestamp})`;
+        yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
+          VALUES (${person.orgId}, ${`prior-${n}`}, ${chat.chatId}, ${agentId}, 0)`;
+      }
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (const [i, body] of ["First.", "Second.", "Third."].entries())
+            yield* service.send(agent, {
+              chatId: chat.chatId,
+              clientMessageId: i === 0 ? "reply:group" : `reply:group~b${i + 1}`,
+              body,
+              intent: "evidence",
+              reply: true,
+            });
+        }),
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS count FROM kin_floor_notices WHERE org_id = ${person.orgId}`,
+        [{ count: 10 }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("keeps a person's uploads with the message and takes them from nobody else", () =>
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed();
@@ -1499,7 +1540,7 @@ describe("KinChatService", () => {
   );
 
   it.effect(
-    "takes reactions as replies: 👍 answers a yes/no card once, wakes on a yes/no to the lead's latest message or a 👎, one per person per message, refuses privileged cards",
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on an answer to the lead's latest question or a 👎, one per person per message, refuses privileged cards",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -1553,8 +1594,8 @@ describe("KinChatService", () => {
         const latest = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-latest",
-          body: "Merged. I can tag the release too if you want.",
-          intent: "answer",
+          body: "Tag the release too?",
+          intent: "question",
         });
         const mine = (messageId: KinMessageId, kind: "person" | "agent" = "person") =>
           sql<{ emoji: string }>`SELECT r.emoji FROM kin_reactions r
@@ -1567,7 +1608,7 @@ describe("KinChatService", () => {
         yield* react(latest.messageId, "🎉");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
-        // A yes on the latest message answers it, question mark or not, replacing the ❤️.
+        // A yes on the latest question replaces the ❤️.
         yield* react(latest.messageId, "👍");
         assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "👍" }]);
         assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
@@ -1704,6 +1745,119 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a thumbs-up wakes the agent only on a message it waits on", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed(false, {
+        owner: "Rhea",
+        agent: "Finance",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      const drained = yield* Deferred.make<void>();
+      const marker = KinMessageId.make("reaction-queue-drained");
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted" && event.message.messageId === marker
+                      ? Deferred.succeed(drained, undefined)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+          Layer.provide(KinEventQueue.layer),
+        ),
+      );
+      const events = yield* Stream.toQueue(
+        (yield* hub.subscribeForViewer(person, chat.chatId)).pipe(
+          Stream.filter((event) => event.type === "reaction.updated"),
+        ),
+        { capacity: "unbounded" },
+      );
+      const react = (messageId: KinMessageId, emoji: KinReactionEmoji) =>
+        service.react(person, { messageId, emoji, on: true });
+      const plain = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "invoice-sent",
+        body: "Done: INV-12 is sent to Tidewater Freight.",
+        intent: "answer",
+      });
+      const reaction = yield* react(plain.messageId, "👍");
+      assert.deepInclude(yield* Queue.take(events), { reaction, woke: false });
+      const history = yield* service.history(person, {
+        chatId: chat.chatId,
+        beforeSeq: plain.seq + 1,
+        limit: 10,
+      });
+      assert.deepStrictEqual(history.reactions, [reaction]);
+
+      const question = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "send-receipt",
+        body: "Send the receipt to Tidewater Freight?",
+        intent: "question",
+      });
+      assert.isTrue(
+        (yield* repo.listOpenWaiting(person)).some((item) => item.messageId === question.messageId),
+      );
+      yield* react(question.messageId, "👍");
+
+      yield* TestClock.adjust("30 seconds");
+      const card = yield* service.ask(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "receipt-delivery",
+        question: "How should Tidewater Freight receive the receipt?",
+        options: [{ label: "Email" }, { label: "Post" }, { label: "Hold" }],
+      });
+      const cardWaiting = (yield* repo.listOpenWaiting(person)).find(
+        (item) => item.messageId === card.messageId,
+      );
+      assert.isDefined(cardWaiting);
+      yield* service.resolveWaiting(agent, {
+        waitingId: cardWaiting.waitingId,
+        resolution: "done",
+      });
+      yield* react(card.messageId, "👍");
+
+      yield* TestClock.adjust("30 seconds");
+      yield* react(plain.messageId, "👎");
+      yield* TestClock.adjust("30 seconds");
+      const latest = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "receipt-recorded",
+        body: "The receipt is recorded.",
+        intent: "answer",
+      });
+      yield* react(latest.messageId, "❌");
+
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: person.orgId,
+        message: { ...latest, messageId: marker, author: { _tag: "system" }, kind: "system" },
+      });
+      yield* Deferred.await(drained);
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$.messageId') AS "messageId",
+              json_extract(json, '$.emoji') AS emoji
+            FROM kin_events WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}
+              AND tag = 'chat.reaction'
+            ORDER BY received_at, event_id`,
+        [
+          { messageId: question.messageId, emoji: "👍" },
+          { messageId: card.messageId, emoji: "👍" },
+          { messageId: plain.messageId, emoji: "👎" },
+          { messageId: latest.messageId, emoji: "❌" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "takes a withdrawn yes as a changed answer, once, and only on the message a reaction last woke the lead for",
     () =>
@@ -1719,8 +1873,8 @@ describe("KinChatService", () => {
         const offer = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-offer",
-          body: "I can tag the release too if you want.",
-          intent: "answer",
+          body: "Tag the release too?",
+          intent: "question",
         });
         yield* react(offer.messageId, "👍");
         yield* react(offer.messageId, "👍", false);
@@ -2681,6 +2835,86 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a Chats row keeps its time for everyone; only a hidden hand-off row is skipped", () =>
+    Effect.gen(function* () {
+      const { repo, service, person: rhea, chat } = yield* seed(true);
+      const { orgId } = rhea;
+      const arjun = { ...rhea, personId: KinPersonId.make("arjun") };
+      yield* repo.insertPerson({
+        orgId,
+        personId: arjun.personId,
+        displayName: "Arjun",
+        handle: "arjun",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const group = yield* repo.createChat({
+        orgId,
+        chatId: KinChatId.make("tidewater"),
+        kind: "project_group",
+        title: "Tidewater Freight",
+        teamId: null,
+        directKey: null,
+        createdAt: timestamp,
+        lastMessageAt: null,
+        archivedAt: null,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId: group.chatId,
+        memberId: KinMemberId.make("tidewater-rhea"),
+        principal: { _tag: "person", personId: rhea.personId },
+        role: "owner",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      yield* TestClock.adjust("1 hour");
+      const before = yield* service.send(rhea, {
+        chatId: group.chatId,
+        body: "The Tidewater Freight order is ready.",
+        clientMessageId: "order-ready",
+      });
+      const direct = yield* service.send(rhea, {
+        chatId: chat.chatId,
+        body: "Check the Tidewater Freight order.",
+        clientMessageId: "check-order",
+      });
+      yield* TestClock.adjust("1 hour");
+      yield* repo.addMember({
+        orgId,
+        chatId: group.chatId,
+        memberId: KinMemberId.make("tidewater-arjun"),
+        principal: { _tag: "person", personId: arjun.personId },
+        role: "member",
+        joinedAt: "1970-01-01T02:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+      yield* service.notice({
+        orgId,
+        chatId: chat.chatId,
+        audience: "owner",
+        messageId: KinMessageId.make("kin-handoff:00000000000000000000000000000003"),
+        body: "Check the order.",
+        silent: true,
+        relay: { kind: "sent_by", agentId },
+      });
+      const snapshots = yield* Effect.forEach([arjun, rhea], (viewer) =>
+        Stream.runHead(service.subscribeChats([viewer], {})).pipe(Effect.map(Option.getOrThrow)),
+      );
+      const [arjunList, rheaList] = snapshots;
+      if (arjunList?._tag !== "snapshot" || rheaList?._tag !== "snapshot")
+        return assert.fail("Expected Chats snapshots");
+      const arjunRow = arjunList.chats.find((row) => row.chatId === group.chatId);
+      assert.strictEqual(arjunRow?.lastMessageAt, before.createdAt);
+      assert.isNull(arjunRow?.lastMessage);
+      const rheaRow = rheaList.chats.find((row) => row.chatId === chat.chatId);
+      assert.strictEqual(rheaRow?.lastMessageAt, direct.createdAt);
+      assert.strictEqual(rheaRow?.lastMessage?.messageId, direct.messageId);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("an owner's answer landing as a co-owner's list reads it still leaves her list", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();
@@ -3396,6 +3630,232 @@ describe("KinChatService", () => {
           assert.notInclude(JSON.stringify(seen), "Secret plan");
           assert.notInclude(JSON.stringify(seen), "Secret pricing");
         }
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "a chat's first backlog carries an access stamp that moves only when what the reader may open moves",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person: rhea, chat } = yield* seed();
+        const { orgId } = rhea;
+        const sql = yield* SqlClient.SqlClient;
+        const zoya = { ...rhea, personId: KinPersonId.make("zoya") };
+        const arjun = { ...rhea, personId: KinPersonId.make("arjun") };
+        for (const [person, name] of [
+          [zoya, "Zoya"],
+          [arjun, "Arjun"],
+        ] as const)
+          yield* repo.insertPerson({
+            ...person,
+            handle: name.toLowerCase(),
+            displayName: name,
+            githubLogin: null,
+            createdAt: timestamp,
+          });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at) VALUES ('zoya-member', ${orgId}, ${chat.chatId},
+          'person', ${zoya.personId}, 'member', ${timestamp})`;
+        yield* sql`UPDATE kin_chats SET shared_at = ${timestamp}, shared_from_seq = 1
+          WHERE org_id = ${orgId} AND chat_id = ${chat.chatId}`;
+        yield* sql`INSERT INTO kin_registers
+          (org_id, register_id, name, key_prefix, built_in, created_at, definition_json) VALUES
+          (${orgId}, 'work', 'Work', 'W', 1, 0, '{}'),
+          (${orgId}, 'projects', 'Projects', 'P', 1, 0, '{}'),
+          (${orgId}, 'clients', 'Clients', 'C', 1, 0, '{}'),
+          (${orgId}, 'docs', 'Docs', 'D', 1, 0, '{}'),
+          (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0, '{}'),
+          (${orgId}, 'orders', 'Orders', 'ORD', 0, 0, '{"fields":[{"key":"number","sensitive":true}]}')`;
+        yield* sql`INSERT INTO kin_records
+          (org_id, record_id, register_id, key, title, owner_kind, owner_id, created_by_kind,
+            origin_key, created_at, updated_at, fields_json, project_id, party_id, team_shared)
+          VALUES
+          (${orgId}, 'project', 'projects', 'P-1', 'Stage', 'person', ${rhea.personId}, 'person',
+            'project', 0, 0, '{}', NULL, 'client', 0),
+          (${orgId}, 'client', 'clients', 'C-1', 'Ambermill', 'person', ${rhea.personId}, 'person',
+            'client', 0, 0, '{}', NULL, NULL, 0),
+          (${orgId}, 'work', 'work', 'W-1', 'Draw the stage', 'person', ${rhea.personId}, 'person',
+            'work', 0, 0, '{}', 'project', NULL, 0),
+          (${orgId}, 'project-doc', 'docs', 'D-1', 'The stage plan', 'person', ${rhea.personId},
+            'person', 'project-doc', 0, 0, '{}', 'project', NULL, 0),
+          (${orgId}, 'company-doc', 'docs', 'D-2', 'Company calendar', 'person', ${rhea.personId},
+            'person', 'company-doc', 0, 0, '{"home":"company"}', NULL, NULL, 0),
+          (${orgId}, 'picture', 'docs', 'D-3', 'Stage picture', 'person', ${rhea.personId},
+            'person', 'picture:stage', 0, 0, '{}', NULL, NULL, 0),
+          (${orgId}, 'order', 'orders', 'ORD-1', 'Stage order', 'person', ${rhea.personId}, 'person',
+            'order', 0, 0, '{"number":"ORD/26/001"}', NULL, NULL, 1)`;
+        yield* sql`INSERT INTO kin_doc_versions
+          (org_id, record_id, version, title, kind, summary, operations_json, actor_kind, via,
+            audience, origin_key, created_at)
+          VALUES (${orgId}, 'picture', 1, 'Stage picture', 'created', '', '[]', 'agent', 'turn',
+            'owner_only', 'picture-version', 0)`;
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+          SELECT 'stage-picture', org_id, chat_id, message_id FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND seq = 1`;
+        yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+          VALUES (${orgId}, 'picture', 1, 'stage-picture')`;
+        const open = service.subscribe(zoya, { chatId: chat.chatId, afterSeq: 1 });
+        const stampOf = (event: KinChatStreamEvent) => {
+          if (event._tag !== "backlog") return assert.fail("Expected a backlog");
+          assert.property(event, "accessStamp");
+          assert.isString(event.accessStamp);
+          return event.accessStamp;
+        };
+        const stamp = Stream.runHead(open).pipe(Effect.map(Option.getOrThrow), Effect.map(stampOf));
+        const events = yield* Stream.toQueue(open, { capacity: "unbounded" });
+        const original = stampOf(yield* Queue.take(events));
+        assert.strictEqual(yield* stamp, original);
+
+        const ownerStamp = Stream.runHead(
+          service.subscribe(rhea, { chatId: chat.chatId, afterSeq: 1 }),
+        ).pipe(Effect.map(Option.getOrThrow), Effect.map(stampOf));
+        const ownerBefore = yield* ownerStamp;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'invoice-40', 'invoices', 'INV-40', 'Tidewater Freight', 'person',
+            ${rhea.personId}, 'person', 'invoice-40', 0, 0)`;
+        assert.strictEqual(yield* ownerStamp, ownerBefore, "creating INV-40");
+        assert.strictEqual(yield* stamp, original, "creating INV-40");
+
+        yield* sql`UPDATE kin_records SET title = 'Tidewater Freight November', state = 'dropped'
+          WHERE org_id = ${orgId} AND record_id = 'invoice-40'`;
+        assert.strictEqual(yield* ownerStamp, ownerBefore, "editing INV-40");
+        assert.strictEqual(yield* stamp, original, "editing INV-40");
+
+        const personAccess = (personId: KinPersonId, access: "member" | "co_owner") =>
+          sql`UPDATE kin_people SET access = ${access}
+            WHERE org_id = ${orgId} AND person_id = ${personId}`;
+        const recordFields = (recordId: string, fields: object) =>
+          sql`UPDATE kin_records SET fields_json = ${JSON.stringify(fields)}
+            WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+        const recordOwner = (recordId: string, ownerId: KinPersonId) =>
+          sql`UPDATE kin_records SET owner_id = ${ownerId}
+            WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+        const places = (clients: number, docs: number, money: number) =>
+          sql`UPDATE kin_people SET sees_clients = ${clients}, sees_docs = ${docs}, sees_money = ${money}
+            WHERE org_id = ${orgId} AND person_id = ${zoya.personId}`;
+        const teamList = (team: boolean, sensitiveNumber: boolean, teamSince = 0) => {
+          const definition = {
+            team,
+            teamSince,
+            sensitive: false,
+            payments: true,
+            fields: [{ key: "number", sensitive: sensitiveNumber }],
+          };
+          return sql`UPDATE kin_registers SET definition_json = ${JSON.stringify(definition)}
+            WHERE org_id = ${orgId} AND register_id = 'orders'`;
+        };
+        const sectionSwitch = (id: "clients" | "deals" | "money", on: boolean) =>
+          sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_at)
+            VALUES (${orgId}, ${JSON.stringify([{ id, on }])}, 1, 0)
+            ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json`;
+        const listDefaultLabel = (sensitive: boolean) =>
+          sql`UPDATE kin_registers SET definition_json = json_set(definition_json,
+            '$.sensitive', json(${JSON.stringify(sensitive)}))
+            WHERE org_id = ${orgId} AND register_id = 'orders'`;
+        const docLabel = (sensitive: number) =>
+          sql`UPDATE kin_records SET sensitive = ${sensitive}
+            WHERE org_id = ${orgId} AND record_id = 'company-doc'`;
+        const chatAgentRetirement = (retiredAt: string | null) =>
+          sql`UPDATE kin_agents SET retired_at = ${retiredAt}
+            WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        const draftFor = (personId: KinPersonId | null) =>
+          recordFields("company-doc", { home: "company", draftFor: personId });
+        for (const [grant, restore, label] of [
+          [
+            personAccess(zoya.personId, "co_owner"),
+            personAccess(zoya.personId, "member"),
+            "owner level",
+          ],
+          [places(1, 0, 0), places(0, 0, 0), "Clients"],
+          [places(0, 1, 0), places(0, 0, 0), "Docs"],
+          [places(0, 0, 1), places(0, 0, 0), "Money"],
+          [sectionSwitch("clients", false), sectionSwitch("clients", true), "Clients section"],
+          [sectionSwitch("deals", false), sectionSwitch("deals", true), "Deals section"],
+          [listDefaultLabel(true), listDefaultLabel(false), "list default privacy"],
+          [
+            recordFields("project", { members: ["person:zoya"] }),
+            recordFields("project", {}),
+            "project membership",
+          ],
+          [
+            recordOwner("project", zoya.personId),
+            recordOwner("project", rhea.personId),
+            "project lead",
+          ],
+          [recordOwner("work", zoya.personId), recordOwner("work", rhea.personId), "task holder"],
+          [
+            recordFields("work", { alsoOn: ["person:zoya"] }),
+            recordFields("work", {}),
+            "task teammate",
+          ],
+          [
+            recordFields("work", { attendees: ["person:zoya"] }),
+            recordFields("work", {}),
+            "task attendee",
+          ],
+          [draftFor(zoya.personId), draftFor(null), "document draft"],
+          [teamList(true, true), teamList(false, true), "team list"],
+          [chatAgentRetirement(timestamp), chatAgentRetirement(null), "direct agent chat"],
+        ] as const) {
+          yield* grant;
+          assert.notStrictEqual(yield* stamp, original, label);
+          yield* restore;
+          assert.strictEqual(yield* stamp, original, label);
+        }
+        yield* places(0, 1, 0);
+        const docs = yield* stamp;
+        yield* docLabel(1);
+        assert.strictEqual(yield* stamp, docs, "document label");
+        yield* docLabel(0);
+        assert.strictEqual(yield* stamp, docs);
+        yield* places(0, 0, 0);
+
+        yield* teamList(true, true);
+        const shared = yield* stamp;
+        yield* teamList(true, true, 1);
+        assert.notStrictEqual(yield* stamp, shared, "team list cutoff");
+        yield* teamList(true, true);
+        assert.strictEqual(yield* stamp, shared);
+        yield* teamList(true, false);
+        assert.notStrictEqual(yield* stamp, shared, "printed number");
+        yield* teamList(true, true);
+        assert.strictEqual(yield* stamp, shared);
+        yield* sectionSwitch("money", false);
+        assert.notStrictEqual(yield* stamp, shared, "Money section");
+        yield* sectionSwitch("money", true);
+        assert.strictEqual(yield* stamp, shared);
+        yield* teamList(false, true);
+
+        yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, last_seq, created_at)
+          VALUES (${orgId}, 'stage-group', 'project_group', 0, ${timestamp})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq) VALUES ('zoya-stage', ${orgId}, 'stage-group',
+          'person', ${zoya.personId}, 'member', ${timestamp}, 1)`;
+        const group = yield* stamp;
+        assert.notStrictEqual(group, original, "group chat membership");
+        yield* sql`UPDATE kin_chat_members SET joined_seq = 2
+          WHERE org_id = ${orgId} AND member_id = 'zoya-stage'`;
+        assert.notStrictEqual(yield* stamp, group, "group chat join floor");
+        yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp}
+          WHERE org_id = ${orgId} AND member_id = 'zoya-stage'`;
+        assert.strictEqual(yield* stamp, original, "leaving group chat");
+
+        yield* service.createDirect(zoya, { orgId, agentId });
+        assert.strictEqual(yield* stamp, original, "opening a new direct agent chat");
+        yield* sql`UPDATE kin_doc_versions SET audience = 'shared'
+          WHERE org_id = ${orgId} AND record_id = 'picture' AND version = 1`;
+        assert.strictEqual(yield* stamp, original, "editing a picture version");
+
+        yield* personAccess(arjun.personId, "co_owner");
+        yield* service.send(rhea, {
+          chatId: chat.chatId,
+          body: "The stage is ready.",
+          clientMessageId: "access-stamp-live",
+        });
+        const live = yield* Queue.take(events);
+        assert.strictEqual(live._tag, "message");
+        assert.notProperty(live, "accessStamp");
+        assert.strictEqual(yield* stamp, original);
       }).pipe(Effect.provide(layer)),
   );
   it.effect(

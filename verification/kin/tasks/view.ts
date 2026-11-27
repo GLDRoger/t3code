@@ -28,6 +28,11 @@ export const rules: Record<string, string> = {
 
 export const variants = [
   {
+    name: "made-untold",
+    breaks: "OneNoticePerHandOff",
+    what: "a task the agent makes for someone else is saved but its holder is not told",
+  },
+  {
     name: "suggested-wakes",
     breaks: "NoSuggestedNotice",
     what: "moving a task before Keep wakes or notifies the new holder",

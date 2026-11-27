@@ -53,6 +53,36 @@ export type Seat = {
   readonly seat: ReadonlyArray<string>;
   /** One line per person in the company. */
   readonly team: ReadonlyArray<string>;
+  readonly keys: {
+    readonly seat: ReadonlyArray<string>;
+    readonly colleagues: ReadonlyArray<string>;
+    readonly team: ReadonlyArray<string>;
+  };
+  readonly now: ReadonlyArray<string>;
+};
+
+type Fragment = { readonly text: string; readonly now?: string };
+const standing = (text: string) => ({ text });
+const live = (before: string, now: string, after = "") => ({
+  text: before + now + after,
+  now,
+});
+
+const renderLine = (fragments: ReadonlyArray<Fragment | undefined>, nowPrefix = "") => {
+  let text = "";
+  let key = "";
+  const now: string[] = [];
+  for (const fragment of fragments) {
+    if (fragment === undefined) continue;
+    text += fragment.text;
+    if (fragment.now === undefined) key += fragment.text;
+    else now.push(fragment.now);
+  }
+  return {
+    text,
+    key: key === "" ? [] : [key],
+    now: now.length === 0 ? [] : [nowPrefix + now.join("; ")],
+  };
 };
 
 /**
@@ -86,11 +116,14 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     .filter((one) => one.agentId !== agentId)
     .map((one) => {
       const held = load?.("agent", one.agentId);
-      return `${colleagueLine(one)}${
+      const counts =
         held === undefined
-          ? ""
-          : ` (${held.open} open${held.late > 0 ? `, ${held.late} late` : ""})`
-      }`;
+          ? undefined
+          : `${held.open} open${held.late > 0 ? `, ${held.late} late` : ""}`;
+      return renderLine(
+        [standing(colleagueLine(one)), counts === undefined ? undefined : live(" (", counts, ")")],
+        `- ${one.name}: `,
+      );
     });
 
   const found = yield* sql<{
@@ -139,50 +172,81 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     const hours = storedWorkHours(person.workHours);
     const held = load?.("person", person.id);
     const leads = led.filter((row) => row.id === person.id).map((row) => row.title);
-    const parts = [
-      [
-        ACCESS_WORDS[person.access ?? "member"] ?? "member",
-        ...(tags._tag === "Some" ? tags.value : []),
-        ...(leads.length === 0 ? [] : [`leads ${leads.slice(0, 2).join(", ")}`]),
-      ].join(", "),
-      away ? `away until ${person.away}` : undefined,
-      hours === undefined
+    const name = `- ${JSON.stringify(clip(person.name, 80))}: `;
+    const access = [
+      ACCESS_WORDS[person.access ?? "member"] ?? "member",
+      ...(tags._tag === "Some" ? tags.value : []),
+    ].join(", ");
+    const leading = leads.length === 0 ? undefined : `leads ${leads.slice(0, 2).join(", ")}`;
+    const absence = away ? `away until ${person.away}` : undefined;
+    const status =
+      hours === undefined || person.timeZone === null || away
         ? undefined
-        : `${describeHours(hours)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
-            person.timeZone === null || away
-              ? ""
-              : workingAt(hours, person.timeZone, now)
-                ? ", working now"
-                : ", off now"
-          }`,
+        : workingAt(hours, person.timeZone, now)
+          ? "working now"
+          : "off now";
+    const counts =
       held === undefined
         ? undefined
-        : `${held.open} open${held.late > 0 ? `, ${held.late} late` : ""}${held.overloaded ? ", overloaded" : ""}`,
-      focus.has(person.id)
-        ? `on ${JSON.stringify(clip(focus.get(person.id) ?? "", 60))}`
-        : undefined,
-      person.talk.trim() === "" ? undefined : `talk: ${JSON.stringify(clip(person.talk, 120))}`,
-    ].filter((part) => part !== undefined && part !== "");
-    return `- ${JSON.stringify(clip(person.name, 80))}: ${parts.join("; ")}`;
+        : `${held.open} open${held.late > 0 ? `, ${held.late} late` : ""}${held.overloaded ? ", overloaded" : ""}`;
+    const task = focus.has(person.id)
+      ? `on ${JSON.stringify(clip(focus.get(person.id) ?? "", 60))}`
+      : undefined;
+    return renderLine(
+      [
+        standing(name + access),
+        leading === undefined ? undefined : live(", ", leading),
+        absence === undefined ? undefined : live("; ", absence),
+        hours === undefined
+          ? undefined
+          : standing(
+              `; ${describeHours(hours)}${person.timeZone === null ? "" : ` ${person.timeZone}`}`,
+            ),
+        status === undefined ? undefined : live(", ", status),
+        counts === undefined ? undefined : live("; ", counts),
+        task === undefined ? undefined : live("; ", task),
+        person.talk.trim() === ""
+          ? undefined
+          : standing(`; talk: ${JSON.stringify(clip(person.talk, 120))}`),
+      ],
+      name,
+    );
   });
-  if (unlisted > 0) team.push(`- ${unlisted} more: people_read lists everyone.`);
+  if (unlisted > 0)
+    team.push(renderLine([standing(`- ${unlisted} more: people_read lists everyone.`)]));
 
   const self = all.find((one) => one.agentId === agentId)?.name ?? "";
-  const seat: Array<string> = [];
+  const seat: Array<ReturnType<typeof renderLine>> = [];
   if (ownerOnly) {
     const held = load?.("agent", agentId);
-    if (held !== undefined)
-      seat.push(
-        `- You hold ${held.open} open${held.late > 0 ? `, ${held.late} late` : ""}${held.dueThisWeek > 0 ? `, ${held.dueThisWeek} due this week` : ""}.`,
-      );
+    if (held !== undefined) {
+      const counts = `${held.open} open${held.late > 0 ? `, ${held.late} late` : ""}${held.dueThisWeek > 0 ? `, ${held.dueThisWeek} due this week` : ""}`;
+      seat.push(renderLine([live("- You hold ", counts, ".")], "- You: "));
+    }
     const memory = input.memory ?? [];
     const permissions = linked(memory, [`permission:${self}`, "permission:all"]);
     if (permissions.length > 0)
       seat.push(
-        `- Standing permissions from the owner: ${permissions.map((item) => JSON.stringify(clip(item.title, 100))).join("; ")}.`,
+        renderLine([
+          standing(
+            `- Standing permissions from the owner: ${permissions.map((item) => JSON.stringify(clip(item.title, 100))).join("; ")}.`,
+          ),
+        ]),
       );
     const positions = linked(memory, [`position:${self}`]);
-    if (positions.length > 0) seat.push(positionsLine(positions, yield* ownerZone(orgId)));
+    if (positions.length > 0)
+      seat.push(renderLine([standing(positionsLine(positions, yield* ownerZone(orgId)))]));
   }
-  return { character, colleagues, seat, team } satisfies Seat;
+  return {
+    character,
+    colleagues: colleagues.map((line) => line.text),
+    seat: seat.map((line) => line.text),
+    team: team.map((line) => line.text),
+    keys: {
+      seat: seat.flatMap((line) => line.key),
+      colleagues: colleagues.flatMap((line) => line.key),
+      team: team.flatMap((line) => line.key),
+    },
+    now: [...seat, ...colleagues, ...team].flatMap((line) => line.now),
+  } satisfies Seat;
 });

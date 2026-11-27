@@ -14,6 +14,28 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { knownArguments } from "../mcp/knownArguments.ts";
+
+const ChartSeriesInput = knownArguments("Chart series", KinChartSeries);
+const ScatterSeries = KinChartScatter.fields.series.value;
+const ScatterPoint = ScatterSeries.fields.points.value;
+const ScatterInput = knownArguments(
+  "Scatter",
+  Schema.Struct({
+    ...KinChartScatter.fields,
+    xUnit: Schema.optional(KinChartUnit),
+    series: Schema.Array(
+      knownArguments(
+        "Scatter series",
+        Schema.Struct({
+          ...ScatterSeries.fields,
+          points: Schema.Array(knownArguments("Scatter point", ScatterPoint)),
+        }),
+      ),
+    ),
+  }),
+);
+
 /**
  * What `kin_chart` takes. Only shapes are checked here: `chartCardState` applies every limit, so
  * a refusal can say how to fix the call.
@@ -24,18 +46,13 @@ export const ChartInput = Schema.Struct({
   unit: KinChartUnit,
   labels: Schema.optional(Schema.Array(Schema.String)),
   labelType: Schema.optional(KinChartLabelType),
-  series: Schema.optional(Schema.Array(KinChartSeries)),
-  comparison: Schema.optional(KinChartSeries),
+  series: Schema.optional(Schema.Array(ChartSeriesInput)),
+  comparison: Schema.optional(knownArguments("Chart comparison", KinChartSeries)),
   caption: Schema.optional(Schema.String),
   colors: Schema.optional(Schema.Array(Schema.NullOr(KinChartColor))),
-  target: Schema.optional(KinChartTarget),
+  target: Schema.optional(knownArguments("Chart target", KinChartTarget)),
   valueLabels: Schema.optional(Schema.Boolean),
-  scatter: Schema.optional(
-    Schema.Struct({
-      ...KinChartScatter.fields,
-      xUnit: Schema.optional(KinChartUnit),
-    }),
-  ),
+  scatter: Schema.optional(ScatterInput),
 });
 export type ChartInput = typeof ChartInput.Type;
 export const ChartResult = Schema.Union([

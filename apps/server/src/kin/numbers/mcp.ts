@@ -32,6 +32,9 @@ const NumberRecordInput = Schema.Struct({
   values: Schema.Array(
     Schema.Struct({
       ...KinNumberValueInput.fields,
+      value: KinNumberValueInput.fields.value.annotate({
+        description: "A plain number: 4210, not 4,210.",
+      }),
       number: KinToolText(80, "Its key (G-1) or name."),
       source: KinNumberSource,
     }),

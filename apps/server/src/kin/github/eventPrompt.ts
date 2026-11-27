@@ -27,7 +27,7 @@ const READ_ON = "Where the diff below stops, read the rest with kin_github_diff 
 
 /** An asked review's closing line: its reply goes to the asker's chat (`replyLane.ts`). */
 const ASKED_REPLY =
-  "Your reply goes to the person who asked, in their own chat with you: at most two sentences, under 300 characters, on what the review found, ending with the review's link from kin_github_review. Kin tells them itself whether it was posted, and tells the owner when it blocks. The details are on GitHub; don't repeat them. No card and no question.";
+  "Your reply goes to the person who asked, in their own chat with you: at most two sentences on what the review found, ending with the review's link from kin_github_review. Kin tells them itself whether it was posted, and tells the owner when it blocks. The details are on GitHub; don't repeat them. No card and no question.";
 
 const OWNERS_OWN = (trigger: KinGithubTrigger) =>
   trigger.pull?.ownersOwn === true
@@ -123,13 +123,11 @@ const SEAT = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefin
 };
 
 /** The instructions an agent's turn gets for one GitHub trigger. */
-export const githubTriggerText = (
-  repo: string,
-  trigger: KinGithubTrigger,
-  silent: string,
-  askedBy?: string,
-) => {
+export const githubTriggerText = (repo: string, trigger: KinGithubTrigger, askedBy?: string) => {
   if (isOutsideReview(trigger)) return SEAT(repo, trigger, askedBy).join("\n");
+  // Step 4 replaces this text.
+  if (trigger.kind === "triage" || trigger.kind === "triage_reply")
+    return CALL_ISSUE(repo, trigger).join("\n");
   return [
     `GitHub work for you, started by Kin on ${repo}. You post on GitHub as Kin's GitHub App (as the owner where it isn't installed); Kin signs every post with your name, so write as yourself, in your own voice.`,
     ...(trigger.pull?.reReview !== undefined && askedBy === undefined
@@ -150,8 +148,8 @@ export const githubTriggerText = (
     askedBy !== undefined
       ? ASKED_REPLY
       : trigger.kind === "review" || trigger.kind === "review_request"
-        ? `A review that blocks nothing tells no one in chat: write exactly ${silent}. The owner hears only of a block, or of what the owner's standing rules ask of the owner on this PR: one sentence to the owner's chat, under 200 characters, carrying the PR's title and number, whose it is, what is wrong and what the owner should do, shaped like: "Fix login" (#12), Dev's, logs everyone out on refresh: hold the merge. Already merged, the same sentence says so: "Fix login" (#12), Dev's, merged, logs everyone out on refresh, and that is on ${trigger.pull?.baseRef ?? "the branch it was merged into"} now: it needs a fix. End with the link (${trigger.url}). No card.`
-        : `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask them. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`,
+        ? `A review that blocks nothing tells no one in chat: end with kin_skip. The owner hears only of a block, or of what the owner's standing rules ask of the owner on this PR: one sentence to the owner's chat, carrying the PR's title and number, whose it is, what is wrong and what the owner should do, shaped like: "Fix login" (#12), Dev's, logs everyone out on refresh: hold the merge. Already merged, the same sentence says so: "Fix login" (#12), Dev's, merged, logs everyone out on refresh, and that is on ${trigger.pull?.baseRef ?? "the branch it was merged into"} now: it needs a fix. End with the link (${trigger.url}). No card.`
+        : `Your reply goes to the owner's chat as one line: one sentence saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask them. A task you started is news to the owner; only when you did nothing new, end with kin_skip.`,
   ]
     .filter((line) => line !== "")
     .join("\n");

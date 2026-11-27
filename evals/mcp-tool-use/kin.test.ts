@@ -15,23 +15,25 @@ import {
   type ServerProvider,
   ServerSettings,
 } from "@t3tools/contracts";
-import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
+import type { AppServer, AppServerEvent } from "./appServer.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import {
+  deliveredText,
   filledEvent,
   JUDGED_CALL_BYTES,
   kinDated,
   kinSessionOf,
   kinTurnBlocks,
   kinTurnFiles,
-  rescuePrompt,
+  replyFollowUp,
   shownText,
 } from "./kin.ts";
 import {
   answerToolCall,
   buildBase,
+  type Base,
   buildMessages,
   gradeSample,
   judged,
@@ -39,6 +41,7 @@ import {
   McpToolUseCase,
   normalizeToolInput,
   normalizeToolName,
+  requestBody,
   runSample,
   type SampleRun,
   shellRequest,
@@ -65,14 +68,6 @@ const template = {
           type: "text",
           text: "<system-reminder>\nCodebase and user instructions are shown below.\n</system-reminder>",
         },
-        {
-          type: "text",
-          text: "<system-reminder>\nAvailable agent types for the Agent tool:\nUse a specialist.\n\nWhen you launch multiple agents for independent work, send them in a single message.\n</system-reminder>",
-        },
-        {
-          type: "text",
-          text: "<system-reminder>\nThe following skills are available for use with the Skill tool:\n- Example\n</system-reminder>",
-        },
         { type: "text", text: "The captured prompt." },
       ],
     },
@@ -84,17 +79,12 @@ const template = {
     {
       role: "system",
       content:
-        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nWebFetch\nWebSearch\nmcp__t3-code__retired_tool\n\nAfter the list.",
+        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nmcp__t3-code__retired_tool\n\nAfter the list.",
     },
     { role: "assistant", content: [{ type: "text", text: "A later turn." }] },
   ],
   tools: [
     { name: "mcp__host__term_Bash", input_schema: { type: "object" } },
-    { name: "mcp__host__priority_Read", input_schema: { type: "object" } },
-    { name: "mcp__host__gossip_Edit", input_schema: { type: "object" } },
-    { name: "mcp__host__slab_Write", input_schema: { type: "object" } },
-    { name: "mcp__host__layer_Agent", input_schema: { type: "object" } },
-    { name: "mcp__host__extra_Skill", input_schema: { type: "object" } },
     { name: "mcp__host__clown_ToolSearch", input_schema: { type: "object" } },
     { name: "mcp__t3-code__retired_tool", input_schema: { type: "object" }, defer_loading: true },
   ],
@@ -190,18 +180,34 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
     name: `mcp__t3-code__${name}`,
     input: {},
   });
-  const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
-    rescuePrompt(
+  const turn = (
+    prompt: string,
+    responses: Array<ReadonlyArray<ReturnType<typeof text> | ReturnType<typeof use>>>,
+  ) =>
+    replyFollowUp(
       {
-        testCase: { prompt, setup: { world: { kinLead: true } } } as never,
+        testCase: replyCase(prompt),
         responses,
+        calls: responses
+          .flat()
+          .flatMap((block) => ("name" in block ? [replyCall(normalizeToolName(block.name))] : [])),
       },
-      normalizeToolName,
-    );
+      "",
+    )?.prompt;
   const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
   // Sonnet 5.5: the reply only in thinking, then the turn ended.
   assert.equal(turn(asked, [[use("records_query")], []]), RESCUE_PROMPT);
-  assert.equal(turn(asked, [[text("NO_REPLY")]]), RESCUE_PROMPT);
+  assert.equal(
+    replyFollowUp(
+      {
+        testCase: replyCase(asked),
+        responses: [[use("kin_skip")]],
+        calls: [replyCall("kin_skip", {}, true)],
+      },
+      "",
+    )?.prompt,
+    RESCUE_PROMPT,
+  );
   // A short line before a tool is a status line, not the reply.
   assert.equal(turn(asked, [[text("Checking"), use("records_query")], []]), RESCUE_PROMPT);
   assert.isUndefined(turn(asked, [[use("records_query")], [text("Yes, on 4 Nov.")]]));
@@ -212,16 +218,21 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
   assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
   // A teammate's request passed on is answered by Kin's line; one put to the owner is not.
   const mate = (passed: boolean) =>
-    rescuePrompt(
+    replyFollowUp(
       {
         testCase: {
-          prompt: `Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)`,
-          setup: { world: { kinLead: true }, mocks: { kin_hand_off: { passed } } },
-        } as never,
-        responses: [[use("kin_hand_off")], [text("NO_REPLY")]],
+          ...replyCase(
+            'Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)',
+          ),
+        },
+        responses: [[use("kin_hand_off")], [use("kin_skip")]],
+        calls: [
+          { ...replyCall("kin_hand_off"), output: JSON.stringify({ passed }) },
+          replyCall("kin_skip", {}, !passed),
+        ],
       },
-      normalizeToolName,
-    );
+      "",
+    )?.prompt;
   assert.isUndefined(mate(true));
   assert.equal(mate(false), RESCUE_PROMPT);
 });
@@ -265,7 +276,7 @@ it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", ()
 });
 
 it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session, its default", () => {
-  const base = (kinSession: boolean) =>
+  const base = (kinSession: boolean): Base =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
@@ -278,40 +289,25 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
     [...base(kinSession).nativeTools, ...base(kinSession).deferred].map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.notInclude(before, "mcp__t3-code__delegate_task");
+  // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
-  const waiting = base(true).deferred.map((tool) => tool.name);
-  assert.deepStrictEqual(
-    upFront.filter((name) => name.startsWith("mcp__t3-code__")),
-    [],
-  );
-  assert.includeMembers(waiting, ["mcp__t3-code__records_query", "mcp__t3-code__record_create"]);
+  assert.include(upFront, "mcp__t3-code__records_query");
+  assert.include(upFront, "mcp__t3-code__record_create");
+  assert.include(upFront, "mcp__t3-code__kin_skip");
+  assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
-  const native = (toolNames: ReadonlyArray<string>) =>
-    toolNames.filter((name) => !name.startsWith("mcp__t3-code__")).map(normalizeToolName);
-  const ownerTools = new Set<string>(OWNER_SEAT_NATIVE_TOOLS);
-  const loadedNative = ["Bash", "Read", "Edit", "Write"].filter((name) => ownerTools.has(name));
-  const deferredNative = ["WebFetch", "WebSearch"].filter((name) => ownerTools.has(name));
-  assert.deepStrictEqual(native(upFront), [...loadedNative, "ToolSearch"]);
-  assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), deferredNative);
+  for (const name of ["Bash"])
+    assert.isTrue(
+      after.some((tool) => tool.endsWith(name)),
+      name,
+    );
   assert.notInclude(after, "mcp__t3-code__schedule_task");
-  const reminders = base(true)
-    .reminders.map((block) => block.text)
-    .join("\n");
-  for (const name of [
-    ...deferredNative,
-    "mcp__t3-code__records_query",
-    "mcp__t3-code__record_create",
-  ])
-    assert.include(reminders, `\n${name}\n`);
-  for (const prefix of [
-    "Available agent types for the Agent tool:",
-    "When you launch multiple agents",
-    "The following skills are available for use with the Skill tool:",
-    "\nMonitor\n",
-  ])
-    assert.notInclude(reminders, prefix);
+  // Claude Code's own deferred tools wait behind ToolSearch, named in the list, as a real turn sends them.
+  assert.isFalse(base(true).nativeTools.some((tool) => tool.name === "Monitor"));
+  assert.notInclude(after, "Monitor");
+  assert.notInclude(String(base(true).deferredAnnouncement), "\nMonitor\n");
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
   const lead = (prompt: string, kinSession?: boolean) =>
     kinSessionOf({
@@ -647,6 +643,221 @@ const kinBase = () =>
     kinAgent: true,
     kinLead: true,
   });
+const replyBlock = (text: string) => ({ type: "text", text });
+const replyCall = (tool: string, input: unknown = {}, failed = false) => ({
+  step: 0,
+  tool,
+  input,
+  failed,
+});
+const personQuote = "> BEGIN QUOTE: owner message";
+const pulseQuote = "> BEGIN QUOTE: pulse";
+const replyCase = (prompt: string) => ({ ...kinCase(), prompt });
+
+it("grades the text that reached a person in each Kin reply voice", () => {
+  const read = { type: "tool_use", id: "r", name: "record_get", input: {} };
+  const sample = {
+    testCase: replyCase(pulseQuote),
+    responses: [[replyBlock("Checking."), read], [replyBlock("The invoice is overdue.")]],
+    calls: [],
+  };
+  assert.equal(deliveredText(sample, false), "The invoice is overdue.");
+  assert.equal(deliveredText(sample, true), "");
+  assert.equal(deliveredText({ ...sample, calls: [replyCall("kin_skip")] }, false), "");
+  assert.equal(
+    deliveredText(
+      { ...sample, calls: [replyCall("kin_send", { text: "Invoice TF-01 is overdue." })] },
+      true,
+    ),
+    "Invoice TF-01 is overdue.",
+  );
+  const person = { ...sample, testCase: replyCase(personQuote + "\n" + pulseQuote) };
+  assert.equal(deliveredText(person, true), "The invoice is overdue.");
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_skip")] }, true),
+    "The invoice is overdue.",
+  );
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Sent answer." })] }, true),
+    "Sent answer.",
+  );
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Refused" }, true)] }, true),
+    "The invoice is overdue.",
+  );
+});
+
+it("simulates one structural Kin nudge or an owed rescue in send voice", () => {
+  const drafted = "The invoice is overdue.";
+  const sample = {
+    testCase: replyCase(pulseQuote),
+    responses: [[replyBlock(drafted)]],
+    calls: [],
+  };
+  assert.equal(replyFollowUp(sample, drafted, true)?.kind, "nudge");
+  assert.isUndefined(replyFollowUp(sample, "", true));
+  assert.isUndefined(replyFollowUp(sample, drafted, false));
+  assert.isUndefined(replyFollowUp({ ...sample, calls: [replyCall("kin_skip")] }, drafted, true));
+  assert.isUndefined(
+    replyFollowUp({ ...sample, calls: [replyCall("kin_send", { text: drafted })] }, drafted, true),
+  );
+  const owed = {
+    ...sample,
+    testCase: replyCase('> BEGIN QUOTE: event data\n> {"type":"task.finished","askedBy":"Rhea"}'),
+  };
+  assert.match(replyFollowUp(owed, drafted, true)?.prompt ?? "", /^Rhea is waiting/);
+});
+
+it("rejects old silence markers in Kin delivered text, including parenthetical phrases", () => {
+  for (const marker of [
+    "no_reply",
+    "(No reply needed)",
+    "(no response needed)",
+    "(nothing to add)",
+    "(staying quiet)",
+    "(silent)",
+  ]) {
+    const run = {
+      calls: [],
+      text: "",
+      deliveredText: `Checked. ${marker}`,
+      stopReason: "end_turn",
+    };
+    assert.deepEqual(failed({}, run), ["marker text delivered"]);
+    assert.deepEqual(failed({}, { ...run, text: marker, deliveredText: "Checked." }), []);
+  }
+});
+
+it("grades Kin delivery both ways and fails silence that took a nudge", () => {
+  const run = { calls: [], text: "Draft", deliveredText: "", stopReason: "end_turn" };
+  assert.deepEqual(failed({ delivered: false }, run), []);
+  assert.deepEqual(failed({ delivered: true }, run), ["delivered true"]);
+  assert.deepEqual(failed({ delivered: true }, { ...run, deliveredText: "Sent." }), []);
+  assert.deepEqual(failed({ delivered: false }, { ...run, deliveredText: "Sent." }), [
+    "delivered false",
+  ]);
+  assert.deepEqual(failed({ delivered: false }, { ...run, nudged: true }), ["delivered false"]);
+});
+
+const skipConfig = {
+  apiKey: "key",
+  model: "claude-sonnet-5-5",
+  effort: "high",
+  maxSteps: 5,
+  shellModel: "claude-haiku-5-5",
+} as const;
+const skipName = "mcp__t3-code__kin_skip";
+const skipUse = { type: "tool_use" as const, id: "skip", name: skipName, input: {} };
+const skipBase = () => {
+  const base = kinBase();
+  const tool = { name: skipName, description: "Fixture", input_schema: { type: "object" } };
+  return { ...base, nativeTools: [...base.nativeTools, tool], t3: [...base.t3, tool] };
+};
+
+it.effect("ends a Claude Kin sample immediately after a successful skip", () =>
+  Effect.gen(function* () {
+    let requests = 0;
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const result = yield* runSample(replyCase(pulseQuote), skipConfig, skipBase(), {
+      usage: { ...usage },
+      shellUsage: { ...usage },
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          PlatformNodeCrypto.layer,
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) => {
+              const first = requests++ === 0;
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    JSON.stringify({
+                      content: first ? [skipUse] : [replyBlock("This request should never run.")],
+                      stop_reason: first ? "tool_use" : "end_turn",
+                      usage: { input_tokens: 0, output_tokens: 0 },
+                    }),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    assert.equal(requests, 1);
+    assert.equal(result.calls[0]?.output, "Nothing sent; this turn is over.");
+    assert.equal(result.deliveredText, "");
+  }),
+);
+
+it.effect("refuses the default Kin skip mock while a person waits for words", () =>
+  Effect.gen(function* () {
+    const sample = makeSample(replyCase(personQuote), skipBase());
+    const response = yield* answerToolCall(sample, skipConfig, skipUse);
+    assert.equal(response.is_error, true);
+    assert.equal(
+      response.content,
+      "Not ended: someone here is waiting on your answer; write it as plain text.",
+    );
+  }).pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("unexpected request")),
+    ),
+  ),
+);
+
+it.effect("keeps app-server text after a trigger skip in the transcript only", () =>
+  Effect.gen(function* () {
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const raw = "Codex wrote another response.";
+    for (const person of [false, true]) {
+      const held = "The fuel statement is filed.\n\nRhea can find it under November.";
+      const appServer: AppServer = {
+        knowsModel: async () => false,
+        close: () => true,
+        runTurn: async (turn) => {
+          const events: Array<AppServerEvent> = [];
+          const event = (value: AppServerEvent) => {
+            events.push(value);
+            turn.onEvent?.(value);
+          };
+          if (person) event({ type: "text", phase: "commentary", text: held });
+          event({ type: "tool", id: "skip", tool: "kin_skip", args: {} });
+          const answer = await turn.onToolCall("kin_skip", {});
+          assert.deepEqual(answer, { text: "Nothing sent; this turn is over.", failed: false });
+          event({ type: "text", phase: "final_answer", text: raw });
+          return {
+            events,
+            items: [],
+            usage: { input: 0, cached: 0, output: 0, reasoning: 0 },
+            ms: 0,
+            stopReason: "end_turn",
+          };
+        },
+      };
+      const run = yield* runSample(
+        replyCase(person ? personQuote : pulseQuote),
+        { ...skipConfig, appServer },
+        skipBase(),
+        { usage: { ...usage }, shellUsage: { ...usage } },
+      );
+      assert.include(run.text, raw);
+      assert.equal(run.deliveredText, person ? `${held}\n\n${raw}` : "");
+      assert.deepEqual(failed({ delivered: person }, run), []);
+    }
+  }).pipe(
+    Effect.provide(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("unexpected request")),
+    ),
+  ),
+);
+
 const attached = {
   attachments: [
     { name: "receipt-taxi.jpg", file: "evals/mcp-tool-use/cases/files/receipt-taxi.jpg" },
@@ -660,7 +871,7 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
       Effect.gen(function* () {
         const sample = makeSample(testCase, kinBase());
         sample.kinFiles = yield* kinTurnFiles(testCase);
-        return buildMessages(sample).at(-1)?.content ?? [];
+        return buildMessages(sample).findLast(({ role }) => role === "user")?.content ?? [];
       });
     const photo = NodeFS.readFileSync(new URL("./cases/files/receipt-taxi.jpg", import.meta.url));
     const [image, prompt] = (yield* turn(kinCase(attached))).slice(-2);
@@ -953,4 +1164,128 @@ it("answers the helper-model cases as T3's tools and Kin's gate really do", () =
           }),
         );
   }
+});
+
+it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const tool = (name: string, description = "", hint?: string) => ({
+      name: `mcp__t3-code__${name}`,
+      description,
+      ...(hint === undefined ? {} : { _meta: { "anthropic/searchHint": hint } }),
+    });
+    const deferred = [
+      tool("kin_defer", "Send a message later."),
+      tool("kin_picture", "Send the result as a picture."),
+      tool("kin_relay", "Send it to a teammate."),
+      tool("kin_connection_call", "Use a connected account."),
+      tool("mailbox_open"),
+      tool("message_send"),
+      tool("note", "", "dispatch"),
+      tool("draft", "dispatch"),
+      tool("not_a_match", "dispatching"),
+    ];
+    const sample = makeSample(kinCase(), { ...base, deferred });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const searchName = base.nativeTools.find((tool) => tool.name.endsWith("ToolSearch"))!.name;
+    const cases = [
+      ["send", ["message_send", "kin_connection_call", "kin_defer", "kin_picture", "kin_relay"]],
+      ["mailbox", ["mailbox_open"]],
+      ["dispatch", ["note", "draft"]],
+      ["mcp__t3-code__kin_picture", ["kin_picture"]],
+      ["select:kin_relay,kin_defer", ["kin_defer", "kin_relay"]],
+    ] as const;
+    for (const [query, names] of cases) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "search",
+        name: searchName,
+        input: { query },
+      });
+      assert.deepEqual(
+        result.content,
+        names.map((name) => ({
+          type: "tool_reference",
+          tool_name: `mcp__t3-code__${name}`,
+        })),
+        query,
+      );
+    }
+    const mail = makeSample(kinCase(), { ...base, deferred: deferred.slice(0, 4) });
+    const result = yield* answerToolCall(mail, config, {
+      type: "tool_use",
+      id: "search",
+      name: searchName,
+      input: { query: "mail send" },
+    });
+    assert.deepEqual(
+      result.content,
+      ["kin_connection_call", "kin_defer", "kin_picture", "kin_relay"].map((name) => ({
+        type: "tool_reference",
+        tool_name: `mcp__t3-code__${name}`,
+      })),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);
+
+it.effect("reports a deferred name differently from a name that does not exist", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const deferred = "mcp__t3-code__kin_github_comment";
+    const sample = makeSample(kinCase(), { ...base, deferred: [{ name: deferred }] });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    for (const [name, error] of [
+      [
+        deferred,
+        `This tool's schema was not sent to the API. To use it, call ToolSearch with query "select:${deferred}", then retry.`,
+      ],
+      ["Absent", "No such tool available: Absent"],
+    ] as const) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "unloaded",
+        name,
+        input: {},
+      });
+      assert.equal(result.is_error, true);
+      assert.equal(result.content, `<tool_use_error>${error}</tool_use_error>`);
+    }
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);
+
+it("cuts only model-facing MCP descriptions longer than 4,096 characters in Claude requests", () => {
+  const base = kinBase();
+  const sample = makeSample(kinCase(), base);
+  const long = "x".repeat(4096) + "y".repeat(904);
+  const limit = "z".repeat(4096);
+  const tools = [
+    { name: "mcp__t3-code__record_create", description: long },
+    { name: "mcp__kin__note", description: limit, defer_loading: true },
+    { name: "mcp__kin__other", description: long, defer_loading: true },
+    { name: "Bash", description: long },
+    { name: "mcp__select_sight__term_Bash", description: long },
+  ];
+  assert.deepEqual(
+    requestBody({ ...sample, tools }, "medium", []).tools.map((tool) => tool.description),
+    [
+      long.slice(0, 4096) + "… [truncated]",
+      limit,
+      long.slice(0, 4096) + "… [truncated]",
+      long,
+      long,
+    ],
+  );
+  assert.equal(tools[0]?.description, long);
 });

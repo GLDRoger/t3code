@@ -17,6 +17,7 @@ import {
   MessageId,
   ModelSelection,
   NodeId,
+  type OrchestrationV2Run,
   ProjectId,
   RunAttemptId,
   RunId,
@@ -80,12 +81,21 @@ import {
   audienceChanged,
   effectiveAudience,
   recordedAudience,
+  turnAudience,
   turnChat,
 } from "./Audience.ts";
+import { TRIAGE_THREAD_PREFIX, outsideTriage } from "./outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
 import { leadListsTool } from "./seatHome.ts";
-import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
+import {
+  KinLeadPrompt,
+  renderSessionChanges,
+  STEER_CLOSING,
+  stillJoined,
+  withSessionChanges,
+  type KinLeadPromptInput,
+} from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
@@ -110,6 +120,7 @@ import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import {
   DeferralSnapshot,
@@ -121,6 +132,7 @@ import {
 const decodeDeferralSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
 const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { isPersonTag, PERSON_TAGS } from "../reply/turnVoice.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
 import {
@@ -137,8 +149,14 @@ import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
 import { KinAgentSessions } from "../mcp/KinAgentSessions.ts";
+import { captureChatCursor, readCursor, sessionChanges, type Cursor } from "./sessionChanges.ts";
+import { KinSessionContext, type SessionSnapshot } from "./turn/sessionContext.ts";
+import { claude } from "./turn/providers/claude.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
 import { KinBoot, carryFacts, decideCarry, ulid, type PromptFingerprint } from "./sessionCarry.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
+import { inheritSession, outsideRead } from "./OutsideContent.ts";
+import { turnSensitive } from "../work/sensitiveReads.ts";
 
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
@@ -200,6 +218,7 @@ const RunningRow = Schema.Struct({
   startedAt: Schema.Number,
 });
 const encodeShadowJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+type PendingSnapshot = Pick<SessionSnapshot, "sections" | "index">;
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const decodeTaskIds = Schema.decodeUnknownOption(
@@ -208,6 +227,8 @@ const decodeTaskIds = Schema.decodeUnknownOption(
 const make = Effect.gen(function* () {
   const boot = yield* Effect.serviceOption(KinBoot);
   const bootId = Option.isSome(boot) ? boot.value : yield* ulid;
+  const sessionContext = Option.getOrUndefined(yield* Effect.serviceOption(KinSessionContext));
+  const workspace = Option.getOrUndefined(yield* Effect.serviceOption(KinWorkspace));
   const agentSessions = Option.getOrUndefined(yield* Effect.serviceOption(KinAgentSessions));
   const refreshHub = Option.getOrUndefined(yield* Effect.serviceOption(KinRefreshHub));
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
@@ -464,6 +485,8 @@ const make = Effect.gen(function* () {
   const lastWork = new Map<string, number>();
   yield* threads.streamDomainEvents.pipe(
     Stream.runForEach((event) => {
+      if (event.type === "thread.deleted")
+        return sessionContext?.forget(event.threadId) ?? Effect.void;
       const at = lastWork.has(event.threadId) ? activityAt(event) : undefined;
       if (at !== undefined)
         lastWork.set(event.threadId, Math.max(at, lastWork.get(event.threadId) ?? at));
@@ -487,6 +510,32 @@ const make = Effect.gen(function* () {
     return yield* leadListsTool(turn.orgId, turn.agentId, "bills_add").pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
+  });
+  const inheritTaken = Effect.fn("WakeupRunner.inheritTaken")(function* (
+    row: typeof RunningRow.Type,
+    run: OrchestrationV2Run,
+  ) {
+    if (run.freshContext === true) return;
+    const earlier = yield* wakeupOfRuns(
+      sql,
+      sql`SELECT run_id, thread_id, ordinal, payload_json
+        FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${row.threadId} AND ordinal < ${run.ordinal}
+          AND ordinal >= COALESCE((
+            SELECT MAX(ordinal) FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${row.threadId} AND ordinal <= ${run.ordinal}
+              AND json_extract(payload_json, '$.freshContext') = 1
+              AND json_extract(payload_json, '$.startedAt') IS NOT NULL
+          ), 0)`,
+      sql`w.org_id = ${row.orgId} AND w.agent_id = ${row.agentId}
+        AND w.wakeup_id <> ${row.wakeupId}`,
+      "all",
+    );
+    yield* inheritSession({
+      orgId: row.orgId,
+      wakeupId: row.wakeupId,
+      fromWakeupIds: earlier.map((wake) => wake.wakeupId),
+    }).pipe(provideSql);
   });
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
@@ -681,6 +730,8 @@ const make = Effect.gen(function* () {
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const wasStopped = (row: typeof RunningRow.Type) =>
+    KinEventQueue.wasPersonStopped(row).pipe(provideSql);
   const sharedTurn = (row: typeof RunningRow.Type) =>
     effectiveAudience(row).pipe(
       provideSql,
@@ -740,14 +791,25 @@ const make = Effect.gen(function* () {
         );
       const stopped = yield* threads.forceStopThread({ threadId });
       if (stopped.outcome === "releasing") return;
+      yield* sessionContext?.forget(threadId) ?? Effect.void;
       yield* identity
         .endAgentThread({ orgId: record.orgId, threadId })
         .pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
     }
     retired.add(pass);
   });
-  const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {
-    if (row.threadId === null || row.runId === null) return;
+  const capture = Effect.fn("WakeupRunner.capture")(function* (
+    row: typeof RunningRow.Type,
+    completed: boolean,
+    snapshot?: PendingSnapshot,
+  ) {
+    if (row.threadId === null) return;
+    const threadId = row.threadId;
+    const unread = sessionContext?.take(threadId) !== undefined;
+    // A released turn can leave the previous row eligible but its snapshot is no longer valid.
+    if (snapshot !== undefined && sessionContext !== undefined)
+      yield* sessionContext.forget(threadId);
+    if (row.runId === null) return;
     const runIds = new Set([row.runId]);
     for (const run of yield* runsFrom(threads, row.threadId, row.runId)) {
       if (
@@ -779,7 +841,6 @@ const make = Effect.gen(function* () {
     yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
     // What the session carried and what the provider read from or wrote to its prompt cache; the
     // endpoint's "Kin endpoint tool list." line has the tool list's hash for the same thread.
-    const threadId = row.threadId;
     yield* Effect.gen(function* () {
       const last = providerTurns.reduce<(typeof providerTurns)[number] | undefined>(
         (latest, turn) =>
@@ -793,12 +854,97 @@ const make = Effect.gen(function* () {
       const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
-      const [shadow] = yield* sql<{ carry: number | null; reason: string | null }>`
+      const [shadow] = yield* sql<{
+        carry: number | null;
+        reason: string | null;
+        chatId: string | null;
+        chatSeq: number | null;
+        chatChangeSeq: number | null;
+        sent: string | null;
+        bootId: string | null;
+        beside: number | null;
+        previousContext: number | null;
+      }>`
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
           carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
         WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
         RETURNING json_extract(carry_json, '$.carry') AS carry,
-          json_extract(carry_json, '$.reason') AS reason`;
+          json_extract(carry_json, '$.reason') AS reason,
+          json_extract(carry_json, '$.sent') AS sent,
+          json_extract(carry_json, '$.bootId') AS "bootId",
+          json_extract(delta_json, '$.beside') AS beside,
+          json_extract(carry_json, '$.contextTokens') AS "previousContext",
+          json_extract(carry_json, '$.cursor.chatId') AS "chatId",
+          json_extract(carry_json, '$.cursor.chatSeq') AS "chatSeq",
+          json_extract(carry_json, '$.cursor.chatChangeSeq') AS "chatChangeSeq"`;
+      if (
+        completed &&
+        (unread ||
+          (shadow?.sent === "carried" &&
+            shadow.beside === 1 &&
+            shadow.bootId !== null &&
+            shadow.bootId !== bootId))
+      ) {
+        yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.missed', json('true'))
+          WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+        yield* Effect.logWarning("Kin carried turn context not read", { wakeupId: row.wakeupId });
+      }
+      if (shadow?.chatId != null && shadow.chatSeq !== null && shadow.chatChangeSeq !== null) {
+        const cursor = yield* captureChatCursor(row, {
+          chatId: shadow.chatId,
+          chatSeq: shadow.chatSeq,
+          chatChangeSeq: shadow.chatChangeSeq,
+        }).pipe(provideSql, Effect.option);
+        if (Option.isSome(cursor)) {
+          const held = yield* encodeShadowJson(cursor.value.heldChatChanges);
+          yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json,
+            '$.cursor.chatSeq', ${cursor.value.chatSeq},
+            '$.cursor.heldChatChanges', json(${held}), '$.cursorCaptured', json('true'))
+            WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+          if (snapshot !== undefined && sessionContext !== undefined)
+            yield* sessionContext.remember(threadId, {
+              wakeupId: row.wakeupId,
+              ...snapshot,
+              ...cursor.value,
+            });
+        } else {
+          yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.cursor', NULL)
+            WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+        }
+      }
+      const tokens = (pick: (usage: TurnTokenUsage) => number | undefined) =>
+        providerTurns.reduce(
+          (total, turn) =>
+            total + (turn.turnTokenUsage === undefined ? 0 : (pick(turn.turnTokenUsage) ?? 0)),
+          0,
+        );
+      const written = tokens((usage) => usage.cacheCreationTokens);
+      const previousContext = shadow?.previousContext;
+      if (
+        completed &&
+        shadow?.sent === "carried" &&
+        previousContext != null &&
+        previousContext > 0 &&
+        contextTokens !== null
+      ) {
+        const growth = contextTokens - previousContext;
+        if (written - Math.max(growth, 0) >= previousContext / 2) {
+          yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.missed', json('true'))
+            WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+          yield* Effect.logInfo("Kin carried turn missed the cache", {
+            wakeupId: row.wakeupId,
+            contextTokens: previousContext,
+            written,
+            growth,
+          });
+        }
+      }
+      const [compaction] = yield* sql`SELECT 1 FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND run_id IN ${sql.in([...runIds])}
+          AND type = 'compaction' LIMIT 1`;
+      if (compaction !== undefined)
+        yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.compacted', json('true'))
+          WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
       const toolResults = yield* sql<{ tool: string; results: number; chars: number }>`
         WITH results AS (
           SELECT CASE type
@@ -820,23 +966,19 @@ const make = Effect.gen(function* () {
       const driver = driverOf(yield* settings.getSettings, thread.modelSelection);
       const [lead] = yield* sql<{ domain: string }>`SELECT domain FROM kin_leads
         WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} ORDER BY agent_id`;
-      const tokens = (pick: (usage: TurnTokenUsage) => number | undefined) =>
-        providerTurns.reduce(
-          (total, turn) =>
-            total + (turn.turnTokenUsage === undefined ? 0 : (pick(turn.turnTokenUsage) ?? 0)),
-          0,
-        );
       yield* Effect.logInfo("Kin wake-up context.", {
         agentId: row.agentId,
         wakeupId: row.wakeupId,
         threadId,
-        threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
-          ? "review"
-          : threadId.startsWith(BILLS_THREAD_PREFIX)
-            ? "bills"
-            : threadId.startsWith(SHARED_THREAD_PREFIX)
-              ? "shared"
-              : "owner",
+        threadKind: threadId.startsWith(TRIAGE_THREAD_PREFIX)
+          ? "triage"
+          : threadId.startsWith(REVIEW_THREAD_PREFIX)
+            ? "review"
+            : threadId.startsWith(BILLS_THREAD_PREFIX)
+              ? "bills"
+              : threadId.startsWith(SHARED_THREAD_PREFIX)
+                ? "shared"
+                : "owner",
         seat:
           lead === undefined
             ? null
@@ -858,7 +1000,7 @@ const make = Effect.gen(function* () {
         carry: shadow?.carry == null ? null : { carry: shadow.carry === 1, reason: shadow.reason },
         inputTokens: tokens((usage) => usage.inputTokens),
         cacheReadTokens: tokens((usage) => usage.cachedInputTokens),
-        cacheWriteTokens: tokens((usage) => usage.cacheCreationTokens),
+        cacheWriteTokens: written,
       });
     }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Kin wake-up context log failed", { cause })),
@@ -889,7 +1031,7 @@ const make = Effect.gen(function* () {
     ),
   );
   const wait = Effect.fn("WakeupRunner.wait")(
-    function* (row: typeof RunningRow.Type, projectId: ProjectId) {
+    function* (row: typeof RunningRow.Type, projectId: ProjectId, snapshot?: PendingSnapshot) {
       if (row.threadId === null || row.runId === null) return;
       const threadId = row.threadId;
       const runId = row.runId;
@@ -926,7 +1068,7 @@ const make = Effect.gen(function* () {
         const claimed = yield* sql<{ messageId: string }>`
           SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
           WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-            AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
+            AND tag IN ${sql.in(PERSON_TAGS)} ORDER BY event_id`;
         yield* floor.renew({
           orgId,
           agentId,
@@ -992,6 +1134,7 @@ const make = Effect.gen(function* () {
             ),
           });
           yield* holdFloor();
+          if (yield* wasStopped(row)) return;
           if (Option.isSome(bridge))
             yield* bridge.value.steered(orgId, wakeupId, {
               n,
@@ -1011,7 +1154,12 @@ const make = Effect.gen(function* () {
             });
           // Past its turn, the steer starts a run this wake-up adopts.
           yield* send("steer").pipe(
-            Effect.catchTags({ ThreadManagementNoSteerableRunError: () => send("queue") }),
+            Effect.catchTags({
+              ThreadManagementNoSteerableRunError: () =>
+                wasStopped(row).pipe(
+                  Effect.flatMap((stopped) => (stopped ? Effect.void : send("queue"))),
+                ),
+            }),
           );
         });
         // A steer that may have landed is never re-sent; one that did not goes back to the queue.
@@ -1114,7 +1262,7 @@ const make = Effect.gen(function* () {
                 (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
                   ?.ordinal ?? 0;
               const adopted =
-                result.timedOut || (yield* isAborted(row))
+                result.timedOut || (yield* isAborted(row)) || (yield* wasStopped(row))
                   ? undefined
                   : (yield* threads.getThreadRecords(threadId, ["runs"], {
                       runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
@@ -1165,9 +1313,10 @@ const make = Effect.gen(function* () {
           : "failed";
       // The stop switch interrupted this run: hand its events back without spending an attempt.
       const stopped = ended === "failed" && (yield* paused(row.orgId));
-      // Otherwise an interrupted run was a person's Stop (`KinStop.interrupt`), not a failure.
+      // A person's Stop survives provider completion, adoption, and recovery.
       const status =
-        ended === "failed" && !stopped && result.run?.status === "interrupted"
+        !stopped &&
+        ((yield* wasStopped(row)) || (ended === "failed" && result.run?.status === "interrupted"))
           ? "interrupted"
           : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
@@ -1232,6 +1381,7 @@ const make = Effect.gen(function* () {
             projectId,
             rootRunId: runId,
             rescue: status === "completed",
+            stopped: status === "interrupted",
           });
           if (status === "completed") {
             lastWork.set(threadId, yield* Clock.currentTimeMillis);
@@ -1275,7 +1425,7 @@ const make = Effect.gen(function* () {
           );
           yield* sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
         }
-        yield* capture(row);
+        yield* capture(row, status === "completed" && !abandoned, snapshot);
         if (stopped)
           yield* queue.release({
             orgId: row.orgId,
@@ -1330,17 +1480,19 @@ const make = Effect.gen(function* () {
         const registered =
           yield* sql`SELECT 1 FROM kin_agent_threads WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} AND thread_id = ${threadId} AND ended_at IS NULL`;
         if (registered.length > 0) yield* identity.endAgentThread({ orgId: row.orgId, threadId });
+        yield* sessionContext?.forget(threadId) ?? Effect.void;
         yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} AND thread_id = ${threadId}`;
       }),
     );
   });
   const cleanup = Effect.fn("WakeupRunner.cleanup")(function* (
     row: typeof RunningRow.Type,
-    interrupted = false,
+    interrupted: boolean | "retry" = false,
     failure: unknown = null,
+    snapshot?: PendingSnapshot,
   ) {
-    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
-    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    // An interrupted wake-up lands what it staged: the agent may already have said it saved it,
+    // and its events may be done. Otherwise, staged changes are dropped.
     if (Option.isSome(writer)) {
       const memory = writer.value;
       const landed =
@@ -1379,8 +1531,24 @@ const make = Effect.gen(function* () {
           .pipe(Effect.ignore);
     }
     yield* clearMissingThread(row).pipe(Effect.ignore);
-    yield* capture(row).pipe(Effect.ignore);
-    if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
+    yield* capture(row, false, snapshot).pipe(Effect.ignore);
+    if (interrupted === "retry") {
+      const lane = Option.isSome(bridge) ? yield* bridge.value.lane(row) : Option.none();
+      const released = yield* queue.release({
+        orgId: row.orgId,
+        wakeupId: row.wakeupId,
+        countAttempt: true,
+        attemptLimit: "run",
+        notBefore: yield* Clock.currentTimeMillis,
+      });
+      if (released.failedEventIds.length > 0 && Option.isSome(bridge) && Option.isSome(lane))
+        yield* bridge.value.failed({
+          orgId: row.orgId,
+          wakeupId: row.wakeupId,
+          lane: lane.value,
+          outcome: "gave_up",
+        });
+    } else if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
     else yield* finishWakeup(row, "failed", null, failure);
   });
 
@@ -1417,6 +1585,70 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin wake-up latency log failed", { cause })),
   );
 
+  const ownerThreadOf = Effect.fn("WakeupRunner.ownerThreadOf")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+  ) {
+    const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
+      FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
+        AND ended_at IS NULL AND chat_id IS NULL AND substr(thread_id, 1, 4) = 'kin:'
+      ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
+    return live?.threadId;
+  });
+  const changesFor = Effect.fn("WakeupRunner.sessionChanges")(function* (
+    row: typeof RunningRow.Type,
+    facts: Effect.Success<ReturnType<typeof carryFacts>>,
+    cursor: Cursor,
+    chatId: string,
+    workChanges?: ReadonlyMap<string, ReadonlySet<number>>,
+  ) {
+    const from = facts.previousCursor;
+    if (from === undefined) return undefined;
+    const zone = yield* ownerZone(row.orgId).pipe(provideSql);
+    const list = yield* sessionChanges({
+      orgId: row.orgId,
+      agentId: row.agentId,
+      chatId,
+      sessionWakeupIds: facts.sessionWakeupIds,
+      from,
+      to: cursor,
+      now: cursor.at,
+      zone,
+      ...(workChanges === undefined ? {} : { workChanges }),
+    }).pipe(
+      Effect.provideService(Memory.Memory, memory),
+      provideSql,
+      Effect.catchTags({
+        SessionChangesNotOwnerChat: (error) =>
+          Effect.logWarning("Kin session changes unavailable", {
+            wakeupId: row.wakeupId,
+            source: error._tag,
+          }).pipe(Effect.as(undefined)),
+        SessionChangesSourceFailed: (error) =>
+          Effect.logWarning("Kin session changes unavailable", {
+            wakeupId: row.wakeupId,
+            source: error.source,
+          }).pipe(Effect.as(undefined)),
+      }),
+    );
+    return list === undefined
+      ? undefined
+      : {
+          rendered: renderSessionChanges(list.lines, list.overflow),
+          lines: list.shown,
+          overflow: list.overflow.length > 0,
+        };
+  });
+  const deltaStats = (
+    changes: NonNullable<Effect.Success<ReturnType<typeof changesFor>>>,
+    beside: boolean,
+  ) =>
+    encodeShadowJson({
+      chars: changes.rendered?.length ?? 0,
+      lines: changes.lines,
+      overflow: changes.overflow,
+      beside,
+    });
   const runOnce = Effect.fn("WakeupRunner.runOnce")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       if (Option.isSome(care)) yield* care.value.storageRecovered(orgId);
@@ -1445,6 +1677,7 @@ const make = Effect.gen(function* () {
         runId: null,
         startedAt,
       };
+      let snapshot: PendingSnapshot | undefined;
       yield* Effect.scoped(
         Effect.gen(function* () {
           let events = yield* Effect.acquireRelease(
@@ -1457,7 +1690,12 @@ const make = Effect.gen(function* () {
               ),
             ),
             (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
+              cleanup(
+                row,
+                Exit.hasInterrupts(exit),
+                Exit.isFailure(exit) ? exit.cause : null,
+                snapshot,
+              ).pipe(
                 Effect.catch((error) =>
                   Effect.logError("Kin wake-up finalizer failed", {
                     orgId,
@@ -1512,10 +1750,16 @@ const make = Effect.gen(function* () {
                 event.messageId,
               );
               if (state._tag !== "live") continue;
-              row = { ...row, threadId: event.threadId, runId: state.run.id };
-              yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
-                WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
-                  AND status = 'running'`;
+              const claimed = { ...row, threadId: event.threadId, runId: state.run.id };
+              yield* sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* inheritTaken(claimed, state.run);
+                  yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
+                    WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
+                      AND status = 'running'`;
+                }),
+              );
+              row = claimed;
               yield* registry.register(event.threadId, {
                 orgId,
                 agentId,
@@ -1763,7 +2007,29 @@ const make = Effect.gen(function* () {
                 people.map((one) => one.name),
               );
             let promptFingerprint: PromptFingerprint = { standing: null, index: null };
-            const built = yield* prompt.build({
+            const driver = driverOf(hostSettings, modelSelection);
+            const candidate =
+              hostSettings.kinSessionCarry &&
+              driver === claude.driver &&
+              (yield* ownerAlone(row).pipe(provideSql)) &&
+              (yield* turnAudience(row).pipe(provideSql)) === "owner_only" &&
+              !(yield* billsOnly(row).pipe(provideSql));
+            const candidateThread = candidate ? yield* ownerThreadOf(orgId, agentId) : undefined;
+            const previous =
+              candidateThread === undefined ? undefined : sessionContext?.previous(candidateThread);
+            const cursor = yield* Effect.gen(function* () {
+              const chatId = lane?.chatId ?? (yield* turnChat(row))?.chatId ?? null;
+              return yield* readCursor(orgId, chatId, pinned.head, agentId);
+            }).pipe(
+              provideSql,
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin session carry shadow recording failed", {
+                  wakeupId,
+                  cause,
+                }).pipe(Effect.as(null)),
+              ),
+            );
+            const promptInput: KinLeadPromptInput = {
               observePrompt: (fingerprint) => {
                 promptFingerprint = fingerprint;
               },
@@ -1776,17 +2042,27 @@ const make = Effect.gen(function* () {
               routineFacts,
               workFor,
               ...(lane === undefined ? {} : { lane }),
-            });
+            };
+            const built = candidate
+              ? yield* prompt.buildSession({
+                  ...promptInput,
+                  ...(previous === undefined ? {} : { previous }),
+                })
+              : undefined;
+            const full = built?.full ?? (yield* prompt.build(promptInput));
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
-            // What the people in the chat attached to the messages this turn answers, as text and
-            // pictures every provider reads alike.
-            const { text, attachments } = yield* turnContent.prepare({
-              text: built,
-              attachments: yield* prompt.attachments({ orgId, events }),
-              offersBillsAdd: yield* offersBillsAdd(row, shared),
-            });
+            const files = yield* prompt.attachments({ orgId, events });
+            const canAddBills = yield* offersBillsAdd(row, shared);
+            const legacyContent =
+              built === undefined
+                ? yield* turnContent.prepare({
+                    text: full,
+                    attachments: files,
+                    offersBillsAdd: canAddBills,
+                  })
+                : undefined;
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* bootstrapLeadProject(projects, {
               orgId,
@@ -1803,11 +2079,22 @@ const make = Effect.gen(function* () {
             // A stranger's pull request is reviewed, and bills are read, on a thread that lists
             // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const confined = review
-              ? REVIEW_THREAD_PREFIX
-              : (yield* billsOnly(row).pipe(provideSql))
-                ? BILLS_THREAD_PREFIX
-                : undefined;
+            const triage = shared ? yield* outsideTriage(row).pipe(provideSql) : undefined;
+            const issueHash =
+              triage === undefined
+                ? undefined
+                : NodeCrypto.createHash("sha256")
+                    .update(`${orgId}|${triage.repo.toLowerCase()}#${triage.number}`)
+                    .digest("hex")
+                    .slice(0, 16);
+            const confined =
+              issueHash !== undefined
+                ? `${TRIAGE_THREAD_PREFIX}${issueHash}:`
+                : review
+                  ? REVIEW_THREAD_PREFIX
+                  : (yield* billsOnly(row).pipe(provideSql))
+                    ? BILLS_THREAD_PREFIX
+                    : undefined;
             const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
@@ -1815,7 +2102,8 @@ const make = Effect.gen(function* () {
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
                 AND (${confined === undefined ? 0 : 1} = 1
                   OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
-                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${TRIAGE_THREAD_PREFIX.length}) <> ${TRIAGE_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
@@ -1825,6 +2113,7 @@ const make = Effect.gen(function* () {
               // A thread keeps its cwd: one from another project ends so this launches its own.
               if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
                 yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
+                yield* sessionContext?.forget(existingThreadId) ?? Effect.void;
                 existingThreadId = null;
               }
             }
@@ -1834,11 +2123,66 @@ const make = Effect.gen(function* () {
               return;
             }
             const threadId = existingThreadId ?? ThreadId.make(`${prefix}${yield* ulid}`);
-            row = { ...row, threadId };
-            yield* Effect.gen(function* () {
-              const driver = driverOf(hostSettings, modelSelection);
+            // T3 may have started the notice's run during preparation.
+            const finished = events.flatMap((event) =>
+              event._tag === "task.finished" && event.threadId === threadId ? [event] : [],
+            );
+            const taken =
+              existingThreadId === null || finished.length === 0
+                ? undefined
+                : (yield* Effect.forEach(finished, (event) =>
+                    noticeRecords(threads, threadId, event.messageId).pipe(
+                      Effect.map((records) => noticeState(records, event.messageId)),
+                    ),
+                  ))
+                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
+                    .at(0);
+            // A wake-up that already owned a marked session cannot be reused for a fresh send.
+            if (
+              row.runId !== null &&
+              taken === undefined &&
+              ((yield* outsideRead(row).pipe(provideSql)) ||
+                (yield* turnSensitive(orgId, wakeupId).pipe(provideSql)))
+            )
+              return yield* cleanup(row, "retry");
+            const claimed = { ...row, threadId, runId: taken?.id ?? null };
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                const [active] =
+                  yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
+                if (active === undefined)
+                  return yield* new KinWakeupError({ orgId, agentId, cause: "retired" });
+                // The post-time grant may have lapsed while these events waited to be claimed;
+                // it now lasts as long as the wake-up may run, so a slow first reply still lands.
+                yield* floor.renew({
+                  orgId,
+                  agentId,
+                  until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
+                  messageIds: events.flatMap((event) =>
+                    isPersonTag(event._tag) && "messageId" in event
+                      ? [KinMessageId.make(event.messageId)]
+                      : [],
+                  ),
+                });
+                yield* identity.registerAgentThread({
+                  orgId,
+                  agentId,
+                  threadId,
+                  ...(chatId === null ? {} : { chatId }),
+                });
+                if (taken !== undefined) yield* inheritTaken(claimed, taken);
+                // The running turn's thread: one wake-up runs per lead at a time.
+                yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+                yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
+                prepared_at = ${preparedAt}, run_id = ${claimed.runId}
+              WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
+              }),
+            );
+            row = claimed;
+            const ownerClaude = alone && confined === undefined && driver === claude.driver;
+            const send = yield* Effect.gen(function* () {
               const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
-              const shadow = yield* carryFacts(row, {
+              const factsEffect = carryFacts(row, {
                 threadId,
                 ownerThread: alone && confined === undefined,
                 driver,
@@ -1855,70 +2199,138 @@ const make = Effect.gen(function* () {
                 enabled: hostSettings.kinSessionCarry,
                 now: yield* Clock.currentTimeMillis,
                 stopRevision: refreshHub?.stopRevision(orgId) ?? 0,
+                compactAtTokens: hostSettings.kinSessionCompactAtTokens,
               });
-              // Report eligibility independently of the switch; this path never resumes a session.
-              const decision = decideCarry({ ...shadow.facts, enabled: true });
+              const facts = yield* workspace === undefined
+                ? factsEffect
+                : factsEffect.pipe(Effect.provideService(KinWorkspace, workspace));
+              const decision = decideCarry(facts.facts);
+              const shadowDecision = hostSettings.kinSessionCarry
+                ? decision
+                : decideCarry({ ...facts.facts, enabled: true });
+              let reason: string | null = shadowDecision.carry ? null : shadowDecision.reason;
+              let sent: "fresh" | "carried" | "refill" = "fresh";
+              let text = full;
+              let beside: string | undefined;
+              let stats: string | null = null;
+              const cursorChat = cursor?.chatId;
+              const hasCursor =
+                cursor !== null &&
+                cursor.memoryHead !== null &&
+                cursor.memoryHead.length > 0 &&
+                cursorChat != null &&
+                cursorChat === facts.previousCursor?.chatId &&
+                cursor.chatVersions.some(({ id }) => id === cursorChat);
+              if (decision.carry) {
+                if (
+                  built === undefined ||
+                  built.sections.header === undefined ||
+                  sessionContext === undefined ||
+                  candidateThread !== threadId ||
+                  previous === undefined ||
+                  previous.wakeupId !== facts.previousWakeupId
+                ) {
+                  reason = "snapshot";
+                } else if (!hasCursor) {
+                  reason = "changes";
+                } else {
+                  const changes = yield* changesFor(
+                    claimed,
+                    facts,
+                    cursor,
+                    cursorChat,
+                    decision.refill ? built.fullWorkChanges : built.workChanges,
+                  );
+                  if (changes === undefined) reason = "changes";
+                  else {
+                    if (decision.refill) {
+                      sent = "refill";
+                      text =
+                        changes.rendered === undefined ? full : `${full}\n\n${changes.rendered}`;
+                    } else {
+                      sent = "carried";
+                      const delta = withSessionChanges(built.delta, changes.rendered);
+                      if (
+                        taken === undefined &&
+                        claude.turnContextBeside &&
+                        delta.length <= 9_000
+                      ) {
+                        beside = delta;
+                        text = built.message;
+                      } else text = `${built.message}\n\n${delta}`;
+                    }
+                    stats = yield* deltaStats(changes, beside !== undefined);
+                  }
+                }
+              }
+              // A carried turn holds what its session was shown, so it starts with the session's marks.
+              if (sent !== "fresh")
+                yield* inheritSession({
+                  orgId,
+                  wakeupId,
+                  fromWakeupIds: facts.sessionWakeupIds.filter((id) => id !== wakeupId),
+                });
               const stamp = yield* encodeShadowJson({
-                carry: decision.carry,
-                reason: decision.carry ? null : decision.reason,
-                sessionStart: shadow.sessionStart,
-                carriedFrom: shadow.carriedFrom,
-                gapMs: shadow.facts.gapMs,
-                contextTokens: shadow.contextTokens,
+                carry: reason === null,
+                reason,
+                sent,
+                sessionStart: sent === "fresh" ? facts.sessionStart : facts.carriedFrom,
+                carriedFrom: facts.carriedFrom,
+                gapMs: facts.facts.gapMs,
+                contextTokens: facts.contextTokens,
                 bootId,
                 toolListSha,
                 missed: false,
+                cursor,
+                cursorCaptured: false,
               });
-              const fingerprint = yield* encodeShadowJson(shadow.fingerprint);
+              const fingerprint = yield* encodeShadowJson(facts.fingerprint);
               const index =
                 promptFingerprint.index === null
                   ? null
                   : yield* encodeShadowJson(promptFingerprint.index);
-              yield* sql`UPDATE kin_wakeups SET carry_json = ${stamp},
+              yield* sql`UPDATE kin_wakeups SET carry_json = ${stamp}, delta_json = ${stats},
                 standing_key = ${fingerprint}, prompt_index = ${index}
                 WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'`;
+              if (!hostSettings.kinSessionCarry && shadowDecision.carry && hasCursor)
+                yield* changesFor(claimed, facts, cursor, cursorChat).pipe(
+                  Effect.flatMap((changes) =>
+                    changes === undefined
+                      ? Effect.void
+                      : deltaStats(changes, false).pipe(
+                          Effect.flatMap(
+                            (delta) => sql`UPDATE kin_wakeups SET delta_json = ${delta}
+                            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`,
+                          ),
+                        ),
+                  ),
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Kin session carry shadow recording failed", {
+                      wakeupId,
+                      cause,
+                    }),
+                  ),
+                  Effect.forkIn(scope),
+                );
+              return { text, freshContext: sent === "fresh", beside };
             }).pipe(
               provideSql,
-              Effect.catch((error) =>
+              Effect.catchCause((cause) =>
                 Effect.logWarning("Kin session carry shadow recording failed", {
                   wakeupId,
-                  errorTag: error._tag,
-                }),
+                  cause,
+                }).pipe(Effect.as({ text: full, freshContext: true, beside: undefined })),
               ),
             );
-            yield* sql.withTransaction(
-              Effect.gen(function* () {
-                const [active] =
-                  yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
-                if (active === undefined)
-                  return yield* new KinWakeupError({ orgId, agentId, cause: "retired" });
-                // The post-time grant may have lapsed while these events waited to be claimed;
-                // it now lasts as long as the wake-up may run, so a slow first reply still lands.
-                yield* floor.renew({
-                  orgId,
-                  agentId,
-                  until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
-                  messageIds: events.flatMap((event) =>
-                    event._tag === "chat.message" ||
-                    event._tag === "widget.action" ||
-                    event._tag === "chat.reaction"
-                      ? [event.messageId]
-                      : [],
-                  ),
-                });
-                yield* identity.registerAgentThread({
-                  orgId,
-                  agentId,
-                  threadId,
-                  ...(chatId === null ? {} : { chatId }),
-                });
-                // The running turn's thread: one wake-up runs per lead at a time.
-                yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-                yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
-                prepared_at = ${preparedAt}
-              WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
-              }),
-            );
+            if (ownerClaude && built !== undefined && (taken === undefined || !send.freshContext))
+              snapshot = { sections: built.sections, index: built.index };
+            const { text, attachments } =
+              legacyContent ??
+              (yield* turnContent.prepare({
+                text: send.text,
+                attachments: files,
+                offersBillsAdd: canAddBills,
+              }));
             // A finished task's run may already be this wake-up's (above).
             if (registry.lookup(threadId)?.wakeupId !== wakeupId)
               yield* registry.register(threadId, {
@@ -1936,22 +2348,13 @@ const make = Effect.gen(function* () {
                 startedAt: row.startedAt,
                 attachments: attachments.length > 0,
               });
-            // T3 already started the run that answers a finished task here: this wake-up owns it.
-            const finished = events.flatMap((event) =>
-              event._tag === "task.finished" && event.threadId === threadId ? [event] : [],
-            );
-            const taken =
-              existingThreadId === null || finished.length === 0
-                ? undefined
-                : (yield* Effect.forEach(finished, (event) =>
-                    noticeRecords(threads, threadId, event.messageId).pipe(
-                      Effect.map((records) => noticeState(records, event.messageId)),
-                    ),
-                  ))
-                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
-                    .at(0);
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
+            if (sessionContext !== undefined)
+              yield* sessionContext.set(
+                threadId,
+                send.beside === undefined ? undefined : { delta: send.beside },
+              );
             const sent =
               taken !== undefined
                 ? undefined
@@ -1977,7 +2380,7 @@ const make = Effect.gen(function* () {
                       text,
                       attachments,
                       mode: "queue",
-                      freshContext: true,
+                      freshContext: send.freshContext,
                       modelSelection,
                       createdBy: "system",
                       creationSource: "server",
@@ -1989,7 +2392,9 @@ const make = Effect.gen(function* () {
             // does who the finished work was for.
             if (
               taken !== undefined &&
-              (workFor.size > 0 || events.some((event) => event._tag !== "task.finished"))
+              (!send.freshContext ||
+                workFor.size > 0 ||
+                events.some((event) => event._tag !== "task.finished"))
             ) {
               if (Option.isSome(bridge))
                 yield* bridge.value.steered(orgId, wakeupId, {
@@ -2023,11 +2428,11 @@ const make = Effect.gen(function* () {
                 runId: run.id,
                 commandId: CommandId.make(`kin-stop-launch:${wakeupId}`),
               });
-            yield* wait(row, project.id);
+            yield* wait(row, project.id, snapshot);
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
-                ? cleanup(row, Exit.hasInterrupts(exit), exit.cause).pipe(
+                ? cleanup(row, Exit.hasInterrupts(exit), exit.cause, snapshot).pipe(
                     Effect.catch((error) =>
                       Effect.logError("Kin wake-up cleanup failed", {
                         orgId,
