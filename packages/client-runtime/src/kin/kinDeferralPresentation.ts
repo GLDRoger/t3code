@@ -366,15 +366,14 @@ export function kinDeferralCardView(
 }
 
 /**
- * Kin's own note that it set something for later. False while the card is open and asks for a
- * decision or the host lists a tap on it (the confirm card's Undo), which still need their buttons.
+ * An older host's note that it set something for later: no phase and no tap listed. A card that
+ * asked or offered a tap stays after the tap, started or closed, so the chat shows what happened.
  */
 export function kinDeferralIsBookkeeping(widget: KinWidget): boolean {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return false;
   const { phase, actions } = decoded.value;
-  const tappable = phase === "heads_up" || phase === "asked" || (actions?.length ?? 0) > 0;
-  return !(widget.closedAt === null && tappable);
+  return phase === undefined && (actions?.length ?? 0) === 0;
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
