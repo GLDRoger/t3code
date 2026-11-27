@@ -74,7 +74,7 @@ export const storedRows = Effect.fn("KinRecommendLedger.rows")(function* (
  * When an open row's card stopped taking taps unanswered: its chat cleared, or its time limit
  * (the card is never redrawn, so it ran from posting). Undefined while it still waits.
  */
-export const ranOutAt = (row: StoredRow, at: number) => {
+export const ranOutAt = (row: Pick<StoredRow, "state" | "postedAt" | "endedAt">, at: number) => {
   if (row.state !== "open") return undefined;
   const expires = row.postedAt + KIN_CHOICE_CARD_TTL_MS;
   if (row.endedAt !== null) return Math.min(row.endedAt, expires);

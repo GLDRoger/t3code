@@ -8,7 +8,7 @@ export const bankSenderCopy = (input: {
   readonly address: string;
   readonly bankName: string;
   readonly source: "company_details" | "statement";
-  readonly company: string;
+  readonly company: string | undefined;
   readonly mailboxes: ReadonlyArray<string>;
   readonly since: string;
   readonly count: number;
@@ -44,7 +44,7 @@ export const bankSenderCopy = (input: {
       : ` Kin won't count alerts about accounts ending ${names.format(shownUnknown)} unless you add ${shownUnknown.length === 1 ? "that account" : "those accounts"} in Settings.`;
   return {
     ask: `Count alerts from ${address} as ${bankName}'s?`,
-    noticed: `Kin has had ${mails} from ${address} in the ${input.company} mailbox${input.mailboxes.length === 1 ? "" : "es"} ${names.format(input.mailboxes)} since ${input.since}. The mail server that received ${one ? "it confirmed it was" : "them confirmed they were"} sent by ${domain}.${owns} Kin noticed this address because it matches ${bankName}, the bank ${source}, and the ${one ? "mail mentions" : "mails mention"} ${article}${accountList(mentioned)}.${alternative}`,
+    noticed: `Kin has had ${mails} from ${address} in the ${input.company === undefined ? "" : `${input.company} `}mailbox${input.mailboxes.length === 1 ? "" : "es"} ${names.format(input.mailboxes)} since ${input.since}. The mail server that received ${one ? "it confirmed it was" : "them confirmed they were"} sent by ${domain}.${owns} Kin noticed this address because it matches ${bankName}, the bank ${source}, and the ${one ? "mail mentions" : "mails mention"} ${article}${accountList(mentioned)}.${alternative}`,
     gives: `If you say yes, each alert from this address about ${about} becomes a Bank transaction, marked Unexplained, and the ${mails} already here ${one ? "is" : "are"} added. Nothing is marked paid without you.${excluded}\n\nSay yes only if you know ${bankName} sends alerts from exactly this address. Anyone can set up an address that looks like a bank's.`,
   };
 };
