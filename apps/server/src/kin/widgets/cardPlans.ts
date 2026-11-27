@@ -306,6 +306,13 @@ const RecommendPlan = Schema.Struct({
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
 export type RecommendChange = typeof RecommendChange.Type;
+
+const BillSenderPlan = Schema.Struct({
+  kind: Schema.Literal("bill_sender"),
+  address: Schema.String,
+  state: Schema.Literals(["approved", "declined"]),
+});
+export type BillSenderPlan = typeof BillSenderPlan.Type;
 /**
  * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
  * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
@@ -431,6 +438,7 @@ export const CardPlan = Schema.Union([
   RoutePlan,
   TakenPlan,
   RecommendPlan,
+  BillSenderPlan,
   AnsweredPlan,
   LeaverPlan,
   WaitedPlan,

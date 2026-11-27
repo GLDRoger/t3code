@@ -634,7 +634,21 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const failed = unreadable.get(one.id);
         if (failed !== undefined) return json({ error: { code: failed } }, failed);
         const full = gmailMessage(one);
-        if (url.searchParams.get("format") === "full") return json(full);
+        if (url.searchParams.get("format") === "full") {
+          const fields = url.searchParams.get("fields");
+          if (fields === null) return json(full);
+          if (!fields.includes("filename") || fields.includes("body"))
+            return json({ error: { code: 400 } }, 400);
+          return json({
+            payload: {
+              mimeType: full.payload.mimeType,
+              parts:
+                "parts" in full.payload
+                  ? full.payload.parts.map(({ filename, mimeType }) => ({ filename, mimeType }))
+                  : undefined,
+            },
+          });
+        }
         const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
         const headers = [
           ...full.payload.headers,

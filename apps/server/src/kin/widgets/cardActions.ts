@@ -46,6 +46,7 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
+import * as BillSenders from "../work/billMail/billSenders.ts";
 import { isHelperRefusal, KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
@@ -142,6 +143,8 @@ const labelOf = (plan: CardPlan): string => {
       return routeShown(plan).label;
     case "recommend":
       return recommendShown(plan).label;
+    case "bill_sender":
+      return BillSenders.decisionLabel(plan.state);
     case "leaver":
       return leaverShown(plan).label;
     case "quiet_keep":
@@ -193,6 +196,8 @@ const lineOf = (plan: CardPlan): string => {
       return routeShown(plan).line;
     case "recommend":
       return recommendShown(plan).line;
+    case "bill_sender":
+      return `${BillSenders.decisionLabel(plan.state)} · ${plan.address}`;
     case "leaver":
       return leaverShown(plan).line;
     case "quiet_keep":
@@ -465,6 +470,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
+    sealed?.kind === "bill_sender" ||
     sealed?.kind === "leaver" ||
     (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
   )
@@ -587,6 +593,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   if (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
+    sealed.kind === "bill_sender" ||
     sealed.kind === "leaver" ||
     isFactCard(sealed) ||
     isTaken(sealed) ||
@@ -686,6 +693,16 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (plan.kind === "bill_sender") {
+    yield* BillSenders.decide(
+      tap.orgId,
+      tap.personId,
+      plan.address,
+      plan.state,
+      tap.widget.widgetId,
+    );
+    return BillSenders.decisionOutcome(plan.state, plan.address);
+  }
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
   if (isQuiet(plan)) return yield* runQuiet(tap, plan);

@@ -5,6 +5,7 @@ import {
   AuthSessionId,
   KinOrgId,
   KinBankSenderRpcs,
+  KinBillSenderRpcs,
   AuthStandardClientScopes,
   KinAgentId,
   KinConnectionId,
@@ -51,6 +52,7 @@ import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { runRecommend } from "./card.ts";
 import * as KinRecommend from "./KinRecommend.ts";
+import * as BillSenderCards from "../work/billMail/billSenderCards.ts";
 import { ruleContext } from "./ledger.ts";
 import {
   type RuleContext,
@@ -1779,6 +1781,187 @@ it.effect(
         );
         assert.include(yield* Effect.flip(listSenders({ orgId: KinOrgId.make("other-company") })), {
           reason: "not_found",
+        });
+      }).pipe(Effect.provide(kinHostDependencies)),
+    ),
+);
+
+it.effect(
+  "billing sender cards ask once, cap the day's cards and do not show in a teammate's chat",
+  () =>
+    run(({ ctx }) =>
+      Effect.gen(function* () {
+        yield* idle(ctx);
+        yield* ctx.sql`UPDATE kin_people SET display_name = 'Zoya' WHERE org_id = ${ctx.orgId}
+          AND person_id = ${ctx.meera.personId}`;
+        const now = yield* Clock.currentTimeMillis;
+        const addresses = [
+          "bills@inkspot.example",
+          "billing@harbor.example",
+          "invoice@inkspot.example",
+          "receipt@harbor.example",
+        ];
+        for (const [index, address] of addresses.entries()) {
+          yield* ctx.sql`INSERT INTO kin_bill_senders
+          (org_id, address, state, seen_count, first_seen_at, last_seen_at, created_at)
+          VALUES (${ctx.orgId}, ${address}, 'candidate', 2, ${now}, ${now}, ${now})`;
+          if (index === 0) {
+            yield* BillSenderCards.offer(ctx.orgId, now);
+            assert.lengthOf(yield* billingCards(ctx), 1);
+          }
+        }
+        yield* BillSenderCards.offer(ctx.orgId, now);
+        yield* BillSenderCards.offer(ctx.orgId, now);
+        const drawn = yield* billingCards(ctx);
+        assert.lengthOf(drawn, 3);
+        assert.isTrue(drawn.every((card) => card.chatId === ctx.chiefChat));
+        const harbor = drawn.find((card) => card.address === "billing@harbor.example")!;
+        const state = JSON.parse(harbor.state) as {
+          question: string;
+          detail: string;
+          options: ReadonlyArray<{ label: string }>;
+        };
+        assert.strictEqual(state.question, "Read bills from billing@harbor.example?");
+        assert.include(state.detail, "Kin saw 2 mails from this address that look like bills");
+        assert.include(
+          state.detail,
+          "Approving lets mail from this exact address, when its mail server vouches for it, become suggested expenses.",
+        );
+        assert.include(state.detail, "Nothing counts in Money until you keep it.");
+        assert.deepStrictEqual(
+          state.options.map(({ label }) => label),
+          ["Approve", "Not a billing sender"],
+        );
+        const denied = yield* ctx.chats
+          .act(ctx.meera, {
+            widgetId: harbor.widgetId,
+            revision: 1,
+            actionId: "choose",
+            value: "option-1",
+            clientActionId: "billing-denied",
+          })
+          .pipe(Effect.flip);
+        assert.include(denied, { reason: "not_found" });
+        yield* tap(ctx, harbor.widgetId, "option-2");
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT state FROM kin_bill_senders
+        WHERE org_id = ${ctx.orgId} AND address = ${harbor.address}`,
+          [{ state: "declined" }],
+        );
+        const next = drawn.find((card) => card.address !== harbor.address)!;
+        yield* tap(ctx, next.widgetId, "option-1");
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT state FROM kin_bill_senders
+        WHERE org_id = ${ctx.orgId} AND address = ${next.address}`,
+          [{ state: "approved" }],
+        );
+        yield* TestClock.adjust("24 hours");
+        yield* BillSenderCards.offer(ctx.orgId, yield* Clock.currentTimeMillis);
+        assert.deepStrictEqual(
+          (yield* billingCards(ctx)).map((card) => card.widgetId),
+          drawn.map((card) => card.widgetId),
+        );
+      }),
+    ),
+);
+
+const billingCards = (ctx: Ctx) => ctx.sql<{
+  readonly address: string;
+  readonly widgetId: KinWidgetId;
+  readonly chatId: string;
+  readonly state: string;
+}>`SELECT b.address, w.widget_id AS "widgetId", w.chat_id AS "chatId", w.state_json AS state
+  FROM kin_bill_senders b JOIN kin_widgets w ON w.org_id = b.org_id AND w.widget_id = b.widget_id
+  WHERE b.org_id = ${ctx.orgId} ORDER BY b.address`;
+
+it.effect(
+  "billing sender Settings checks each role, resolves cards and reverses remove and decline",
+  () =>
+    run(({ ctx }) =>
+      Effect.gen(function* () {
+        yield* idle(ctx);
+        yield* ctx.sql`UPDATE kin_people SET display_name = CASE person_id
+          WHEN ${ctx.meera.personId} THEN 'Zoya' ELSE 'Meera' END WHERE org_id = ${ctx.orgId}
+          AND person_id IN (${ctx.meera.personId}, ${ctx.devId})`;
+        const now = yield* Clock.currentTimeMillis;
+        const address = "bills@inkspot.example";
+        const identity = Context.get(ctx.services, KinIdentity);
+        const org = { orgId: ctx.orgId };
+        const ref = { ...org, address };
+        const group = RpcGroup.make(...KinBillSenderRpcs);
+        const callsAs = Effect.fn("test.billingCallsAs")(function* (personId: KinPersonId) {
+          const services = Context.add(ctx.services, KinIdentity, {
+            ...identity,
+            resolve: () => Effect.succeed([{ _tag: "person" as const, ...org, personId }]),
+          });
+          const calls = yield* makeKinHandlers({
+            sessionId: AuthSessionId.make("billing-settings"),
+            subject: "browser",
+            method: "browser-session-cookie",
+            scopes: AuthStandardClientScopes,
+          }).pipe(
+            Effect.provideService(Kin.KinServer, {
+              taskCardUpdater: Layer.empty,
+              services: Option.some(services),
+              subscribeForViewer: Option.none(),
+            }),
+          );
+          return yield* RpcTest.makeClient(group).pipe(Effect.provide(group.toLayer(calls)));
+        });
+        const zoya = yield* callsAs(ctx.meera.personId);
+        for (const method of ["approve", "decline", "remove", "add"] as const) {
+          const error = yield* Effect.flip(zoya[`kin.billSenders.${method}`](ref));
+          assert.strictEqual(error._tag, "EnvironmentAuthorizationError");
+        }
+        assert.strictEqual(
+          (yield* Effect.flip(zoya["kin.billSenders.list"](org)))._tag,
+          "EnvironmentAuthorizationError",
+        );
+        const meera = yield* callsAs(ctx.devId);
+        const refresh = (personId: KinPersonId) =>
+          Stream.runHead(subscribeRefreshes([{ _tag: "person", ...org, personId }], org)).pipe(
+            Effect.map((shown) => Option.getOrThrow(shown).billSenders),
+          );
+        const revision = yield* refresh(ctx.devId);
+        assert.isUndefined(yield* refresh(ctx.meera.personId));
+        yield* ctx.sql`INSERT INTO kin_bill_senders
+        (org_id, address, state, seen_count, first_seen_at, last_seen_at, created_at)
+        VALUES (${ctx.orgId}, ${address}, 'candidate', 1, ${now}, ${now}, ${now})`;
+        yield* BillSenderCards.offer(ctx.orgId, now);
+        const [card] = yield* billingCards(ctx);
+        assert.include((yield* meera["kin.billSenders.list"](org)).rows[0], {
+          address,
+          state: "waiting",
+          askedInChat: true,
+        });
+        yield* meera["kin.billSenders.decline"](ref);
+        assert.strictEqual(yield* refresh(ctx.devId), (revision ?? 0) + 2);
+        assert.strictEqual(yield* refresh(ctx.owner.personId), (revision ?? 0) + 2);
+        assert.isUndefined(yield* refresh(ctx.meera.personId));
+        assert.include((yield* meera["kin.billSenders.list"](org)).rows[0], {
+          address,
+          state: "declined",
+          askedInChat: false,
+          decidedBy: "Meera",
+        });
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT awaiting_json FROM kin_widgets WHERE widget_id = ${card!.widgetId}`,
+          [{ awaiting_json: "[]" }],
+        );
+        yield* meera["kin.billSenders.add"]({ ...ref, address: " BILLS@INKSPOT.EXAMPLE " });
+        assert.include((yield* meera["kin.billSenders.list"](org)).rows[0], {
+          address,
+          state: "approved",
+        });
+        yield* meera["kin.billSenders.remove"](ref);
+        assert.deepStrictEqual(yield* meera["kin.billSenders.list"](org), { rows: [] });
+        assert.include(yield* Effect.flip(meera["kin.billSenders.approve"](ref)), {
+          reason: "conflict",
+        });
+        yield* meera["kin.billSenders.add"](ref);
+        assert.include((yield* meera["kin.billSenders.list"](org)).rows[0], {
+          address,
+          state: "approved",
         });
       }).pipe(Effect.provide(kinHostDependencies)),
     ),

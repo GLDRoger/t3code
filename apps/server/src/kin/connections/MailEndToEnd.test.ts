@@ -193,6 +193,7 @@ type Gates = {
   file?: Effect.Effect<void>;
   send?: () => Promise<void>;
   calendarDelete?: (url: URL) => void;
+  mailRead?: (url: URL) => void;
   /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
   keep?: Effect.Effect<void>;
 };
@@ -235,6 +236,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
               (async (input, init) => {
                 const url = input instanceof Request ? input.url : String(input);
                 const method = input instanceof Request ? input.method : init?.method;
+                if (url.includes("/messages/")) gates.mailRead?.(new URL(url));
                 if (method === "DELETE" && url.includes("/events/"))
                   gates.calendarDelete?.(new URL(url));
                 if (gates.send !== undefined && url.endsWith("/messages/send")) await gates.send();
@@ -463,6 +465,7 @@ const connectOwn = (
 
 const setUp = <E>(
   body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
+  gates: Gates = {},
 ) =>
   Effect.gen(function* () {
     const fake = makeFakeMail();
@@ -474,7 +477,6 @@ const setUp = <E>(
     });
     fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
     const cards: Array<Card> = [];
-    const gates: Gates = {};
     yield* Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       yield* seed;
@@ -1318,6 +1320,168 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             financeScope,
           );
           assert.include(thread.quoted ?? "", body);
+        }),
+      ),
+  );
+
+  it.effect.each([
+    [
+      "failing DMARC",
+      "no-reply@inkspot.example",
+      "Invoice",
+      "dmarc=fail header.from=inkspot.example",
+    ],
+    ["unchecked", "no-reply@inkspot.example", "Invoice", null],
+    ["reply", "no-reply@inkspot.example", "Re: Invoice", "dmarc=pass header.from=inkspot.example"],
+    [
+      "forward",
+      "no-reply@inkspot.example",
+      "Fwd: Invoice",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+    [
+      "display name",
+      '"no-reply@inkspot.example" <no-reply@harbor.example>',
+      "Invoice",
+      "dmarc=pass header.from=harbor.example",
+    ],
+    ["lookalike", "no-reply@inks-pot.example", "Invoice", "dmarc=pass header.from=inkspot.example"],
+    [
+      "plus variant",
+      "no-reply+nov@inkspot.example",
+      "Invoice",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+  ] as const)("billing proposals refuse %s from headers alone", ([, from, subject, verdict]) => {
+    const reads: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(accounts);
+          yield* TestClock.adjust("1 minute");
+          const control = fake.deliver({
+            to: ACCOUNTS,
+            from: "no-reply@inkspot.example",
+            subject: "Invoice",
+            body: "Inkspot Cloud bill.",
+            at: NOW + 1,
+            authResults: ["mx.example; dmarc=pass header.from=inkspot.example"],
+          });
+          yield* readMail(accounts);
+          const mail = fake.deliver({
+            to: ACCOUNTS,
+            from,
+            subject,
+            body: "Harbor Power bill.",
+            at: NOW + 2,
+            authResults: verdict === null ? [] : [`mx.example; ${verdict}`],
+          });
+          yield* readMail(accounts);
+          const keyed = (id: string) =>
+            reads.filter((url) => url.pathname.endsWith(`/messages/${id}`));
+          assert.lengthOf(keyed(mail.id), 1);
+          assert.strictEqual(keyed(mail.id)[0]?.searchParams.get("format"), "metadata");
+          assert.deepStrictEqual(
+            yield* sql`SELECT address, seen_count AS count FROM kin_bill_senders WHERE org_id = ${orgId}`,
+            [{ address: "no-reply@inkspot.example", count: 1 }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT message_id FROM kin_bill_sender_mail WHERE org_id = ${orgId}`,
+            [{ message_id: control.id }],
+          );
+        }),
+      { mailRead: (url) => reads.push(url) },
+    );
+  });
+
+  it.effect.each([
+    ["google", ACCOUNTS],
+    ["microsoft", HELLO],
+  ] as const)("billing proposals use named PDF or image part headers on %s", ([provider, to]) => {
+    const reads: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connectionId = yield* connect(fake, provider, to);
+          yield* readMail(connectionId);
+          yield* TestClock.adjust("1 minute");
+          const positive = fake.deliver({
+            to,
+            from: "no-reply@inkspot.example",
+            subject: "November",
+            body: "Inkspot Cloud bill.",
+            at: NOW + 1,
+            files: [{ name: "inkspot.pdf", mimeType: "application/pdf", data: "AA==" }],
+            authResults: ["mx.example; dmarc=pass header.from=inkspot.example"],
+          });
+          const negative = fake.deliver({
+            to,
+            from: "no-reply@harbor.example",
+            subject: "November",
+            body: "Harbor Power bill.",
+            at: NOW + 2,
+            files: [{ name: "harbor.csv", mimeType: "text/csv", data: "AA==" }],
+            authResults: ["mx.example; dmarc=pass header.from=harbor.example"],
+          });
+          yield* readMail(connectionId);
+          assert.deepStrictEqual(
+            yield* sql`SELECT address FROM kin_bill_senders WHERE org_id = ${orgId}`,
+            [{ address: "no-reply@inkspot.example" }],
+          );
+          for (const id of [positive.id, negative.id]) {
+            const paths = reads.filter((url) => url.pathname.includes(`/messages/${id}`));
+            assert.lengthOf(paths, 2);
+            if (provider === "google") {
+              assert.include(paths[1]?.searchParams.get("fields"), "filename");
+              assert.notInclude(paths[1]?.searchParams.get("fields"), "body");
+            } else {
+              assert.include(paths[1]?.searchParams.get("$select"), "contentType");
+              assert.notInclude(paths[1]?.searchParams.get("$select"), "contentBytes");
+            }
+          }
+        }),
+      { mailRead: (url) => reads.push(url) },
+    );
+  });
+
+  it.effect(
+    "billing proposals count a verified mail once and do not ask a declined address again",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          yield* readMail(accounts);
+          yield* readMail(hello);
+          yield* TestClock.adjust("1 minute");
+          const from = "no-reply+acct_1abc@inkspot.example";
+          const mail = {
+            from,
+            subject: "November invoice",
+            body: "Inkspot Cloud bill.",
+            authResults: [
+              "mx.example; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
+            ],
+          };
+          const first = fake.deliver({ ...mail, to: ACCOUNTS, at: NOW + 1 });
+          fake.deliver({ ...mail, to: HELLO, at: NOW + 2, messageId: first.messageId });
+          yield* readMail(accounts);
+          yield* readMail(hello);
+          const rows = () => sql`SELECT address, state, seen_count AS count FROM kin_bill_senders
+        WHERE org_id = ${orgId} ORDER BY address`;
+          assert.deepStrictEqual(yield* rows(), [{ address: from, state: "candidate", count: 1 }]);
+          yield* sql`UPDATE kin_bill_senders SET state = 'declined' WHERE org_id = ${orgId} AND address = ${from}`;
+          fake.deliver({ ...mail, to: ACCOUNTS, at: NOW + 3 });
+          yield* readMail(accounts);
+          assert.deepStrictEqual(yield* rows(), [{ address: from, state: "declined", count: 1 }]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT message_id FROM kin_bill_sender_mail WHERE org_id = ${orgId}`,
+            [{ message_id: first.id }],
+          );
         }),
       ),
   );

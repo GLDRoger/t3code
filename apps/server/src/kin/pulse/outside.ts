@@ -1,3 +1,4 @@
+import { normalizeAddress } from "../connections/MailSignals.ts";
 import {
   KinEvent,
   KinEventId,
@@ -15,7 +16,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
-import { list, normalizeAddress } from "../work/statements/bankSenderRows.ts";
+import { list } from "../work/statements/bankSenderRows.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";

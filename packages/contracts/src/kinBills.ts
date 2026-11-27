@@ -11,6 +11,7 @@ import {
   KinPersonId,
   KinWidgetId,
 } from "./kinChat.ts";
+import { KIN_BILL_SENDER_RPC_SCOPES } from "./kinBillSenders.ts";
 import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
@@ -310,6 +311,7 @@ export const KinBillRpcs = [
 ] as const;
 
 export const KIN_BILL_RPC_SCOPES = {
+  ...KIN_BILL_SENDER_RPC_SCOPES,
   [KIN_BILL_WS_METHODS.add]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.list]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.keepRead]: AuthKinChatScope,

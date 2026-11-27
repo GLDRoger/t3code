@@ -16,6 +16,7 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
+import { billingHint, isBillFile, normalizeAddress } from "./MailSignals.ts";
 import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
 import {
   answeredWith,
@@ -367,11 +368,29 @@ const inboxChanges = Effect.fn("KinGoogle.inboxChanges")(function* (
   } as const;
 });
 
+const fromForArrival = (message: unknown) => {
+  const [from, ...others] = headerValues(message, "From");
+  if (from === undefined || others.length > 0) return null;
+  const angled = /^\s*[^<>]*<([^<>]+)>\s*$/.exec(from);
+  return normalizeAddress(angled?.[1] ?? from) ?? null;
+};
+
+// The metadata format omits MIME parts. A partial response supplies their names and types only.
+const PART_FIELDS = "filename,mimeType";
+const ARRIVAL_PARTS = `payload(${Array.from({ length: 6 }).reduce<string>(
+  (fields) => `${PART_FIELDS},parts(${fields})`,
+  PART_FIELDS,
+)})`;
+const hasBillPart = (part: unknown): boolean =>
+  isBillFile(text(field(part, "filename")), text(field(part, "mimeType"))) ||
+  list(field(part, "parts")).some(hasBillPart);
+
 const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
   context: MailContext,
   messageId: string,
 ) {
-  const found = yield* api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, {
+  const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
+  const found = yield* api(context, url, {
     format: "metadata",
     metadataHeaders: FEED_HEADERS,
   }).pipe(
@@ -391,12 +410,12 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     !Number.isSafeInteger(receivedAt)
   )
     return yield* failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`);
-  return {
+  const arrival = {
     messageId,
     threadId,
     receivedAt,
     from: header(message, "From"),
-    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+    fromAddress: fromForArrival(message),
     to: addressesIn(header(message, "To")),
     cc: addressesIn(header(message, "Cc")),
     deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
@@ -409,6 +428,12 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     ...automationOf(message),
     hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
   } satisfies MailArrival;
+  const billing = billingHint(arrival);
+  if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
+  const parts = yield* api(context, url, { format: "full", fields: ARRIVAL_PARTS });
+  return hasBillPart(field(parts, "payload"))
+    ? { ...arrival, hasBillFile: true as const }
+    : arrival;
 });
 
 /**

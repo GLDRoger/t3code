@@ -131,6 +131,8 @@ export type MailArrival = {
   /** The vendor filed it as bulk (Gmail's Promotions, Social or Forums). */
   readonly bulk: boolean;
   readonly hasFile: boolean;
+  /** A named PDF or image, determined from part metadata without loading any bytes. */
+  readonly hasBillFile?: true;
 };
 export type MailAutomation = Pick<
   MailArrival,

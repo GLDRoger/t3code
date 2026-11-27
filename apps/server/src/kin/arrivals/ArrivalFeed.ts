@@ -18,6 +18,9 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
+import { billsOnMail, pruneHeldBillMail } from "../work/billMail/billSenderArrivals.ts";
+import { offer } from "../work/billMail/billSenderCards.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 
@@ -107,6 +110,13 @@ const make = Effect.gen(function* () {
       parked !== undefined,
     );
     if (!made) return undefined;
+    yield* billsOnMail({
+      orgId,
+      connectionId: input.connectionId,
+      mail: arrival,
+      knownBillers: input.rows.billers,
+      now,
+    });
     return {
       arrivalId,
       class: classified.class,
@@ -255,6 +265,7 @@ const runtimeLayer = Layer.effectDiscard(
     const feed = yield* KinArrivalFeed;
     const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
+    const chat = yield* KinChatService;
     const due = new Map<string, { readonly at: number; readonly failures: number }>();
     let pruned = Number.NEGATIVE_INFINITY;
     yield* ticks.register(
@@ -263,7 +274,7 @@ const runtimeLayer = Layer.effectDiscard(
         const now = yield* Clock.currentTimeMillis;
         if (now - pruned >= PRUNE_EVERY_MS) {
           pruned = now;
-          yield* ArrivalStore.prune(now).pipe(
+          yield* Effect.andThen(ArrivalStore.prune(now), pruneHeldBillMail(now)).pipe(
             Effect.catch((cause) => Effect.logWarning("Kin couldn't prune arrivals", { cause })),
           );
         }
@@ -274,12 +285,14 @@ const runtimeLayer = Layer.effectDiscard(
           WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL AND paused_at IS NULL
             AND state = 'active' AND person_id IS NULL
           ORDER BY org_id, created_at, connection_id`.pipe(NodeSqliteClient.readOnly);
+        const companies = new Set<string>();
         for (const { orgId, connectionId } of rows) {
           const key = `${orgId}\0${connectionId}`;
           const next = due.get(key);
           if (next !== undefined && now < next.at) continue;
           const exit = yield* Effect.exit(feed.read(KinOrgId.make(orgId), connectionId));
           if (Exit.isSuccess(exit)) {
+            companies.add(orgId);
             due.set(key, {
               at: now + (exit.value.more ? 0 : FEED_EVERY_MS),
               failures: 0,
@@ -298,6 +311,13 @@ const runtimeLayer = Layer.effectDiscard(
             cause: exit.cause,
           });
         }
+        for (const orgId of companies)
+          yield* offer(KinOrgId.make(orgId), now).pipe(
+            Effect.provideService(KinChatService, chat),
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin couldn't offer billing sender cards", { cause }),
+            ),
+          );
       }).pipe(Effect.catch((cause) => Effect.logWarning("Kin arrival scan failed", { cause }))),
     );
   }),
