@@ -2000,9 +2000,10 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
                       ).toString("base64url"),
                     },
                   },
-                  attachment("g-file", "../Invoice.txt", "text/plain", 12),
+                  // The mail's own types are wrong on purpose: the name decides, as an upload's.
+                  attachment("g-file", "../Invoice.txt", "text/html", 12),
                   attachment("g-large", "Large.txt", "text/plain", 51 * 1024 * 1024),
-                  attachment("g-type", "Odd.zz", "image/x-unknown", 12),
+                  attachment("g-type", "Odd.jxl", "application/pdf", 12),
                 ]
               : [],
         },
@@ -2092,16 +2093,16 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
           "@odata.type": "#microsoft.graph.fileAttachment",
           id: "o-file",
           name: "Quote.txt",
-          contentType: "text/plain",
+          contentType: "application/x-msdownload",
           size: 12,
         };
         if (path === "/messages/om1") return json(ana);
         if (path === "/messages/om1/attachments") return json({ value: [graphFile] });
         if (path === "/messages/om1/attachments/o-file")
           return json(
-            url.searchParams.get("$select") === "contentBytes"
-              ? { contentBytes: Buffer.from("body secret!").toString("base64") }
-              : graphFile,
+            url.searchParams.has("$select")
+              ? graphFile
+              : { ...graphFile, contentBytes: Buffer.from("body secret!").toString("base64") },
           );
         if (path === "/events") return json({ value: [] });
         return json({ error: { code: "ErrorItemNotFound" } }, 404);
@@ -3866,7 +3867,7 @@ describe("Mail attachment to Docs", () => {
             );
             assert.strictEqual(
               (yield* askSave("g-type").pipe(Effect.flip)).message,
-              "'Odd.zz' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.",
+              "'Odd.jxl' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.",
             );
           }
           const [saved, again] = yield* Effect.all([askSave(attachmentId), askSave(attachmentId)], {
@@ -3928,6 +3929,7 @@ describe("Mail attachment to Docs", () => {
             assert.notInclude(log, outside);
             assert.notInclude(saved.quoted ?? "", outside);
           }
+          for (const name of [fileName, "Large.txt", "Odd.jxl"]) assert.notInclude(log, name);
         }),
       ),
   );

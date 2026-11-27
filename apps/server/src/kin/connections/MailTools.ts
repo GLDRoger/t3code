@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Mime from "effect/http/Mime";
+import * as Option from "effect/Option";
 import {
   classifyComposerAttachmentFile,
   unsupportedImageAttachmentMessage,
@@ -113,6 +115,9 @@ export const mailFileMimeType = (value: string | undefined) => {
     ? type
     : "application/octet-stream";
 };
+/** A saved file's type, from its name as a browser gives an upload's; never the mail's own. */
+export const mailFileType = (name: string) =>
+  Option.getOrElse(Mime.getType(safeMailFileName(name)), () => "application/octet-stream");
 export const checkMailFile = (file: MailFile) => {
   const name = safeMailFileName(file.name);
   if (classifyComposerAttachmentFile({ name, type: file.type }) === "unsupported-image")

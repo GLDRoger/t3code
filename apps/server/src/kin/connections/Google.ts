@@ -24,7 +24,7 @@ import {
   checkMailFile,
   failure,
   mailDate,
-  mailFileMimeType,
+  mailFileType,
   mailProvider,
   unreached,
   safeMailFileName,
@@ -465,7 +465,7 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")
     const found = attachmentPart(field(message, "payload"), attachmentId);
     if (found === undefined)
       return yield* failure("protocol", "Kin couldn't find that mail attachment.");
-    const part = { ...found, type: mailFileMimeType(found.type) };
+    const part = { ...found, type: mailFileType(found.name) };
     const problem = checkMailFile(part);
     if (problem !== undefined) return yield* problem;
     const name = safeMailFileName(part.name);

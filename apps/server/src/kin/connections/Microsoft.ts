@@ -26,6 +26,7 @@ import {
   failure,
   mailDate,
   mailFileMimeType,
+  mailFileType,
   mailProvider,
   unreached,
   safeMailFileName,
@@ -181,12 +182,13 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinMicrosoft.attachmen
   function* (context, messageId, attachmentId) {
     const messageUrl = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
     const fileUrl = `${messageUrl}/attachments/${encodeURIComponent(attachmentId)}`;
-    const file = graphFile(
+    const listed = graphFile(
       yield* api(context, fileUrl, {
         params: { $select: "id,name,contentType,size" },
         limit: { bytes: 64 * 1024, message: "Kin couldn't read that mail attachment." },
       }),
     );
+    const file = { ...listed, type: mailFileType(listed.name) };
     if (file.attachmentId !== attachmentId)
       return yield* failure("protocol", "Kin couldn't find that mail attachment.");
     const problem = checkMailFile(file);
@@ -195,10 +197,8 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinMicrosoft.attachmen
     const message = yield* api(context, messageUrl, {
       params: { $select: "from,receivedDateTime" },
     });
-    const content = yield* api(context, fileUrl, {
-      params: { $select: "contentBytes" },
-      limit: attachmentJsonLimit(name),
-    });
+    // Graph documents contentBytes on the plain GET; selecting a fileAttachment property isn't.
+    const content = yield* api(context, fileUrl, { limit: attachmentJsonLimit(name) });
     const from = addressOf(field(message, "from"));
     return {
       name,
