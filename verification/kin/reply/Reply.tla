@@ -6,7 +6,9 @@
    works and posts it once the run has ended, as one group of bubbles in one transaction. *)
 EXTENDS Naturals
 
-CONSTANTS Broken, Msgs
+CONSTANTS Broken, Msgs,
+  Quiet      \* messages that may go unanswered: a plain new reaction, another agent's answer
+             \* coming back, a message this agent handed off (KinReplyBridge quietAllowed)
 
 VARIABLES
   ev,        \* kin_events.state per message: none, queued, claimed, done, failed, expired
@@ -47,11 +49,12 @@ VARIABLES
   stopPosted, \* reply text was posted for a message its person had stopped
   partial,   \* part of a reply group showed in the chat without the rest
   twoRings,  \* one reply group rang (pushed or counted unread) more than once
-  early      \* reply text posted while the run was still working
+  early,     \* reply text posted while the run was still working
+  letGo      \* an accepted kin_skip ended the turn with nothing posted for the message
 
 audience == <<joined, joins, noticed, aborted, moves, heldBack, toOld, demoted>>
 turn == <<held, ended, stopping, sent>>
-marks == <<stopped, stopPosted, partial, twoRings, early>>
+marks == <<stopped, stopPosted, partial, twoRings, early, letGo>>
 vars == <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
           worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience, turn, marks>>
 
@@ -75,7 +78,7 @@ Init ==
   /\ demoted = FALSE
   /\ held = [m \in Msgs |-> FALSE] /\ ended = "no" /\ stopping = FALSE /\ sent = FALSE
   /\ stopped = [m \in Msgs |-> FALSE] /\ stopPosted = FALSE /\ partial = FALSE
-  /\ twoRings = FALSE /\ early = FALSE
+  /\ twoRings = FALSE /\ early = FALSE /\ letGo = [m \in Msgs |-> FALSE]
 
 \* The wake-up is over: what lived in its memory goes with it.
 TurnOver == held' = [m \in Msgs |-> FALSE] /\ ended' = "no" /\ stopping' = FALSE /\ sent' = FALSE
@@ -98,8 +101,10 @@ Claim ==
   /\ shown' = [m \in Msgs |-> IF ev[m] = "queued" THEN FALSE ELSE shown[m]]
   /\ asked' = [m \in Msgs |-> IF ev[m] = "queued" THEN FALSE ELSE asked[m]]
   /\ joined' = FALSE /\ noticed' = FALSE /\ aborted' = FALSE
+  /\ letGo' = [m \in Msgs |-> IF ev[m] = "queued" THEN FALSE ELSE letGo[m]]
   /\ UNCHANGED <<tries, replies, answered, notes, fails, thought, lost, floor, restarts, twice, diagnostic,
-                 joins, moves, heldBack, toOld, demoted, turn, marks>>
+                 joins, moves, heldBack, toOld, demoted, turn, stopped, stopPosted, partial, twoRings,
+                 early>>
 
 (* KinEventQueue.steer: a message sent mid-turn joins the running wake-up with its own slot,
    until the run ends: in the run (steer), or as a run the wake-up adopts (queue), whose end is
@@ -116,9 +121,10 @@ Steer(m) ==
   /\ shown' = [shown EXCEPT ![m] = FALSE] /\ asked' = [asked EXCEPT ![m] = FALSE]
   \* In the interrupted run it stays a Stop; as an adopted run it turns the end into that run's.
   /\ stopping' \in IF stopping THEN {TRUE, FALSE} ELSE {FALSE}
+  /\ letGo' = [letGo EXCEPT ![m] = FALSE]
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
                  worked, floor, presence, restarts, twice, diagnostic, audience, held, ended, sent,
-                 marks>>
+                 stopped, stopPosted, partial, twoRings, early>>
 
 (* reply/KinReplyBridge.ts decide: the lead's text is held by slot (`outcome: "held"`) and
    nothing posts; its streaming draft is gone too. isAnswer keeps Claude thinking items out (only
@@ -150,7 +156,7 @@ LeadSends ==
   /\ twoRings' = (twoRings \/ Broken = "bubble-two-rings")
   /\ UNCHANGED <<ev, tries, wake, promise, notes, fails, thought, nudged, lost, floor, presence,
                  restarts, shown, asked, twice, diagnostic, audience, held, ended, stopping,
-                 stopped, stopPosted, partial, early>>
+                 stopped, stopPosted, partial, early, letGo>>
 
 (* After a tool call, the lead writes its answer again, word for word. flushReplies keeps each
    exact paragraph once per slot (classify.ts uniqueParagraphs); the variant posts it twice. *)
@@ -233,7 +239,22 @@ PersonStops ==
   /\ stopping' = TRUE
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience,
-                 held, ended, sent, stopPosted, partial, twoRings, early>>
+                 held, ended, sent, stopPosted, partial, twoRings, early, letGo>>
+
+(* lead/mcp/handlers.ts kin_skip → KinReplyBridge.skip: the agent ends its turn with nothing to
+   send, its note kept in its journal only. Accepted when every message the wake-up claimed may go
+   unanswered (`quietAllowed`) or already has held text (`hasReplyText`), which still posts at the
+   end; then `answered` counts the skip and `complete` asks no rescue. Refused ("someone here is
+   waiting on your answer") it changes nothing: the turn goes on, and its reply posts as usual. The
+   variant accepts it, and counts it as the answer, for a message owed words. *)
+Skip ==
+  /\ wake = "running" /\ ended = "no"
+  /\ \E m \in Claimed : ~covered[m] /\ ~held[m] /\ ~letGo[m]
+  /\ \A m \in Claimed : m \in Quiet \/ held[m] \/ covered[m] \/ Broken = "skip-silences"
+  /\ letGo' = [m \in Msgs |-> letGo[m] \/ (m \in Claimed /\ ~covered[m] /\ ~held[m])]
+  /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
+                 lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience,
+                 turn, stopped, stopPosted, partial, twoRings, early>>
 
 (* KinReplyBridge.complete → flushReplies, after a completed or failed run: each slot's held
    text, joined, its exact repeats gone, split by kinReplyBubbles (or into parts past 16,000
@@ -267,7 +288,7 @@ RunEnds ==
      ELSE ended' \in {"completed", "failed"} /\ Posts(Postable, FALSE)
   /\ UNCHANGED <<ev, tries, wake, promise, notes, fails, thought, nudged, lost, floor, presence,
                  restarts, shown, asked, twice, diagnostic, joined, joins, noticed, aborted, moves,
-                 heldBack, demoted, held, stopping, sent, stopped>>
+                 heldBack, demoted, held, stopping, sent, stopped, letGo>>
 
 (* The flush again, for held text RunEnds left: after a resumed restart (only the variant forgets
    what it posted), mid-turn (variant `posts-mid-turn`), or after a Stop (`stop-flushes`). *)
@@ -279,7 +300,7 @@ Flush ==
   /\ Posts(Postable, ended = "no")
   /\ UNCHANGED <<ev, tries, wake, promise, notes, fails, thought, nudged, lost, floor, presence,
                  restarts, shown, asked, twice, diagnostic, joined, joins, noticed, aborted, moves,
-                 heldBack, demoted, turn, stopped>>
+                 heldBack, demoted, turn, stopped, letGo>>
 
 Owed == {m \in Claimed : ~covered[m]}
 
@@ -382,8 +403,10 @@ Flushed == Pending = {} \/ (joined /\ (noticed \/ aborted))
 (* KinReplyBridge.complete, after the flush, for a completed run: a message still owed words gets
    one turn asking for them (RESCUE_PROMPT, or CAPTION_PROMPT for one that only got a chart or
    file), whose text posts the same way, then "{Lead} didn't reply." when none came, except under
-   a chart or file, which stands. Events done (KinEventQueue.finish). settleLine clears the line.
-   The variant ends without asking. *)
+   a chart or file, which stands. One an accepted kin_skip let go is owed nothing (`answered`
+   reads the skip). Events done (KinEventQueue.finish). settleLine clears the line. The variant
+   ends without asking. *)
+Due == {m \in Owed : ~letGo[m]}
 RunCompletes ==
   /\ wake = "running" /\ ended = "completed" /\ Flushed
   /\ IF noticed \/ aborted
@@ -391,11 +414,11 @@ RunCompletes ==
        \* for it, and its every post goes nowhere): no rescue, no other line.
        THEN /\ ev' = IF aborted THEN Requeued ELSE Ended
             /\ UNCHANGED <<asked, replies, answered, fails>>
-       ELSE /\ asked' = [m \in Msgs |-> asked[m] \/ (m \in Owed /\ Broken # "no-rescue")]
-            /\ \/ /\ replies' = [m \in Msgs |-> IF m \in Owed THEN replies[m] + 1 ELSE replies[m]]
-                  /\ answered' = [m \in Msgs |-> answered[m] \/ m \in Owed]
+       ELSE /\ asked' = [m \in Msgs |-> asked[m] \/ (m \in Due /\ Broken # "no-rescue")]
+            /\ \/ /\ replies' = [m \in Msgs |-> IF m \in Due THEN replies[m] + 1 ELSE replies[m]]
+                  /\ answered' = [m \in Msgs |-> answered[m] \/ m \in Due]
                   /\ UNCHANGED fails
-               \/ /\ fails' = [m \in Msgs |-> IF m \in Owed /\ ~shown[m] THEN fails[m] + 1 ELSE fails[m]]
+               \/ /\ fails' = [m \in Msgs |-> IF m \in Due /\ ~shown[m] THEN fails[m] + 1 ELSE fails[m]]
                   /\ UNCHANGED <<replies, answered>>
             /\ ev' = Ended
   /\ wake' = "idle"
@@ -483,7 +506,7 @@ Next ==
   \/ Claim \/ LeadWrites \/ LeadSends \/ LeadRepeats \/ LeadShows \/ LeadKeepsPromise \/ LeadThinks
   \/ LeadNudgesAsker \/ LeadWorks \/ TerminalDiagnostic
   \/ FloorCloses \/ SomeoneJoins \/ JoinStops \/ MadeMember \/ PersonStops
-  \/ RunEnds \/ Flush \/ ReplyHeldBack
+  \/ Skip \/ RunEnds \/ Flush \/ ReplyHeldBack
   \/ RunCompletes \/ RunFails \/ RunStopped \/ Restart
 
 Fair == WF_vars(Claim) /\ WF_vars(RunEnds) /\ WF_vars(Flush) /\ WF_vars(ReplyHeldBack)
@@ -504,10 +527,12 @@ SaidOnce == ~twice
 RelayLands == ~lost
 \* A turn that ended without the words a message waited for asked the lead for them once: a
 \* thinking-only end, and a chart or file with no line beside it.
-\* A reply Kin held back for a join is told so in the chat instead (`heldBack`), and a message
-\* its person stopped wanted nothing more (`stopped`).
+\* A reply Kin held back for a join is told so in the chat instead (`heldBack`), a message
+\* its person stopped wanted nothing more (`stopped`), and one that needed no answer was let go.
+LetGoQuietly(m) == letGo[m] /\ m \in Quiet
 AskedBeforeSilence ==
-  \A m \in Msgs : (ev[m] = "done" /\ ~answered[m] /\ ~heldBack[m] /\ ~stopped[m]) => asked[m]
+  \A m \in Msgs : (ev[m] = "done" /\ ~answered[m] /\ ~heldBack[m] /\ ~stopped[m]
+                   /\ ~LetGoQuietly(m)) => asked[m]
 \* A message whose reply a join held back moves to a fresh wake-up at most once.
 MovedOnce == \A m \in Msgs : moves[m] <= 1
 \* Nothing posts to the chat a private prompt was built for once someone else can read it.
@@ -521,9 +546,10 @@ StopPostsNothing == ~stopPosted
 \* A reply group rings (push, unread) at most once: bubble 1, or none for a quiet one.
 OneRing == ~twoRings
 \* A chart or file asked for its line stands as the answer when none comes; a message its
-\* person stopped ends with their own Stop.
+\* person stopped ends with their own Stop; a reaction or another agent's answer that needed no
+\* answer ends with the agent's kin_skip, and nothing else may.
 EveryMessageAnswered ==
   \A m \in Msgs : ev[m] # "none" ~> (replies[m] + fails[m] >= 1 \/ (shown[m] /\ asked[m])
-                                     \/ stopped[m])
+                                     \/ stopped[m] \/ (ev[m] = "done" /\ LetGoQuietly(m)))
 LineClears == presence = "on" ~> presence = "off"
 =============================================================================

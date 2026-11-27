@@ -73,6 +73,17 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     ]),
   );
   assert.deepStrictEqual(
+    kinTools
+      .filter((tool) =>
+        `${Tool.getDescription(tool)}${JSON.stringify(advertisedJsonSchema(tool))}`.includes(
+          "NO_REPLY",
+        ),
+      )
+      .map((tool) => tool.name),
+    [],
+    "No tool tells an agent to write a marker word: kin_skip ends a turn quietly.",
+  );
+  assert.deepStrictEqual(
     measured,
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
@@ -101,7 +112,7 @@ it("advertises every accepted memory write key and a single operation enum", () 
   });
 });
 
-it("adds six everyday tools to Claude's owner core without moving the Codex partition", () => {
+it("adds seven everyday tools to Claude's owner core without moving the Codex partition", () => {
   const actual = Object.values(withAlwaysLoaded(Toolkit.make(...kinTools)).tools)
     .filter((tool) => alwaysLoads(tool) === true)
     .map((tool) => tool.name);
@@ -113,6 +124,7 @@ it("adds six everyday tools to Claude's owner core without moving the Codex part
     "doc_create",
     "record_create",
     "kin_ask",
+    "kin_skip",
   ]);
 });
 

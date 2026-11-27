@@ -60,8 +60,11 @@ export const COMMENT_REFUSAL = {
   unknown: (ref: string) =>
     `GitHub didn't say whether it took the comment on ${ref}, so Kin won't send it again. It may be on the issue.`,
 };
-const COMMENT_NEXT =
-  "Posted on the issue. Nothing you write now goes anywhere: write exactly NO_REPLY.";
+// The outside seat is a quiet lane with no kin_skip: its text already goes nowhere.
+const commentNext = (outside: boolean) =>
+  outside
+    ? "Posted on the issue. Nothing you write now goes anywhere."
+    : "Posted on the issue. Kin tells the owner itself when you set owner: end with kin_skip.";
 
 export const CommentInput = Schema.Struct({
   body: Schema.String.annotate({ description: "Body in plain words, at most 2,000 characters." }),
@@ -173,7 +176,7 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
       return {
         status: "posted" as const,
         url: sent.url,
-        next: COMMENT_NEXT,
+        next: commentNext(outside),
         ...(comment.notes.length === 0 ? {} : { notes: comment.notes }),
       };
     case "refused":

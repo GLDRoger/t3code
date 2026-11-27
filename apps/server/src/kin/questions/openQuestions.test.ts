@@ -5583,7 +5583,7 @@ it.effect(
         ).pipe(Effect.provide(promptLayer));
         assert.include(
           built,
-          "Rhea Rao dismissed your question “Which way should I build the client portal?” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first. End your turn with exactly NO_REPLY.",
+          "Rhea Rao dismissed your question “Which way should I build the client portal?” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Send nothing in chat, but sending nothing is not stopping: do the work first. End your turn with kin_skip.",
         );
         // In that turn Finance may not put what the dismissal released back to waiting on her.
         const records = Context.get(services, KinRecords);

@@ -507,6 +507,7 @@ it.live(
           "kin_ask_person",
           "kin_chart",
           "kin_visual",
+          "kin_skip",
           "kin_react",
           "message_withdraw",
           "message_replace",

@@ -2263,6 +2263,13 @@ const make = Effect.gen(function* () {
                   }
                 }
               }
+              // A carried turn holds what its session was shown, so it starts with the session's marks.
+              if (sent !== "fresh")
+                yield* inheritSession({
+                  orgId,
+                  wakeupId,
+                  fromWakeupIds: facts.sessionWakeupIds.filter((id) => id !== wakeupId),
+                });
               const stamp = yield* encodeShadowJson({
                 carry: reason === null,
                 reason,

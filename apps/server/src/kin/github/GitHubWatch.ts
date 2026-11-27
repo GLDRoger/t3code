@@ -27,7 +27,6 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { SILENT_REPLY } from "../reply/classify.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
 import { agentPostKeys, agentPostLines, signed } from "./agentMark.ts";
@@ -1870,7 +1869,7 @@ export const postedResult = (
       review === "asked"
         ? `Posted on the PR${asOwner}. Tell the person who asked, in one or two sentences, what it found, with the link.`
         : review === "kins"
-          ? `Posted on the PR${asOwner}. If nothing in it blocks, write exactly ${SILENT_REPLY}; if it blocks, tell the owner in the one sentence your instructions shape, with the link.`
+          ? `Posted on the PR${asOwner}. If nothing in it blocks, end with kin_skip; if it blocks, tell the owner in the one sentence your instructions shape, with the link.`
           : review === "outside"
             ? "Posted on the PR as a comment. Kin tells the owner itself if it blocks; write nothing more."
             : sent.asOwner

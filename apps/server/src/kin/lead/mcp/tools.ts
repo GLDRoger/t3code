@@ -13,7 +13,7 @@ import * as Context from "effect/Context";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Prompt, Tool, Toolkit } from "effect/ai";
 import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -42,6 +42,7 @@ import * as AgentUpdate from "../agentUpdate.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import * as Lead from "../LeadMemory.ts";
+import { EndsClaudeTurn } from "../../../mcp/McpHttpServer.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -204,6 +205,19 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: VisualCard.VisualInput,
     success: VisualCard.VisualResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_skip", {
+    ...shared,
+    description:
+      "End this turn with nothing to send. In a turn a trigger started, nothing is posted and the turn ends. In a turn a person started, what you wrote is still your reply; this ends such a turn only where no answer is owed, such as a reaction to a statement or another agent's answer that adds nothing, and is refused where someone waits on your words. note: your reason, kept in your journal, never shown.",
+    parameters: Schema.Struct({
+      note: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
+    }),
+    success: Schema.String,
+    toModelOutput: (text) => [Prompt.textPart({ text })],
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
+  })
+    .annotate(EndsClaudeTurn, true)
+    .annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_react", {
     ...chat,
     description:
