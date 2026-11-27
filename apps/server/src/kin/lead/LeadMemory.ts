@@ -326,7 +326,8 @@ const SHARED_BYTES_PER_DAY = 20_000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",
-    message: "Not saved yet: memory is busy saving other work. Try the same call again in a moment; nothing retries it on its own.",
+    message:
+      "Not saved yet: memory is busy saving other work. Try the same call again in a moment; nothing retries it on its own.",
   });
 // Writer rejections about the caller rather than the request.
 const authorityRejections = new Set([
