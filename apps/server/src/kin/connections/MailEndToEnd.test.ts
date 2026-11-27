@@ -1067,6 +1067,17 @@ it.effect("a named sender without an aligned pass is held", () =>
         senderCheck: "not checked",
         reason: "sender not verified",
       });
+      // An older rule that would only hold the mail never stops a newer rule that runs on it.
+      yield* TestClock.adjust("1 minute");
+      const open = yield* turnOnRule(mailbox, { useCoOwner: true });
+      ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, 2, false);
+      yield* readMail(mailbox);
+      assert.deepStrictEqual(
+        (yield* storedRuleEvents).map(({ event }) =>
+          event._tag === "pulse" ? event.rule?.ruleId : undefined,
+        ),
+        [open.ruleId],
+      );
     }),
   ),
 );

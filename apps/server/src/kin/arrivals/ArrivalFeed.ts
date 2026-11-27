@@ -201,7 +201,9 @@ const make = Effect.gen(function* () {
             recorded.push(arrived.arrivalId);
             const { class: mailClass, look } = arrived;
             if (!arrived.elsewhere) {
-              let claimed = false;
+              // The oldest rule that runs on the mail claims it; else the oldest that holds it.
+              let runs: (typeof rules)[number]["rule"] | undefined;
+              let holds: typeof runs;
               for (const { rule, filter } of rules) {
                 if (rule.state !== "on" && !startedOn.has(rule.ruleId)) continue;
                 const resultOfRule = matchMailRule(filter, {
@@ -210,12 +212,21 @@ const make = Effect.gen(function* () {
                   class: mailClass,
                   subject: result.arrival.subject,
                 });
-                if (resultOfRule === "no_match") continue;
-                yield* claimRuleMail(rule, arrived.arrivalId, resultOfRule);
-                claimed = true;
-                break;
+                if (resultOfRule === "match") {
+                  runs = rule;
+                  break;
+                }
+                if (resultOfRule === "held_unverified") holds ??= rule;
               }
-              if (claimed) continue;
+              const claimer = runs ?? holds;
+              if (claimer !== undefined) {
+                yield* claimRuleMail(
+                  claimer,
+                  arrived.arrivalId,
+                  runs === undefined ? "held_unverified" : "match",
+                );
+                continue;
+              }
             }
             if (look === undefined || typeof look.by !== "string") continue;
             switch (mailClass) {
