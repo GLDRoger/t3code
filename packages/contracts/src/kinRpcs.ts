@@ -584,6 +584,7 @@ const KIN_RPC_ACCESS = {
   "kin.connections.saveEdited": "owner_level",
   // A person's own mailbox: theirs alone to connect, see and disconnect (`KinConnections.mine`).
   "kin.connections.mine": "person",
+  "kin.connections.mineCalendar": "person",
   "kin.connections.mineSignInStart": "person",
   "kin.connections.mineSignInFinish": "person",
   "kin.connections.mineRemove": "person",
@@ -882,6 +883,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.sendEdited": "kin-connections",
   "kin.connections.saveEdited": "kin-connections",
   "kin.connections.mine": "kin-connections",
+  "kin.connections.mineCalendar": "kin-connections",
   "kin.connections.mineSignInStart": "kin-connections",
   "kin.connections.mineSignInFinish": "kin-connections",
   "kin.connections.mineRemove": "kin-connections",
