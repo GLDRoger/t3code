@@ -20,7 +20,7 @@ import {
   receivedAfter,
   receivedAmong,
 } from "./MailProvider.ts";
-import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
+import { looksLikeSignInMail, senderVerdictForAddress, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
 import { DAY_MS } from "../durations.ts";
 
@@ -374,7 +374,7 @@ const call = Effect.fn("KinMail.call")(function* (
           cc: message.ccLine,
           date: message.date,
           subject: message.subject,
-          senderCheck: senderCheck(message.authResults),
+          senderCheck: senderVerdictForAddress(message.authResults, message.fromAddress),
           text: shownText(message.subject, message.body?.text ?? ""),
           attachments: message.body?.attachments ?? [],
         })),

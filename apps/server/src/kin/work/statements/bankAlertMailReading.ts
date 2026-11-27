@@ -1,20 +1,11 @@
 import * as Effect from "effect/Effect";
 
+import { dmarcPassedFor } from "../../connections/MailText.ts";
 import type { AlertMail, AlertReading, AlertRejection } from "./bankAlerts.ts";
 import type * as BankAlertReader from "./BankAlertReader.ts";
 import { printedAccountEndings, verifyBankAlert } from "./bankAlertGuard.ts";
 
 const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", reason });
-
-/**
- * Only the topmost `Authentication-Results`, the one the receiving server added: a sender can
- * write its own lower down. It must say DMARC passed for the sender's own domain.
- */
-const vouched = (results: ReadonlyArray<string>, domain: string) => {
-  const top = (results[0] ?? "").toLowerCase();
-  const dmarc = /\bdmarc=(\w+)[^;]*?\bheader\.from=([a-z0-9.-]+)/.exec(top);
-  return dmarc !== null && dmarc[1] === "pass" && dmarc[2] === domain;
-};
 
 export const authenticationRejection = (
   mail: AlertMail,
@@ -22,7 +13,7 @@ export const authenticationRejection = (
 ): "sender" | "unverified" | undefined =>
   /^\s*(?:re|fwd?)\s*:/i.test(mail.subject)
     ? "sender"
-    : vouched(mail.authResults, address.slice(address.lastIndexOf("@") + 1))
+    : dmarcPassedFor(mail.authResults, address.slice(address.lastIndexOf("@") + 1))
       ? undefined
       : "unverified";
 

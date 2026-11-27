@@ -3,6 +3,8 @@
  * text dropped, and bodies of sign-in and security mail withheld. All of it stays outside text.
  */
 
+import { isPlainAddress } from "./MailProvider.ts";
+
 const ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -68,15 +70,115 @@ export const looksLikeSignInMail = (subject: string, body: string) =>
 
 export const WITHHELD = "[body withheld: this looks like a sign-in or security message]";
 
-/** Whether the receiving server checked the sender, from `Authentication-Results`. */
-export const senderCheck = (results: ReadonlyArray<string>) => {
-  const all = results.join(";").toLowerCase();
-  const verdict = (name: string) => new RegExp(`\\b${name}=(\\w+)`).exec(all)?.[1];
-  const dmarc = verdict("dmarc");
-  if (dmarc === "pass") return "passed";
-  if (dmarc === "fail") return "failed";
-  if (verdict("dkim") === "pass" && verdict("spf") === "pass") return "passed";
+export const senderVerdictForAddress = (
+  results: ReadonlyArray<string>,
+  fromAddress: string | null,
+) => {
+  if (results.length > 0) {
+    const from = fromAddress?.trim().toLowerCase();
+    const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
+    return senderVerdict(results, domain);
+  }
   return "not checked";
+};
+
+type Verdict = {
+  readonly method: string;
+  readonly result: string;
+  readonly props: Map<string, string>;
+};
+
+// Comments and quoted values carry sender-controlled text (a bounce address), so they never split.
+const segments = (header: string) => {
+  const out: Array<string> = [];
+  let current = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < header.length; i++) {
+    const char = header[i]!;
+    if (char === "\\" && (quoted || depth > 0)) {
+      if (quoted) current += char + (header[i + 1] ?? "");
+      i++;
+    } else if (quoted) {
+      current += char;
+      if (char === '"') quoted = false;
+    } else if (char === "(") depth++;
+    else if (char === ")" && depth > 0) depth--;
+    else if (depth > 0) continue;
+    else if (char === '"') {
+      quoted = true;
+      current += char;
+    } else if (char === ";") {
+      out.push(current);
+      current = "";
+    } else current += char;
+  }
+  return [...out, current];
+};
+
+const PROPERTY = /^\s*([a-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s"]+)/;
+
+/**
+ * The receiving server's verdicts: only the topmost `Authentication-Results`, the one it added,
+ * since a sender can write its own lower down. Read as RFC 8601 results, never as loose text.
+ */
+const receiverVerdicts = (results: ReadonlyArray<string>) =>
+  segments((results[0] ?? "").toLowerCase()).flatMap((segment): Array<Verdict> => {
+    const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
+    if (head === null) return [];
+    const props = new Map<string, string>();
+    let rest = segment.slice(head[0].length);
+    for (let found = PROPERTY.exec(rest); found !== null; found = PROPERTY.exec(rest)) {
+      const value = found[2]!;
+      props.set(
+        found[1]!,
+        value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/g, "$1") : value,
+      );
+      rest = rest.slice(found[0].length);
+    }
+    return [{ method: head[1]!, result: head[2]!, props }];
+  });
+
+const domainIn = (value: string | undefined) =>
+  value?.slice(value.lastIndexOf("@") + 1).replace(/\.$/, "");
+const aligned = (domain: string | undefined, from: string) =>
+  domain !== undefined &&
+  domain !== "" &&
+  (domain === from || from.endsWith(`.${domain}`) || domain.endsWith(`.${from}`));
+
+/** The receiving server's DMARC pass for exactly this From domain. */
+export const dmarcPassedFor = (results: ReadonlyArray<string>, domain: string) =>
+  receiverVerdicts(results).some(
+    ({ method, result, props }) =>
+      method === "dmarc" && result === "pass" && domainIn(props.get("header.from")) === domain,
+  );
+
+/**
+ * Whether the receiving server vouched for a From domain (ASCII, lower case): DMARC passed for it,
+ * or DKIM and SPF both passed for it or a domain it shares an owner with.
+ */
+export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string | null) => {
+  const verdicts = receiverVerdicts(results);
+  const passes = (method: string, domain: (props: Map<string, string>) => string | undefined) =>
+    fromDomain !== null &&
+    verdicts.some(
+      (one) =>
+        one.method === method && one.result === "pass" && aligned(domain(one.props), fromDomain),
+    );
+  if (fromDomain !== null && dmarcPassedFor(results, fromDomain)) return "passed" as const;
+  if (verdicts.some(({ method, result }) => method === "dmarc" && result === "fail"))
+    return "failed" as const;
+  if (
+    passes("dkim", (props) => domainIn(props.get("header.d") ?? props.get("header.i"))) &&
+    passes("spf", (props) => domainIn(props.get("smtp.mailfrom")))
+  )
+    return "passed" as const;
+  return verdicts.some(
+    ({ method, result }) =>
+      (method === "dkim" || method === "spf") && (result === "fail" || result === "softfail"),
+  )
+    ? ("failed" as const)
+    : ("not checked" as const);
 };
 
 type Part = {
