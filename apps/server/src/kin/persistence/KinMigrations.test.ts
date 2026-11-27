@@ -2361,6 +2361,9 @@ describe("Kin migrations", () => {
         yield* BillReadsMigration;
         yield* sql`CREATE TABLE kin_sql_migrations (migration_id INTEGER PRIMARY KEY,
         name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
+        // K238 reads mail rules, which this cut-down database otherwise lacks.
+        yield* sql`CREATE TABLE kin_mail_rules (org_id TEXT, rule_id TEXT, state TEXT,
+          updated_at INTEGER)`;
         for (const [id, name] of kinMigrations.filter(([id]) => id <= 235))
           yield* sql`INSERT INTO kin_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
         yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
@@ -2372,6 +2375,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), [
           [236, "BillCrops"],
           [237, "CardTapDeliveries"],
+          [238, "RemovedRuleCards"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
           { ...before[0], parent_sha256: null, cut_page: null, cut_box_json: null },

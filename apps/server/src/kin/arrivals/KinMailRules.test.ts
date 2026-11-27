@@ -39,7 +39,8 @@ import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "../chat/refreshes.ts";
-import { runKinMigrations } from "../persistence/KinMigrations.ts";
+import { kinMigrations, runKinMigrations } from "../persistence/KinMigrations.ts";
+import RemovedRuleCards from "../persistence/migrations/K238_RemovedRuleCards.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { sealPlans } from "../widgets/cardPlans.ts";
 import { mailRuleTap } from "./mailRuleTap.ts";
@@ -476,6 +477,134 @@ it.effect("marks the answered rule card removed in open chats only once", () =>
     assert.deepStrictEqual(yield* rules.remove([identity], ref), removed);
     assert.deepStrictEqual(yield* getCard, updated);
     assert.strictEqual(yield* Queue.size(updates), 0);
+
+    // Nothing on the card or in Settings turns a removed rule back on.
+    const tapAgain = yield* mailRuleTap({
+      identity,
+      widget: updated,
+      revision: updated.revision,
+      action: "turn_on",
+      tapId: KinMessageId.make("rhea-tap-again"),
+    }).pipe(Effect.flip);
+    assert.strictEqual(tapAgain.message, "This mail rule card was already answered.");
+    const resumeAgain = yield* rules
+      .resume([identity], { ...ref, chatId, agentId, tapId: "rhea-resume-removed" })
+      .pipe(Effect.flip);
+    assert.strictEqual(
+      resumeAgain.message,
+      "This mail rule isn't paused, so there's nothing to resume.",
+    );
+    assert.strictEqual(
+      (yield* rules.list([identity], { orgId, removed: true })).rules[0]?.state,
+      "removed",
+    );
+  }).pipe(Effect.scoped, Effect.provide(withChats)),
+);
+
+it.effect("tells the card of a rule removed before cards learnt it when that was", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const repo = yield* ChatRepository.KinChatRepository;
+    yield* TestClock.setTime(Date.parse("2026-11-20T09:00:00Z"));
+    const card = Effect.fn("KinMailRulesTest.card")(function* (
+      name: string,
+      decision: KinMailRuleCardState["decision"],
+    ) {
+      const at = iso(yield* Clock.currentTimeMillis);
+      const messageId = KinMessageId.make(`${name}-message`);
+      yield* repo.insertMessage({
+        orgId,
+        chatId,
+        messageId,
+        audience: "owner",
+        author: { _tag: "system" },
+        kind: "system",
+        body: "",
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: at,
+        editedAt: null,
+      });
+      const { contentSha256, monthlyCap } = yield* prepareMailRule(tap);
+      yield* repo.insertWidget({
+        orgId,
+        chatId,
+        widgetId: KinWidgetId.make(name),
+        messageId,
+        audience: "owner",
+        widgetClass: "native",
+        type: "mail_rule",
+        state: {
+          mailbox: { connectionId, label: "Mail" },
+          lead: { agentId, name: "Finance" },
+          monthlyCap,
+          contentSha256,
+          expiresAt: 0,
+          what: tap.what,
+          match,
+          fromAscii: ["juniper.example"],
+          decision,
+        },
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: decision.status === "proposed" ? null : at,
+        updatedAt: at,
+      });
+      return Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(name) }));
+    });
+    const by = { personId: meera, name: "Meera" };
+    const gone = yield* rules.createFromTap(owners, { ...tap, tapId: "gone-tap" });
+    const kept = yield* rules.createFromTap(owners, { ...tap, tapId: "kept-tap" });
+    const other = yield* rules.createFromTap(owners, { ...tap, tapId: "other-tap" });
+    const widgets = [
+      yield* card("gone", { status: "on", ruleId: gone.ruleId, by }),
+      yield* card("kept", { status: "on", ruleId: kept.ruleId, by }),
+      yield* card("open", { status: "proposed" }),
+      yield* card("other", { status: "on", ruleId: other.ruleId, by }),
+    ];
+    // As the earlier remove left it: the rule removed, its card still saying it was turned on.
+    const removedAt = Date.parse("2026-11-21T10:30:00.250Z");
+    yield* sql`UPDATE kin_mail_rules SET state = 'removed', updated_at = ${removedAt}
+      WHERE rule_id = ${gone.ruleId}`;
+    const stored = sql`SELECT widget_id, revision, state_json, updated_at FROM kin_widgets
+      ORDER BY widget_id`;
+    const before = yield* stored;
+    yield* TestClock.setTime(Date.parse("2026-11-28T00:00:00Z"));
+    yield* RemovedRuleCards;
+    const cards = yield* Effect.forEach(widgets, (widget) =>
+      repo.getWidget(widget).pipe(Effect.map(Option.getOrThrow)),
+    );
+    assert.deepStrictEqual(cards[0]!.state, {
+      ...(yield* decodeCard(widgets[0]!.state)),
+      decision: { status: "on", ruleId: gone.ruleId, by, removedAt: "2026-11-21T10:30:00.250Z" },
+    });
+    assert.strictEqual(cards[0]!.revision, widgets[0]!.revision + 1);
+    assert.deepStrictEqual(cards.slice(1), widgets.slice(1));
+    const after = yield* stored;
+    yield* RemovedRuleCards;
+    assert.deepStrictEqual(yield* stored, after);
+    assert.notDeepEqual(after, before);
+    assert.deepInclude(kinMigrations, [238, "RemovedRuleCards"]);
+
+    // Removing one rule now tells its own card and no other.
+    yield* rules.remove(owners, { orgId, ruleId: kept.ruleId });
+    const now = yield* Effect.forEach(widgets, (widget) =>
+      repo.getWidget(widget).pipe(Effect.map(Option.getOrThrow)),
+    );
+    assert.deepStrictEqual(now[1]!.state, {
+      ...(yield* decodeCard(widgets[1]!.state)),
+      decision: { status: "on", ruleId: kept.ruleId, by, removedAt: "2026-11-28T00:00:00.000Z" },
+    });
+    assert.deepStrictEqual([now[0], now[2], now[3]], [cards[0], widgets[2], widgets[3]]);
   }).pipe(Effect.scoped, Effect.provide(withChats)),
 );
 
