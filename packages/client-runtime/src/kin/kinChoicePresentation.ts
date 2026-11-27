@@ -761,16 +761,12 @@ export function kinChoiceUndoneLine(
 }
 
 /**
- * A settled card's Undo for this viewer: shown to who answered it and to owners (unknown kind
+ * A settled card's Undo for this viewer: shown to a current owner or co-owner only (unknown kind
  * offers it; the host decides), held while a tap is on its way, with the host's refusal under it.
  */
 export function kinChoiceUndoOffer(
   view: Pick<KinChoiceCardView, "undo" | "answer">,
-  viewer: {
-    readonly personId: KinPersonId | null;
-    readonly ownerLevel: boolean | undefined;
-    readonly canAct: boolean;
-  },
+  viewer: { readonly ownerLevel: boolean | undefined; readonly canAct: boolean },
   tap: { readonly pending: string | null; readonly status: KinChoiceCardStatus },
 ): {
   readonly label: string;
@@ -781,7 +777,7 @@ export function kinChoiceUndoOffer(
 } | null {
   const { undo, answer } = view;
   if (undo === null || answer === null || !viewer.canAct) return null;
-  if (answer.personId !== viewer.personId && viewer.ownerLevel === false) return null;
+  if (viewer.ownerLevel === false) return null;
   const status = tap.status?.optionId === KIN_CHOICE_UNDO_ACTION ? tap.status : null;
   return {
     ...undo,

@@ -704,7 +704,7 @@ function KinChoiceCard(props: {
   const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
   const undoOffer = kinChoiceUndoOffer(
     choice,
-    { personId: props.viewerPersonId, ownerLevel: props.ownerLevel, canAct },
+    { ownerLevel: props.ownerLevel, canAct },
     { pending, status },
   );
 

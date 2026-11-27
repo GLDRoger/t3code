@@ -1377,7 +1377,7 @@ describe("choice cards", () => {
             undo: {
               actionId: "undo",
               label: "Undo",
-              line: "Mark these expenses as owed again and return BNK-7 to its earlier state.",
+              line: "Mark EXP-2 owed again and put BNK-7 back as it was",
             },
             ...outcome,
           }).filter(([, value]) => value !== undefined),
@@ -1385,44 +1385,35 @@ describe("choice cards", () => {
       },
     });
   const zoya = KinPersonId.make("zoya");
-  const arjun = KinPersonId.make("arjun");
-  const rheaOwner = KinPersonId.make("rhea");
 
-  it("offers a settled card's Undo to its answerer and to owners, and to nobody once undone", () => {
+  it("offers a settled card's Undo to owners and co-owners only, and to nobody once undone", () => {
     const card = repaid();
-    const line = "Mark these expenses as owed again and return BNK-7 to its earlier state.";
+    const line = "Mark EXP-2 owed again and put BNK-7 back as it was";
     const offered = { label: "Undo", line, busy: false, disabled: false, notice: null };
     const idle = { pending: null, status: null };
-    const as = (personId: KinPersonId | null, ownerLevel: boolean | undefined, canAct = true) =>
-      kinChoiceUndoOffer(card, { personId, ownerLevel, canAct }, idle);
-    // Zoya marked it; Rhea is an owner; Arjun is a teammate who did not.
-    expect(as(zoya, false)).toEqual(offered);
-    expect(as(rheaOwner, true)).toEqual(offered);
-    expect(as(arjun, false)).toBeNull();
+    const as = (ownerLevel: boolean | undefined, canAct = true) =>
+      kinChoiceUndoOffer(card, { ownerLevel, canAct }, idle);
+    // An owner or co-owner sees it; a teammate does not, though Zoya marked it before a demotion.
+    expect(as(true)).toEqual(offered);
+    expect(as(false)).toBeNull();
     // Until the viewer's kind is known every tap is offered, as on other cards: the host decides.
-    expect(as(arjun, undefined)).toEqual(offered);
-    // A device that may not act on this chat gets no button, the answerer's either.
-    expect(as(zoya, false, false)).toBeNull();
+    expect(as(undefined)).toEqual(offered);
+    // A device that may not act on this chat gets no button, an owner's either.
+    expect(as(true, false)).toBeNull();
     // Undone, the host drops the Undo and says who did it.
     const undone = repaid({
       title: "Repayment undone",
-      text: "The expenses are owed again, and BNK-7 is back to its earlier state in Bank transactions.",
+      text: "EXP-2 is owed again, and BNK-7 is back as it was in Bank transactions.",
       undo: undefined,
       undone: { personId: "rhea", name: "Rhea Rao", at: "2026-11-08T10:00:00.000Z" },
     });
-    expect(
-      kinChoiceUndoOffer(undone, { personId: rheaOwner, ownerLevel: true, canAct: true }, idle),
-    ).toBeNull();
+    expect(kinChoiceUndoOffer(undone, { ownerLevel: true, canAct: true }, idle)).toBeNull();
     expect(kinChoiceUndoneLine(undone, zoya, new Date("2026-11-08T12:00:00.000Z"))).toBe(
       `Undone by Rhea Rao at ${formatKinWhen(new Date("2026-11-08T10:00:00.000Z"), "time")}.`,
     );
     // A card with no Undo offers none, today's cards too.
     expect(
-      kinChoiceUndoOffer(
-        repaid({ undo: undefined }),
-        { personId: zoya, ownerLevel: true, canAct: true },
-        idle,
-      ),
+      kinChoiceUndoOffer(repaid({ undo: undefined }), { ownerLevel: true, canAct: true }, idle),
     ).toBeNull();
     // The tap sends the card's Undo with no value, against the revision on screen.
     expect(kinChoiceUndoInput(card, "undo-1")).toEqual({
@@ -1480,7 +1471,7 @@ describe("choice cards", () => {
           ticked: () => {},
         },
       });
-    const viewer = { personId: zoya, ownerLevel: false, canAct: true };
+    const viewer = { ownerLevel: true, canAct: true };
     const refuse = (reason: "invalid_state" | "not_allowed" | "widget_changed", message: string) =>
       AsyncResult.failure<unknown, unknown>(Cause.fail(new KinChatError({ reason, message })));
 
@@ -1507,7 +1498,7 @@ describe("choice cards", () => {
     });
     expect(kinChoiceUndoOffer(card, viewer, { pending: null, status: refused })).toEqual({
       label: "Undo",
-      line: "Mark these expenses as owed again and return BNK-7 to its earlier state.",
+      line: "Mark EXP-2 owed again and put BNK-7 back as it was",
       busy: false,
       disabled: false,
       notice: { kind: "error", text: changed },
@@ -1515,7 +1506,7 @@ describe("choice cards", () => {
 
     // Each other refusal reads as the host said it.
     for (const [reason, message, kind] of [
-      ["not_allowed", "Only the person who marked the repayment or an owner can undo it.", "error"],
+      ["not_allowed", "Only the owner or a co-owner can undo a repayment.", "error"],
       ["invalid_state", "Nothing was undone. EXP-2 is no longer there.", "error"],
       [
         "invalid_state",

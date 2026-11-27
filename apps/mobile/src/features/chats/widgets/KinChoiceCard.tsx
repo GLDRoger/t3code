@@ -702,7 +702,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const notice = noticeLine(status?.notice);
   const undoOffer = kinChoiceUndoOffer(
     choice,
-    { personId: props.viewerPersonId, ownerLevel: props.ownerLevel, canAct },
+    { ownerLevel: props.ownerLevel, canAct },
     { pending, status },
   );
 
