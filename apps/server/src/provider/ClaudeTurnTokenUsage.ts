@@ -256,7 +256,7 @@ export function normalizeClaudeTurnTokenUsage(
   }
 
   // The result omits subagent and compaction work that the process-wide ledger records.
-  const otherUsage =
+  const ledgerOtherUsage =
     observed.ledger !== undefined &&
     inputTokens !== undefined &&
     rawOutputTokens !== undefined &&
@@ -267,6 +267,21 @@ export function normalizeClaudeTurnTokenUsage(
           outputTokens: observed.ledger.outputTokens - rawOutputTokens,
         }
       : undefined;
+  // An interrupted result can report the main agent before the ledger has caught up to its children.
+  const requestOtherUsage =
+    terminalStatus === "completed" || requests === undefined
+      ? undefined
+      : runningClaudeTurnTokenUsage(requests).otherUsage;
+  const otherUsage =
+    requestOtherUsage === undefined
+      ? ledgerOtherUsage
+      : {
+          inputTokens: Math.max(ledgerOtherUsage?.inputTokens ?? 0, requestOtherUsage.inputTokens),
+          outputTokens: Math.max(
+            ledgerOtherUsage?.outputTokens ?? 0,
+            requestOtherUsage.outputTokens,
+          ),
+        };
   const commonUsage = {
     ...observedFields,
     ...(otherUsage === undefined ? {} : { otherUsage }),
