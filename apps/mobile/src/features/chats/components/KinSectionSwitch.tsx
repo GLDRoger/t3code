@@ -1,5 +1,6 @@
 import {
   KIN_LIST_SECTIONS,
+  KIN_PLACE_DOCK,
   KIN_SECTION_SWITCHES,
   KIN_SECTIONS_PAGE,
   KIN_SWITCHABLE_SECTIONS,
@@ -12,9 +13,12 @@ import {
   kinSectionRenamed,
   kinDockRoom,
   kinListSectionDocked,
+  kinPlaceDockDetail,
+  kinPlaceDockSwitch,
   kinListCanBeSection,
   kinListSectionId,
   kinListSections,
+  type KinDockPlace,
   type KinListSection,
   type KinSectionChange,
   type KinSwitchableSection,
@@ -95,6 +99,13 @@ function KinSectionRow(props: {
   const [problem, setProblem] = useState<string | null>(null);
   const heldOff = kinSectionHeldOffLine(props.shell, props.id);
   const detail = kinSectionNamed(props.shell, heldOff ?? words.detail);
+  const send = async (change: KinSectionChange) => {
+    setBusy(true);
+    setProblem(null);
+    setProblem(await props.held.change(props.shell, change));
+    setBusy(false);
+  };
+  const id = props.id;
   return (
     <>
       {problem === null ? null : (
@@ -107,10 +118,54 @@ function KinSectionRow(props: {
           // Held off by another section: the line says which; nothing to send from here.
           disabled={busy || heldOff !== null}
           value={kinSectionOn(props.shell, props.id)}
-          onValueChange={async (next) => {
+          onValueChange={(next) => void send({ id: props.id, on: next })}
+        />
+        {/* Its place in the phone's dock, on Sections only. */}
+        {props.titled === "name" && (id === "money" || id === "clients") ? (
+          <KinPlaceDockToggle id={id} shell={props.shell} busy={busy} onChange={send} />
+        ) : null}
+      </ListSection>
+    </>
+  );
+}
+
+/** The dock switch of Money, Clients or Docs: off while the section is, or while the dock is full. */
+function KinPlaceDockToggle(props: {
+  readonly id: KinDockPlace;
+  readonly shell: KinShell;
+  readonly busy: boolean;
+  readonly onChange: (change: KinSectionChange) => void;
+}) {
+  const dock = kinPlaceDockSwitch(props.shell, props.id);
+  return (
+    <ListToggleRow
+      label={KIN_PLACE_DOCK.label}
+      description={dock.full ? KIN_PLACE_DOCK.full : kinPlaceDockDetail(props.shell, props.id)}
+      disabled={props.busy || dock.disabled}
+      value={dock.docked}
+      onValueChange={(next) => props.onChange({ id: props.id, dock: next })}
+    />
+  );
+}
+
+/** Docs is always on: on Sections it has only its place in the phone's dock. */
+function KinDocsDockRow(props: { readonly held: Held; readonly shell: KinShell }) {
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <>
+      {problem === null ? null : (
+        <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
+      )}
+      <ListSection title={kinSectionName(props.shell, "docs")}>
+        <KinPlaceDockToggle
+          id="docs"
+          shell={props.shell}
+          busy={busy}
+          onChange={async (change) => {
             setBusy(true);
             setProblem(null);
-            setProblem(await props.held.change(props.shell, { id: props.id, on: next }));
+            setProblem(await props.held.change(props.shell, change));
             setBusy(false);
           }}
         />
@@ -259,6 +314,7 @@ export function KinSectionsSettings(props: KinWorkTarget) {
           </Fragment>
         );
       })}
+      <KinDocsDockRow held={held} shell={shell} />
       <KinListSectionsSettings {...props} held={held} shell={shell} />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.olderPhones}

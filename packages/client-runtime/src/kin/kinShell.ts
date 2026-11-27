@@ -252,7 +252,7 @@ export function kinSectionListed(shell: KinShell | null | undefined, list: strin
 export type KinSectionChange =
   | { readonly id: KinSectionId | KinListSectionId; readonly on: boolean }
   | { readonly id: "clients"; readonly name: string; readonly noun: string }
-  | { readonly id: KinListSectionId; readonly dock: boolean }
+  | { readonly id: KinListSectionId | KinDockPlace; readonly dock: boolean }
   | { readonly id: KinListSectionId; readonly remove: true };
 
 /** What `kin.shell.set` takes for one change: every section as held, that one changed. */
@@ -260,6 +260,8 @@ export function kinShellChanged(shell: KinShell, change: KinSectionChange) {
   const changed = (section: KinShell["sections"][number]) => {
     if ("on" in change) return { ...section, on: change.on };
     if ("dock" in change) {
+      // Kin's own places are in the dock unless said otherwise, so false is kept for them.
+      if (!kinIsListSection(change.id)) return { ...section, dock: change.dock };
       const { dock: _dock, ...rest } = section;
       return change.dock ? { ...rest, dock: true } : rest;
     }
@@ -326,33 +328,69 @@ export function kinListSections(shell: KinShell | null | undefined): ReadonlyArr
 /** The places the phone's dock holds, Chats included. */
 const KIN_DOCK_PLACES = 5;
 
+/** Kin's own places an owner can take out of the phone's dock; Chats and Tasks never leave. */
+export type KinDockPlace = "money" | "clients" | "docs";
+const KIN_DOCK_PLACE_IDS: ReadonlySet<string> = new Set<KinDockPlace>(["money", "clients", "docs"]);
+
+/** Whether one of Kin's places keeps its place in the phone's dock: unless the company said no. */
+export function kinPlaceInDock(shell: KinShell | null | undefined, id: KinDockPlace): boolean {
+  return held(shell, id)?.dock !== false;
+}
+
+const outOfDock = (shell: KinShell | null | undefined, tab: string) =>
+  KIN_DOCK_PLACE_IDS.has(tab) && !kinPlaceInDock(shell, tab as KinDockPlace);
+
 /**
- * The phone's dock: this person's own places, then each list section that is on and marked for the
- * dock, in the shell's order, while places are left. Never more than five; a list section left out
- * is reached in Lists.
+ * This person's places that the company took out of the dock: still theirs, opened from a row on
+ * Chats. Only places in `tabs`, so a place they don't reach gets no row.
+ */
+export function kinPlacesOutOfDock(
+  tabs: ReadonlyArray<string>,
+  shell: KinShell | null | undefined,
+): ReadonlyArray<KinDockPlace> {
+  return tabs.filter((tab): tab is KinDockPlace => outOfDock(shell, tab));
+}
+
+/** This person's places that keep their place in the dock, in order. */
+export function kinDockPlaces<Tab extends string>(
+  tabs: ReadonlyArray<Tab>,
+  shell: KinShell | null | undefined,
+): ReadonlyArray<Tab> {
+  return tabs.filter((tab) => !outOfDock(shell, tab));
+}
+
+/**
+ * The phone's dock: this person's own places left in it, then each list section that is on and
+ * marked for the dock, in the shell's order, while places are left. Never more than five; a list
+ * section left out is reached in Lists, a place taken out from Chats.
  */
 export function kinDockWithLists<Tab extends string>(
   tabs: ReadonlyArray<Tab>,
   shell: KinShell | null | undefined,
 ): ReadonlyArray<Tab | KinListSectionId> {
-  const room = Math.max(0, KIN_DOCK_PLACES - tabs.length);
+  const places = kinDockPlaces(tabs, shell);
+  const room = Math.max(0, KIN_DOCK_PLACES - places.length);
   const docked = kinListSections(shell)
     .filter((section) => section.on && section.dock)
     .slice(0, room)
     .map((section) => section.id);
-  return [...tabs, ...docked];
+  return [...places, ...docked];
 }
 
 /**
- * Room for list sections in the company's dock, as Settings offers it: Chats, Tasks and Docs always
- * have a place, Money and Clients while they are on, and a list section takes one they leave.
+ * Room for list sections in the company's dock, as the host counts it: Chats and Tasks always have
+ * a place, Docs while in the dock, Money and Clients while on and in it.
  */
 export function kinDockRoom(shell: KinShell | null | undefined): {
   readonly room: number;
   readonly used: number;
   readonly full: boolean;
 } {
-  const kins = 3 + Number(kinSectionOn(shell, "money")) + Number(kinSectionOn(shell, "clients"));
+  const kins =
+    2 +
+    Number(kinPlaceInDock(shell, "docs")) +
+    Number(kinSectionOn(shell, "money") && kinPlaceInDock(shell, "money")) +
+    Number(kinSectionOn(shell, "clients") && kinPlaceInDock(shell, "clients"));
   const room = Math.max(0, KIN_DOCK_PLACES - kins);
   const used = kinListSections(shell).filter((section) => section.on && section.dock).length;
   return { room, used, full: used >= room };
@@ -371,6 +409,20 @@ export function kinListSectionDocked(
     .filter((section) => section.on && section.dock)
     .slice(0, room)
     .some((section) => section.id === id);
+}
+
+/**
+ * The dock switch of Money, Clients or Docs in Settings › Sections: off while the section is off,
+ * and while the place is out and putting it back would pass five (`full`).
+ */
+export function kinPlaceDockSwitch(
+  shell: KinShell | null | undefined,
+  id: KinDockPlace,
+): { readonly docked: boolean; readonly disabled: boolean; readonly full: boolean } {
+  const docked = kinPlaceInDock(shell, id);
+  const on = id === "docs" || kinSectionOn(shell, id);
+  const full = on && !docked && kinDockRoom(shell).full;
+  return { docked, disabled: !on || full, full };
 }
 
 /**
@@ -402,7 +454,7 @@ export const KIN_LIST_SECTIONS = {
   detail:
     "A list shown as a section has a place of its own in the sidebar, for everyone who can see the list.",
   dock: "In the phone's dock",
-  dockFull: "The dock holds five places. Turn one off first.",
+  dockFull: "The dock holds five places. Take one out of the dock first.",
   remove: "Remove from sidebar",
   /** The phone has no sidebar: the same move, said as the place it adds. */
   removeOnPhone: "Stop showing as a section",
@@ -411,6 +463,16 @@ export const KIN_LIST_SECTIONS = {
   addPick: "Choose a list",
   addSave: "Show",
 } as const;
+
+/** The dock switch on Money, Clients and Docs in Settings › Sections, for the web and the phone. */
+export const KIN_PLACE_DOCK = {
+  label: "In the phone's dock",
+  full: KIN_LIST_SECTIONS.dockFull,
+} as const;
+
+/** What the dock switch says: where the place is found while it is out, in the company's name. */
+export const kinPlaceDockDetail = (shell: KinShell | null | undefined, id: KinDockPlace) =>
+  `Out of the dock, ${kinSectionName(shell, id)} stays on and opens from Chats.`;
 
 /** What `kin.shell.set` takes to switch one section: every section as held, that one changed. */
 export const kinShellSwitched = (shell: KinShell, id: KinSectionId, on: boolean) =>
