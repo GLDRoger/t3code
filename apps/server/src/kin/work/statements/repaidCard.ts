@@ -418,6 +418,8 @@ export const undoRepaid = Effect.fn("KinRepaidCard.undo")(function* (
     { state: bank.state, category: bank.category },
     bank.rev,
   );
+  // Mark and Undo can both land between pulse ticks, without the fact ever clearing.
+  yield* retell(orgId, repaidFactKey(bank.key));
   return {
     title: "Repayment undone",
     text: fittedKeys(

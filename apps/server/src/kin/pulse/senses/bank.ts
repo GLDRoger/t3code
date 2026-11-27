@@ -1,4 +1,10 @@
-import { formatKinMoney, formatKinWhen, KIN_TEXT_LOCALE, KinRecordId } from "@t3tools/contracts";
+import {
+  formatKinMoney,
+  formatKinWhen,
+  KIN_CHOICE_CARD_TTL_MS,
+  KIN_TEXT_LOCALE,
+  KinRecordId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -370,8 +376,40 @@ const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
  * that marks them repaid; one that doesn't is a line in the brief, and Kin marks nothing. A
  * debit matching a repayment already marked by hand that day is not raised.
  */
-const repaidSeenSenses = (ctx: SenseContext, matches: ReadonlyArray<RepaidMatch>) =>
-  matches.map(({ debit, partner, repays, owedMinor, owedCount, expense }): SensedFact => {
+const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
+  ctx: SenseContext,
+  matches: ReadonlyArray<RepaidMatch>,
+) {
+  const exact = matches.flatMap(({ debit, repays }) =>
+    repays === undefined ? [] : [debit.recordId],
+  );
+  const sql = yield* SqlClient.SqlClient;
+  const undone =
+    exact.length === 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT
+      json_extract(p.plan_json, '$.bank.recordId') AS "recordId"
+    FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+    WHERE p.org_id = ${ctx.orgId} AND json_extract(p.plan_json, '$.kind') = 'undo_repaid'
+      AND json_extract(p.plan_json, '$.bank.recordId') IN ${sql.in(exact)}
+      AND json_type(w.state_json, '$.outcome.undone') = 'object'`).map((row) => row.recordId);
+  const stillOpen =
+    undone.length === 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT
+      json_extract(p.plan_json, '$.recordId') AS "recordId"
+    FROM kin_widgets w JOIN kin_card_plans p ON p.org_id = w.org_id AND p.widget_id = w.widget_id
+    JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    WHERE w.org_id = ${ctx.orgId} AND w.type = 'choice' AND w.closed_at IS NULL
+      AND m.status = 'posted' AND json_array_length(w.awaiting_json) > 0 AND p.ran_message_id IS NULL
+      AND (json_extract(w.state_json, '$.untilAnswered') = 1
+        OR w.updated_at > ${DateTime.formatIso(iso(ctx.at - KIN_CHOICE_CARD_TTL_MS))})
+      AND json_extract(p.plan_json, '$.kind') = 'mark_repaid'
+      AND json_extract(p.plan_json, '$.recordId') IN ${sql.in(undone)}`).map((row) => row.recordId);
+  const wasUndone = new Set(undone);
+  const hasOpenCard = new Set(stillOpen);
+
+  return matches.map(({ debit, partner, repays, owedMinor, owedCount, expense }): SensedFact => {
     const paid = `${debit.key}, ${plain(debit.amountMinor, debit.currency)} paid ${shortDay(debit.date)}, names ${partner.name}`;
     const shared = {
       sense: "repaid_seen" as const,
@@ -409,6 +447,10 @@ const repaidSeenSenses = (ctx: SenseContext, matches: ReadonlyArray<RepaidMatch>
       expense === undefined
         ? `${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`
         : `It could instead pay ordinary expense ${expense.key}. Nothing is marked until the owner picks one on a mark_repaid card, which offers both.`;
+    const open = hasOpenCard.has(debit.recordId);
+    const again = !wasUndone.has(debit.recordId)
+      ? ""
+      : ` The repayment mark was undone. ${open ? "A repayment card is open." : "No repayment card is open."}`;
     return {
       ...shared,
       key: `repaid_seen:${debit.key}`,
@@ -417,12 +459,13 @@ const repaidSeenSenses = (ctx: SenseContext, matches: ReadonlyArray<RepaidMatch>
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${unmarked}`,
+          )}. ${unmarked}${again}`,
         repays.length,
       ),
-      wake: "now",
+      wake: open ? "brief" : "now",
     };
   });
+});
 
 export const billPaidConsequence = (
   bankKey: string,
@@ -475,5 +518,8 @@ export const bankDebitSenses = Effect.fn("KinPulse.bankDebitSenses")(function* (
   const contested = new Set(
     repayments.flatMap(({ debit, expense }) => (expense === undefined ? [] : [debit.recordId])),
   );
-  return [...repaidSeenSenses(ctx, repayments), ...(yield* billPaidSeenSenses(ctx, contested))];
+  return [
+    ...(yield* repaidSeenSenses(ctx, repayments)),
+    ...(yield* billPaidSeenSenses(ctx, contested)),
+  ];
 });
