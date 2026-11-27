@@ -612,6 +612,7 @@ export const KinSearchHit = Schema.Struct({
   recordId: KinRecordId,
   key: Schema.Union([KinRecordKey, KinMemoryItemId]),
   kind: KinSearchKind,
+  bankTransaction: Schema.optional(Schema.Literal(true)),
   title: KinTrimmedText,
   /** A few plain words around the match; never markup. */
   snippet: KinText,
