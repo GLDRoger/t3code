@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
-import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
+import { type FakeMail, fileStore, makeFakeMail } from "./FakeMail.ts";
 import { MAIL_TOOL, type MailActivity, type Mailbox, type MailProvider } from "./MailProvider.ts";
 import type { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_PROVIDERS } from "./mailProviders.ts";
@@ -656,6 +659,29 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
 });
+
+it.effect("reads and clears a provider failure from another fake using the same file", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "kin-fake-mail-" });
+    const file = path.join(dir, "kin-fake-mail.json");
+    const vendor = makeFakeMail(fileStore(file));
+    const writer = makeFakeMail(fileStore(file));
+    vendor.addAccount({ address: OWNER, provider: "google", name: "Tidewater Freight" });
+    const handle = vendor.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+    const read = () =>
+      Effect.promise(() =>
+        handle("https://www.googleapis.com/calendar/v3/calendars/primary/events?fields=items", {
+          headers: { Authorization: `Bearer fake-at.1.${OWNER}` },
+        }),
+      );
+    writer.failWith(OWNER.toUpperCase(), 429);
+    assert.strictEqual((yield* read()).status, 429);
+    writer.failWith(OWNER, null);
+    assert.strictEqual((yield* read()).status, 200);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.effect("stops a start-ordered Google agenda after four pages of 100", () =>
   run(MAIL_PROVIDERS.google, ({ provider, fake, http, token, requests }) =>

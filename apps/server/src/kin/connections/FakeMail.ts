@@ -92,6 +92,7 @@ export type FakeMailState = {
     string,
     { readonly account: string; readonly raw: string; readonly threadId: string }
   >;
+  readonly failing: Record<string, number>;
   seq: number;
 };
 
@@ -108,6 +109,7 @@ const emptyFakeMail = (): FakeMailState => ({
   codes: {},
   granted: {},
   drafts: {},
+  failing: {},
   seq: 0,
 });
 
@@ -270,13 +272,14 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const setDown = (address: string, isDown: boolean) =>
     isDown ? void down.add(lower(address)) : void down.delete(lower(address));
   /** Every call for the account answers this HTTP status, as a refusal or a throttle does. */
-  const failing = new Map<string, number>();
   const failWith = (address: string, status: number | null) =>
-    status === null
-      ? void failing.delete(lower(address))
-      : void failing.set(lower(address), status);
-  const outage = (account: FakeMailAccount, request: Request) => {
-    const status = failing.get(lower(account.address));
+    edit((state) => {
+      const key = lower(address);
+      if (status === null) delete state.failing[key];
+      else state.failing[key] = status;
+    });
+  const outage = (state: FakeMailState, account: FakeMailAccount, request: Request) => {
+    const status = state.failing[lower(account.address)];
     if (status === 429)
       return new Response(JSON.stringify({ error: { code: status } }), {
         status,
@@ -598,7 +601,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     return edit((state) => {
       const account = bearer(state, request);
       if (account === undefined) return json({ error: { code: 401 } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
@@ -795,7 +798,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       const account = bearer(state, request);
       if (account === undefined)
         return json({ error: { code: "InvalidAuthenticationToken" } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account).toSorted((a, b) => b.at - a.at);
