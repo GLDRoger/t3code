@@ -34,7 +34,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { memo, useEffect, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, useWindowDimensions, View } from "react-native";
 
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { AppBar } from "../../components/ui/AppBar";
@@ -584,8 +584,11 @@ const TONE: Record<KinBillTone, string> = {
   muted: "text-foreground-muted",
   active: "text-foreground",
   attention: "text-warning-foreground",
-  done: "text-success-foreground",
+  // The phone's themes have no success colour; an unknown class draws black, unreadable in dark.
+  done: "text-foreground-secondary",
 };
+// From this text size a field's label goes above its value, so neither breaks mid-word.
+const LARGE_TEXT_SCALE = 1.5;
 
 const CHANGES: ReadonlySet<KinBillAction> = new Set([
   "keep",
@@ -662,6 +665,7 @@ const BillRow = memo(function BillRow(props: {
   const { view } = props;
   const taps = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
+  const stacked = useWindowDimensions().fontScale >= LARGE_TEXT_SCALE;
   return (
     <View accessible={false} className="flex-row gap-3 border-b border-border px-4 py-3">
       <BillThumb view={view} environmentId={props.environmentId} onPreview={props.onPreview} />
@@ -675,11 +679,18 @@ const BillRow = memo(function BillRow(props: {
         </Text>
         <View className="gap-0.5">
           {view.fields.map((field) => (
-            <View key={field.key} className="min-h-4 flex-row gap-3">
-              <Text textRole="footnote" className="w-28 text-foreground-muted">
+            <View key={field.key} className={stacked ? "min-h-4" : "min-h-4 flex-row gap-3"}>
+              <Text
+                textRole="footnote"
+                className={stacked ? "text-foreground-muted" : "w-28 text-foreground-muted"}
+              >
                 {field.label}
               </Text>
-              <Text textRole="footnote" numberOfLines={1} className="flex-1 text-foreground">
+              <Text
+                textRole="footnote"
+                numberOfLines={stacked ? undefined : 1}
+                className={stacked ? "text-foreground" : "flex-1 text-foreground"}
+              >
                 {field.value ?? ""}
               </Text>
             </View>
