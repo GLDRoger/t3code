@@ -18,6 +18,19 @@ export const normalizeAddress = (value: string | null | undefined) => {
     : undefined;
 };
 
+export const quietBankSenderAddresses = Effect.fn("KinBankSenders.quietAddresses")(function* (
+  orgId: KinOrgId,
+  moneyOn: boolean,
+) {
+  if (moneyOn) return new Set<string>();
+  const rows = yield* list(orgId);
+  return new Set(
+    rows
+      .filter((row) => row.state === "candidate" || row.state === "approved")
+      .map((row) => row.address),
+  );
+});
+
 const ending = /^\d{4}$/;
 const AccountsJson = Schema.fromJsonString(
   Schema.Array(Schema.String.check(Schema.isPattern(ending))),
