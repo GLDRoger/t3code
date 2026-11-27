@@ -6,11 +6,10 @@ import { homeCurrency } from "../companyProfile.ts";
 import { partnerPayees } from "../partnersOwed.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
-import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { expenseContests } from "./debitBill.ts";
 import { openEntries } from "./invoiceCredits.ts";
-import { identifies, markedByHand, repayment, SALARIES, suggest } from "./statementMatch.ts";
+import { assignRepaidMarks, identifies, repayment, SALARIES, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -21,7 +20,7 @@ export const MARKED_REPAID = "Marked repaid";
 /**
  * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
  * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
- * `marked`: the day `markedByHand` found an individual or total repayment for the same money.
+ * `marked`: the day an individual or total repayment was assigned to this debit.
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -54,28 +53,38 @@ export type RepaidItem = {
 
 const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   orgId: KinOrgId,
-  def: ListDef,
-  debits: ReadonlyArray<OpenDebit>,
   at: number,
+  target?: string,
 ) {
-  if (debits.length === 0) return [];
+  const def = yield* findBankList(orgId);
+  if (def === undefined) return [];
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const today = dayIn(at, zone);
   const partners = yield* partnerCandidates(orgId, yield* homeCurrency(orgId), zone);
   if (partners.length === 0) return [];
+  const open = yield* openEntries(orgId, def, "debit", "all");
+  const debits = target === undefined ? open : open.filter((debit) => debit.recordId === target);
+  if (debits.length === 0) return [];
   const payees = yield* partnerPayees(orgId);
   const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
     FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
     ORDER BY account`).map((one) => one.account);
+  const assigned = assignRepaidMarks(open, payees, ownAccounts);
   const states = bankStates(def);
   const setBack = new Set(
     (yield* sql<{ recordId: string }>`SELECT DISTINCT c.record_id AS "recordId"
       FROM kin_record_changes c, json_each(c.fields_json) f
-      WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(debits.map((one) => one.recordId))}
-        AND c.actor_kind = 'person' AND json_extract(f.value, '$.field') = 'state'
+      WHERE c.org_id = ${orgId} AND c.actor_kind = 'person' AND json_extract(f.value, '$.field') = 'state'
         AND json_extract(f.value, '$.from') = ${states.explained}
         AND json_extract(f.value, '$.to') = ${states.open}
+        ${
+          target === undefined
+            ? sql`AND c.record_id IN (
+          SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
+            AND r.register_id = ${def.id} AND r.state = ${states.open})`
+            : sql`AND c.record_id = ${target}`
+        }
         AND c.record_id IN (SELECT COALESCE(json_extract(p.plan_json, '$.final.recordId'),
             json_extract(p.plan_json, '$.recordId'))
           FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id
@@ -98,10 +107,7 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const [id, name] = only;
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
-    const payee = payees.find((one) => one.id === id);
-    const marked = payee?.repaid.find((one) =>
-      markedByHand(debit.row, debit.currency, one, debit.recordId),
-    )?.day;
+    const marked = assigned.get(debit.row)?.day;
     const candidate = repayment(debit.row, partner, 0, true)?.candidate;
     const found = candidate?.repays;
     const repays = found?.flatMap((one) =>
@@ -157,9 +163,7 @@ export const repaidMatches = Effect.fn("KinDebitRepaid.matches")(function* (
   orgId: KinOrgId,
   at: number,
 ) {
-  const def = yield* findBankList(orgId);
-  if (def === undefined) return [];
-  return yield* matchAll(orgId, def, yield* openEntries(orgId, def, "debit", undefined), at);
+  return yield* matchAll(orgId, at);
 });
 
 /** One debit as the matcher reads it now; undefined when it names no one partner Kin owes. */
@@ -168,13 +172,6 @@ export const repaidMatch = Effect.fn("KinDebitRepaid.match")(function* (
   bankRecordId: string,
   at: number,
 ) {
-  const def = yield* findBankList(orgId);
-  if (def === undefined) return undefined;
-  const [match] = yield* matchAll(
-    orgId,
-    def,
-    yield* openEntries(orgId, def, "debit", { recordId: bankRecordId }),
-    at,
-  );
+  const [match] = yield* matchAll(orgId, at, bankRecordId);
   return match;
 });

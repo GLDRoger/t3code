@@ -32,8 +32,10 @@ import {
   seedFixtureAlertMailbox,
 } from "./bankAlerts.testkit.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
-import { repaidMatches } from "./debitRepaid.ts";
+import { repaidMatch, repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine, undoRepaid } from "./repaidCard.ts";
+import { buildReview } from "./statementReview.ts";
+import type { Statement } from "./statementTable.ts";
 import { bankDebitSenses } from "../../pulse/senses/bank.ts";
 
 // Invented: Ambermill's owner Rhea gets Harbor Bank alerts; Zoya and Arjun paid bills from their own cards.
@@ -337,7 +339,7 @@ it.layer(layer)((it) => {
         ["BNK-10", 2_000],
         ["BNK-11", 500],
       ] as const)
-        yield* kin.debit(key, amount, "2026-11-23");
+        yield* kin.debit(key, amount, key === "BNK-9" ? "2026-11-22" : "2026-11-23");
       const marked = () =>
         Effect.map(repaidMatches(org, NOW), (matches) =>
           Object.fromEntries(matches.map((match) => [match.debit.key, match.marked])),
@@ -354,7 +356,7 @@ it.layer(layer)((it) => {
       yield* mark("EXP-5", "repaid", "2026-11-22");
       assert.deepStrictEqual(yield* marked(), {
         "BNK-9": "2026-11-22",
-        "BNK-10": "2026-11-22",
+        "BNK-10": undefined,
         "BNK-11": undefined,
       });
       assert.strictEqual(
@@ -369,6 +371,232 @@ it.layer(layer)((it) => {
         "BNK-11": undefined,
       });
     }),
+  );
+
+  it.effect.each([
+    ["one-mark-first", [1_200], [1_200, 1_200], "marks"],
+    ["one-debits-first", [1_200], [1_200, 1_200], "debits"],
+    ["one-statement-first", [1_200], [1_200, 1_200], "statement"],
+    ["two-equal", [1_200, 1_200], [1_200, 1_200, 1_200], "debits"],
+    ["two-unequal", [1_200, 800], [1_200, 1_200], "marks"],
+    ["single-before-total", [1_200, 800], [1_200, 2_000], "marks"],
+    ["total-before-single", [1_200, 800], [2_000, 1_200], "marks"],
+    ["same-day-key-order", [1_200], [1_200, 1_200], "debits"],
+  ] as const)(
+    "shares the repayment assignment for %s between list, statement, draw and tap",
+    (name, marks, amounts, order) =>
+      Effect.gen(function* () {
+        const org = KinOrgId.make(`ambermill-${name}`);
+        const kin = yield* company(org);
+        const records = yield* KinRecords.KinRecords;
+        const owner = {
+          actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+          via: "owner" as const,
+        };
+        const markDay = "2026-11-18";
+        const paid = { reimbursement: "repaid", repaidOn: markDay };
+        const offered = amounts.length - 1;
+        const debits = amounts.map((amount, index) => ({
+          index,
+          key: `BNK-${10 + index}`,
+          day:
+            index === 0 || name === "same-day-key-order"
+              ? "2026-11-19"
+              : index === 1
+                ? "2026-11-21"
+                : "2026-11-22",
+          amount,
+          title: `UPI ZOYA RAO payment ${index}`,
+        }));
+        const statement = (rows: typeof debits): Statement => ({
+          kind: "account",
+          bank: null,
+          account: "4821",
+          currency: "INR",
+          from: null,
+          to: null,
+          openingMinor: null,
+          closingMinor: null,
+          check: { status: "unchecked", line: "" },
+          rows: rows.map((one, index) => ({
+            index,
+            date: one.day,
+            description: one.title,
+            reference: null,
+            amountMinor: one.amount * 100,
+            direction: "debit",
+            balanceMinor: null,
+            foreign: null,
+          })),
+        });
+        const read = (rows: typeof debits, id = "st-repaid") =>
+          buildReview(org, statement(rows), null, "file", id);
+        const drawMarks = () =>
+          Effect.forEach(marks, (amount, index) =>
+            kin.expense(`EXP-${index + 4}`, amount, "2026-10-01", paid),
+          );
+        yield* kin.expense("EXP-8", amounts[offered]!, "2026-11-01", { reimbursement: "owed" });
+        if (order !== "debits") yield* drawMarks();
+        if (order === "statement") {
+          const draft = yield* read(debits);
+          assert.deepStrictEqual(
+            [...draft.matches.values()].map(
+              (one) => one.suggestion.why?.includes("repayment already marked") ?? false,
+            ),
+            [true, false],
+          );
+        }
+        for (const one of debits.toReversed())
+          yield* kin.debit(one.key, one.amount, one.day, one.title);
+        if (order === "debits") yield* drawMarks();
+
+        const bank = yield* repaidMatches(org, NOW);
+        const single = yield* Effect.forEach(debits, (one) =>
+          repaidMatch(org, `${org}-${one.key}`, NOW),
+        );
+        assert.deepStrictEqual(
+          single,
+          debits.map((one) => bank.find((match) => match.debit.key === one.key)),
+        );
+        assert.deepStrictEqual(
+          single.map((one) => one?.marked ?? null),
+          debits.map((_, index) => (index === offered ? null : markDay)),
+        );
+        for (const one of debits.slice(0, offered))
+          assert.include(yield* kin.draw(one.key), "repayment already marked by hand");
+
+        // Re-read the entire statement and upload again with only the last debit shown.
+        // Other open debits already on file still compete, even if not in the uploaded period.
+        for (const [rows, id] of [
+          [debits, "st-repaid"],
+          [debits, "st-repaid"],
+          [debits.slice(offered), "st-reuploaded"],
+        ] as const) {
+          const review = yield* read(rows, id);
+          assert.deepStrictEqual(
+            [...review.known.values()].map((one) => one.key),
+            rows.map((one) => one.key),
+          );
+          assert.deepStrictEqual(
+            [...review.matches.values()].map(
+              (one) => one.suggestion.why?.includes("repayment already marked") ?? false,
+            ),
+            rows.map((one) => one.index !== offered),
+          );
+        }
+        const plan = yield* kin.drawPlan(debits[offered]!.key);
+        assert.deepStrictEqual(
+          plan.repays.map((one) => one.key),
+          ["EXP-8"],
+        );
+        const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
+        assert.strictEqual(outcome?.outcome.title, "Marked repaid");
+      }),
+  );
+
+  it.effect("an unfiled statement debit competes with open debits outside the statement", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-draft-repaid");
+      const kin = yield* company(org);
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-18",
+      });
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-10", 1_200, "2026-11-19");
+      const draft: Statement = {
+        kind: "account",
+        bank: null,
+        account: "4821",
+        currency: "INR",
+        from: null,
+        to: null,
+        openingMinor: null,
+        closingMinor: null,
+        check: { status: "unchecked", line: "" },
+        rows: [
+          {
+            index: 0,
+            date: "2026-11-21",
+            description: "UPI ZOYA RAO",
+            reference: null,
+            amountMinor: 120_000,
+            direction: "debit",
+            balanceMinor: null,
+            foreign: null,
+          },
+        ],
+      };
+      for (const id of ["st-upload", "st-reupload"]) {
+        const review = yield* buildReview(org, draft, null, "file", id);
+        assert.strictEqual(review.known.size, 0);
+        assert.deepStrictEqual(
+          review.matches.get(0)?.candidates[0]?.repays?.map((one) => one.key),
+          ["EXP-8"],
+        );
+      }
+    }),
+  );
+
+  it.effect("an earlier possible duplicate cannot take an open debit's own tie", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-reopened-tie");
+      const { kin, records, owner } = yield* cardMarkedCompany(org);
+      yield* kin.debit("BNK-7", 5_000, "2026-11-19");
+      yield* records.update(org, owner, "BNK-9", { state: "open" });
+      assert.sameDeepMembers(
+        (yield* repaidMatches(org, NOW)).map((match) => [match.debit.key, match.marked]),
+        [
+          ["BNK-7", undefined],
+          ["BNK-9", "2026-11-20"],
+        ],
+      );
+    }),
+  );
+
+  it.effect(
+    "taking back one equal hand mark offers the last debit again and rechecks old cards",
+    () =>
+      Effect.gen(function* () {
+        const org = KinOrgId.make("ambermill-equal-undo");
+        const kin = yield* company(org);
+        const records = yield* KinRecords.KinRecords;
+        const owner = {
+          actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+          via: "owner" as const,
+        };
+        const markDay = "2026-11-18";
+        yield* kin.expense("EXP-4", 1_200, "2026-10-01", {
+          reimbursement: "repaid",
+          repaidOn: markDay,
+        });
+        yield* kin.expense("EXP-8", 1_200, "2026-10-15", { reimbursement: "owed" });
+        yield* kin.debit("BNK-10", 1_200, "2026-11-19");
+        yield* kin.debit("BNK-11", 1_200, "2026-11-21");
+        const marked = () =>
+          Effect.map(repaidMatches(org, NOW), (matches) =>
+            Object.fromEntries(matches.map((match) => [match.debit.key, match.marked])),
+          );
+
+        yield* kin.expense("EXP-5", 1_200, "2026-11-01", {
+          reimbursement: "repaid",
+          repaidOn: markDay,
+        });
+        assert.deepStrictEqual(yield* marked(), { "BNK-10": markDay, "BNK-11": markDay });
+        yield* records.update(org, owner, "EXP-5", {
+          fields: { reimbursement: "owed", repaidOn: null },
+        });
+        assert.deepStrictEqual(yield* marked(), { "BNK-10": markDay, "BNK-11": undefined });
+        assert.deepStrictEqual(yield* kin.told(), ["repaid_seen:BNK-11"]);
+
+        const plan = yield* kin.drawPlan("BNK-11");
+        // Explaining an earlier debit elsewhere frees the mark; the old card must record nothing.
+        yield* records.update(org, owner, "BNK-10", { state: "done" });
+        assert.deepStrictEqual(yield* marked(), { "BNK-11": markDay });
+        const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
+        assert.isUndefined(outcome);
+        assert.strictEqual((yield* records.get(org, "BNK-11"))?.state, "open");
+      }),
   );
 
   it.effect(
@@ -471,19 +699,19 @@ it.layer(layer)((it) => {
     }),
   );
 
-  it.effect("the same payment recorded twice gets no second card", () =>
+  it.effect("the two-day duplicate total protects one debit, not every nearby debit", () =>
     Effect.gen(function* () {
       const org = KinOrgId.make("ambermill-duplicate-debit");
       const { kin } = yield* cardMarkedCompany(org);
-      yield* kin.debit("BNK-10", 5_000, "2026-11-20", "UPI to Zoya Rao");
+      yield* kin.debit("BNK-10", 5_000, "2026-11-22", "UPI to Zoya Rao");
       yield* kin.debit("BNK-11", 5_000, "2026-11-22", "UPI debit to Zoya Rao");
 
-      assert.deepStrictEqual(yield* kin.told(), []);
-      for (const key of ["BNK-10", "BNK-11"])
-        assert.strictEqual(
-          yield* kin.draw(key),
-          `${key} may be the repayment already marked by hand for Zoya Rao on 2026-11-20, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.`,
-        );
+      assert.deepStrictEqual(yield* kin.told(), ["repaid_seen:BNK-11"]);
+      assert.strictEqual(
+        yield* kin.draw("BNK-10"),
+        "BNK-10 may be the repayment already marked by hand for Zoya Rao on 2026-11-20, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+      assert.strictEqual(yield* kin.draw("BNK-11"), "EXP-8");
     }),
   );
 

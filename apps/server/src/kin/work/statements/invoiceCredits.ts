@@ -56,7 +56,7 @@ export const agentWrote = Effect.fn("KinStatements.agentWrote")(function* (
 
 /**
  * Unexplained entries one way in Bank transactions no agent wrote or changed, newest first, each
- * as the statement row the matcher reads: of one currency up to an amount, or one entry by id.
+ * as the statement row the matcher reads. Repayment assignment needs the whole open debit set.
  */
 export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
   orgId: KinOrgId,
@@ -65,13 +65,16 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
   only:
     | { readonly currency: string; readonly maxMinor: number }
     | { readonly recordId: string }
+    | "all"
     | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
-  const currency = only !== undefined && "currency" in only ? only.currency : null;
-  const maxMinor = only !== undefined && "maxMinor" in only ? only.maxMinor : null;
-  const recordId = only !== undefined && "recordId" in only ? only.recordId : null;
+  const limit = only === "all" ? Infinity : LOOKED_AT;
+  const filter = only === "all" ? undefined : only;
+  const currency = filter !== undefined && "currency" in filter ? filter.currency : null;
+  const maxMinor = filter !== undefined && "maxMinor" in filter ? filter.maxMinor : null;
+  const recordId = filter !== undefined && "recordId" in filter ? filter.recordId : null;
   const readPage = (cursor?: { dateAt: number; recordId: string }) => sql<{
     recordId: string;
     key: string;
@@ -114,11 +117,11 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
   return yield* Effect.gen(function* () {
     let rows = yield* readPage();
     const entries = inDirection(rows);
-    while (rows.length === LOOKED_AT && entries.length < LOOKED_AT) {
+    while (rows.length === LOOKED_AT && entries.length < limit) {
       rows = yield* readPage(rows.at(-1));
       entries.push(...inDirection(rows));
     }
-    return entries.slice(0, LOOKED_AT);
+    return entries.length <= limit ? entries : entries.slice(0, limit);
   }).pipe(sql.withTransaction, readOnly);
 });
 type OpenCredit = Effect.Success<ReturnType<typeof openEntries>>[number];

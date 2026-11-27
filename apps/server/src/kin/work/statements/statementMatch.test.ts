@@ -636,6 +636,10 @@ describe("statement matching", () => {
         ownAccounts: [],
         known: [],
         bank: null,
+        bankDebits:
+          bankRecordId === undefined
+            ? []
+            : [{ row: line, currency: "INR", key: bankRecordId, recordId: bankRecordId }],
         bankRows:
           bankRecordId === undefined
             ? new Map()
@@ -795,6 +799,53 @@ describe("statement matching", () => {
     assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
       ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
     ]);
+  });
+
+  it.each([
+    ["one mark", [1_200], [1_200, 1_200], [true, false]],
+    ["two equal marks", [1_200, 1_200], [1_200, 1_200, 1_200], [true, true, false]],
+    ["unequal marks", [1_200, 800], [1_200, 1_200], [true, false]],
+    ["single before total", [1_200, 800], [1_200, 2_000], [true, false]],
+    ["total before single", [1_200, 800], [2_000, 1_200], [true, false]],
+  ] as const)("assigns %s in day order, not statement order", (_, marks, amounts, expected) => {
+    const debits = amounts.map((amount, index) =>
+      row({
+        index,
+        direction: "debit",
+        date: ["2026-10-07", "2026-10-09", "2026-10-10"][index]!,
+        description: "NEFT DR-ARJUN MEHTA",
+        amountMinor: amount * 100,
+      }),
+    );
+    for (const rows of [debits, debits.toReversed()]) {
+      const matches = matchRows(rows, {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        payees: [
+          {
+            id: "arjun",
+            name: "Arjun Mehta",
+            repaid: [
+              {
+                currency: "INR",
+                day: "2026-10-06",
+                amountMinor: marks.reduce<number>((sum, mark) => sum + mark * 100, 0),
+                marks: marks.map((mark) => ({ amountMinor: mark * 100, bankRecordId: null })),
+              },
+            ],
+          },
+        ],
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      });
+      assert.deepStrictEqual(
+        matches.map((match) => match.suggestion.why?.includes("repayment already marked") ?? false),
+        rows.map((debit) => expected[debit.index]),
+      );
+    }
   });
 
   it("ranks a credit's refund and a partner's return together, and ticks neither on an amount alone", () => {

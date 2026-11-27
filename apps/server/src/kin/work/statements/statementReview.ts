@@ -50,6 +50,7 @@ import {
   type KnownRow,
   knownRows,
 } from "./bankList.ts";
+import { openEntries } from "./invoiceCredits.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts";
@@ -400,8 +401,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     ORDER BY updated_at DESC LIMIT 500`;
   const partners = yield* partnerCandidates(orgId, home, zone);
   const payees = yield* partnerPayees(orgId);
-  const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
-    WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
+  const accounts = (yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
+    WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`).map((row) => row.account);
   return {
     currency: statement.currency,
     withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
@@ -426,7 +427,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         repeats: row.repeats === 1,
         rev: row.rev,
       })),
-    ownAccounts: accounts.map((row) => row.account).filter((one) => one !== statement.account),
+    bankOwnAccounts: accounts,
+    ownAccounts: accounts.filter((one) => one !== statement.account),
     known: [
       ...new Map(
         vendors.flatMap((row) =>
@@ -527,9 +529,18 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     const had = known.get(row.index);
     return had === undefined || (states !== undefined && had.state === states.open);
   });
+  const matching = yield* candidates(orgId, statement, statementId);
+  const bankDebits =
+    def === undefined ||
+    !open.some((row) => row.direction === "debit") ||
+    !matching.payees.some((one) => one.repaid.length > 0)
+      ? []
+      : yield* openEntries(orgId, def, "debit", "all");
   const results = matchRows(open, {
-    ...(yield* candidates(orgId, statement, statementId)),
+    ...matching,
     bankRows: known,
+    bankDebits,
+    possibleDuplicates: new Set(found.possible.keys()),
   });
   // A possible duplicate is the owner's call: nothing is ticked or matched for it.
   const judged = open.map((row, index): RowMatch => {
