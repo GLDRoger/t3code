@@ -32,6 +32,7 @@ import { kinMentionCandidates } from "./kinGroups.ts";
 import { emptyKinChat, type KinChatState } from "./kinInboxModel.ts";
 import { kinIntroVisible } from "./kinIntro.ts";
 import { kinChatReadOnly } from "./kinLeadPresentation.ts";
+import { kinHeldAskCards } from "./kinLive.ts";
 import { splitKinOutbox, type KinOutboxEntry } from "./kinOutbox.ts";
 import { kinPeopleChatWith } from "./kinPeopleChat.ts";
 import {
@@ -288,9 +289,12 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
   const streamed = mergeKinFeed(live, input.earlier);
   const { acked, pending, echoed } = splitKinOutbox(input.outbox, streamed.messages);
   const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
+  const held = kinHeldAskCards(messages, live.presence);
+  const visibleMessages =
+    held === null ? messages : messages.filter((message) => !held.ids.has(message.messageId));
   const widgets = new Map(streamed.widgets.map((widget) => [widget.widgetId, widget]));
   const feedRows = buildKinFeedRows(
-    kinFeedMessages(messages, widgets),
+    kinFeedMessages(visibleMessages, widgets),
     input.viewer,
     input.expandedRuns,
     input.dayStart,
@@ -317,7 +321,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
       ),
     ),
   );
-  const newLineSeq = kinNewLineSeq(messages, input.newLine ?? null, input.viewer.personId);
+  const newLineSeq = kinNewLineSeq(visibleMessages, input.newLine ?? null, input.viewer.personId);
   const { rows: linedRows, newLineIndex } = withNewLine(groupedRows, newLineSeq);
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
@@ -358,7 +362,10 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
         : null;
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.
-  const landPage = landOn !== null && landIndex < 0 && input.caughtUp ? earlierPage : null;
+  const landPage =
+    landOn !== null && landIndex < 0 && input.caughtUp && held?.ids.has(landOn) !== true
+      ? earlierPage
+      : null;
   const showIntro = kinIntroVisible({
     // Nobody is there to greet in a retired agent's chat.
     ownsLead: input.ownsLead && !input.retired,
@@ -376,6 +383,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
   return {
     streamed,
     messages,
+    visibleMessages,
     widgets,
     /** Outbox entries the stream now carries, for the outbox to forget. */
     echoed,
@@ -390,7 +398,8 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     landPage,
     /** The row to open the feed on, or null to open at its end. */
     openRow,
-    latestSeq: latestKinSeq(messages),
+    // A monotone read mark cannot skip the hidden row, even if later rows are visible.
+    latestSeq: held?.readThroughSeq ?? latestKinSeq(messages),
     earlierPage,
     showIntro,
     // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
@@ -416,6 +425,9 @@ export function kinChatFeedFollow(
 /** A chat's feed rows and where it scrolls, as one view. */
 export function kinChatFeedView(input: KinChatFeedInput & { readonly follow: KinFeedFollow }) {
   const rows = kinChatFeedRows(input);
-  return { ...rows, ...kinChatFeedFollow(rows.messages, input.follow, input.viewer.personId) };
+  return {
+    ...rows,
+    ...kinChatFeedFollow(rows.visibleMessages, input.follow, input.viewer.personId),
+  };
 }
 export type KinChatFeedView = ReturnType<typeof kinChatFeedView>;

@@ -247,6 +247,9 @@ function KinNeedsBlock(
             >
               {row.detail}
             </span>
+            {row.asking == null ? null : (
+              <span className="text-xs text-muted-foreground">{row.asking}</span>
+            )}
           </span>
         </button>
       </li>
@@ -259,7 +262,7 @@ function KinNeedsBlock(
   );
   return (
     <KinWorkSection title={props.title} action={seeAll}>
-      {total === 0 ? (
+      {shown.length === 0 && shownAttention.length === 0 && total === 0 ? (
         props.empty === null ? null : (
           <p className="px-2 text-sm text-muted-foreground">{props.empty}</p>
         )

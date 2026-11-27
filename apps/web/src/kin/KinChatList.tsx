@@ -645,7 +645,7 @@ function KinWaiting(props: {
 }) {
   const [open, setOpen] = useState(false);
   const nowMs = useNowMinuteMs();
-  const banner = kinWaitingBannerView(props.waiting, props.waitsFor);
+  const banner = kinWaitingBannerView(props.waiting, props.waitsFor, props.chats);
   if (banner === null) return null;
   return (
     <div className="mb-1 flex flex-col">
@@ -660,9 +660,11 @@ function KinWaiting(props: {
         {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
         <span className="flex min-w-0 flex-1 flex-col items-start text-start">
           <span className="font-medium">{KIN_WAITING_TITLE}</span>
-          <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
-            {banner.summary}
-          </span>
+          {banner.summary === "" ? null : (
+            <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
+              {banner.summary}
+            </span>
+          )}
         </span>
         {banner.count === 0 ? null : <Badge size="sm">{banner.count}</Badge>}
       </Button>
@@ -670,7 +672,7 @@ function KinWaiting(props: {
         <ul className="flex flex-col p-1">
           {props.waiting.map((item) => {
             const row = kinWaitingRowView(item, props.chats, props.directory.agentNames);
-            const ask = kinWaitingAskView(item, nowMs);
+            const ask = row.asking === null ? kinWaitingAskView(item, nowMs) : null;
             return (
               <li key={item.waitingId}>
                 <Link
@@ -693,6 +695,9 @@ function KinWaiting(props: {
                     <span className="line-clamp-3 whitespace-pre-line text-xs text-foreground">
                       {row.excerpt}
                     </span>
+                  )}
+                  {row.asking === null ? null : (
+                    <span className="text-xs text-muted-foreground">{row.asking}</span>
                   )}
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>

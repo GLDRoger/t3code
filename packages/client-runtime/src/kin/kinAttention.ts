@@ -532,7 +532,10 @@ export function kinTasksBlock(input: {
   if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
   const rows = attention.length + needs.length + input.hidden;
   const onMe = input.attention.length - attention.length + input.needs.length - needs.length;
-  const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
+  const total =
+    rows +
+    onMe +
+    input.needs.reduce((sum, row) => sum + (row.asking == null ? (row.count ?? 1) : 0) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
   // What waits on the viewer is never cut: it lists what the sidebar's "Waiting on you" lists.

@@ -49,6 +49,7 @@ import {
   type KinFeedRow,
   type KinFeedViewer,
 } from "./kinChatFeed.ts";
+import { kinChatFeedRows } from "./kinChatScreen.ts";
 import type { KinHost } from "./kinHost.ts";
 import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive.ts";
 import { kinMessageLayout, kinPageHead, kinPageView } from "./kinMessagePage.ts";
@@ -845,6 +846,61 @@ describe("streaming replies", () => {
       ["fixture-1", "m2", "m6", "reply:tidewater"],
       ["fixture-1", "m2", "reply:tidewater"],
     ]);
+  });
+
+  it("only a posted reply from the card's exact turn makes it readable before presence ends", () => {
+    const wakeupId = KinWakeupId.make("juniper-turn");
+    const card = agentMessage(2, {
+      sourceWakeupId: wakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice:juniper"),
+      ordinaryTurnAsk: true,
+    });
+    const progress = agentMessage(3, {
+      sourceWakeupId: wakeupId,
+      body: "Checking Juniper Cold Chain's order.",
+      progress: true,
+    });
+    const words = agentMessage(4, { sourceWakeupId: wakeupId, body: "The order is ready." });
+    const other = {
+      ...words,
+      author: { ...words.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+    };
+    const presence: KinPresence = {
+      agentId: KIN_FIXTURE_AGENT,
+      wakeupId,
+      state: "writing",
+      label: null,
+      startedAt: words.createdAt,
+      since: words.createdAt,
+    };
+    const read = (tail: KinMessage, line = presence) =>
+      kinChatFeedRows({
+        chatId: KIN_FIXTURE_CHAT_ID,
+        live: { ...feed([ownMessage(1), card, progress, tail]), presence: [line] },
+        earlier: emptyKinChat,
+        exhausted: true,
+        outbox: [],
+        viewer,
+        expandedRuns: new Set(),
+        dayStart: streamingAt,
+        teamRoomId: null,
+        direct: true,
+        formatTime: () => "",
+        landOn: null,
+        caughtUp: true,
+        ownsLead: true,
+        agentName: null,
+        retired: false,
+        readOnly: false,
+      }).latestSeq;
+    expect([
+      read(other),
+      read({ ...words, sourceWakeupId: KinWakeupId.make("not-this-turn") }),
+      read({ ...words, chatId: "other-chat" as KinMessage["chatId"] }),
+      read(words),
+      read(other, { ...presence, agentId: KIN_FIXTURE_QA }),
+    ]).toEqual([1, 1, 1, 4, 4]);
   });
 
   it("draws a reply's buttons and receipt after its last separate card", () => {
