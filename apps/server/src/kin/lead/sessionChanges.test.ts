@@ -603,6 +603,7 @@ it.effect(
         memory_label: "write-only",
         kin_defer: "write-only",
         kin_schedule: "write-only",
+        mail_rule: "write-only",
         kin_cancel: "write-only",
         kin_journal: "write-only",
         kin_github_review_ask: "write-only",

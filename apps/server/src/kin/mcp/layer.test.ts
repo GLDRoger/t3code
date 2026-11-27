@@ -2200,6 +2200,7 @@ it.effect.each([true, false])(
             .soft(
               yield* propose({
                 ...proposal,
+                sourceEventId: undefined,
                 match: { ...match, subjectHas: ["JUNIPER ORDERS"] },
                 what: "Draft a reply.",
               }),
