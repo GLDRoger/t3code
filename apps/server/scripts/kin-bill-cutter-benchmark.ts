@@ -14,7 +14,7 @@ const boxes: ReadonlyArray<BillBox> = grid.flatMap((y) =>
   grid.map((x) => [x, y, 304, 304] as const),
 );
 
-const billPhoto = async (width: number, height: number, rotate = false) => {
+export const billPhoto = async (width: number, height: number, rotate = false) => {
   const sheet = createCanvas(width, height);
   const context = sheet.getContext("2d");
   const grain = new Uint8ClampedArray(width * height * 4);

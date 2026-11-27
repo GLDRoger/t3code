@@ -18,6 +18,7 @@ import * as AttachmentClaims from "../../orchestration-v2/AttachmentClaims.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { pageImageId } from "../lead/turn/content.ts";
 import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
+import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
 
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
 const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
@@ -154,13 +155,20 @@ export const layer = Layer.effect(
       }),
       remove: Effect.fn("KinAttachmentStore.remove")((attachmentIds) =>
         AttachmentClaims.releaseClaimedAttachments(
-          attachmentIds
-            .flatMap((attachmentId) => [attachmentId, ...pagesOf(attachmentId)])
-            .flatMap((attachmentId) => {
-              if (!isKinAttachmentId(attachmentId)) return [];
-              const path = resolveAttachmentPathById({ attachmentsDir, attachmentId });
-              return path === null ? [] : [path];
-            }),
+          attachmentIds.filter(isKinAttachmentId).flatMap((attachmentId) => {
+            const originals = [attachmentId, ...pagesOf(attachmentId)]
+              .map((id) => resolveAttachmentPathById({ attachmentsDir, attachmentId: id }))
+              .filter((path) => path !== null);
+            const previewId = billPhotoPreviewId(attachmentId);
+            const preview =
+              previewId === null
+                ? null
+                : resolveAttachmentRelativePath({
+                    attachmentsDir,
+                    relativePath: `${previewId}.jpg`,
+                  });
+            return preview === null ? originals : [...originals, preview];
+          }),
         ).pipe(Effect.provideContext(context)),
       ),
     });

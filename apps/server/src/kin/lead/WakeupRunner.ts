@@ -1128,6 +1128,7 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
+            billPhotos: events.every((event) => event._tag === "bills.read"),
             offersBillsAdd: yield* offersBillsAdd(
               row,
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
@@ -2061,12 +2062,14 @@ const make = Effect.gen(function* () {
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             const files = yield* prompt.attachments({ orgId, events });
+            const billPhotos = events.every((event) => event._tag === "bills.read");
             const canAddBills = yield* offersBillsAdd(row, shared);
             const legacyContent =
               built === undefined
                 ? yield* turnContent.prepare({
                     text: full,
                     attachments: files,
+                    billPhotos,
                     offersBillsAdd: canAddBills,
                   })
                 : undefined;
@@ -2336,6 +2339,7 @@ const make = Effect.gen(function* () {
               (yield* turnContent.prepare({
                 text: send.text,
                 attachments: files,
+                billPhotos,
                 offersBillsAdd: canAddBills,
               }));
             // A finished task's run may already be this wake-up's (above).

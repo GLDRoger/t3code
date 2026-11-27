@@ -31,6 +31,11 @@ import {
   KIN_TEXT_LOCALE,
   parseKinMoney,
 } from "@t3tools/contracts";
+import {
+  BILL_PHOTO_MAX_PIXELS,
+  IMAGE_DIMENSIONS_HEADER_BYTES,
+  readImageDimensions,
+} from "@t3tools/shared/imageDimensions";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -51,10 +56,16 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { shownAsPicture } from "../lead/turn/content.ts";
+import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { cutBillPage } from "./billCutter.ts";
-import { MAX_BILL_BOXES, refuseBillPage, type BillBox } from "./billCutterProtocol.ts";
+import {
+  BILLS_PER_TURN,
+  MAX_BILL_BOXES,
+  refuseBillPage,
+  type BillBox,
+} from "./billCutterProtocol.ts";
 import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { currencyDigits, dayIn, farAbove, largestIn } from "./money.ts";
@@ -71,9 +82,6 @@ import { notAVendor } from "./vendorName.ts";
  */
 
 const FINANCE_DOMAIN = "finance";
-/** Bills a quiet turn reads at most, within the turn's image budget (`TURN_FILES`). */
-const BILLS_PER_TURN = 5;
-const GROUP_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Kin queues a bill on its own at most this often; the owner's Read again is beside it. */
 const AUTO_READS = 2;
 const COULD_NOT_READ = "Kin could not read this one";
@@ -395,7 +403,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
     if (
       last === undefined ||
       last.length >= BILLS_PER_TURN ||
-      (image && bytes + row.sizeBytes > GROUP_IMAGE_BYTES)
+      (image && bytes + row.sizeBytes > PDF_PAGE_IMAGES.bytesPerTurn)
     ) {
       groups.push([row]);
       bytes = image ? row.sizeBytes : 0;
@@ -856,11 +864,27 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
 
 const prepareFiles = Effect.fn("KinBills.prepareFiles")(function* (
   files: ReadonlyArray<KinAttachment>,
+  uploads?: ReadonlyArray<KinAttachment>,
 ) {
   const accepted: Array<Prepared["accepted"][number]> = [];
-  for (const attachment of files)
-    accepted.push({ attachment, sha256: sha256(yield* fileBytes(attachment)) });
-  return accepted;
+  const refused: Array<Prepared["refused"][number]> = [];
+  for (const [index, attachment] of files.entries()) {
+    const bytes = yield* fileBytes(attachment);
+    const sentId = uploads?.[index]?.id;
+    const dimensions = isPdf(attachment)
+      ? null
+      : readImageDimensions(bytes.subarray(0, IMAGE_DIMENSIONS_HEADER_BYTES));
+    if (dimensions !== null && dimensions.width * dimensions.height > BILL_PHOTO_MAX_PIXELS) {
+      refused.push({
+        name: attachment.name,
+        reason: refuseBillPage("photo_pixels").problem,
+        ...(sentId === undefined ? {} : { sentId }),
+      });
+    } else {
+      accepted.push({ attachment, sha256: sha256(bytes), sentId });
+    }
+  }
+  return { accepted, refused };
 });
 
 /** `kin.bills.add`: files uploaded from Money's Add bills, kept on the batch's card. */
@@ -906,11 +930,11 @@ export const add = Effect.fn("KinBills.add")(function* (
       : yield* store.value.claim(wanted, uploader);
   const sql = yield* SqlClient.SqlClient;
   const batchId = batchIdFor(`${input.orgId}:${person.personId}:${input.clientRequestId}`);
-  const accepted = (yield* prepareFiles(claimed?.attachments ?? []).pipe(
+  const prepared = yield* prepareFiles(claimed?.attachments ?? [], wanted).pipe(
     Effect.onError(() =>
       claimed === undefined || Option.isNone(store) ? Effect.void : store.value.release(claimed),
     ),
-  )).map((file, index) => ({ ...file, sentId: wanted[index]?.id }));
+  );
   const result = yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -928,7 +952,7 @@ export const add = Effect.fn("KinBills.add")(function* (
           agentId: reader.agentId,
           cardChatId: chatId,
           addedBy: person.personId,
-          prepared: { accepted, refused },
+          prepared: { accepted: prepared.accepted, refused: [...refused, ...prepared.refused] },
           source: { _tag: "card" },
         });
         yield* keepAnswer(
@@ -951,12 +975,12 @@ export const add = Effect.fn("KinBills.add")(function* (
     // Files whose bytes were already a bill, or twice in this add, are on no message: they go.
     const kept = new Set(result.added.map((file) => file.sha256));
     const onCard = new Map<string, string>();
-    for (const file of accepted)
+    for (const file of prepared.accepted)
       if (kept.has(file.sha256) && !onCard.has(file.sha256))
         onCard.set(file.sha256, file.attachment.id);
     const ids = new Set(onCard.values());
     yield* store.value.remove(
-      accepted.filter((file) => !ids.has(file.attachment.id)).map((file) => file.attachment.id),
+      (claimed?.attachments ?? []).filter((file) => !ids.has(file.id)).map((file) => file.id),
     );
     yield* store.value.discardPending(wanted);
   }
@@ -1008,7 +1032,7 @@ export const addFromMessage = Effect.fn("KinBills.addFromMessage")(function* (in
   yield* countryFirst(input.orgId);
   const cardChatId =
     (yield* cardChat(input.orgId, personId, input.agentId)) ?? KinChatId.make(input.chatId);
-  const accepted = yield* prepareFiles(wanted);
+  const prepared = yield* prepareFiles(wanted);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const again = yield* storedAnswer(input.orgId, personId, "add", requestId, input.messageId);
@@ -1019,7 +1043,7 @@ export const addFromMessage = Effect.fn("KinBills.addFromMessage")(function* (in
         agentId: input.agentId,
         cardChatId,
         addedBy: personId,
-        prepared: { accepted, refused },
+        prepared: { accepted: prepared.accepted, refused: [...refused, ...prepared.refused] },
         source: { _tag: "message", chatId: input.chatId, messageId: input.messageId },
       });
       yield* keepAnswer(input.orgId, personId, "add", requestId, input.messageId, made);

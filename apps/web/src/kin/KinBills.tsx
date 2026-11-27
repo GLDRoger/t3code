@@ -18,7 +18,6 @@ import {
 import { kinCategoryLabel } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_DEFAULT_HOME_CURRENCY,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type EnvironmentId,
   type KinAttachment,
   type KinBillRow,
@@ -50,7 +49,7 @@ import {
   releaseAttachmentUpload,
   startAttachmentUpload,
 } from "../lib/attachmentUploadQueue";
-import { prepareImageForAttachment } from "../lib/imageCompression";
+import { prepareImageForBill } from "../lib/imageCompression";
 import { cn, randomUUID } from "../lib/utils";
 import { KinNewExpenseDialog } from "./KinMoneyForms";
 import { KinLoadFailed, KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
@@ -86,10 +85,9 @@ async function uploadBill(
       file,
     };
   } else {
-    const prepared = await prepareImageForAttachment(
-      normalizeComposerImageFileMimeType(file),
-      PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-    ).catch(() => null);
+    const prepared = await prepareImageForBill(normalizeComposerImageFileMimeType(file)).catch(
+      () => null,
+    );
     if (prepared === null || !prepared.ok)
       throw new Error(
         prepared?.ok === false && prepared.reason === "too-large"

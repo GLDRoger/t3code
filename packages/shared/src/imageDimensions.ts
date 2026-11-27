@@ -3,6 +3,14 @@ export interface ImageDimensions {
   readonly height: number;
 }
 
+/**
+ * Anthropic rejects an image over 2000px on a side once a request holds more than 20 images, and
+ * Claude Code forwards images sent into a running turn unchanged.
+ */
+export const IMAGE_ATTACHMENT_MAX_EDGE = 2000;
+
+export const BILL_PHOTO_MAX_PIXELS = 50_000_000;
+
 /** Allows several 64 KiB JPEG metadata segments before the dimensions header. */
 export const IMAGE_DIMENSIONS_HEADER_BYTES = 256 * 1024;
 
