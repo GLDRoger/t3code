@@ -90,7 +90,8 @@ export const mailRuleTap = Effect.fn("KinMailRules.answerCard")(function* ({
       KinChatError: () =>
         new KinChatError({
           reason: "invalid_state",
-          message: "This company mailbox is no longer connected.",
+          message:
+            "This mailbox is no longer a connected company mailbox, so nothing was turned on.",
         }),
     }),
   );

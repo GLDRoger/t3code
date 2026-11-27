@@ -2270,10 +2270,15 @@ it.effect.each([true, false])(
             .toBe("Only the owner or a co-owner can answer this mail rule card.");
           yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${person.personId}`;
           yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE connection_id = ${proposal.connectionId}`;
-          expect.soft(yield* refused()).toBe("This company mailbox is no longer connected.");
+          const noMailbox =
+            "This mailbox is no longer a connected company mailbox, so nothing was turned on.";
+          expect.soft(yield* refused()).toBe(noMailbox);
           yield* notNow(reworded, "tap-juniper-reworded-not-now").pipe(Effect.ignore);
           expect.soft(yield* decided(reworded)).toEqual({ status: "dismissed" });
           yield* sql`UPDATE kin_connections SET removed_at = NULL WHERE connection_id = ${proposal.connectionId}`;
+          yield* sql`UPDATE kin_connections SET person_id = ${person.personId} WHERE connection_id = ${proposal.connectionId}`;
+          expect.soft(yield* refused()).toBe(noMailbox);
+          yield* sql`UPDATE kin_connections SET person_id = NULL WHERE connection_id = ${proposal.connectionId}`;
           yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.what', 'Send the order.') WHERE widget_id = ${card.widgetId}`;
           expect
             .soft(yield* refused())
