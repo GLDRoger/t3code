@@ -151,6 +151,7 @@ import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
 import ChatsSettleAfter from "./migrations/K228_ChatsSettleAfter.ts";
 import BankSenders from "./migrations/K229_BankSenders.ts";
 import MailRules from "./migrations/K231_MailRules.ts";
+import MailRuleRuns from "./migrations/K232_MailRuleRuns.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -383,6 +384,7 @@ const migrations = {
   "228_ChatsSettleAfter": ChatsSettleAfter,
   "229_BankSenders": BankSenders,
   "231_MailRules": MailRules,
+  "232_MailRuleRuns": MailRuleRuns,
 };
 const loader = Migrator.fromRecord(migrations);
 
