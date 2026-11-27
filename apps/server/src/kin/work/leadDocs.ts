@@ -137,7 +137,7 @@ export const CreateInput = Schema.Struct({
     }),
   ).annotate({
     description:
-      "This doc is one draft (a post, a mail, a proposal…): its own card with Copy text and, in a teammate's own chat, Send to the owner.",
+      "A draft has its own card with Copy text. Only a teammate's own card has Send to the named approver. An owner or co-owner can use the draft without sending it for approval.",
   }),
 });
 export const WriteResult = Schema.Struct({
