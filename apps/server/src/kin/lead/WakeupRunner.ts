@@ -115,7 +115,9 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { RoutineHasNowState } from "../pulse/nowState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
+import { KinDeferralGithubReader } from "../triggers/deferralGithub.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { textLocale } from "../work/companyProfile.ts";
@@ -467,6 +469,7 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ensuring(Effect.sync(() => spaceChecks.delete(orgId))), Effect.forkIn(scope));
   }, Effect.uninterruptible);
   const prompt = yield* KinLeadPrompt;
+  const linkReader = yield* KinDeferralGithubReader;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
   const floor = yield* Floor.KinFloor;
@@ -1944,13 +1947,15 @@ const make = Effect.gen(function* () {
             // The morning check-in carries the retired morning brief's sections as facts.
             if (Option.isSome(routineContent))
               for (const event of events.filter(isMorningCheckIn)) {
-                const facts = yield* routineContent.value.morningFacts(orgId, agentId).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Kin morning facts unavailable", {
-                      cause: error.cause,
-                    }).pipe(Effect.as(null)),
-                  ),
-                );
+                const facts = yield* routineContent.value
+                  .morningFacts(orgId, agentId, wakeupId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin morning facts unavailable", {
+                        cause: error.cause,
+                      }).pipe(Effect.as(null)),
+                    ),
+                  );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
             // The evening check-in carries the retired evening summary's sections as facts. One
@@ -1970,7 +1975,7 @@ const make = Effect.gen(function* () {
                 const facts =
                   day !== today
                     ? null
-                    : yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
+                    : yield* routineContent.value.eveningFacts(orgId, agentId, wakeupId).pipe(
                         Effect.catch((error) =>
                           Effect.logWarning("Kin evening facts unavailable", {
                             cause: error.cause,
@@ -2049,13 +2054,23 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             };
-            const built = candidate
-              ? yield* prompt.buildSession({
-                  ...promptInput,
-                  ...(previous === undefined ? {} : { previous }),
-                })
-              : undefined;
-            const full = built?.full ?? (yield* prompt.build(promptInput));
+            const routineHasNow = events.some(
+              (event) =>
+                (isMorningCheckIn(event) || isEveningCheckIn(event)) &&
+                routineFacts.has(event.eventId),
+            );
+            const { built, full } = yield* Effect.gen(function* () {
+              const built = candidate
+                ? yield* prompt.buildSession({
+                    ...promptInput,
+                    ...(previous === undefined ? {} : { previous }),
+                  })
+                : undefined;
+              return { built, full: built?.full ?? (yield* prompt.build(promptInput)) };
+            }).pipe(
+              Effect.provideService(RoutineHasNowState, routineHasNow),
+              Effect.provideService(KinDeferralGithubReader, linkReader),
+            );
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";

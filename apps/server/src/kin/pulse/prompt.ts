@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { cappedText, encoded } from "../lead/quote.ts";
 import { tracked } from "../lead/tracked.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
 import { declineLine, givenDeclines } from "./declines.ts";
@@ -30,6 +31,7 @@ import * as KinPulse from "./KinPulse.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { inOwnerTime } from "./checkInSeeds.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { readNowState, RoutineHasNowState } from "./nowState.ts";
 import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
@@ -105,7 +107,19 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const gone = wokeFor.filter((key) => !open.has(key));
   const setAside =
     tell === undefined ? [] : (yield* givenDeclines(input.orgId, input.now, tell)).map(declineLine);
-  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0)
+  const sql = yield* SqlClient.SqlClient;
+  const [checkInOwner] =
+    checkIn && !(yield* RoutineHasNowState)
+      ? yield* sql<{ id: string }>`SELECT a.owner_person_id AS id FROM kin_agents a
+        WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId} AND a.retired_at IS NULL
+          AND ${sql.literal(ownerLevelSql("a.org_id", "a.owner_person_id"))}`
+      : [];
+  if (
+    checkInOwner === undefined &&
+    (checkIn ? all.facts.length : all.total) === 0 &&
+    gone.length === 0 &&
+    setAside.length === 0
+  )
     return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
@@ -197,7 +211,19 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     groups.set(project, [...(groups.get(project) ?? []), row(fact)]);
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
+  const now =
+    checkInOwner === undefined
+      ? undefined
+      : yield* readNowState({
+          orgId: input.orgId,
+          owner: KinPersonId.make(checkInOwner.id),
+          at: input.now,
+          zone,
+          links: [],
+          pulseRecords: [...new Set(shown.flatMap((fact) => fact.subject.recordId ?? []))],
+        });
   return {
+    ...(now === undefined ? {} : { now }),
     asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),

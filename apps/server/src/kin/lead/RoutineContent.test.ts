@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -26,10 +27,17 @@ import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
+import {
+  KinDeferralGithubError,
+  KinDeferralGithubReader,
+  type KinDeferralGithubReaderShape,
+  type GithubLinkState,
+} from "../triggers/deferralGithub.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { turnSensitive } from "../work/sensitiveReads.ts";
 import * as Queue from "./KinEventQueue.ts";
 import * as RoutineContent from "./RoutineContent.ts";
-import { renderRoutine, ROUTINE_MAX_LINES } from "./routines.ts";
+import { renderRoutine, ROUTINE_MAX_LINES, type MorningFacts } from "./routines.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { agentId, orchestrationHarness, orgId, seed } from "./WakeupRunner.testkit.ts";
 
@@ -74,6 +82,7 @@ const EVIL_TITLE =
 
 interface FixtureOptions {
   readonly at?: number;
+  readonly linkReader?: KinDeferralGithubReaderShape;
   readonly truncatedRepos?: number;
   /** Runs inside the GitHub read, after the first lead lookup and before the write transaction. */
   readonly onGithubRead?: Effect.Effect<void, never, SqlClient.SqlClient>;
@@ -175,6 +184,12 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>, options: Fixt
       Layer.provide(memory),
       Layer.provideMerge(chat),
       Layer.provide(github),
+      Layer.provide(
+        Layer.succeed(
+          KinDeferralGithubReader,
+          options.linkReader ?? KinDeferralGithubReader.defaultValue(),
+        ),
+      ),
       Layer.provide(threads),
     );
     return WakeupRunner.layer.pipe(
@@ -309,6 +324,207 @@ const deferralCard: Setup = Effect.gen(function* () {
   };
   yield* repo.insertWidget({ ...widget, audience: "chat" });
 }).pipe(Effect.orDie);
+
+const checkInLinks = [
+  "https://github.com/tidewater/app/pull/41",
+  "W-12",
+  "https://github.com/tidewater/app/issues/44",
+];
+const accountsCommitment: [string, string] = [
+  "commitments/com-accounts.md",
+  memoryFile("com-accounts", {
+    kind: "commitment",
+    title: "Rhea to sign in to the Accounts mailbox",
+    due: "2026-11-09T08:00Z",
+    recorded_at: "2026-11-05T00:30:00Z",
+    links: checkInLinks,
+  }),
+];
+
+const seedCheckIn = Effect.gen(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId}`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+    VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', 'member', ${timestamp})`;
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'Asia/Kolkata', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+  yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, account_label, created_at, updated_at, person_id)
+    VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL),
+      (${orgId}, 'rhea', 'google', 'Rhea mail', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'rhea@tidewater.example', 0, 0, 'owner'),
+      (${orgId}, 'zoya', 'google', 'Zoya mail', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'zoya@tidewater.example', 0, 0, 'zoya')`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+      owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+    VALUES (${orgId}, 'r-W-12', 'work', 'W-12', 'Invented site copy', 'done',
+      'person', 'owner', 'person', 'owner', 'o-W-12', 0, 0)`;
+});
+
+const readMorning = Effect.fn("test.readMorning")(function* (wakeupId?: string) {
+  const content = yield* RoutineContent.KinRoutineContent;
+  const facts = yield* content.morningFacts(orgId, agentId, wakeupId);
+  assert.isNotNull(facts);
+  return JSON.parse(facts) as MorningFacts;
+});
+
+it.effect("morning keeps the four-day-old commitment beside the live company mailbox", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const statements: Array<string> = [];
+      const transformer: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          statements.push(statement.compile()[0]);
+          return statement;
+        });
+      const facts = yield* readMorning().pipe(
+        Effect.provideService(Statement.CurrentTransformer, transformer),
+        Effect.provideService(Statement.SpanPropagationEnabled, true),
+      );
+      assert.lengthOf(statements, 13);
+      assert.include(facts.dueToday[0], {
+        title: "Rhea to sign in to the Accounts mailbox",
+        written: "Thu 5 Nov, 4 days ago",
+      });
+      assert.include(facts.now?.lines, "Accounts (accounts@tidewater.example): signed in");
+    }),
+  ),
+);
+
+it.effect("morning shows a company mailbox that needs signing in again", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE connection_id = 'accounts'`;
+      const facts = yield* readMorning();
+      assert.include(
+        facts.now?.lines ?? [],
+        "Accounts (accounts@tidewater.example): needs signing in again",
+      );
+    }),
+  ),
+);
+
+it.effect.each(["merged", "unavailable"] as const)(
+  "morning reports GitHub link state when the reader is %s",
+  (mode) =>
+    withFixture(
+      [accountsCommitment],
+      Effect.gen(function* () {
+        yield* seedCheckIn;
+        const facts = yield* readMorning();
+        assert.include(
+          facts.now?.lines ?? [],
+          mode === "merged"
+            ? "tidewater/app#41 by zoya-dev: merged"
+            : "https://github.com/tidewater/app/pull/41: Kin couldn't check it now",
+        );
+        if (mode === "merged")
+          assert.include(
+            facts.now?.lines,
+            "tidewater/app#44 by zoya-dev: open, assigned to zoya-dev",
+          );
+      }),
+      {
+        linkReader: {
+          readRepo: (id, repo, numbers) =>
+            mode === "unavailable"
+              ? Effect.fail(new KinDeferralGithubError({ orgId: id, reason: "unavailable" }))
+              : Effect.sync(() => {
+                  if (repo !== "tidewater/app") return new Map();
+                  assert.deepStrictEqual(numbers, [41, 44]);
+                  return new Map<number, Omit<GithubLinkState, "link">>([
+                    [41, { state: "merged", assignees: [], linkedPrs: [], author: "zoya-dev" }],
+                    [
+                      44,
+                      { state: "open", assignees: ["zoya-dev"], linkedPrs: [], author: "zoya-dev" },
+                    ],
+                  ]);
+                }),
+        },
+      },
+    ),
+);
+
+it.effect("morning shows the live state from a secondary link to Work", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const facts = yield* readMorning();
+      assert.include(facts.now?.lines ?? [], "W-12 Invented site copy: done");
+    }),
+  ),
+);
+
+it.effect("morning includes Rhea's mailbox and omits Zoya's mailbox", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const facts = yield* readMorning();
+      assert.include(facts.now?.lines ?? [], "Rhea mail (rhea@tidewater.example): signed in");
+      assert.notInclude(facts.now.lines.join("\n"), "zoya@tidewater.example");
+    }),
+  ),
+);
+
+it.effect("a teammate lead does not receive live state for a private record or a mailbox", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = 'W-12'`;
+      const owner = yield* readMorning("rhea-checkin");
+      assert.include(owner.now.lines, "W-12 Invented site copy: done");
+      assert.isTrue(yield* turnSensitive(orgId, "rhea-checkin"));
+      yield* sql`UPDATE kin_agents SET owner_person_id = 'zoya' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      const teammate = yield* readMorning();
+      assert.notProperty(teammate, "now");
+      assert.notProperty(teammate.dueToday[0], "written");
+    }),
+  ),
+);
+
+it.effect("a three-paragraph waiting message supplies a single short row to the agent", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      const chat = yield* Chat.KinChatService;
+      const day = "2026-11-08T18:45:00Z";
+      yield* chat.notice({
+        audience: "chat",
+        orgId,
+        chatId: KinChatId.make("owner-chat"),
+        messageId: KinMessageId.make("needs-rhea"),
+        body: "Pick the Tidewater launch day.\n\nReview the copy.\n\nApprove the design.",
+      });
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, reason, created_at)
+      VALUES ('waiting-rhea', ${orgId}, 'owner', 'owner-chat', 'needs-rhea', 'question', ${day})`;
+      const facts = yield* readMorning();
+      assert.deepStrictEqual(facts.waiting, [
+        {
+          title: "Pick the Tidewater launch day.",
+          note: "question, since Mon 9 Nov",
+          written: "Mon 9 Nov, today",
+          more: true,
+        },
+      ]);
+    }),
+  ),
+);
 
 it.effect(
   "a morning brief routine posts one server-written message with its card and no lead run",
