@@ -70,6 +70,11 @@ import {
 
 export const RESTART_JOURNAL_LINE =
   "Kin restarted during this turn; what was noted before the restart may not have been saved.";
+
+/** A stored time as UTC ms: ISO with a zone, or SQLite's zoneless `YYYY-MM-DD HH:MM:SS`, which is UTC. */
+const utcMs = (at: string) =>
+  Date.parse(/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+
 const FINISHED_KEPT = 1_000;
 const RESTART_OWNER_NOTICE =
   "Kin restarted while an agent was working, so something it said it saved may not have been kept. If it matters, tell it again.";
@@ -1977,7 +1982,7 @@ const make = Effect.gen(function* () {
           // came from a chat the owner didn't place the lead in, so it stays off the default branch.
           const [cutOver] = yield* sql<{ at: string }>`SELECT created_at AS "at"
             FROM kin_sql_migrations WHERE migration_id = 35`.pipe(toSql);
-          const cutOverSeconds = Date.parse(`${cutOver?.at.replace(" ", "T")}Z`) / 1000;
+          const cutOverSeconds = (cutOver === undefined ? Number.NaN : utcMs(cutOver.at)) / 1000;
           if (!Number.isFinite(cutOverSeconds)) return;
           const same = (a: Buffer | undefined, b: Buffer | undefined) =>
             a === undefined ? b === undefined : b !== undefined && a.equals(b);
@@ -2018,7 +2023,7 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${orgId} AND chat_id = ${cited} AND message_id = ${message}`.pipe(
                 toSql,
               );
-              if (said === undefined || !(Date.parse(said.at) < cutOverMs)) return false;
+              if (said === undefined || !(utcMs(said.at) < cutOverMs)) return false;
             }
             const chats = [...new Set([item.chat, cited].filter((chat) => chat !== undefined))];
             if (chats.length === 0) return true;

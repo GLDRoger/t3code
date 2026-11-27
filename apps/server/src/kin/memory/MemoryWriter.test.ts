@@ -2644,6 +2644,9 @@ it.effect("a chat-cited shadow note lands only when its message was said before 
       yield* said("m-before", "2026-10-30T00:00:00.000Z");
       // K035 ran at 12:42:41; this was said later that second.
       yield* said("m-after", "2026-11-10T12:42:41.500Z");
+      // SQLite's zoneless form is UTC, not the server's local time.
+      yield* said("m-plain-before", "2026-10-30 00:00:00");
+      yield* said("m-plain-after", "2026-11-10 14:00:00");
       yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
       yield* wokeBeforeCutOver(writer, "wake0");
       yield* commitDirectly(
@@ -2654,6 +2657,8 @@ it.effect("a chat-cited shadow note lands only when its message was said before 
             "people/before.md": cites("before", "m-before"),
             "people/after.md": cites("after", "m-after"),
             "people/missing.md": cites("missing", "m-missing"),
+            "people/plain-before.md": cites("plain-before", "m-plain-before"),
+            "people/plain-after.md": cites("plain-after", "m-plain-after"),
           },
         },
         preCutOver,
@@ -2664,10 +2669,12 @@ it.effect("a chat-cited shadow note lands only when its message was said before 
       assert.include(tree, "people/before.md");
       assert.notInclude(tree, "people/after.md");
       assert.notInclude(tree, "people/missing.md");
+      assert.include(tree, "people/plain-before.md");
+      assert.notInclude(tree, "people/plain-after.md");
       assert.deepStrictEqual(
         (yield* toldOwner).map((row) => row.body),
         [
-          "Some of Lead's earlier notes weren't added to Memory:\n- people/after.md: Kin couldn't confirm where it came from, so it left it out.\n- people/missing.md: Kin couldn't confirm where it came from, so it left it out.",
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/after.md: Kin couldn't confirm where it came from, so it left it out.\n- people/missing.md: Kin couldn't confirm where it came from, so it left it out.\n- people/plain-after.md: Kin couldn't confirm where it came from, so it left it out.",
         ],
       );
     }),
