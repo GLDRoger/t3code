@@ -4,7 +4,8 @@
 # answers a waiting code sign-in, `revoked` makes GitHub refuse the login, `prs` counts the PRs
 # `pr create` made, and `calls` records every run. `gh api` and the posting commands go to
 # `fakeGitHub.ts` beside this file (`github.json` in the state). Invented data only; it never reaches GitHub.
-S="$KIN_FAKE_GH"
+# An agent's shell isn't given KIN_FAKE_GH; kin-verify keeps the state beside this file.
+S="${KIN_FAKE_GH:-$(dirname "$0")/state}"; export KIN_FAKE_GH="$S"
 echo "$*" >> "$S/calls"
 API="$(dirname "$0")/fakeGitHub.ts"
 [ -f "$API" ] || API="$(dirname "$0")/../github/fakeGitHub.ts"
