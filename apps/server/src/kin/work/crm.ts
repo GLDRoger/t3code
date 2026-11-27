@@ -56,6 +56,8 @@ import {
   personSees,
   personSeesAs,
   seenBy,
+  teamSeesChange,
+  teamSeesField,
   type KinViewer,
 } from "./teamView.ts";
 import {
@@ -815,12 +817,14 @@ export const history = Effect.fn("KinCrm.history")(function* (
     listOf(anchor.registerId) === "projects"
       ? sql`r.project_id = ${anchor.recordId}`
       : sql`r.party_id = ${anchor.recordId}`;
+  const teammateProject = viewer._tag === "people" && listOf(anchor.registerId) === "projects";
   const filter = sql.and([
     sql`r.org_id = ${orgId}`,
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
     seen(sql, viewer),
+    ...(teammateProject ? [teamSeesChange(sql)] : []),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
   ]);
@@ -852,7 +856,9 @@ export const history = Effect.fn("KinCrm.history")(function* (
     via: row.via,
     kind: row.kind,
     fields: parseChanges(row.fieldsJson)
-      .filter((change) => change.field.trim() !== "")
+      .filter((change) =>
+        teammateProject ? teamSeesField(change.field) : change.field.trim() !== "",
+      )
       // A deal's stage is the company's id; the line reads its name.
       .map((change) =>
         row.registerId === "deals" && change.field === "stage" ? stageLine(stages, change) : change,
