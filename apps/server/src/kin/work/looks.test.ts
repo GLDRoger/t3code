@@ -4,7 +4,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { layer, team } from "../tasksKey/tasksKey.testkit.ts";
+import { admitted, layer, team } from "../tasksKey/tasksKey.testkit.ts";
+import * as TasksKeys from "../tasksKey/TasksKeys.ts";
+import { asPerson } from "../tasksKey/tasks.ts";
 import { CodingAgentCall } from "./keyCall.ts";
 import * as Work from "./ownerWork.ts";
 
@@ -76,4 +78,43 @@ it.effect("an admitted coding-agent call still cannot mark the person's task", (
     assert.strictEqual(error.reason, "not_found");
     assert.isUndefined(yield* time(mate.personId));
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("opening an entry gives an independent first-visit mark for each person", () =>
+  Effect.gen(function* () {
+    const { owner, mate, input } = yield* setup;
+    const upTo = "1970-01-01T00:00:00.100Z";
+    yield* TestClock.adjust(100);
+    assert.isNull((yield* Work.get([owner], input)).lookedAt);
+    yield* Work.looked([owner], { ...input, upTo });
+    assert.strictEqual((yield* Work.get([owner], input)).lookedAt, upTo);
+    assert.isNull((yield* Work.get([mate], input)).lookedAt);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("reading an entry as the owner and as a teammate leaves the mark table empty", () =>
+  Effect.gen(function* () {
+    const { owner, mate, input, sql } = yield* setup;
+    yield* Work.get([owner], input);
+    yield* Work.get([mate], input);
+    assert.deepStrictEqual(yield* sql`SELECT looked_at FROM kin_looks`, []);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["through its connection", "inside its call"] as const)(
+  "a coding-agent key %s leaves the mark out of the entry",
+  (path) =>
+    Effect.gen(function* () {
+      const { mate, input, zoya } = yield* setup;
+      yield* Work.looked([mate], { ...input, upTo: "1970-01-01T00:00:00.000Z" });
+      const key = yield* admitted(
+        (yield* TasksKeys.issue(zoya.app, { orgId: input.orgId })).secret,
+      );
+      const { people, connection } = asPerson(key);
+      const read =
+        path === "through its connection"
+          ? Work.get(people, input, connection)
+          : Work.get(people, input).pipe(Effect.provideService(CodingAgentCall, key.sessionId));
+      assert.notProperty(yield* read, "lookedAt");
+    }).pipe(Effect.provide(layer)),
 );

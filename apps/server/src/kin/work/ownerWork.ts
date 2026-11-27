@@ -850,8 +850,13 @@ const getAs = Effect.fn("KinWork.getAs")(function* (
     ? yield* teamVisible(input.orgId, viewer.person.personId, linked).pipe(workFailure)
     : undefined;
   const sees = (recordId: string) => seen === undefined || seen.has(recordId);
+  const mark =
+    connection === undefined && (yield* CodingAgentCall) === undefined
+      ? yield* Looks.lookedAt(input.orgId, viewer.person.personId, row.recordId).pipe(workFailure)
+      : undefined;
   return {
     ...shown,
+    ...(mark === undefined ? {} : { lookedAt: mark === null ? null : iso(mark) }),
     ...(milestone === undefined ||
     !sees(milestone.recordId) ||
     (viewer.teammate && plainTask(row, led))

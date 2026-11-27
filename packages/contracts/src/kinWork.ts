@@ -456,6 +456,7 @@ export const KinRecordDetail = Schema.Struct({
   ),
   credited: Schema.optionalKey(KinMoney),
   ...KinRecord.fields,
+  lookedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   notes: KinText,
   /** A task's milestone; absent with none, and from older hosts. */
   milestone: Schema.optional(KinRecordRef),

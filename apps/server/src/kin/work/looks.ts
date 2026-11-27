@@ -6,6 +6,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { notFound, workFailure } from "./recordRows.ts";
 import { type KinViewer, seenBy } from "./teamView.ts";
 
+export const lookedAt = Effect.fn("KinLooks.lookedAt")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ lookedAt: number }>`SELECT looked_at AS "lookedAt" FROM kin_looks
+    WHERE org_id = ${orgId} AND person_id = ${personId} AND record_id = ${recordId}`;
+  return row?.lookedAt ?? null;
+});
+
 // Only the explicit screen RPC advances the mark. Preview and background reads share the same entry reads.
 export const look = Effect.fn("KinLooks.look")(function* (
   orgId: KinOrgId,
