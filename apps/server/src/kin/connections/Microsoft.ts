@@ -142,7 +142,7 @@ const bodyText = (message: unknown) => {
 };
 
 const SUMMARY =
-  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
+  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,webLink";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
 const automationOf = (message: unknown) => ({
   listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
@@ -155,8 +155,15 @@ const receivedOf = (message: unknown) => {
   const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
   return Number.isFinite(at) ? at : null;
 };
+const linkOf = (message: unknown) => {
+  const id = text(field(message, "id"));
+  const webLink = text(field(message, "webLink"));
+  const url = id && webLink ? URL.parse(webLink) : null;
+  return webLink && url?.protocol === "https:" && !url.username && !url.password ? { webLink } : {};
+};
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
+  ...linkOf(message),
   from: nameOf(field(message, "from")),
   fromAddress: addressOf(field(message, "from")),
   to: recipients(message, "toRecipients"),

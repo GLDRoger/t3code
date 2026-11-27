@@ -130,29 +130,37 @@ const receivedOf = (message: unknown) => {
 
 /** A Gmail message; its body only in `full` format. */
 const messageOf =
-  (full: boolean, watch = false) =>
-  (message: unknown): MailMessage => ({
-    threadId: text(field(message, "threadId")) ?? "",
-    from: header(message, "From"),
-    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
-    to: addressesIn(header(message, "To")),
-    replyTo: addressesIn(header(message, "Reply-To")),
-    toLine: header(message, "To"),
-    ccLine: header(message, "Cc"),
-    deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
-      headerValues(message, name).flatMap(addressesIn),
-    ),
-    date: header(message, "Date"),
-    receivedAt: receivedOf(message),
-    subject: header(message, "Subject") ?? "",
-    preview: htmlToText(text(field(message, "snippet")) ?? ""),
-    unread: list(field(message, "labelIds")).includes("UNREAD"),
-    messageId: header(message, "Message-ID"),
-    references: header(message, "References"),
-    authResults: headerValues(message, "Authentication-Results"),
-    ...(watch ? { automation: automationOf(message) } : {}),
-    body: full ? messageBody(field(message, "payload")) : null,
-  });
+  (account: string | null, full: boolean, watch = false) =>
+  (message: unknown): MailMessage => {
+    const threadId = text(field(message, "threadId")) ?? "";
+    return {
+      threadId,
+      ...(account && threadId
+        ? {
+            webLink: `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#all/${encodeURIComponent(threadId)}`,
+          }
+        : {}),
+      from: header(message, "From"),
+      fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+      to: addressesIn(header(message, "To")),
+      replyTo: addressesIn(header(message, "Reply-To")),
+      toLine: header(message, "To"),
+      ccLine: header(message, "Cc"),
+      deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
+        headerValues(message, name).flatMap(addressesIn),
+      ),
+      date: header(message, "Date"),
+      receivedAt: receivedOf(message),
+      subject: header(message, "Subject") ?? "",
+      preview: htmlToText(text(field(message, "snippet")) ?? ""),
+      unread: list(field(message, "labelIds")).includes("UNREAD"),
+      messageId: header(message, "Message-ID"),
+      references: header(message, "References"),
+      authResults: headerValues(message, "Authentication-Results"),
+      ...(watch ? { automation: automationOf(message) } : {}),
+      body: full ? messageBody(field(message, "payload")) : null,
+    };
+  };
 
 const threadsOf = Effect.fn("KinGoogle.threads")(function* (
   context: MailContext,
@@ -189,7 +197,11 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
           ...RECIPIENT_HEADERS,
           ...(watch ? AUTOMATION_HEADERS : []),
         ],
-      }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false, watch)))),
+      }).pipe(
+        Effect.map((thread) =>
+          list(field(thread, "messages")).map(messageOf(context.mailbox.account, false, watch)),
+        ),
+      ),
     { concurrency: 5 },
   );
 
@@ -485,7 +497,9 @@ const google: MailVendor = {
     }),
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
-      Effect.map((thread) => list(field(thread, "messages")).map(messageOf(true))),
+      Effect.map((thread) =>
+        list(field(thread, "messages")).map(messageOf(context.mailbox.account, true)),
+      ),
     ),
   events: (context, query) =>
     api(context, calendarOf(query.calendarId), {

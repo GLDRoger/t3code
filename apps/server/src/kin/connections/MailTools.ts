@@ -273,6 +273,7 @@ const threadSummary = (mailbox: Mailbox) => (messages: ReadonlyArray<MailMessage
   const incoming = messages.findLast((message) => !sentBy(mailbox, message)) ?? last;
   return {
     threadId: first.threadId,
+    webLink: last.webLink,
     account: mailbox.account,
     receivedBy: receivedBy(mailbox, incoming),
     subject: first.subject,
@@ -368,6 +369,7 @@ const call = Effect.fn("KinMail.call")(function* (
         receivedBy: receivedBy(mailbox, incoming),
         messages: all.map((message) => ({
           from: message.from,
+          webLink: message.webLink,
           to: message.toLine,
           cc: message.ccLine,
           date: message.date,

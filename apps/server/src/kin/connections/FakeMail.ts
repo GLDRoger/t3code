@@ -747,6 +747,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const graphMessage = (message: FakeMailMessage) => ({
     id: message.id,
     conversationId: message.threadId,
+    webLink: `https://outlook.office.com/mail/inbox/id/${message.id}`,
     subject: message.subject,
     from: who(message.from),
     toRecipients: message.to.map(who),

@@ -164,6 +164,7 @@ export type MailFile = {
 /** One message as a vendor's mapping reads it. The shared tools see mail only through this. */
 export type MailMessage = {
   readonly threadId: string;
+  readonly webLink?: string;
   /** The sender as the mail shows it, such as `Ana <ana@example.com>`. */
   readonly from: string | null;
   readonly fromAddress: string | null;
