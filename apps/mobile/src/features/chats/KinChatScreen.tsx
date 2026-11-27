@@ -211,6 +211,7 @@ import {
   FloatingWorkingControl,
 } from "../threads/floating-working-control";
 import { KinWorkingSheet, useKinWorkingStop } from "./components/KinWorkingSheet";
+import { KinChatPinsStrip, useKinChatPins } from "./components/KinChatPins";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -1007,10 +1008,18 @@ function KinChatFeed(props: {
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
   // A stand-in computer's chat says whose it is before anyone types into it, in its own room
-  // under the bar so it never covers a message.
+  // under the bar so it never covers a message. Pinned cards share that slot.
   const standIn = useKinStandIn(props.environmentId);
+  const pins = useKinChatPins({
+    environmentId: props.environmentId,
+    orgId: KinOrgId.make(props.orgId),
+    chatId: props.chatId,
+    personId: props.viewer.personId,
+    members: props.members,
+  });
   const barSpace = useBarOverlap();
-  const barOverlap = standIn === null ? barSpace : 0;
+  const hasTopSlot = standIn !== null || pins.visible;
+  const barOverlap = hasTopSlot ? 0 : barSpace;
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
   const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
   // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
@@ -1793,9 +1802,14 @@ function KinChatFeed(props: {
 
   return (
     <View className="flex-1">
-      {standIn === null ? null : (
-        <View className="px-4 pb-1" style={{ paddingTop: barSpace }}>
-          <KinStandInLine line={standIn} />
+      {!hasTopSlot ? null : (
+        <View style={{ paddingTop: barSpace }}>
+          {standIn === null ? null : (
+            <View className="px-4 pb-1">
+              <KinStandInLine line={standIn} />
+            </View>
+          )}
+          <KinChatPinsStrip pins={pins} />
         </View>
       )}
       {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- KinFeedScrollView is passed through the iOS-only spread below, as in the thread feed. */}

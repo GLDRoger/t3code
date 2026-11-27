@@ -16,6 +16,7 @@ import {
   kinProjectLeadChoices,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinCampaignResultId } from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
@@ -27,14 +28,14 @@ import type {
   KinRecordKey,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
-import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PlusIcon } from "lucide-react";
+import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PinIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { Radio, RadioGroup } from "../components/ui/radio-group";
 import {
   Sheet,
@@ -46,6 +47,7 @@ import {
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAskRecord } from "./KinAskRecord";
+import { KinPinToChatDialog } from "./KinPinToChatDialog";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
@@ -70,6 +72,7 @@ import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinPinActions } from "./useKinPins";
 import { kinHostConnected } from "./useKinHost";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import {
@@ -142,6 +145,8 @@ function ProjectPage(
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [choosingLead, setChoosingLead] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions({ environmentId, orgId });
   const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
   const shell = useKinShell(props.environmentId);
@@ -227,45 +232,49 @@ function ProjectPage(
               disabled={busy}
             />
             {canChange ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => setEditing(true)}
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
+                <PencilIcon />
+                {KIN_PROJECTS.edit}
+              </Button>
+            ) : null}
+            {canChange || pinActions.canPin ? (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
+                  }
                 >
-                  <PencilIcon />
-                  {KIN_PROJECTS.edit}
-                </Button>
-                <Menu>
-                  <MenuTrigger
-                    render={
-                      <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
-                    }
-                  >
-                    <EllipsisIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    {view.closed === null ? (
-                      <>
-                        <MenuItem onClick={() => void change({ state: "done" })}>
-                          {KIN_PROJECTS.done}
-                        </MenuItem>
-                        <MenuItem
-                          variant="destructive"
-                          onClick={() => void change({ state: "dropped" })}
-                        >
-                          {KIN_PROJECTS.drop}
-                        </MenuItem>
-                      </>
-                    ) : (
-                      <MenuItem onClick={() => void change({ state: "open" })}>
-                        {KIN_PROJECTS.reopen}
+                  <EllipsisIcon />
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  {pinActions.canPin ? (
+                    <>
+                      <MenuItem onClick={() => setPinning(true)}>
+                        <PinIcon />
+                        {KIN_PINS_COPY.pinToChat}
                       </MenuItem>
-                    )}
-                  </MenuPopup>
-                </Menu>
-              </>
+                      {canChange ? <MenuSeparator /> : null}
+                    </>
+                  ) : null}
+                  {!canChange ? null : view.closed === null ? (
+                    <>
+                      <MenuItem onClick={() => void change({ state: "done" })}>
+                        {KIN_PROJECTS.done}
+                      </MenuItem>
+                      <MenuItem
+                        variant="destructive"
+                        onClick={() => void change({ state: "dropped" })}
+                      >
+                        {KIN_PROJECTS.drop}
+                      </MenuItem>
+                    </>
+                  ) : (
+                    <MenuItem onClick={() => void change({ state: "open" })}>
+                      {KIN_PROJECTS.reopen}
+                    </MenuItem>
+                  )}
+                </MenuPopup>
+              </Menu>
             ) : null}
           </div>
         </div>
@@ -668,6 +677,16 @@ function ProjectPage(
           </DialogPopup>
         </Dialog>
       )}
+      {pinning ? (
+        <KinPinToChatDialog
+          open={pinning}
+          onOpenChange={setPinning}
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.name}
+        />
+      ) : null}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}

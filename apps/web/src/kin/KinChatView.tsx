@@ -133,6 +133,7 @@ import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinChatPinsStrip } from "./KinChatPins";
 import { KinStopButton, KinWorkingTimer } from "./KinPresenceControls";
 import {
   KinComposerAttachmentStrip,
@@ -338,6 +339,15 @@ export function KinChatView(props: {
               : () => setProfileOpen(true)
         }
       />
+      {state._tag === "ready" && environmentId !== null && chatId !== null ? (
+        <KinChatPinsStrip
+          environmentId={environmentId}
+          orgId={summary?.orgId ?? KinOrgId.make(props.orgId)}
+          chatId={chatId}
+          personId={viewer.personId}
+          members={group?.members ?? summary?.members ?? []}
+        />
+      ) : null}
       {group === null ||
       environmentId === null ||
       summary === undefined ||

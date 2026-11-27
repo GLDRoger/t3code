@@ -62,7 +62,10 @@ import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { useKinAskRecord } from "./state/useKinAskRecord";
+import { useKinPinActions } from "./state/useKinPins";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   useKinProjectPage,
@@ -191,6 +194,8 @@ function KinProjectBody(
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions(props);
   const shell = useKinShell(environmentId);
   const view = kinProjectPageView(props.page, props.directory.names, now, shell);
   // A project goes with Clients: opened by its link while that is off, it says so.
@@ -225,195 +230,221 @@ function KinProjectBody(
   const asker = useKinAskRecord(props, { key: view.key, title: view.name });
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
+  const moreItems = [
+    ...(pinActions.canPin
+      ? [
+          {
+            id: "pin-to-chat",
+            title: KIN_PINS_COPY.pinToChat,
+            disabled: busy,
+            onPress: () => setPinning(true),
+          },
+        ]
+      : []),
+    ...(!canChange
+      ? []
+      : view.state === "open"
+        ? [
+            {
+              id: "done",
+              title: KIN_PROJECTS.done,
+              disabled: busy,
+              onPress: () => void change({ state: "done" }),
+            },
+            {
+              id: "dropped",
+              title: KIN_PROJECTS.drop,
+              destructive: true,
+              disabled: busy,
+              onPress: () => void change({ state: "dropped" }),
+            },
+          ]
+        : [
+            {
+              id: "open",
+              title: KIN_PROJECTS.reopen,
+              disabled: busy,
+              onPress: () => void change({ state: "open" }),
+            },
+          ]),
+  ];
+  const bar = {
+    actions: [
+      ...asker.actions,
+      ...(canChange
+        ? [
+            {
+              accessibilityLabel: KIN_PROJECTS.edit,
+              icon: "pencil" as const,
+              disabled: busy,
+              onPress: () =>
+                navigation.navigate("KinProjectForm", {
+                  environmentId,
+                  orgId,
+                  project: view.key,
+                }),
+            },
+          ]
+        : []),
+    ],
+    menus: [
+      ...asker.menus,
+      ...(moreItems.length === 0
+        ? []
+        : [{ title: "More", icon: "ellipsis" as const, items: moreItems }]),
+    ],
+  };
   return (
-    <KinTasksList
-      environmentId={environmentId}
-      orgId={orgId}
-      live={props.live}
-      stale={props.stale}
-      directory={props.directory}
-      title="Project"
-      onBack={() => navigation.goBack()}
-      choices={null}
-      initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
-      within={{
-        adds: view.adds,
-        bar: canChange
-          ? {
-              actions: [
-                ...asker.actions,
-                {
-                  accessibilityLabel: KIN_PROJECTS.edit,
-                  icon: "pencil",
-                  disabled: busy,
-                  onPress: () =>
-                    navigation.navigate("KinProjectForm", {
-                      environmentId,
-                      orgId,
-                      project: view.key,
-                    }),
-                },
-              ],
-              menus: [
-                ...asker.menus,
-                {
-                  title: "More",
-                  icon: "ellipsis",
-                  items:
-                    view.state === "open"
-                      ? [
-                          {
-                            id: "done",
-                            title: KIN_PROJECTS.done,
-                            disabled: busy,
-                            onPress: () => void change({ state: "done" }),
-                          },
-                          {
-                            id: "dropped",
-                            title: KIN_PROJECTS.drop,
-                            destructive: true,
-                            disabled: busy,
-                            onPress: () => void change({ state: "dropped" }),
-                          },
-                        ]
-                      : [
-                          {
-                            id: "open",
-                            title: KIN_PROJECTS.reopen,
-                            disabled: busy,
-                            onPress: () => void change({ state: "open" }),
-                          },
-                        ],
-                },
-              ],
-            }
-          : asker,
-        header: (
-          <>
-            {offLine === null ? null : (
-              <Text textRole="footnote" className="px-2 text-foreground-muted">
-                {offLine}
-              </Text>
-            )}
-            <KinProjectSummary
-              view={view}
-              problem={problem}
-              onDismissProblem={() => setProblem(null)}
-              onOpenTask={openTask}
-              onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
-              onAddMilestone={
-                (canChange || leads) && view.adds && view.state === "open"
-                  ? () =>
-                      navigation.navigate("KinMilestoneForm", {
-                        environmentId,
-                        orgId,
-                        project: view.key,
-                      })
-                  : null
-              }
-              onChangeLead={
-                canChange
-                  ? () =>
-                      navigation.navigate("KinProjectLead", {
-                        environmentId,
-                        orgId,
-                        project: view.key,
-                      })
-                  : null
-              }
-              privacy={{
-                shown: canChange,
-                disabled: busy || view.privacy.inherited,
-                onChange: (sensitive) => void change({ sensitive }),
-              }}
-              people={
-                <KinProjectPeopleSection
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  view={view}
-                  onChanged={props.onRefresh}
-                  onAdd={() =>
-                    navigation.navigate("KinProjectPeople", {
-                      environmentId,
-                      orgId,
-                      project: view.key,
-                    })
-                  }
-                />
-              }
-              results={
-                props.page.results === undefined ? null : (
-                  <KinCampaignResultsSection
-                    results={props.page.results}
-                    audience={view.audience}
-                    deals={dealsOn}
-                    shell={shell}
-                    onOpen={(id) => {
-                      const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
-                      navigation.navigate("KinMarketingList", {
-                        environmentId,
-                        orgId,
-                        title: opened.title,
-                        ...(opened.to === "contacts"
-                          ? { campaign: view.key }
-                          : opened.to === "deals"
-                            ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
-                            : {
-                                cameFrom: opened.filter.cameFrom ?? "",
-                                show: id === "prospects" ? "prospects" : "clients",
-                              }),
-                      });
-                    }}
-                  />
-                )
-              }
-              docs={
-                <KinDocsUnder
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  names={props.directory.names}
-                  under={{ project: view.key }}
-                />
-              }
-            />
-            <View className="gap-5 px-4 pb-2">
-              {props.page.can?.note === undefined ? null : (
-                <KinProjectNoteSection
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  projectKey={view.key}
-                  note={props.page.note ?? null}
-                  canEdit={props.page.can.note && canNote}
-                  onChanged={props.onRefresh}
-                />
+    <>
+      <KinTasksList
+        environmentId={environmentId}
+        orgId={orgId}
+        live={props.live}
+        stale={props.stale}
+        directory={props.directory}
+        title="Project"
+        onBack={() => navigation.goBack()}
+        choices={null}
+        initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
+        within={{
+          adds: view.adds,
+          bar,
+          header: (
+            <>
+              {offLine === null ? null : (
+                <Text textRole="footnote" className="px-2 text-foreground-muted">
+                  {offLine}
+                </Text>
               )}
-              <KinAsideNote
-                environmentId={environmentId}
-                orgId={orgId}
-                record={view.key}
-                names={props.directory.names}
-              />
-              <KinAttentionSection
-                environmentId={environmentId}
-                orgId={orgId}
-                scope={{ type: "project", key: view.key }}
-                names={props.directory.names}
-                onOpen={(to) => {
-                  if (to.type === "record") openTask(to.key);
+              <KinProjectSummary
+                view={view}
+                problem={problem}
+                onDismissProblem={() => setProblem(null)}
+                onOpenTask={openTask}
+                onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
+                onAddMilestone={
+                  (canChange || leads) && view.adds && view.state === "open"
+                    ? () =>
+                        navigation.navigate("KinMilestoneForm", {
+                          environmentId,
+                          orgId,
+                          project: view.key,
+                        })
+                    : null
+                }
+                onChangeLead={
+                  canChange
+                    ? () =>
+                        navigation.navigate("KinProjectLead", {
+                          environmentId,
+                          orgId,
+                          project: view.key,
+                        })
+                    : null
+                }
+                privacy={{
+                  shown: canChange,
+                  disabled: busy || view.privacy.inherited,
+                  onChange: (sensitive) => void change({ sensitive }),
                 }}
+                people={
+                  <KinProjectPeopleSection
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    view={view}
+                    onChanged={props.onRefresh}
+                    onAdd={() =>
+                      navigation.navigate("KinProjectPeople", {
+                        environmentId,
+                        orgId,
+                        project: view.key,
+                      })
+                    }
+                  />
+                }
+                results={
+                  props.page.results === undefined ? null : (
+                    <KinCampaignResultsSection
+                      results={props.page.results}
+                      audience={view.audience}
+                      deals={dealsOn}
+                      shell={shell}
+                      onOpen={(id) => {
+                        const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
+                        navigation.navigate("KinMarketingList", {
+                          environmentId,
+                          orgId,
+                          title: opened.title,
+                          ...(opened.to === "contacts"
+                            ? { campaign: view.key }
+                            : opened.to === "deals"
+                              ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
+                              : {
+                                  cameFrom: opened.filter.cameFrom ?? "",
+                                  show: id === "prospects" ? "prospects" : "clients",
+                                }),
+                        });
+                      }}
+                    />
+                  )
+                }
+                docs={
+                  <KinDocsUnder
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    names={props.directory.names}
+                    under={{ project: view.key }}
+                  />
+                }
               />
-              <KinPlaceLists
-                environmentId={environmentId}
-                orgId={orgId}
-                place={{ project: { key: view.key, title: view.name } }}
-                seq={props.stale ? null : props.page.seq}
-                directory={props.directory}
-              />
-            </View>
-          </>
-        ),
-      }}
-    />
+              <View className="gap-5 px-4 pb-2">
+                {props.page.can?.note === undefined ? null : (
+                  <KinProjectNoteSection
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    projectKey={view.key}
+                    note={props.page.note ?? null}
+                    canEdit={props.page.can.note && canNote}
+                    onChanged={props.onRefresh}
+                  />
+                )}
+                <KinAsideNote
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  record={view.key}
+                  names={props.directory.names}
+                />
+                <KinAttentionSection
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  scope={{ type: "project", key: view.key }}
+                  names={props.directory.names}
+                  onOpen={(to) => {
+                    if (to.type === "record") openTask(to.key);
+                  }}
+                />
+                <KinPlaceLists
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  place={{ project: { key: view.key, title: view.name } }}
+                  seq={props.stale ? null : props.page.seq}
+                  directory={props.directory}
+                />
+              </View>
+            </>
+          ),
+        }}
+      />
+      {pinning ? (
+        <KinPinToChatSheet
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.name}
+          onClose={() => setPinning(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

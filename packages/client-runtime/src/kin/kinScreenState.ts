@@ -19,7 +19,7 @@ import type { AsyncResult } from "effect/reactivity";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
-import { kinHostLink, type KinHost } from "./kinHost.ts";
+import { kinHostLink, type KinHost, type KinRouteHost } from "./kinHost.ts";
 import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
 import { kinTapText } from "./kinTap.ts";
 import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
@@ -207,7 +207,7 @@ const emptyKinDirectory: KinDirectory = {
   retiredAgents: new Set(),
 };
 
-export function kinDirectory(host: KinHost): KinDirectory {
+export function kinDirectory(host: KinHost | KinRouteHost): KinDirectory {
   if (host._tag !== "host") return emptyKinDirectory;
   const { probe } = host;
   if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;

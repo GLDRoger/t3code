@@ -113,6 +113,7 @@ import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
@@ -136,7 +137,9 @@ import {
 } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { useKinAskRecord } from "./state/useKinAskRecord";
+import { useKinPinActions } from "./state/useKinPins";
 import {
   useKinWork,
   useKinWorkAnswer,
@@ -330,6 +333,8 @@ function KinWorkItemBody(props: ItemTarget) {
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
   const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
+  const pinActions = useKinPinActions(props);
+  const [pinning, setPinning] = useState(false);
   const leadChat = useKinLeadChatId(
     props,
     task !== null && task.owner._tag === "agent" ? task.owner.agentId : null,
@@ -619,6 +624,9 @@ function KinWorkItemBody(props: ItemTarget) {
   // The less-used moves; each is here only where the host takes it from this viewer.
   // Giving it to someone is on Held by, so the menu doesn't offer it twice.
   const moreItems: ReadonlyArray<AppBarMenuItem> = [
+    ...(pinActions.canPin
+      ? [{ id: "pin-to-chat", title: KIN_PINS_COPY.pinToChat, onPress: () => setPinning(true) }]
+      : []),
     ...repeatMenu,
     ...(controls.menu.handBack
       ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
@@ -1097,6 +1105,15 @@ function KinWorkItemBody(props: ItemTarget) {
       />
       {linkedSection(shown, view.links, canLink && view.can.links === true)}
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+      {pinning ? (
+        <KinPinToChatSheet
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={item.key}
+          recordTitle={view.title}
+          onClose={() => setPinning(false)}
+        />
+      ) : null}
     </KinWorkFrame>
   );
 }

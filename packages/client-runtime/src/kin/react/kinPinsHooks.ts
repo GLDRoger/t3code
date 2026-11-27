@@ -5,6 +5,8 @@ import type {
   KinChatPinInput,
   KinChatPinsResult,
   KinChatUnpinInput,
+  KinOwnerTimeZone,
+  KinPeopleProfilesResult,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -25,6 +27,10 @@ const noPins: ReadonlyArray<KinChatPin> = [];
 const noRead = Atom.make<AsyncResult.AsyncResult<KinChatPinsResult, unknown>>(
   AsyncResult.initial(),
 );
+const noZone = Atom.make<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>>(AsyncResult.initial());
+const noProfiles = Atom.make<AsyncResult.AsyncResult<KinPeopleProfilesResult, unknown>>(
+  AsyncResult.initial(),
+);
 
 function dueTime(pin: KinChatPin) {
   if (
@@ -39,7 +45,38 @@ function dueTime(pin: KinChatPin) {
   return null;
 }
 
-export function makeKinPinsHooks<R, ER>({ kinClient, useAtomCommand }: KinHookApp<R, ER>) {
+export function makeKinPinsHooks<R, ER>({
+  kinClient,
+  registry,
+  useAtomCommand,
+}: KinHookApp<R, ER>) {
+  function useKinPinZones(
+    { environmentId, orgId }: KinScreenTarget,
+    personId: string | null,
+    enabled = true,
+  ): KinPinZones {
+    const supported = useAtomValue(
+      kinClient.chatPinsSupported({ environmentId, input: { orgId } }),
+    );
+    const active = enabled && supported;
+    const zoneResult = useAtomValue(
+      active ? kinClient.workZone({ environmentId, input: { orgId } }) : noZone,
+    );
+    const profilesResult = useAtomValue(
+      active && personId !== null
+        ? kinClient.profiles({ environmentId, input: { orgId } })
+        : noProfiles,
+    );
+    const zone = Option.getOrNull(AsyncResult.value(zoneResult))?.timeZone ?? null;
+    const readerZone =
+      personId === null
+        ? null
+        : (Option.getOrNull(AsyncResult.value(profilesResult))?.profiles.find(
+            (profile) => profile.personId === personId,
+          )?.timeZone ?? null);
+    return { zone, readerZone };
+  }
+
   function useKinPins(
     { environmentId, orgId, chatId }: ChatTarget,
     names: KinPinZones,
@@ -95,12 +132,24 @@ export function makeKinPinsHooks<R, ER>({ kinClient, useAtomCommand }: KinHookAp
       supported,
       canPin: supported && canPin,
       canUnpin: supported && canUnpin,
-      pin: (input: Omit<KinChatPinInput, "orgId">) =>
-        pin({ environmentId, input: { ...input, orgId } }),
-      unpin: (input: Omit<KinChatUnpinInput, "orgId">) =>
-        unpin({ environmentId, input: { ...input, orgId } }),
+      pin: async (input: Omit<KinChatPinInput, "orgId">) => {
+        const outcome = await pin({ environmentId, input: { ...input, orgId } });
+        if (AsyncResult.isSuccess(outcome))
+          registry.refresh(
+            kinClient.chatPins({ environmentId, input: { orgId, chatId: input.chatId } }),
+          );
+        return outcome;
+      },
+      unpin: async (input: Omit<KinChatUnpinInput, "orgId">) => {
+        const outcome = await unpin({ environmentId, input: { ...input, orgId } });
+        if (AsyncResult.isSuccess(outcome))
+          registry.refresh(
+            kinClient.chatPins({ environmentId, input: { orgId, chatId: input.chatId } }),
+          );
+        return outcome;
+      },
     };
   }
 
-  return { useKinPins, useKinPinActions };
+  return { useKinPinZones, useKinPins, useKinPinActions };
 }
