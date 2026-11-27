@@ -178,8 +178,8 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
         }),
     ],
     [
-      "reads a thread oldest first, with each file's name, type and size",
-      ({ fake, provider, call }) =>
+      "reads a thread oldest first, with each file's id, name, type and size",
+      ({ fake, call, provider }) =>
         Effect.gen(function* () {
           const first = fake.deliver({
             to: BILLING,
@@ -210,8 +210,14 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             thread.messages.map((one: any) => one.text),
             ["Here is the brief.", "And a question."],
           );
+          assert.strictEqual(thread.messages[0].messageId, first.id);
           assert.deepStrictEqual(thread.messages[0].attachments, [
-            { name: "brief.pdf", type: "application/pdf", bytes: 17 },
+            {
+              attachmentId: provider.preset === "google" ? "part:1" : `${first.id}-a0`,
+              name: "brief.pdf",
+              type: "application/pdf",
+              bytes: 17,
+            },
           ]);
           assert.include(thread.messages[0].to, BILLING);
           assert.deepStrictEqual(

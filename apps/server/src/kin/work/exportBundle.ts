@@ -462,16 +462,17 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
             file_json AS "fileJson"
           FROM kin_doc_versions WHERE org_id = ${orgId} AND record_id = ${row.recordId}
           ORDER BY version DESC LIMIT 1`;
+        const file =
+          latest?.fileJson == null
+            ? undefined
+            : Option.getOrUndefined(decodeDocFile(latest.fileJson));
+        if (file?.source?.privateTo !== undefined && file.source.privateTo !== owner) return [];
         const shown = yield* sql<{ attachmentId: string }>`SELECT attachment_id AS "attachmentId"
           FROM kin_doc_files WHERE org_id = ${orgId} AND record_id = ${row.recordId}
           ORDER BY attachment_id`;
         for (const one of shown) keepFile(`docs/${row.key}`, one.attachmentId);
         if (latest?.bodyKind === "file" && latest.attachmentId !== null) {
-          keepFile(
-            "docs",
-            latest.attachmentId,
-            `${row.key} ${safeName(fileNameOf(latest.fileJson) ?? row.title)}`,
-          );
+          keepFile("docs", latest.attachmentId, `${row.key} ${safeName(file?.name ?? row.title)}`);
           return [];
         }
         const name = `docs/${row.key} ${safeName(row.title)}.md`;
@@ -617,8 +618,6 @@ const decodeDocFile = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocFil
 const decodeCommentFiles = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(KinAttachment)),
 );
-const fileNameOf = (json: string | null) =>
-  json === null ? undefined : Option.getOrUndefined(decodeDocFile(json))?.name;
 const text = (value: string) => Stream.make(new TextEncoder().encode(value));
 
 /** The zip, after checking again that `personId` is the org's owner. */

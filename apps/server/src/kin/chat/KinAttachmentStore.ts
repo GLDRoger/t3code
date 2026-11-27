@@ -22,6 +22,7 @@ import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
 const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
 export { KIN_ATTACHMENT_ID_PREFIX };
+export const KIN_MAIL_FILE_OWNER = `${KIN_ATTACHMENT_ID_PREFIX}mail`;
 
 /** The page images a turn drew of a stored PDF (`turn/content.ts`) go with it. */
 const pagesOf = (attachmentId: string) =>

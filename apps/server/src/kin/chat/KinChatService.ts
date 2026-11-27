@@ -1057,6 +1057,16 @@ const make = Effect.gen(function* () {
   const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
     Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
       Effect.gen(function* () {
+        const [imported] = yield* sql<{ privateTo: string | null }>`SELECT
+            json_extract(file_json, '$.source.privateTo') AS "privateTo"
+          FROM kin_doc_versions
+          WHERE org_id = ${person.orgId} AND file_attachment_id = ${attachmentId}
+            AND json_extract(file_json, '$.source.kind') = 'mail'
+          LIMIT 1`;
+        if (imported !== undefined)
+          return imported.privateTo === null
+            ? yield* ownerLevel(person.orgId, person.personId)
+            : imported.privateTo === person.personId;
         const made = yield* sql`SELECT 1 FROM kin_doc_versions v
           JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
           LEFT JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
