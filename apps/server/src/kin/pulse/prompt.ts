@@ -114,16 +114,25 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId} AND a.retired_at IS NULL
           AND ${sql.literal(ownerLevelSql("a.org_id", "a.owner_person_id"))}`
       : [];
-  if (
-    checkInOwner === undefined &&
-    (checkIn ? all.facts.length : all.total) === 0 &&
-    gone.length === 0 &&
-    setAside.length === 0
-  )
-    return undefined;
+  const quiet =
+    (checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0;
+  if (quiet && checkInOwner === undefined) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
+  const zone = yield* ownerZone(input.orgId);
+  const now =
+    checkInOwner === undefined
+      ? undefined
+      : yield* readNowState({
+          orgId: input.orgId,
+          owner: KinPersonId.make(checkInOwner.id),
+          at: input.now,
+          zone,
+          links: [],
+          pulseRecords: [...new Set(shown.flatMap((fact) => fact.subject.recordId ?? []))],
+        });
+  if (quiet && now?.lines.length === 0) return undefined;
   // An overdue invoice or unanswered quote comes with the mail it went in, to reply in that thread.
   const mailed = new Map<string, SentMail>();
   for (const fact of shown)
@@ -152,7 +161,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
   const starts = yield* headStarts(input.orgId, shown, input.ownAccounts ?? []);
-  const zone = yield* ownerZone(input.orgId);
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
     : new Map<string, string>();
@@ -211,17 +219,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     groups.set(project, [...(groups.get(project) ?? []), row(fact)]);
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
-  const now =
-    checkInOwner === undefined
-      ? undefined
-      : yield* readNowState({
-          orgId: input.orgId,
-          owner: KinPersonId.make(checkInOwner.id),
-          at: input.now,
-          zone,
-          links: [],
-          pulseRecords: [...new Set(shown.flatMap((fact) => fact.subject.recordId ?? []))],
-        });
   return {
     ...(now === undefined ? {} : { now }),
     asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),

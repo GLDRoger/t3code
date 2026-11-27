@@ -536,8 +536,19 @@ describe("KinPulse", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = ${owner}`;
       const input = { orgId, agentId: chief, now: Date.parse("2026-11-09T15:00:00Z"), wokeFor: [] };
+      assert.isUndefined(yield* buildPulseSection({ ...input, checkIn: new Set() }));
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+          auth, reach, state, account_label, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL)`;
+      yield* sql`UPDATE kin_people SET access = 'member' WHERE org_id = ${orgId} AND person_id = ${owner}`;
+      assert.isUndefined(yield* buildPulseSection({ ...input, checkIn: new Set() }));
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = ${owner}`;
       const quiet = yield* buildPulseSection({ ...input, checkIn: new Set() });
-      assert.deepStrictEqual(quiet?.now, { at: "Mon 9 Nov, 15:00", lines: [] });
+      assert.deepStrictEqual(quiet?.now, {
+        at: "Mon 9 Nov, 15:00",
+        lines: ["Accounts (accounts@tidewater.example): signed in"],
+      });
 
       yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
         VALUES (${orgId}, 'r-W-5', 'pull_request', 'https://github.com/tidewater/app/pull/41', 'relates', 0),
@@ -556,7 +567,10 @@ describe("KinPulse", () => {
             }),
         }),
       );
-      assert.deepStrictEqual(afternoon?.now?.lines, ["tidewater/app#41 by zoya-dev: merged"]);
+      assert.deepStrictEqual(afternoon?.now?.lines, [
+        "Accounts (accounts@tidewater.example): signed in",
+        "tidewater/app#41 by zoya-dev: merged",
+      ]);
       const morningPulse = yield* section.pipe(Effect.provideService(RoutineHasNowState, true));
       assert.deepStrictEqual(morningPulse?.byProject, afternoon?.byProject);
       assert.notProperty(morningPulse, "now");
