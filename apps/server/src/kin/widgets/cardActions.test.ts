@@ -4966,8 +4966,9 @@ it.effect.each([
           clientActionId,
         });
       if (change === "tapped on two devices at once") {
-        const taps = yield* Effect.all(
-          [press(owner, "undo-phone"), press(owner, "undo-laptop")].map(Effect.result),
+        const taps = yield* Effect.forEach(
+          ["undo-phone", "undo-laptop"],
+          (device) => Effect.result(press(owner, device)),
           { concurrency: "unbounded" },
         );
         assert.deepStrictEqual(
