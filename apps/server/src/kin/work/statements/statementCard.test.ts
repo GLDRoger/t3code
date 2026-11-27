@@ -62,7 +62,7 @@ describe("statement review cards", () => {
       const review = reviewWith({ fit: "tds", tdsMinor: 1_000_000 });
       assert.strictEqual(
         rowsOf(review, "matched", 0, 1).matched[0]?.target.note,
-        "Paid with ₹10,000.00 withheld by the client",
+        "Paid with ₹10,000.00 tax withheld by the client",
       );
     }),
   );

@@ -78,7 +78,7 @@ const target = (
     ? { note: repaysNote(candidate.repays) }
     : candidate.fit === "tds" && candidate.tdsMinor !== undefined
       ? {
-          note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "withheld by the client" : `${withheldTax} deducted`}`,
+          note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "tax withheld by the client" : `${withheldTax} deducted`}`,
         }
       : candidate.fit === "part"
         ? { note: "Part payment" }
