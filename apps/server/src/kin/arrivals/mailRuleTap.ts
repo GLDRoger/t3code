@@ -1,6 +1,7 @@
 import { KinChatError, KinMailRuleCardState } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import type { MailRuleTapHandler } from "../chat/KinChatService.ts";
@@ -15,6 +16,7 @@ import {
 import { mailRuleFilter } from "./ruleMatch.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinMailRuleCardState);
+const decodeCardOption = Schema.decodeUnknownOption(KinMailRuleCardState);
 const changed = new KinChatError({
   reason: "widget_changed",
   message: "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
@@ -54,10 +56,16 @@ export const mailRuleTap = Effect.fn("KinMailRules.answerCard")(function* ({
       message: "Only the person this mail rule card was drawn for can answer it.",
     });
   if (widget.closedAt !== null)
-    return yield* new KinChatError({
-      reason: "widget_changed",
-      message: "This mail rule card was already answered.",
-    });
+    return yield* Option.getOrUndefined(decodeCardOption(widget.state))?.decision.status ===
+    "replaced"
+      ? new KinChatError({
+          reason: "widget_changed",
+          message: "A newer mail rule card replaced this one, so nothing was turned on.",
+        })
+      : new KinChatError({
+          reason: "widget_changed",
+          message: "This mail rule card was already answered.",
+        });
   if (widget.revision !== revision) return yield* stale;
   if ((yield* Clock.currentTimeMillis) >= seal.shown.expiresAt)
     return yield* new KinChatError({
@@ -105,7 +113,13 @@ export const mailRuleTap = Effect.fn("KinMailRules.answerCard")(function* ({
         }),
     }),
   );
-  if (currentMailbox.label !== mailbox.label || destination.name !== lead.name) return yield* stale;
+  // A rename draws no later card, so the person needs a new proposal, not the latest card.
+  if (currentMailbox.label !== mailbox.label || destination.name !== lead.name)
+    return yield* new KinChatError({
+      reason: "widget_changed",
+      message:
+        "This mail rule card shows an old name for its mailbox or lead, so ask for a new one.",
+    });
   const service = yield* KinMailRules;
   const rule = yield* service.createFromTap(
     [identity],

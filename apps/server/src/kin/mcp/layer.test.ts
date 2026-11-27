@@ -2214,11 +2214,14 @@ it.effect.each([true, false])(
             return made[0]!;
           });
           const reworded = yield* changedCard({
-            match: { ...match, subjectHas: ["JUNIPER ORDERS"] },
+            match: { ...match, subjectHas: ["JUNIPER ORDERS"], classes: ["client", "names_money"] },
             what: "Draft a reply.",
           });
           expect.soft(JSON.parse(reworded.state)).toMatchObject({ what: "Draft a reply." });
-          const capped = yield* changedCard({ monthlyCap: 12 });
+          const capped = yield* changedCard({
+            match: { ...match, withFile: null },
+            monthlyCap: 12,
+          });
           expect.soft(JSON.parse(capped.state)).toMatchObject({ what, monthlyCap: 12 });
           const notNow = (row: typeof card, clientActionId: string) =>
             chatService.act(person, {
@@ -2242,6 +2245,26 @@ it.effect.each([true, false])(
               Effect.flip,
               Effect.map((error) => error.message),
             );
+          // A change to the same filters, however spelled, closes the older card: one can be tapped.
+          const older = yield* changedCard({
+            match: { ...match, subjectHas: ["juniper credits"] },
+          });
+          const newer = yield* changedCard({
+            match: { ...match, subjectHas: ["JUNIPER CREDITS"] },
+            what: "Draft a reply.",
+          });
+          expect.soft(yield* decided(older)).toEqual({ status: "replaced" });
+          expect.soft(yield* decided(newer)).toEqual({ status: "proposed" });
+          expect
+            .soft(
+              yield* refused({
+                ...action,
+                widgetId: KinWidgetId.make(older.widgetId),
+                revision: older.revision,
+                clientActionId: "tap-juniper-replaced",
+              }),
+            )
+            .toBe("A newer mail rule card replaced this one, so nothing was turned on.");
           const other = { ...person, personId: KinPersonId.make("person-meera-juniper") };
           yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at, access)
             VALUES (${person.orgId}, ${other.personId}, 'meera', 'Meera', '1970-01-01', 'co_owner')`;
@@ -2282,6 +2305,13 @@ it.effect.each([true, false])(
           yield* sql`UPDATE kin_connections SET person_id = ${person.personId} WHERE connection_id = ${proposal.connectionId}`;
           expect.soft(yield* refused()).toBe(noMailbox);
           yield* sql`UPDATE kin_connections SET person_id = NULL WHERE connection_id = ${proposal.connectionId}`;
+          yield* sql`UPDATE kin_connections SET label = 'Juniper orders desk' WHERE connection_id = ${proposal.connectionId}`;
+          expect
+            .soft(yield* refused())
+            .toBe(
+              "This mail rule card shows an old name for its mailbox or lead, so ask for a new one.",
+            );
+          yield* sql`UPDATE kin_connections SET label = 'Juniper orders' WHERE connection_id = ${proposal.connectionId}`;
           yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.what', 'Send the order.') WHERE widget_id = ${card.widgetId}`;
           expect
             .soft(yield* refused())
@@ -2340,7 +2370,8 @@ it.effect.each([true, false])(
             )
             .toContain('"isError":false');
           const pending = (yield* cards()).find(
-            (row) => ![card, reworded, capped].some((one) => one.widgetId === row.widgetId),
+            (row) =>
+              ![card, reworded, capped, older, newer].some((one) => one.widgetId === row.widgetId),
           )!;
           yield* chatService.act(person, {
             ...action,

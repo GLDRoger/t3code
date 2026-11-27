@@ -66,6 +66,8 @@ export const KinMailRuleCardState = Schema.Struct({
     Schema.Struct({ status: Schema.Literal("proposed") }),
     Schema.Struct({ status: Schema.Literal("on"), ruleId: id }),
     Schema.Struct({ status: Schema.Literal("dismissed") }),
+    // A later proposal for the same filters took its place before either was tapped.
+    Schema.Struct({ status: Schema.Literal("replaced") }),
   ]),
 });
 export type KinMailRuleCardState = typeof KinMailRuleCardState.Type;

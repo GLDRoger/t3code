@@ -412,6 +412,11 @@ it.effect("a rule pulse claims alone and keeps the setter's private destination"
 
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 
+// A rule is made or turned on only by the person's tap: no SQL an agent tool reaches may do either.
+const makesRule = /\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+kin_mail_rules\b/i;
+const turnsRuleOn =
+  /\bUPDATE\s+kin_mail_rules\s+SET\b(?:(?!\bWHERE\b)[\s\S])*?\bstate\s*=\s*(?!\s|'paused'|'removed')/i;
+
 it("keeps mail-rule writes out of the MCP import graph", () => {
   const seen = new Set<string>();
   const graph = (file: string, via: ReadonlyArray<string> = []): void => {
@@ -423,6 +428,8 @@ it("keeps mail-rule writes out of the MCP import graph", () => {
       [...via, file].join(" → "),
     );
     const source = NodeFS.readFileSync(file, "utf8");
+    assert.notMatch(source, makesRule, [...via, file].join(" → "));
+    assert.notMatch(source, turnsRuleOn, [...via, file].join(" → "));
     const imports =
       /^(?:import|export)\s+(?!type\b)(?:[^;"']*?\sfrom\s+)?["'](\.[^"']+\.tsx?)["']|\bimport\(\s*["'](\.[^"']+\.tsx?)["']\s*\)/gm;
     for (const [, declaration, dynamic] of source.matchAll(imports)) {

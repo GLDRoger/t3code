@@ -12,7 +12,12 @@ import * as Schema from "effect/Schema";
 
 import { companyRuleMailbox, directRuleLead, ruleSetter } from "./ruleAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import { hasHiddenCharacters, mailRuleMatchProblem } from "./ruleMatch.ts";
+import {
+  hasHiddenCharacters,
+  mailRuleFilter,
+  mailRuleMatchProblem,
+  mailRulePhrase,
+} from "./ruleMatch.ts";
 
 export const DEFAULT_MAIL_RULE_CAP = 30;
 export const mailRuleMatchJson = Schema.fromJsonString(KinMailRuleMatch);
@@ -63,6 +68,17 @@ export const prepareMailRule = Effect.fn("KinMailRules.prepareDraft")(function* 
     monthlyCap: input.monthlyCap ?? DEFAULT_MAIL_RULE_CAP,
   };
 });
+
+/** The same filters however they were spelled or ordered: a proposal that changes only the rest replaces the older card. */
+export const mailRuleFilterKey = (match: KinMailRuleMatch) => {
+  const sorted = (values: ReadonlyArray<string>) => [...new Set(values)].toSorted();
+  return JSON.stringify({
+    from: sorted(match.from.flatMap((sender) => mailRuleFilter(sender).spelling ?? [])),
+    subjectHas: sorted(match.subjectHas.map(mailRulePhrase)),
+    withFile: match.withFile,
+    classes: match.classes === null ? null : sorted(match.classes),
+  });
+};
 
 export const checkMailRuleOwner = Effect.fn("KinMailRules.stillOwner")(function* (
   orgId: KinOrgId,

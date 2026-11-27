@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { looksLikeSignInMail } from "../connections/MailText.ts";
 import { DAY_MS } from "../durations.ts";
@@ -200,7 +201,7 @@ const make = Effect.gen(function* () {
         old.state === "removed"
       )
         return yield* tapUsed;
-    }
+    } else yield* (yield* KinRefreshObserver).touch(orgId, "connections");
     return yield* view({ orgId, ruleId });
   }, transaction);
 
@@ -220,6 +221,7 @@ const make = Effect.gen(function* () {
       const reason = state === "paused" ? "paused" : "removed";
       yield* holdRuleMail(input.orgId, [input.ruleId], "held_paused", reason, now);
       yield* stopQueuedRuleMail(input.orgId, [input.ruleId], reason, now);
+      yield* (yield* KinRefreshObserver).touch(input.orgId, "connections");
     }
     return yield* view(input);
   }, transaction);
@@ -248,6 +250,7 @@ const make = Effect.gen(function* () {
       agent_id = ${agentId}, chat_id = ${chatId}, source_event = ${tapId}, updated_at = ${now},
       activation = activation + 1
       WHERE org_id = ${orgId} AND rule_id = ${ruleId}`;
+    yield* (yield* KinRefreshObserver).touch(orgId, "connections");
     return yield* view(input);
   }, transaction);
   const list = Effect.fn("KinMailRules.list")(function* (

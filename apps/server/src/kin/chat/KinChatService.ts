@@ -27,7 +27,7 @@ import {
   KIN_DOC_CARD,
   KIN_MAIL_RULE_CARD_TYPE,
   KIN_MAIL_RULE_CARD_ACTIONS,
-  type KinMailRuleCardState,
+  KinMailRuleCardState,
   type KinMessageRefInput,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
@@ -223,6 +223,8 @@ export type ChoiceAnswerHandler = (input: {
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
+const decodeMailRuleCard = Schema.decodeUnknownOption(KinMailRuleCardState);
+
 export type MailRuleTapHandler = (input: {
   readonly identity: PersonIdentity;
   readonly widget: KinWidget;
@@ -530,7 +532,12 @@ export class KinChatService extends Context.Service<
     ) => Effect.Effect<KinWidget, ServiceError>;
     readonly showMailRule: (
       identity: AgentIdentity,
-      input: { readonly chatId: KinChatId; readonly state: KinMailRuleCardState },
+      input: {
+        readonly chatId: KinChatId;
+        readonly state: KinMailRuleCardState;
+        /** Older open proposals this one changes: each closes as replaced, so only one can be tapped. */
+        readonly replaces?: ReadonlyArray<KinWidgetId>;
+      },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
     readonly chart: (
@@ -4770,7 +4777,7 @@ const make = Effect.gen(function* () {
       });
     }),
     showMailRule: Effect.fn("KinChatService.showMailRule")(function* (identity, input) {
-      return yield* postCard(identity, {
+      const card = yield* postCard(identity, {
         chatId: input.chatId,
         clientMessageId: `kin-mail-rule:${SecureRandom.uuidV4Unsafe()}`,
         type: KIN_MAIL_RULE_CARD_TYPE,
@@ -4778,6 +4785,27 @@ const make = Effect.gen(function* () {
         state: validateState(KIN_MAIL_RULE_CARD_TYPE, input.state),
         silent: true,
       });
+      for (const widgetId of input.replaces ?? []) {
+        const older = Option.getOrUndefined(
+          yield* repo.getWidget({ orgId: identity.orgId, widgetId }),
+        );
+        if (older?.type !== KIN_MAIL_RULE_CARD_TYPE || older.closedAt !== null) continue;
+        const state = Option.getOrUndefined(decodeMailRuleCard(older.state));
+        if (state?.decision.status !== "proposed") continue;
+        const at = yield* now;
+        const closed = yield* repo.updateWidget({
+          ...older,
+          audience: "owner",
+          state: { ...state, decision: { status: "replaced" } } satisfies KinMailRuleCardState,
+          expectedRevision: older.revision,
+          closedAt: at,
+          updatedAt: at,
+        });
+        yield* sql.afterCommit(
+          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+        );
+      }
+      return card;
     }, transaction),
     showCard: Effect.fn("KinChatService.showCard")(
       (identity, input) =>

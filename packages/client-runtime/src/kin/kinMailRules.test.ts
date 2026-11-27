@@ -610,6 +610,92 @@ describe("kinMailRuleHistoryRows: what matched, when, and what happened", () => 
       "attention",
     ],
     [{ state: "held_paused" as const, eventId: null }, "Held: paused", "attention"],
+    // A host with the run ledger says why each mail was held and what each run did.
+    [
+      { state: "held_paused" as const, holdReason: "paused" as const, runOutcome: "held" as const },
+      "Held: the rule was paused",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "removed" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: the rule was removed",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "setter_left" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: the person who set it up left the team",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "setter_demoted" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: the person who set it up is no longer an owner or co-owner",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "mailbox_unavailable" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: the mailbox was no longer connected",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "destination_unavailable" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: its lead or chat was no longer available",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "wording_changed" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: the rule was changed outside Kin",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "monthly_limit" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: limit reached",
+      "attention",
+    ],
+    [
+      {
+        state: "held_paused" as const,
+        holdReason: "sender_unverified" as const,
+        runOutcome: "held" as const,
+      },
+      "Held: sender not verified",
+      "attention",
+    ],
+    [{ runOutcome: "posted_message" as const }, "Ran: the lead answered in the rule's chat", "ok"],
+    [
+      { outcome: "draft" as const, runOutcome: "raised_card" as const },
+      "Ran: a card waits for a tap",
+      "ok",
+    ],
+    [{ outcome: "nothing" as const, runOutcome: "nothing" as const }, "Nothing needed doing", "ok"],
+    [{ runOutcome: null, holdReason: null }, "Running", "ok"],
   ] as const)("%j says %s", (overrides, happened, tone) => {
     expect(row(mail(overrides))).toEqual({
       key: "arr_01JDCXD5E7F9G1H3J5K7M9N1P3",
@@ -1015,6 +1101,14 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
       "closed without an answer",
       cardWidget(cardState(), { closedAt: "2026-11-27T09:15:00.000Z" }),
       "This card closed, so nothing was turned on.",
+    ],
+    [
+      "replaced by a newer card",
+      cardWidget(cardState({ decision: { status: "replaced" } }), {
+        closedAt: "2026-11-27T09:15:00.000Z",
+        revision: 2,
+      }),
+      "A newer card replaced this one, so nothing was turned on.",
     ],
   ] as const)("settles %s, with no buttons", (_state, widget, status) => {
     const card = view(widget, { ownerLevel: true });

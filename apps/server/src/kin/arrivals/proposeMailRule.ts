@@ -4,12 +4,14 @@ import {
   KinChatId,
   KinMailRuleCardState,
   KinMailRuleCreateInput,
+  KinMailRuleMatch,
   KinPersonId,
   KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -23,6 +25,7 @@ import {
   checkMailRuleOwner,
   companyMailRuleMailbox,
   mailRuleDirectLead,
+  mailRuleFilterKey,
   prepareMailRule,
 } from "./ruleDraft.ts";
 import { mailRuleFilter } from "./ruleMatch.ts";
@@ -36,6 +39,7 @@ export const MailRuleProposal = Schema.Struct({
   monthlyCap: KinMailRuleCreateInput.fields.monthlyCap,
 });
 export const MailRuleProposalResult = Schema.Struct({ widgetId: KinWidgetId });
+const decodeMatch = Schema.decodeUnknownOption(Schema.fromJsonString(KinMailRuleMatch));
 
 const ownMessage = new KinChatError({
   reason: "not_allowed",
@@ -105,6 +109,20 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
         AND json_extract(p.plan_json, '$.shown.expiresAt') > ${now}
       LIMIT 1`;
       if (open !== undefined) return open;
+      const filters = mailRuleFilterKey(input.match);
+      const older = yield* sql<{ widgetId: KinWidgetId; matchJson: string }>`
+      SELECT w.widget_id AS "widgetId", json_extract(w.state_json, '$.match') AS "matchJson"
+      FROM kin_widgets w
+      JOIN kin_card_plans p ON p.org_id = w.org_id AND p.widget_id = w.widget_id
+        AND p.chat_id = w.chat_id AND p.option_id = 'turn_on'
+      WHERE w.org_id = ${orgId} AND w.type = 'mail_rule' AND w.closed_at IS NULL
+        AND json_extract(p.plan_json, '$.kind') = 'mail_rule'
+        AND json_extract(p.plan_json, '$.personId') = ${person.personId}
+        AND json_extract(p.plan_json, '$.shown.mailbox.connectionId') = ${input.connectionId}`;
+      const replaces = older.flatMap(({ widgetId, matchJson }) => {
+        const shown = Option.getOrUndefined(decodeMatch(matchJson));
+        return shown !== undefined && mailRuleFilterKey(shown) === filters ? [widgetId] : [];
+      });
       const { chatId } = yield* chat.createDirect(person, { orgId, agentId: input.agentId });
       const destination = yield* mailRuleDirectLead(orgId, person.personId, input.agentId, chatId);
       const shown = {
@@ -130,10 +148,7 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
           ownerPersonId: KinPersonId.make(destination.ownerPersonId),
           threadId: ThreadId.make(destination.threadId ?? `kin-host:${input.agentId}`),
         },
-        {
-          chatId,
-          state,
-        },
+        { chatId, state, replaces },
       );
       const plan: MailRulePlan = { kind: "mail_rule", personId: person.personId, shown };
       yield* sealPlans({

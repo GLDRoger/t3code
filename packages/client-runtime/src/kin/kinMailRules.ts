@@ -8,6 +8,7 @@ import {
   type EnvironmentId,
   type KinMailRule,
   type KinMailRuleHistory,
+  type KinMailRuleHoldReason,
   type KinMailRuleMatch,
   type KinMailRulePreview,
   type KinMailRuleRef,
@@ -175,6 +176,24 @@ export const KIN_MAIL_RULES = {
     held_cap: "Held: limit reached",
     held_unverified: "Held: sender not verified",
     held_paused: "Held: paused",
+  },
+  /** Why a matched mail didn't run, one sentence per reason the host records. */
+  heldBecause: {
+    paused: "Held: the rule was paused",
+    removed: "Held: the rule was removed",
+    setter_left: "Held: the person who set it up left the team",
+    setter_demoted: "Held: the person who set it up is no longer an owner or co-owner",
+    mailbox_unavailable: "Held: the mailbox was no longer connected",
+    destination_unavailable: "Held: its lead or chat was no longer available",
+    wording_changed: "Held: the rule was changed outside Kin",
+    monthly_limit: "Held: limit reached",
+    sender_unverified: "Held: sender not verified",
+  } satisfies Record<KinMailRuleHoldReason, string>,
+  /** What a run did, from what Kin saw it post. */
+  ranAnd: {
+    posted_message: "Ran: the lead answered in the rule's chat",
+    raised_card: "Ran: a card waits for a tap",
+    nothing: "Nothing needed doing",
   },
   gap: (from: string, to: string) => `Kin couldn't see mail between ${from} and ${to}`,
   previewTitle: "What would have matched in the last 30 days",
@@ -623,7 +642,11 @@ const recordKey = (refs: unknown): string | null => {
 
 function happened(entry: Extract<KinMailRuleEntry, { kind: "mail" }>): string {
   const copy = KIN_MAIL_RULES.happened;
+  if (entry.holdReason !== undefined && entry.holdReason !== null)
+    return KIN_MAIL_RULES.heldBecause[entry.holdReason];
   if (entry.state !== "woke") return copy[entry.state];
+  if (entry.runOutcome !== undefined && entry.runOutcome !== null && entry.runOutcome !== "held")
+    return KIN_MAIL_RULES.ranAnd[entry.runOutcome];
   switch (entry.outcome) {
     case "draft":
       return copy.draft;
@@ -693,18 +716,11 @@ export function kinMailRulePreviewView(
   };
 }
 
-/** A host with the wake answers a started run with its ids and no sentence. */
-type KinMailRuleRunNowQueued = {
-  readonly status: "queued";
-  readonly arrivalId: string;
-  readonly eventId: string;
-};
-
 /**
  * What Run now answered, in the host's own sentence: "not yet" and "no match" ran nothing; any
  * other answer a later host gives means a run started.
  */
-export function kinMailRuleRunNowAnswer(result: KinMailRuleRunNow | KinMailRuleRunNowQueued): {
+export function kinMailRuleRunNowAnswer(result: KinMailRuleRunNow): {
   readonly text: string;
   readonly ran: boolean;
 } {
@@ -774,6 +790,7 @@ export const KIN_MAIL_RULE_CARD = {
   dismissed: (at: string) => `Not now was tapped ${at}, so nothing was turned on.`,
   expired: "This card expired, so nothing was turned on. Ask the lead for a new one.",
   closed: "This card closed, so nothing was turned on.",
+  replaced: "A newer card replaced this one, so nothing was turned on.",
 } as const;
 
 /** A lead's proposed mail rule in chat, exactly as the host sealed it. */
@@ -839,11 +856,13 @@ export function kinMailRuleCardView(
         ? settledAt === null
           ? "Not now was tapped, so nothing was turned on."
           : copy.dismissed(settledAt)
-        : closedAt !== null
-          ? copy.closed
-          : open
-            ? copy.open(when(card.expiresAt, words))
-            : copy.expired;
+        : card.decision.status === "replaced"
+          ? copy.replaced
+          : closedAt !== null
+            ? copy.closed
+            : open
+              ? copy.open(when(card.expiresAt, words))
+              : copy.expired;
   const match = {
     ...card.match,
     from: card.match.from.map((sender) =>
