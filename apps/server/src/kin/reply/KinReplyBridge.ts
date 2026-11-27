@@ -1384,6 +1384,8 @@ const make = Effect.gen(function* () {
               delivered === undefined
                 ? yield* holdSend(wake, clientMessageId, body)
                 : { sent: true, messageId: delivered.messageId };
+            // A posted send marks its events in `deliver`; a held one is answered here.
+            if (delivered === undefined) yield* repliedBy(wake, Infinity)();
             // The steer boundary belongs to the committed send, not to the provider transcript.
             const receiptKey = `${clientMessageId}:${through}`;
             const [receipt] =

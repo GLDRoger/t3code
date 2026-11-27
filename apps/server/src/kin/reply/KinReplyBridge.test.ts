@@ -4018,6 +4018,12 @@ it.effect("an explicit check-in send waits in the same queue as a relay", () =>
       [{ body: text, deliverAt: Date.parse("1970-01-03T09:00:00.000Z") }],
     );
     assert.deepStrictEqual(yield* posted, []);
+    // Held is answered: a restart that loses the run must not requeue it for a second hold.
+    assert.deepStrictEqual(
+      yield* sql`SELECT COUNT(*) AS count FROM kin_events
+        WHERE wakeup_id = ${wakeupId} AND replied_at IS NOT NULL`,
+      [{ count: 1 }],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
