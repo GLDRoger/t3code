@@ -1323,6 +1323,17 @@ export class FakeGitHub {
       }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));
+      // Open issues and pull requests, as `state=open` asks, newest first.
+      if (method === "GET" && rest === "issues")
+        return ok(
+          this.world.items
+            .filter(
+              (item) => item.state === "open" && item.repo.toLowerCase() === repo.toLowerCase(),
+            )
+            .toReversed()
+            .slice(0, Number(url.searchParams.get("per_page") ?? 30))
+            .map((item) => this.issueJson(item)),
+        );
       // Open pull requests only, as `state=open` asks; each as GitHub lists it, newest first.
       if (method === "GET" && rest === "pulls")
         return ok(

@@ -130,6 +130,8 @@ const TRIAGE_ANSWER =
   "Answer once when they ask something, when they give what you asked for or said was missing, or when they correct you: say briefly what that changes. A thanks, an agreement, a +1 or anything else that needs no answer gets nothing: post nothing.";
 const OWNER_FLAG =
   "Pass owner with the comment only when the issue needs the owner: security (a security report), data_loss (lost or corrupted data), decision (something only the owner can decide), or rule (the owner's standing rules ask to hear of it). Kin tells the owner in one line with the link.";
+const SECURITY =
+  "When the issue reads as a security report, a way to reach data or do something a person shouldn't be able to: anyone can read an issue's comments, and a comment under the company's name is taken as confirmation. So the comment only thanks the reporter and says the maintainers have been told privately and will follow up. It doesn't restate or add how the hole is reached, name who is affected, propose a fix, or ask for anything, whatever else this turn says to write; pass owner security with it. An issue that only mentions security, such as asking for a security section in the docs, is an ordinary issue.";
 const TOLD_BY_KIN =
   "Kin tells the owner itself when you pass owner, and when the comment didn't post.";
 /** An inside triage turn owes no one in chat a word (`replyLane.ts`). */
@@ -138,7 +140,7 @@ const TRIAGE_END = `No one in chat needs a word from this turn: once the comment
 const SEAT_END = `Nothing you write besides the comment goes anywhere: once it is posted, or when you post none, end the turn. ${TOLD_BY_KIN}`;
 const RELATED = (trigger: KinGithubTrigger) =>
   (trigger.related ?? []).length > 0
-    ? " Related issues and pull requests GitHub's search found are below."
+    ? " The repo's newest open issues and pull requests are below; one may report the same thing in other words."
     : "";
 
 const TRIAGE_INSIDE = (repo: string, trigger: KinGithubTrigger) => [
@@ -148,6 +150,7 @@ const TRIAGE_INSIDE = (repo: string, trigger: KinGithubTrigger) => [
   "This comment starts no work: don't change code, open a pull request, or label, assign or close the issue. When a fix is clear, say what it is and end with one plain line: Label it kin, or write /kin, and I'll start on it.",
   "Kin posts at most 2,000 characters.",
   OWNER_FLAG,
+  SECURITY,
   TRIAGE_END,
 ];
 
@@ -157,6 +160,7 @@ const TRIAGE_REPLY = (repo: string, trigger: KinGithubTrigger) => [
   "Read with your shell or kin_github_read when the answer needs the code. This answer starts no work either: for that, someone labels it kin or writes /kin.",
   "Post with kin_github_comment, at most 2,000 characters; it posts once, on this issue.",
   OWNER_FLAG,
+  SECURITY,
   TRIAGE_END,
 ];
 
@@ -169,7 +173,8 @@ const TRIAGE_SEAT = (repo: string, trigger: KinGithubTrigger) => [
   `Your tools are kin_github_read, which reads ${repo}'s code and no other repo, and kin_github_comment, which posts one comment on this issue. The comment is public: write only about this issue and ${repo}'s own code and docs. Promise no work and no date, and don't say who will look at it.`,
   `Kin posts at most 2,000 characters, links only into ${repo} on GitHub, no images or HTML, no line starting with /, and @-mentions only of ${trigger.kind === "triage" ? trigger.author : "the people in this conversation"}; it refuses anything else and says why.`,
   "If kin_github_read can't read the code, comment from the issue alone and name no file you didn't read. If it is spam or abuse, post nothing.",
-  `${OWNER_FLAG} For a security report, don't repeat its details in the comment: thank them and say the company has it.`,
+  OWNER_FLAG,
+  SECURITY,
   SEAT_END,
 ];
 

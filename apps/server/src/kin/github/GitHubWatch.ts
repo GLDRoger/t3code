@@ -299,19 +299,7 @@ const decodeMemberships = Schema.decodeUnknownOption(
 );
 const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
-const decodeIssueSearch = Schema.decodeUnknownOption(
-  Schema.Struct({
-    items: Schema.Array(
-      Schema.Struct({
-        number: Schema.Int,
-        title: Schema.String,
-        state: Schema.String,
-        repository_url: Schema.String,
-        pull_request: Schema.optional(Schema.Unknown),
-      }),
-    ),
-  }),
-);
+const decodeOpenIssues = Schema.decodeUnknownOption(Schema.Array(Issue));
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
 const decodePermission = Schema.decodeUnknownOption(Permission);
@@ -523,28 +511,34 @@ const triggerFacts = (
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
+/** The repo's newest open issues and PRs for a triage turn to judge a duplicate by, not a match. */
+const RELATED = 10;
+const OPENING = 300;
+// In an inside turn only a teammate's text is shown; a stranger's issue is shown by its title.
+const INSIDE_TEXT = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const readRelatedIssues = Effect.fn("KinGitHubWatch.relatedIssues")(function* (
   get: (path: string) => Effect.Effect<ApiAnswer>,
-  { repo, number, title }: ThreadSnapshot,
+  { repo, number }: ThreadSnapshot,
+  inside: boolean,
 ) {
-  const words = (title.slice(0, 120).match(/[\p{L}\p{N}]+/gu) ?? []).join(" ");
-  if (words === "") return undefined;
-  const query = encodeURIComponent(`repo:${repo} in:title ${words}`);
-  const answer = yield* get(`search/issues?q=${query}&per_page=6`);
-  const found = answer.status === 200 ? decodeIssueSearch(answer.body) : Option.none();
-  const repositoryUrl = `https://api.github.com/repos/${repo.toLowerCase()}`;
-  return Option.map(found, ({ items }) =>
+  const answer = yield* get(`repos/${repo}/issues?state=open&per_page=${RELATED + 1}`);
+  const found = answer.status === 200 ? decodeOpenIssues(answer.body) : Option.none();
+  return Option.map(found, (items) =>
     items
-      .filter(
-        (item) => item.number !== number && item.repository_url.toLowerCase() === repositoryUrl,
-      )
-      .slice(0, 5)
-      .map((item) => ({
-        number: item.number,
-        title: item.title.slice(0, pieceEnd(item.title, 120)),
-        kind: item.pull_request === undefined ? ("issue" as const) : ("pull" as const),
-        state: item.state,
-      })),
+      .filter((item) => item.number !== number)
+      .slice(0, RELATED)
+      .map((item) => {
+        const body =
+          !inside || INSIDE_TEXT.has(item.author_association) ? (item.body ?? "").trim() : "";
+        const opening = body.slice(0, pieceEnd(body, OPENING));
+        return {
+          number: item.number,
+          title: item.title.slice(0, pieceEnd(item.title, 120)),
+          kind: item.pull_request === undefined ? ("issue" as const) : ("pull" as const),
+          state: item.state,
+          ...(opening === "" ? {} : { opening }),
+        };
+      }),
   ).pipe(Option.getOrUndefined);
 });
 
@@ -1528,7 +1522,7 @@ export const make = Effect.gen(function* () {
         tally.woken < WAKES_PER_LOOK &&
         (yield* hasAutomaticAllowance(orgId, repo, trigger, now, !trigger.inside))
           ? {
-              related: yield* readRelatedIssues(get, current),
+              related: yield* readRelatedIssues(get, current, trigger.inside),
               conversation:
                 trigger.kind === "triage_reply"
                   ? yield* readConversation(get, read.thread, decide, trigger.inside)
