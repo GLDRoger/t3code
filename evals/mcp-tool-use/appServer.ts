@@ -21,6 +21,7 @@ export type AppServerTurn = {
   readonly effort: string;
   readonly baseInstructions: string;
   readonly config: Readonly<Record<string, Json>>;
+  readonly disableConfiguredMcpServers?: boolean;
   /** The namespace Codex lists the tools under, as it lists an MCP server's. */
   readonly namespace: string;
   readonly tools: ReadonlyArray<AppServerTool>;
@@ -136,25 +137,41 @@ export const openAppServer = () => {
       finish = resolve;
       fail = reject;
     });
-    const thread = await request("thread/start", {
-      model: turn.model,
-      cwd,
-      ephemeral: true,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      environments: [],
-      baseInstructions: turn.baseInstructions,
-      config: turn.config,
-      dynamicTools: [
-        {
-          type: "namespace",
-          name: turn.namespace,
-          description: "Tools of the app this agent works in.",
-          tools: turn.tools.map((tool) => ({ type: "function", ...tool })),
-        },
-      ],
-    });
-    const threadId: string = thread.thread.id;
+    let threadId: string;
+    try {
+      const config = turn.disableConfiguredMcpServers
+        ? {
+            ...turn.config,
+            ...Object.fromEntries(
+              Object.keys((await request("config/read", { cwd })).config.mcp_servers ?? {}).map(
+                (name) => [`mcp_servers.${name}.enabled`, false],
+              ),
+            ),
+          }
+        : turn.config;
+      const thread = await request("thread/start", {
+        model: turn.model,
+        cwd,
+        ephemeral: true,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        environments: [],
+        baseInstructions: turn.baseInstructions,
+        config,
+        dynamicTools: [
+          {
+            type: "namespace",
+            name: turn.namespace,
+            description: "Tools of the app this agent works in.",
+            tools: turn.tools.map((tool) => ({ type: "function", ...tool })),
+          },
+        ],
+      });
+      threadId = thread.thread.id;
+    } catch (error) {
+      NodeFS.rmSync(cwd, { recursive: true, force: true });
+      throw error;
+    }
     let turnId: string | undefined;
     const record = (event: AppServerEvent) => {
       events.push(event);

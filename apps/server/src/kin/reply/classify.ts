@@ -251,7 +251,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
-  [/(?:^|__|\.)kin_chat_post$/, "Writing"],
+  [/(?:^|__|\.)(?:kin_chat_post|kin_send)$/, "Writing"],
   [/(?:^|__|\.)(?:kin_react|kin_journal|kin_skip)$/, null],
   [
     /(?:^|__|\.)(?:records_query|record_get|client_read|pipeline_read|deal_stages|dates_query)$/,

@@ -61,6 +61,7 @@ import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { UNREAD_ALERT_MARKER } from "../work/statements/bankAlerts.ts";
 import { formatMoneyPlain } from "../work/money.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
@@ -588,7 +589,7 @@ describe("KinPulse", () => {
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
       assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
-      // A suggested repeating invoice's next draft names no amount and waits on Keep.
+      // A suggested repeating invoice's next draft names no amount and is not yet kept.
       yield* insert({
         id: "INV-17",
         list: "invoices",
@@ -598,7 +599,7 @@ describe("KinPulse", () => {
         dateAt: B + 15 * DAY,
       });
       const [retainer] = keyed((yield* read(B + 10 * DAY)).facts, "retainer_due", "INV-17");
-      assert.match(retainer!.consequence, /; it is still a draft that waits on Keep\.$/);
+      assert.match(retainer!.consequence, /; it is still a draft, suggested and not yet kept\.$/);
       assert.notInclude(retainer!.consequence, "12,345");
 
       // V27: our own task under a client is a late task, not something we owe the client.
@@ -2929,7 +2930,7 @@ describe("KinPulse", () => {
       assert.match(hers, /^Your meeting (with .+ )?was /);
       assert.match(
         keyed((yield* read(at)).facts, "meeting_passed", "W-14")[0]!.consequence,
-        /^Meeting with Meera was /,
+        /^Meeting with Meera was .+ Ask how it went, then add the outcome/,
       );
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-W-14'`;
       const outside = (yield* read(at, { _tag: "people", people: [KinPersonId.make("other")] }))
@@ -2969,7 +2970,10 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = ${mate}`;
       const removed = keyed((yield* read(at)).facts, "holder_removed", "W-8")[0];
       assert.deepStrictEqual(removed?.actor, { _tag: "owner" });
-      assert.match(removed?.consequence ?? "", /^Held by .+, whose access was removed\./);
+      assert.match(
+        removed?.consequence ?? "",
+        /^Held by (.+), whose access was removed\. Give it to someone else, or give \1 access again in Settings → Team\.$/,
+      );
       assert.notInclude(
         (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
         "holder_removed",
@@ -3102,7 +3106,7 @@ describe("KinPulse", () => {
           ),
         );
       const advice =
-        "Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
+        "Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
       assert.isEmpty(yield* facts());
       yield* insertAlert("old", at - 15 * DAY);
       yield* insertAlert("future", at + DAY);
@@ -3129,6 +3133,19 @@ describe("KinPulse", () => {
       assert.equal(two?.subject.title, "2 bank alerts could not be read");
       assert.equal(two?.consequence, `Sent between Tue 17 Nov and Thu 19 Nov. ${advice}`);
       assert.notEqual(factSig(one!, at, zone), factSig(two!, at, zone));
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'second'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read 1 of them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'first'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}`;
 
       const told = { orgId, personId: owner, at, zone };
       yield* markTold({ ...told, eventId: "first-checkin", facts: [one!] });
@@ -3270,12 +3287,12 @@ describe("KinPulse", () => {
         yield* credit("BNK-3", 95_000, 9, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
         assert.strictEqual(
           (yield* factOf("BNK-2"))!.consequence,
-          "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: same amount from Harbourline Logistics. BNK-3 (₹95,000, 10 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+          "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: same amount from Harbourline Logistics. BNK-3 (₹95,000, 10 Nov) could also be this invoice's payment. It isn't recorded as paid until the owner confirms.",
         );
         const third = yield* factOf("BNK-3");
         assert.strictEqual(
           third!.consequence,
-          "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. BNK-2 (₹95,000, 9 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+          "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. BNK-2 (₹95,000, 9 Nov) could also be this invoice's payment. It isn't recorded as paid until the owner confirms.",
         );
 
         // The owner says it isn't: told no more, and no wake, whatever invoices come later.
@@ -3421,7 +3438,7 @@ describe("KinPulse", () => {
       yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
         VALUES (${orgId}, 'invented-alert', 'invented-connection', 'invented-thread', ${B}, ${B}, 'unparsed')`;
       const title = "1 bank alert could not be read";
-      const expected = `${title}. Sent Sun 1 Nov. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
+      const expected = `${title}. Sent Sun 1 Nov. Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
       const input = { orgId, now: B, viewer: KIN_OWNER_LEVEL };
       const offered = { ...input, offeredFacts: new Set(["bank_alerts_unreadable"]) };
       assert.isEmpty(yield* morningMoneyLines(input));

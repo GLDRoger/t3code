@@ -63,6 +63,11 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
+import * as BankAlertReader from "../work/statements/BankAlertReader.ts";
+import {
+  approveFixtureAlertSender,
+  fixtureBankAlertReader,
+} from "../work/statements/bankAlerts.testkit.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
@@ -216,6 +221,7 @@ const gatedFiles = (gates: Gates) =>
   );
 const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
+    Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
     Layer.provideMerge(Layer.merge(Connections.layer, KinRecords.layer)),
     Layer.provide(gateFor(cards)),
     Layer.provideMerge(gatedSecrets(gates)),
@@ -2814,16 +2820,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               const alert = fake.deliver({
                 to: ACCOUNTS,
                 ...(after === undefined ? {} : { threadId: after.alert.threadId }),
-                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                from: "Harbor Bank alerts <alerts@harborbank.example>",
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
                 at,
                 authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
                 ],
               });
               return { mail, alert };
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const closed: Array<string> = [];
           const collect: CloseCards = (ids, text) =>
             Effect.sync(() => closed.push(...ids.map((id) => `${id}: ${text}`)));
@@ -3144,12 +3151,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             fake.deliver({
               to: address,
               ...(threadId === undefined ? {} : { threadId }),
-              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
               subject: "You have done a UPI txn. Check details!",
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+              authResults: [
+                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+              ],
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const first = yield* connect(fake, service, address);
           yield* readMail(first);
           const moved = yield* connections.moveMailbox(people(owner), {
@@ -3227,12 +3237,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             fake.deliver({
               to: ACCOUNTS,
               ...(threadId === undefined ? {} : { threadId }),
-              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
               subject: "You have done a UPI txn. Check details!",
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+              authResults: [
+                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+              ],
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const accounts = yield* connect(fake, "google", ACCOUNTS);
           yield* readMail(accounts);
           // An older host's second, unkeyed row of the same address can't move beside the first.
@@ -5214,17 +5227,18 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const at = yield* Clock.currentTimeMillis;
           yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
             VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${at})`;
-          // Invented alerts in HDFC's shape, more of them than any one pass used to read.
+          yield* approveFixtureAlertSender(orgId, owner);
+          // Invented alerts in the shape of a bank's alert, more of them than any one pass used to read.
           for (const n of Array.from({ length: 25 }, (_, index) => index + 10))
             for (const to of [ACCOUNTS, HELLO])
               fake.deliver({
                 to,
-                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                from: "Harbor Bank alerts <alerts@harborbank.example>",
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${n}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is 6322111100${n}.`,
                 at,
                 authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
                 ],
                 files: [{ name: "receipt.pdf", mimeType: "application/pdf", data: "YQ==" }],
               });

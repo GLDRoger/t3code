@@ -5,6 +5,7 @@ import * as KinGitHubAppSetupHttp from "./kin/github/appSetupHttp.ts";
 import * as KinGitHubHookHttp from "./kin/github/hookHttp.ts";
 import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
 import * as Kin from "./kin/layer.ts";
+import * as BankAlertReader from "./kin/work/statements/BankAlertReader.ts";
 import * as ToolBlockStarts from "./kin/reply/ToolBlockStarts.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -933,6 +934,7 @@ const layerMakeRoutes = Layer.mergeAll(
     speechStreamRouteLayer,
   ),
   Kin.mcpLayer(McpHttpServer.layer).pipe(
+    Layer.provide(BankAlertReader.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
     Layer.provide(ProjectionStoreV2.layer),

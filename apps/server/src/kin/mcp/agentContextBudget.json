@@ -1,22 +1,22 @@
 {
-  "mcpToolListJsonBytes": 64794,
-  "kinToolListJsonBytes": 3071,
+  "mcpToolListJsonBytes": 64848,
+  "kinToolListJsonBytes": 3125,
   "kinInstructionsBytes": {
-    "owner": 44088,
-    "confined": 44036
+    "owner": 44795,
+    "confined": 44743
   },
-  "kinSharedInstructionsHash": "02bd16739ecbb5c887a999efe843d28f36bd8f78c7d545940b63aefa7db0989c",
+  "kinSharedInstructionsHash": "5fea36c08e6e4df923d71ea4a8ad0b9419ce5e28f04fe0a01f178bf77cd7aa1a",
   "kinLeadToolListJsonBytes": {
-    "engineering": 140740,
-    "engineeringBesideFinanceAndSales": 126931,
-    "finance": 119918,
-    "shared": 73725,
-    "social": 122647,
-    "socialBesideFinanceAndSales": 108838,
-    "support": 119918
+    "engineering": 140780,
+    "engineeringBesideFinanceAndSales": 126971,
+    "finance": 119958,
+    "shared": 75205,
+    "social": 122687,
+    "socialBesideFinanceAndSales": 108878,
+    "support": 119958
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
-  "kinLeadAlwaysLoadedToolBytes": 30332,
+  "kinLeadAlwaysLoadedToolBytes": 31692,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -95,7 +95,7 @@
       "schema": 422
     },
     "kin_ask": {
-      "desc": 2350,
+      "desc": 2572,
       "schema": 769
     },
     "kin_ask_close": {
@@ -107,7 +107,7 @@
       "schema": 825
     },
     "kin_cancel": {
-      "desc": 231,
+      "desc": 297,
       "schema": 115
     },
     "kin_chart": {
@@ -115,7 +115,7 @@
       "schema": 2080
     },
     "kin_chat_post": {
-      "desc": 515,
+      "desc": 569,
       "schema": 330
     },
     "kin_chat_read": {
@@ -143,7 +143,7 @@
       "schema": 88
     },
     "kin_defer": {
-      "desc": 544,
+      "desc": 640,
       "schema": 877
     },
     "kin_document": {
@@ -175,8 +175,8 @@
       "schema": 134
     },
     "kin_github_watch": {
-      "desc": 221,
-      "schema": 114
+      "desc": 336,
+      "schema": 142
     },
     "kin_hand_off": {
       "desc": 1451,
@@ -222,6 +222,10 @@
       "desc": 520,
       "schema": 941
     },
+    "kin_send": {
+      "desc": 400,
+      "schema": 572
+    },
     "kin_skip": {
       "desc": 400,
       "schema": 57
@@ -241,10 +245,6 @@
     "list_define": {
       "desc": 642,
       "schema": 2208
-    },
-    "mail_rule": {
-      "desc": 450,
-      "schema": 937
     },
     "memory_label": {
       "desc": 380,
@@ -331,7 +331,7 @@
       "schema": 208
     },
     "record_create": {
-      "desc": 2829,
+      "desc": 2845,
       "schema": 4434
     },
     "record_get": {
@@ -402,10 +402,10 @@
   "kinLeadPromptBytes": {
     "ownerReply": 1588,
     "setUp": 3175,
-    "checkIn": 2976,
-    "pulse": 3012,
-    "scheduled": 3248,
-    "reminder": 3302,
+    "checkIn": 3181,
+    "pulse": 3221,
+    "scheduled": 3469,
+    "reminder": 3510,
     "groupReply": 3113,
     "teamRoom": 2751
   }

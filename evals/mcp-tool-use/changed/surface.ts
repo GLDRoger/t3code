@@ -32,6 +32,7 @@ import {
   kinGitHubOf,
   kinTurnFiles,
 } from "../kin.ts";
+import { kinSeatOf } from "../kin-seat.ts";
 import { filledKinMocks } from "../kin-checks.ts";
 import { rubricRequest } from "../rubric.ts";
 import {
@@ -71,7 +72,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "c3192a5873c2e27b";
+export const REVIEWED_RUNNER = "b1f337c0e2192d2a";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -302,6 +303,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   // run.ts `baseKey` for a Claude model.
   const options = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
+    const kinSeat = kinSeatOf(testCase);
     return {
       role: setup.role,
       deviceAccess: setup.world?.deviceAgentAccess !== false,
@@ -316,6 +318,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
       kinBills: kinBillsOf(testCase),
       kinGitHub: kinGitHubOf(testCase),
       kinEngineering: setup.world?.kinEngineering === true,
+      ...(kinSeat === undefined ? {} : { kinSeat }),
     };
   };
   const bases = new Map<string, Base>();

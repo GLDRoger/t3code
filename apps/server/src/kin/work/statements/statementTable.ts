@@ -150,8 +150,8 @@ const fromSerial = (serial: number) => {
 export const parseDay = (text: string, order: DateOrder, serial?: number): string | undefined => {
   if (serial !== undefined) return fromSerial(serial);
   const said = text.trim().replace(/\s+/g, " ");
-  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s|,])/.exec(said);
-  if (iso !== null) return validDay(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  const iso = /^(\d{4})([-/])(\d{1,2})\2(\d{1,2})(?:$|[T\s|,])/.exec(said);
+  if (iso !== null) return validDay(Number(iso[1]), Number(iso[3]), Number(iso[4]));
   const numeric = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?:$|[\s|,T])/.exec(said);
   if (numeric !== null) {
     const [first, second] = [Number(numeric[1]), Number(numeric[2])];

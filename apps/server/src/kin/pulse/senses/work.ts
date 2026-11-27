@@ -155,7 +155,7 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
         sense: "holder_removed",
         key: `holder_removed:${row.key}:${row.ownerId}:${row.removedAt}`,
         since: iso(row.removedAt),
-        consequence: `Held by ${row.holder}, whose access was removed. Give it to someone else, or bring them back.`,
+        consequence: `Held by ${row.holder}, whose access was removed. Give it to someone else, or give ${row.holder} access again in Settings → Team.`,
         wake: "sweep",
         actor: { _tag: "owner" },
       }),

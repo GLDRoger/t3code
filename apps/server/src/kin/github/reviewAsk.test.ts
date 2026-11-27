@@ -2462,6 +2462,28 @@ it.effect("triage outside requires the app and inside can post as the owner", ()
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("kin_github_watch lists triage and turns it off and on per repo", () => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { sql, orgId, startIssue } = yield* tidewater(github, true);
+    yield* startIssue(true);
+    const repos = JSON.stringify([{ repo: TRIAGE_REPO, fork: false }]);
+    yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+      VALUES (${orgId}, ${OWNER_LOGIN}, 0, 0, 0, ${repos})
+      ON CONFLICT (org_id) DO UPDATE SET repos_json = excluded.repos_json`;
+    const triageOf = (answer: { readonly value: Record<string, unknown> }) =>
+      (answer.value.repos as ReadonlyArray<{ readonly triage?: boolean }>).map(
+        (repo) => repo.triage,
+      );
+    assert.deepStrictEqual(triageOf(yield* callAs("tech", "kin_github_watch", {})), [true]);
+    for (const triage of [false, true])
+      assert.deepStrictEqual(
+        triageOf(yield* callAs("tech", "kin_github_watch", { repo: TRIAGE_REPO, triage })),
+        [triage],
+      );
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("triage keeps the outside seat when two issues share a wake-up", () => {
   const { github, layer } = harness({}, { app: true });
   return Effect.gen(function* () {

@@ -134,6 +134,7 @@ export const SHARED_TOOLS = {
   kin_ask_close: "allowed",
   // Checked against everyone behind the turn, in its own transaction (`askPerson`).
   kin_ask_person: "allowed",
+  kin_send: "allowed",
   kin_skip: "allowed",
   kin_react: "allowed",
   // Its own unread message, only in the chat this turn answers.

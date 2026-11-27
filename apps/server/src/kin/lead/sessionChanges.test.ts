@@ -595,6 +595,7 @@ it.effect(
         kin_ask_person: "write-only",
         kin_chart: "write-only",
         kin_visual: "write-only",
+        kin_send: "write-only",
         kin_skip: "write-only",
         kin_react: "write-only",
         message_withdraw: "write-only",

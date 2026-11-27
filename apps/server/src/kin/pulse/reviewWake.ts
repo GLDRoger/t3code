@@ -420,7 +420,7 @@ export const REVIEW_WAKE_TEXT = (input: {
   readonly who: ReadonlyArray<string>;
   readonly count: number;
 }) =>
-  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} answered or reacted to ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has answered or reacted to yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them; otherwise end with kin_skip.`;
+  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} answered or reacted to ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has answered or reacted to yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Send nothing new unless something new needs them; otherwise end with kin_skip.`;
 /** The review wake found, as it started, nothing of the agent's here unread any more. */
 export const REVIEW_NOTHING_NOW =
   "Kin woke you to look again at your unanswered messages here, but as this turn started everything you said here had been answered, reacted to or taken back.";

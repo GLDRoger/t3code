@@ -193,7 +193,7 @@ const shortfallProblem = ({ asked, status }: Shortfall) =>
 export type AppState =
   | { readonly _tag: "none" }
   | { readonly _tag: "broken"; readonly problem: string }
-  | { readonly _tag: "ok"; readonly app: Described };
+  | { readonly _tag: "ok"; readonly app: Described; readonly coverageUnverified?: true };
 
 /** One read's answer: its bytes up to the read's limit, and whether GitHub sent more (`cut`). */
 export interface KinGitHubAppRead {
@@ -463,6 +463,7 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(about)) return short("about the App", app.status);
     const botLogin = namedBot ?? `${about.value.slug}[bot]`;
     const installations: Array<Installation> = [];
+    let coverageUnverified = false;
     for (let page = 1; page <= MAX_PAGES; page++) {
       const answer = yield* request(appToken, {
         path: `app/installations?per_page=100&page=${page}`,
@@ -478,6 +479,8 @@ export const make = Effect.gen(function* () {
             ? held
             : yield* mint(appToken, installation);
         const repos = new Set<string>();
+        const suspended = installation.suspended_at != null;
+        if (token === undefined && !suspended) coverageUnverified = true;
         for (let reposPage = 1; token !== undefined && reposPage <= MAX_PAGES; reposPage++) {
           let answer = yield* request(token.token, {
             path: `installation/repositories?per_page=100&page=${reposPage}`,
@@ -485,13 +488,19 @@ export const make = Effect.gen(function* () {
           // A token GitHub stopped taking (revoked, or the installation was replaced): mint once more.
           if (answer.status === 401 && token === held) {
             token = yield* mint(appToken, installation);
-            if (token === undefined) break;
+            if (token === undefined) {
+              if (!suspended) coverageUnverified = true;
+              break;
+            }
             answer = yield* request(token.token, {
               path: `installation/repositories?per_page=100&page=${reposPage}`,
             });
           }
           const found = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
-          if (Option.isNone(found)) break;
+          if (Option.isNone(found)) {
+            if (!suspended) coverageUnverified = true;
+            break;
+          }
           for (const repo of found.value.repositories) repos.add(repo.full_name.toLowerCase());
           if (found.value.repositories.length < 100) break;
         }
@@ -499,7 +508,7 @@ export const make = Effect.gen(function* () {
           id: installation.id,
           account,
           selection: installation.repository_selection === "all" ? "all" : "selected",
-          suspended: installation.suspended_at != null,
+          suspended,
           settingsUrl: installation.html_url?.startsWith("https://github.com/")
             ? installation.html_url
             : null,
@@ -540,6 +549,7 @@ export const make = Effect.gen(function* () {
     }
     return {
       _tag: "ok",
+      ...(coverageUnverified ? { coverageUnverified: true as const } : {}),
       app: {
         id: Number(appId),
         name: about.value.name,
@@ -669,8 +679,11 @@ export const make = Effect.gen(function* () {
                 status: described.status,
               });
             loggedProblem = problem;
-            // A working App stays on through a passing failure; its tokens still hold.
-            if (before._tag !== "ok") state = { _tag: "broken", problem };
+            // Existing App work keeps its tokens, but new outside triage needs verified coverage.
+            state =
+              before._tag === "ok"
+                ? { ...before, coverageUnverified: true }
+                : { _tag: "broken", problem };
           } else {
             loggedProblem = null;
             state = described;

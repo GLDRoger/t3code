@@ -91,6 +91,7 @@ export const OUTSIDE_TOOLS = {
   // What it writes is the owner's alone: the outside read marks the turn sensitive.
   memory_write: "allowed",
   kin_journal: "allowed",
+  kin_send: "allowed",
   kin_skip: "allowed",
   memory_label: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.

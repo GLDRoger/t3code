@@ -1,16 +1,20 @@
 import {
+  KinChatError,
   KinOrgId,
   type KinGitHubAgents,
   type KinGitHubAppAccount,
   type KinGitHubInstant,
+  type KinGitHubRepoSetInput,
   type KinGitHubStatus,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import {
   createKinGitHubGuardActions,
   createKinGitHubLookActions,
+  createKinGitHubRepoActions,
   KIN_GITHUB_GUARD_COPY,
   kinGitHubAccountRepos,
   kinGitHubGuardAction,
@@ -22,6 +26,8 @@ import {
   kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
+  kinGitHubTriageAction,
+  kinGitHubTriageLine,
 } from "./kinGitHub.ts";
 
 const base: KinGitHubStatus = {
@@ -574,6 +580,78 @@ describe("protecting a repo's main branch from Kin's App", () => {
         "invented-owner/private: GitHub offers no protection on this repo with its plan. Make it public or upgrade on GitHub.",
         "invented-co/shared: GitHub takes this only from an admin of the repo, and your login isn't one.",
       ],
+    });
+  });
+});
+
+describe("replying to new issues per repo", () => {
+  it("shows the control only for watched repos with triage and permission, and notes when off", () => {
+    const cases = [
+      [{ watched: true, triage: true }, true],
+      [{ watched: true, triage: false }, true],
+      [{ watched: true, triage: undefined }, true],
+      [{ watched: true, triage: true }, false],
+      [{ watched: true, triage: false }, false],
+      [{ watched: false, triage: true }, true],
+      [{ watched: false, triage: false }, true],
+    ] as const;
+    expect(
+      cases.map(([repo, canChange]) => [
+        kinGitHubTriageAction(repo, canChange),
+        kinGitHubTriageLine(repo),
+      ]),
+    ).toEqual([
+      ["stop", null],
+      ["start", "New issues get no reply"],
+      [null, null],
+      [null, null],
+      [null, "New issues get no reply"],
+      [null, null],
+      [null, null],
+    ]);
+  });
+
+  it("sends { repo, triage }, refreshes, and surfaces refusal text", async () => {
+    const sent: Array<KinGitHubRepoSetInput> = [];
+    let refreshed = 0;
+    const repo = {
+      repo: "ambermill/app",
+      watched: true,
+      fork: false,
+      mentions: false,
+      triage: true,
+    };
+    const actions = createKinGitHubRepoActions({
+      orgId: KinOrgId.make("org"),
+      set: async (input) => {
+        sent.push(input);
+        return AsyncResult.success({ repos: [] });
+      },
+      refresh: () => {
+        refreshed += 1;
+      },
+    });
+    expect(await actions.triage(repo, false)).toEqual({ ok: true });
+    expect(await actions.triage({ ...repo, triage: false }, true)).toEqual({ ok: true });
+    expect(sent).toEqual([
+      { orgId: KinOrgId.make("org"), repo: "ambermill/app", triage: false },
+      { orgId: KinOrgId.make("org"), repo: "ambermill/app", triage: true },
+    ]);
+    expect(refreshed).toBe(2);
+
+    const refused = createKinGitHubRepoActions({
+      orgId: KinOrgId.make("org"),
+      set: async () =>
+        AsyncResult.failure(
+          Cause.fail(
+            new KinChatError({ reason: "not_allowed", message: "Only the owner can change this." }),
+          ),
+        ),
+      refresh: () => {},
+    });
+    expect(await refused.triage(repo, false)).toEqual({
+      ok: false,
+      problem: "Only the owner can change this.",
     });
   });
 });

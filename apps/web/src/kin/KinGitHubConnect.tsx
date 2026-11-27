@@ -27,12 +27,15 @@ import {
   kinGitHubRow,
   kinGitHubRowDetail,
   kinGitHubSheet,
+  kinGitHubTriageAction,
+  kinGitHubTriageLine,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
 import type { KinConnectionTone } from "@t3tools/client-runtime/kin/kinConnections";
 import type {
   EnvironmentId,
   KinGitHubAppCreateStart,
+  KinGitHubRepo,
   KinGitHubStatus,
   KinOrgId,
 } from "@t3tools/contracts";
@@ -982,9 +985,24 @@ function RepoList(props: {
     reload();
     reloadStatus();
   });
+  const canChange = useAtomValue(kinClient.githubReposSet.permissionAtom(environmentId));
+  const [triageBusy, setTriageBusy] = useState<ReadonlySet<string>>(() => new Set());
   const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
   const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
     onProblem(outcome.ok ? null : outcome.problem);
+  const runTriage = (repo: KinGitHubRepo, on: boolean) => {
+    if (triageBusy.has(repo.repo)) return;
+    onProblem(null);
+    setTriageBusy((prev) => new Set(prev).add(repo.repo));
+    void actions.triage(repo, on).then((outcome) => {
+      setTriageBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(repo.repo);
+        return next;
+      });
+      settle(outcome);
+    });
+  };
   if (repos === null)
     return AsyncResult.isFailure(result) ? (
       <div className="flex items-center justify-between gap-3">
@@ -1001,56 +1019,70 @@ function RepoList(props: {
       <p className="text-sm text-muted-foreground">{WATCH.reposHint}</p>
       {repos.length === 0 ? <p className="text-sm text-muted-foreground">{WATCH.noRepos}</p> : null}
       <ul className="flex flex-col divide-y rounded-md border">
-        {repos.map((repo) => (
-          <li
-            key={repo.repo}
-            className="flex min-h-11 items-center justify-between gap-3 px-3 py-2"
-          >
-            <div className="flex min-w-0 flex-col">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm">{repo.repo}</span>
-                {repo.fork ? (
-                  <KinSettingsStatus tone="quiet">{WATCH.fork}</KinSettingsStatus>
-                ) : null}
-              </div>
-              {repo.mentions || repo.agentsAs !== undefined || kinGitHubGuardLine(repo) !== null ? (
-                <span className="text-xs text-muted-foreground">
-                  {[
-                    repo.agentsAs === undefined
-                      ? null
-                      : repo.agentsAs === "app"
-                        ? WATCH.asApp
-                        : WATCH.asYou,
-                    repo.mentions ? WATCH.mentions : null,
-                    kinGitHubGuardLine(repo),
-                  ]
-                    .filter(Boolean)
-                    .join(". ")}
-                </span>
-              ) : null}
-              {kinGitHubGuardAction(repo.guard) === null ? null : (
-                <div className="pt-1.5">
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={guard.busy}
-                    onClick={() =>
-                      guard.run([repo.repo], kinGitHubGuardAction(repo.guard) === "protect")
-                    }
-                  >
-                    {kinGitHubGuardAction(repo.guard) === "protect" ? GUARD.protect : GUARD.remove}
-                  </Button>
+        {repos.map((repo) => {
+          const guardAction = kinGitHubGuardAction(repo.guard);
+          const triageAction = kinGitHubTriageAction(repo, canChange);
+          const note = [
+            repo.agentsAs === undefined
+              ? null
+              : repo.agentsAs === "app"
+                ? WATCH.asApp
+                : WATCH.asYou,
+            repo.mentions ? WATCH.mentions : null,
+            kinGitHubTriageLine(repo),
+            kinGitHubGuardLine(repo),
+          ]
+            .filter(Boolean)
+            .join(". ");
+          const triageInFlight = triageBusy.has(repo.repo);
+          return (
+            <li
+              key={repo.repo}
+              className="flex min-h-11 items-center justify-between gap-3 px-3 py-2"
+            >
+              <div className="flex min-w-0 flex-col">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-sm">{repo.repo}</span>
+                  {repo.fork ? (
+                    <KinSettingsStatus tone="quiet">{WATCH.fork}</KinSettingsStatus>
+                  ) : null}
                 </div>
-              )}
-            </div>
-            <Switch
-              size="sm"
-              checked={repo.watched}
-              aria-label={`Watch ${repo.repo}`}
-              onCheckedChange={(checked) => void actions.watch(repo, checked).then(settle)}
-            />
-          </li>
-        ))}
+                {note === "" ? null : <span className="text-xs text-muted-foreground">{note}</span>}
+                {guardAction === null && triageAction === null ? null : (
+                  <div className="flex flex-wrap gap-2 pt-1.5">
+                    {guardAction === null ? null : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={guard.busy}
+                        onClick={() => guard.run([repo.repo], guardAction === "protect")}
+                      >
+                        {guardAction === "protect" ? GUARD.protect : GUARD.remove}
+                      </Button>
+                    )}
+                    {triageAction === null ? null : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={triageInFlight}
+                        aria-busy={triageInFlight}
+                        onClick={() => runTriage(repo, triageAction === "start")}
+                      >
+                        {triageAction === "stop" ? WATCH.stopTriage : WATCH.startTriage}
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+              <Switch
+                size="sm"
+                checked={repo.watched}
+                aria-label={`Watch ${repo.repo}`}
+                onCheckedChange={(checked) => void actions.watch(repo, checked).then(settle)}
+              />
+            </li>
+          );
+        })}
       </ul>
       <GuardOutcome outcome={guard.outcome} />
       {repos.some((repo) => !repo.watched) ? (

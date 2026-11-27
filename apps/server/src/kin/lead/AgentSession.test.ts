@@ -2,12 +2,20 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { CommandId, KinAgentId, KinOrgId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  KinAgentId,
+  KinOrgId,
+  KinWakeupId,
+  MessageId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { nudgeMessageId, steerMessageId } from "../chat/KinIdentity.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import { delegatedTurn, fullSessionRefusal, isT3Tool } from "./AgentSession.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
@@ -39,49 +47,53 @@ const chain = Effect.fn("test.chain")(function* (root: string, run: string, pref
 const turnOf = (threadId: string) =>
   delegatedTurn(ThreadId.make(threadId)).pipe(Effect.map(({ turn }) => turn?.wakeupId));
 
-it.effect("a task follows the wake-up its asking run belongs to, by that run's provenance", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-brief" });
-    const own = yield* startWakeupRun(lead, "wake-brief");
-    yield* sql`UPDATE kin_wakeups SET thread_id = ${lead}, run_id = ${own.id}, status = 'running'
-      WHERE wakeup_id = 'wake-brief'`;
-    // The owner's steer landed after the provider turn ended, so Kin adopted a new run for it.
-    yield* orchestrator.dispatch({
-      type: "run.interrupt",
-      commandId: CommandId.make("end-own"),
-      threadId: lead,
-      runId: own.id,
-    });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make("late-steer"),
-      threadId: lead,
-      messageId: MessageId.make("kin-steer-msg:wake-brief:1"),
-      text: "Also draft the reply to Meera.",
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "system",
-      creationSource: "server",
-    });
-    const steer = (yield* orchestrator.getThreadProjection(lead)).runs.at(-1)!;
-    assert.notStrictEqual(steer.id, own.id);
-    yield* delegation(lead, steer.id, "from-steer");
-    yield* delegation(lead, own.id, "from-own");
-    yield* delegation(lead, "run-of-no-wakeup", "from-stray");
-    assert.strictEqual(yield* turnOf("from-steer"), "wake-brief");
-    assert.strictEqual(yield* turnOf("from-own"), "wake-brief");
-    assert.deepStrictEqual(yield* delegatedTurn(ThreadId.make("from-stray")), {
-      lineage: "kin",
-      delegated: true,
-      turn: undefined,
-    });
-    // A finished wake-up still backs the tasks it asked for.
-    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake-brief'`;
-    assert.strictEqual(yield* turnOf("from-steer"), "wake-brief");
-    assert.strictEqual(yield* turnOf("from-own"), "wake-brief");
-  }).pipe(Effect.provide(authorityLayer)),
+it.effect.each(["steer", "nudge"] as const)(
+  "a task follows its asking run's wake-up provenance (%s)",
+  (kind) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const wakeupId = KinWakeupId.make("65b9589e-c6af-4ca3-ad88-46fad9ed5597");
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+      const own = yield* startWakeupRun(lead, wakeupId);
+      yield* sql`UPDATE kin_wakeups SET thread_id = ${lead}, run_id = ${own.id}, status = 'running'
+      WHERE wakeup_id = ${wakeupId}`;
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("end-own"),
+        threadId: lead,
+        runId: own.id,
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`late-${kind}`),
+        threadId: lead,
+        messageId: MessageId.make(
+          kind === "steer" ? steerMessageId(wakeupId, 1) : nudgeMessageId(wakeupId),
+        ),
+        text: "Send the update to Meera.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "system",
+        creationSource: "server",
+      });
+      const followUp = (yield* orchestrator.getThreadProjection(lead)).runs.at(-1)!;
+      assert.notStrictEqual(followUp.id, own.id);
+      yield* delegation(lead, followUp.id, "from-follow-up");
+      yield* delegation(lead, own.id, "from-own");
+      yield* delegation(lead, "run-of-no-wakeup", "from-stray");
+      assert.strictEqual(yield* turnOf("from-follow-up"), wakeupId);
+      assert.strictEqual(yield* turnOf("from-own"), wakeupId);
+      assert.deepStrictEqual(yield* delegatedTurn(ThreadId.make("from-stray")), {
+        lineage: "kin",
+        delegated: true,
+        turn: undefined,
+      });
+      // A finished wake-up still backs the tasks it asked for.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = ${wakeupId}`;
+      assert.strictEqual(yield* turnOf("from-follow-up"), wakeupId);
+      assert.strictEqual(yield* turnOf("from-own"), wakeupId);
+    }).pipe(Effect.provide(authorityLayer)),
 );
 
 it.effect(

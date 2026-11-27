@@ -7,7 +7,7 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes (held until its turn ends), writes the same answer again, sends its message itself, ends its turn quietly with kin_skip, posts a chart, thinks, sends you a message for someone else (a nudge or relay), you press Stop, its run ends and what it held posts, its turn ends or fails, someone joins the chat while it works, you are made a member while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart (the turn lost or picked up again), a floor that can close, a Stop, and up to two people joining mid-turn; it follows your first message, a question or request; your second is a reaction or another agent's answer, which may need no reply. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, a trigger (a check-in, a GitHub event, a pulse fact) queues an event instead, the agent starts on it, writes (held until its turn ends), writes the same answer again, sends its message itself, ends its turn quietly with kin_skip, posts a chart, thinks, sends you a message for someone else (a nudge or relay), you press Stop, its run ends and what it held posts, its turn ends or fails, a turn a trigger started is asked once to send what it wrote, someone joins the chat while it works, you are made a member while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart (the turn lost or picked up again), a floor that can close, a Stop, and up to two people joining mid-turn; it follows your first message, a question or request; your second is a reaction or another agent's answer, which may need no reply, or a trigger's event, whose turn speaks only through kin_send. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo:
@@ -36,6 +36,10 @@ export const rules: Record<string, string> = {
   EveryMessageAnswered:
     "Every message you send ends in a reply, a plain failure line, a chart or file whose agent was asked for its line, or your own Stop, never silence, even when the agent sent you a nudge or relay meanwhile. Only a reaction or another agent's answer that needs no reply may end with the agent's kin_skip.",
   LineClears: '"Working…" (the agent\'s line) always clears.',
+  TriggerOnlySends:
+    "In a turn a trigger started, only the agent's kin_send reaches the chat; text it writes without sending posts nothing.",
+  NudgeOnce:
+    "A turn a trigger started that wrote text and sent nothing is asked once to send it or end with kin_skip, never twice.",
 };
 
 export const variants = [
@@ -150,6 +154,26 @@ export const variants = [
     what: "after a successful send, the text the agent also wrote posts as a second message",
   },
   {
+    name: "trigger-text-posts",
+    breaks: "TriggerOnlySends",
+    what: "a turn a trigger started posts its plain text at the end, as before the switch (no `dropText`)",
+  },
+  {
+    name: "send-forgotten-on-restart",
+    breaks: "NeverTwo",
+    what: "a restart after a send forgets its receipt, so the resumed wake-up posts the text held beside the send as a second message (no stored `sentThrough`)",
+  },
+  {
+    name: "send-after-stop",
+    breaks: "StopPostsNothing",
+    what: "a send lands after your Stop committed (no `wasStopped` check in the send's transaction)",
+  },
+  {
+    name: "nudge-loops",
+    breaks: "NudgeOnce",
+    what: "a turn a trigger started is asked to send again after the first nudge (no `nudged` mark)",
+  },
+  {
     name: "skip-silences",
     breaks: "EveryMessageAnswered",
     what: "kin_skip is accepted, and counted as the answer, while you wait on words (no `quietAllowed` refusal)",
@@ -186,6 +210,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
     case "PersonSends":
       return first(from, "ev") === "none" ? "You send a message" : "You send another message";
+    case "TriggerFires":
+      return "A trigger queues an event for the agent";
+    case "Nudge":
+      return "The turn ends with text no one got; the agent is asked once to send it or skip";
     case "Claim":
       return "The agent starts on it";
     case "Steer":

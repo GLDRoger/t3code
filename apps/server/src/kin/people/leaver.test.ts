@@ -47,6 +47,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
 import { partnersOwed } from "../work/partnersOwed.ts";
 import { presetList } from "../work/registers.ts";
+import * as BankSenders from "../work/statements/bankSenders.ts";
 import { viewerOfPeople } from "../work/teamView.ts";
 import * as People from "./KinPeople.ts";
 
@@ -814,6 +815,30 @@ it.effect(
     ),
 );
 
+it.effect("a co-owner's bank sender decision stays company history after access is removed", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { orgId } = ctx;
+      const sender = {
+        address: "notices@harborbank.example",
+        bankName: "Harbor Bank",
+        accounts: ["4821"],
+      };
+      yield* BankSenders.add(orgId, meeraId, sender);
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      const [row] = yield* BankSenders.list(orgId);
+      assert.include(row, {
+        address: sender.address,
+        state: "approved",
+        decidedByPersonId: meeraId,
+      });
+      assert.include(yield* Effect.flip(BankSenders.remove(orgId, meeraId, sender.address)), {
+        reason: "not_allowed",
+      });
+    }),
+  ),
+);
+
 // Every column that holds a person or an agent, as last reviewed. A new one fails here until
 // someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
 // (`lead/Retirement.ts`) do to it, tests that, and lists it.
@@ -821,6 +846,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_agent_threads: "agent_id",
   kin_agents: "agent_id owner_person_id retired_by_person_id",
   kin_arrivals: "agent_id",
+  // Past decisions stay company history; they are not ongoing authority for the decider.
+  kin_bank_senders: "decided_by_person_id",
   kin_bank_statements: "agent_id applied_by",
   // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
   kin_bill_reads: "added_by_person_id agent_id",

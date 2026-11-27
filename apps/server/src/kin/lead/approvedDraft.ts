@@ -136,7 +136,7 @@ const verdict = Effect.fn("KinApprovedDraft.verdict")(function* (
 ) {
   const of = yield* approvalOf(turn);
   if (of._tag === "none") return undefined;
-  if (name === "kin_skip" || APPROVED_READS.has(name)) return ALLOWED;
+  if (name === "kin_skip" || name === "kin_send" || APPROVED_READS.has(name)) return ALLOWED;
   if (of._tag === "invalid") return APPROVED_REFUSAL;
   if (APPROVED_ASKS.has(name)) return ALLOWED;
   const { draft, made } = of.approval;
