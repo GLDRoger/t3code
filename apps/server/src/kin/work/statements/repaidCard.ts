@@ -172,7 +172,7 @@ const LINE_MAX = 200;
 export const repaidLine = (plan: RepaidPlan) => {
   if (plan.asExpense && plan.expense !== undefined) {
     const expense = plan.expense;
-    return `Link ${plan.key} to ${expense.key}${expense.open ? " and mark it paid" : ""}.`;
+    return `Link ${plan.key} to ${expense.key}${expense.open ? " and mark it paid" : ""}`;
   }
   const line = (quoted: boolean) =>
     fitted(
