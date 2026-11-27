@@ -20,6 +20,8 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mailLine } from "../pulse/outside.ts";
+import { sectionOnFor } from "../shell/KinShell.ts";
+import { normalizeAddress, quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 import { companyRuleMailbox } from "./ruleAccess.ts";
@@ -164,6 +166,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
           const connection = yield* companyRuleMailbox(orgId, connectionId);
+          let hiddenBankSenders: Set<string> | undefined;
           const recorded: Array<string> = [];
           const playbook = new Map<string, PlaybookMail>();
           const ruleCandidates = new Set<string>();
@@ -216,7 +219,16 @@ const make = Effect.gen(function* () {
             recorded.push(arrived.arrivalId);
             const { class: mailClass, look } = arrived;
             const arrivalId = arrived.arrivalId;
+            const quietBankSender =
+              look !== undefined &&
+              typeof look.by === "string" &&
+              (hiddenBankSenders ??= yield* quietBankSenderAddresses(
+                orgId,
+                yield* sectionOnFor(orgId, "money"),
+              )).size > 0 &&
+              hiddenBankSenders.has(normalizeAddress(result.arrival.fromAddress) ?? "");
             const ordinary =
+              !quietBankSender &&
               connection !== undefined &&
               look !== undefined &&
               typeof look.by === "string" &&
