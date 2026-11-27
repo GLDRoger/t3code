@@ -52,6 +52,7 @@ import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as Work from "../work/ownerWork.ts";
+import { iso } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
@@ -733,7 +734,7 @@ describe("kin_picture", () => {
         const fourth = yield* OwnerDocs.get(reader, { orgId, key });
         assert.deepStrictEqual(summary(fourth), { from: 1, total: 2, versions: [4, 2] });
         // Looked just after the hidden third: the diff starts at the last version Meera saw.
-        const afterThird = new Date(Date.parse(fourth.version.at) - 1).toISOString();
+        const afterThird = iso(Date.parse(fourth.version.at) - 1);
         yield* Work.looked(reader, { orgId, recordId: opened.recordId, upTo: afterThird });
         assert.deepStrictEqual(summary(yield* OwnerDocs.get(reader, { orgId, key })), {
           from: 2,
