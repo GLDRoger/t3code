@@ -393,6 +393,7 @@ export const KinNativeCardType = Schema.Literals([
   "form",
   "date",
   "choice",
+  "mail_rule",
 ]);
 export type KinNativeCardType = typeof KinNativeCardType.Type;
 

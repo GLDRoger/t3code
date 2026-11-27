@@ -1,3 +1,4 @@
+import { mailRuleTap } from "./arrivals/mailRuleTap.ts";
 import * as MailRules from "./arrivals/KinMailRules.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
@@ -133,6 +134,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         (yield* KinRecords.KinRecords).changes(owner.orgId),
       );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+      yield* chat.attachMailRuleTap((input) => mailRuleTap(input).pipe(Effect.provide(services)));
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* chat.attachChoiceAnswers(
         (input) => answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),

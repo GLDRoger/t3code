@@ -54,6 +54,7 @@ export const TURN_EVENT_TOOLS: ReadonlySet<string> = new Set([
   "kin_recipe_undo",
   "kin_relay",
   "kin_schedule",
+  "mail_rule",
   "kin_take_private",
   "list_define",
   "memory_label",

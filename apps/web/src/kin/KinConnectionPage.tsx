@@ -45,6 +45,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { kinClient } from "./kinClient";
+import { KinMailRulesBlock } from "./settings/KinMailRules";
 import {
   KinSettingsChoice,
   KinSettingsField,
@@ -86,6 +87,8 @@ export function KinConnectionPage(props: {
   readonly signInAddress: string;
   readonly differs: KinMailDiffers;
   readonly onRemoved: () => void;
+  /** A company mailbox's Rules open one rule's page. */
+  readonly onOpenRule?: (ruleId: string) => void;
 }) {
   const { environmentId, orgId } = props;
   const ref = { orgId, connectionId: props.connection.connectionId };
@@ -306,6 +309,15 @@ export function KinConnectionPage(props: {
             })
           )}
         </KinSettingsSection>
+      ) : null}
+
+      {mail && props.onOpenRule !== undefined ? (
+        <KinMailRulesBlock
+          environmentId={environmentId}
+          orgId={orgId}
+          connectionId={connection.connectionId}
+          onOpen={props.onOpenRule}
+        />
       ) : null}
 
       <KinSettingsSection title={MAIL.accountSection(mail)} problem={problemAt("account")}>

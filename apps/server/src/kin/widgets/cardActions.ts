@@ -126,7 +126,7 @@ const quoted = (text: string, max = 80) => {
 };
 
 const LABEL_MAX = 80;
-type PresentedPlan = Exclude<CardPlan, { kind: "undo_repaid" }>;
+type PresentedPlan = Exclude<CardPlan, { kind: "undo_repaid" } | { readonly kind: "mail_rule" }>;
 /** The option's button for a plan: the verb and its key, written by the server, never the agent. */
 const labelOf = (plan: PresentedPlan): string => {
   switch (plan.kind) {
@@ -457,6 +457,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
+    sealed?.kind === "mail_rule" ||
     sealed?.kind === "leaver" ||
     sealed?.kind === "undo_repaid" ||
     (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
@@ -592,6 +593,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   if (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
+    sealed.kind === "mail_rule" ||
     sealed.kind === "leaver" ||
     sealed.kind === "undo_repaid" ||
     isFactCard(sealed) ||
@@ -702,6 +704,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (plan.kind === "mail_rule") return yield* notAllowed("Answer the mail rule on its own card.");
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (plan.kind === "undo_repaid") {
     const { orgId, personId, widget } = tap;

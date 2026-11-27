@@ -102,6 +102,7 @@ export const SECTIONS = {
     kin_receipt: "money",
     kin_connection_tools: null,
     kin_connection_call: null,
+    mail_rule: null,
     kin_connection_offer: null,
     kin_connection_note: null,
     social_read: null,

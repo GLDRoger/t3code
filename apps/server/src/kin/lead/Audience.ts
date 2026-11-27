@@ -76,6 +76,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
     const level = (yield* ownerLevelPeople(input.orgId)).add(lead.owner);
     const events = yield* sql<{
       tag: string;
+      mailRule: string | null;
       chatId: string | null;
       originChatId: string | null;
       originPersonId: string | null;
@@ -87,6 +88,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       subjectType: string | null;
     }>`
       SELECT e.tag, json_extract(e.json, '$.chatId') AS "chatId",
+        json_extract(e.json, '$.rule.ruleId') AS "mailRule",
         json_extract(e.json, '$.origin.chatId') AS "originChatId",
         json_extract(e.json, '$.origin.personId') AS "originPersonId",
         json_extract(e.json, '$.provenance._tag') AS provenance,
@@ -122,7 +124,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         (event.tag === "record.changed" ||
           event.tag === "task.finished" ||
           event.tag === "deferral.due" ||
-          event.tag === "github") &&
+          event.tag === "github" ||
+          (event.tag === "pulse" && event.mailRule !== null)) &&
         event.chatId !== null
       ) {
         if (event.subjectType === "reminder" || event.subjectType === "scheduled_task")

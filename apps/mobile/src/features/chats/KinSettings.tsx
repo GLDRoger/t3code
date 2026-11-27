@@ -25,6 +25,7 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
+import { KinMailRulesSettingsRow } from "./connections/KinMailRules";
 import { KinChatsSettleRows } from "./KinChatsSettleRows";
 import { KinQuietHoursRows } from "./KinQuietHoursRows";
 import { useKinIsHome } from "./state/kinHome";
@@ -238,6 +239,7 @@ export function KinSettings(props: {
           {here === null || rows.company.length === 0 ? null : (
             <SettingsSection title="Company">
               {rows.company.map((page) => {
+                if (page === "mailRules") return <KinMailRulesSettingsRow key={page} {...here} />;
                 const row = COMPANY_ROWS[page];
                 if (row === undefined) return null;
                 return (

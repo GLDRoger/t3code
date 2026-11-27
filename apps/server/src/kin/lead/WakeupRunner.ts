@@ -50,7 +50,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
-import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { KinRefreshHub, KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as HostBackup from "../hostBackup.ts";
 import { ServerConfig } from "../../config.ts";
@@ -64,6 +64,8 @@ import { feedTurn } from "../numbers/feeds.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
+import { reportRuleWordingChanged } from "../arrivals/ruleWake.ts";
+import { holdRuleWake } from "../arrivals/ruleRunStore.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -230,6 +232,8 @@ const make = Effect.gen(function* () {
   const workspace = Option.getOrUndefined(yield* Effect.serviceOption(KinWorkspace));
   const agentSessions = Option.getOrUndefined(yield* Effect.serviceOption(KinAgentSessions));
   const refreshHub = Option.getOrUndefined(yield* Effect.serviceOption(KinRefreshHub));
+  // A held mail rule run shows in Settings; a turn's own fiber may not carry the observer.
+  const refresh = yield* KinRefreshObserver;
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
   const refusals = yield* Effect.serviceOption(KinRefusedModels);
@@ -2049,13 +2053,54 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             };
-            const built = candidate
-              ? yield* prompt.buildSession({
-                  ...promptInput,
-                  ...(previous === undefined ? {} : { previous }),
-                })
-              : undefined;
-            const full = built?.full ?? (yield* prompt.build(promptInput));
+            const rendered = yield* Effect.gen(function* () {
+              const built = candidate
+                ? yield* prompt.buildSession({
+                    ...promptInput,
+                    ...(previous === undefined ? {} : { previous }),
+                  })
+                : undefined;
+              return { built, full: built?.full ?? (yield* prompt.build(promptInput)) };
+            }).pipe(
+              Effect.catchTags({
+                KinLeadPromptError: (error) =>
+                  error.mailRuleHold === undefined
+                    ? Effect.fail(error)
+                    : Effect.succeed(error.mailRuleHold),
+              }),
+            );
+            if ("reason" in rendered) {
+              yield* sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    yield* holdRuleWake(orgId, rendered.eventId, wakeupId, rendered.reason).pipe(
+                      Effect.provideService(KinRefreshObserver, refresh),
+                    );
+                    const [event] = events;
+                    if (
+                      rendered.reason === "wording_changed" &&
+                      event?._tag === "pulse" &&
+                      Option.isSome(chatRepository) &&
+                      Option.isSome(chatHub)
+                    )
+                      yield* sql
+                        .withTransaction(
+                          reportRuleWordingChanged(event, yield* Clock.currentTimeMillis),
+                        )
+                        .pipe(
+                          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+                          Effect.provideService(KinChatHub, chatHub.value),
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning("Kin couldn't post a mail rule notice", { cause }),
+                          ),
+                        );
+                    yield* queue.finish({ orgId, wakeupId, status: "completed" });
+                  }),
+                )
+                .pipe(provideSql);
+              return;
+            }
+            const { built, full } = rendered;
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";

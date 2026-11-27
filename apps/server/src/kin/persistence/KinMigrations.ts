@@ -155,6 +155,7 @@ import MailRules from "./migrations/K231_MailRules.ts";
 import ConversationMessageIndex from "./migrations/K232_ConversationMessageIndex.ts";
 import Looks from "./migrations/K233_Looks.ts";
 import Pins from "./migrations/K234_Pins.ts";
+import MailRuleRuns from "./migrations/K235_MailRuleRuns.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -391,6 +392,7 @@ const migrations = {
   "232_ConversationMessageIndex": ConversationMessageIndex,
   "233_Looks": Looks,
   "234_Pins": Pins,
+  "235_MailRuleRuns": MailRuleRuns,
 };
 const loader = Migrator.fromRecord(migrations);
 

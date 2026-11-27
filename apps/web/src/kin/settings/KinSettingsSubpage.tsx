@@ -19,6 +19,10 @@ export interface KinSettingsTrailSlots {
 
 export const KinSettingsTrail = createContext<KinSettingsTrailSlots | null>(null);
 
+// Stable, and the title's node is keyed on it, so focus moves once per page opened: the row that
+// opened the page is gone, and focus would otherwise drop to the body.
+const named = (node: HTMLElement | null) => node?.focus({ preventScroll: true });
+
 /**
  * One thing's own page inside a Settings page: it replaces the page's whole content, opens at the
  * top, adds its name to the header's trail, and has one way back, the arrow before the trail.
@@ -56,7 +60,9 @@ export function KinSettingsSubpage(props: {
             <>
               <WorkspaceBreadcrumbSeparator />
               <WorkspaceBreadcrumbItem current>
-                <span className="truncate">{props.title}</span>
+                <span key={props.title} ref={named} tabIndex={-1} className="truncate outline-none">
+                  {props.title}
+                </span>
               </WorkspaceBreadcrumbItem>
             </>,
             slots.trail,
@@ -64,7 +70,14 @@ export function KinSettingsSubpage(props: {
       {slots === null ? (
         <div className="mx-auto flex w-full max-w-2xl items-center gap-2 px-4 pt-6 sm:px-6">
           {back}
-          <h2 className="truncate text-base font-semibold text-foreground">{props.title}</h2>
+          <h2
+            key={props.title}
+            ref={named}
+            tabIndex={-1}
+            className="truncate text-base font-semibold text-foreground outline-none"
+          >
+            {props.title}
+          </h2>
         </div>
       ) : null}
       {props.children}
