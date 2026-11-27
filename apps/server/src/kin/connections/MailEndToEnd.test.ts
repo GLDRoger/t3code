@@ -954,9 +954,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* watchMail();
         assert.lengthOf(yield* arrivalRows, 0);
         assert.lengthOf(yield* pulseEvents, 0);
-        const {
-          recorded: [arrivalId],
-        } = yield* readMail(hello);
+        const arrivalId = (yield* readMail(hello)).recorded[0]!;
         yield* readMail(accounts);
         const beforeReplay = yield* arrivalRows;
         assert.lengthOf(beforeReplay, 2);
@@ -1298,9 +1296,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.lengthOf(yield* pulseEvents, 0);
           const [before] = yield* sql<{ cursor: string }>`SELECT mail_cursor AS cursor
           FROM kin_connection_cursors WHERE connection_id = ${accounts}`;
-          const {
-            recorded: [arrivalId],
-          } = yield* readMail(accounts);
+          const arrivalId = (yield* readMail(accounts)).recorded[0]!;
           assert.isString(arrivalId);
           assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
           // The vendor replays the same page (a position kept before the commit): no second record.
@@ -1331,9 +1327,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
           fake.failRead(stuck.id, null);
           yield* TestClock.adjust("1 minute");
-          const {
-            recorded: [paymentArrivalId],
-          } = yield* readMail(accounts);
+          const paymentArrivalId = (yield* readMail(accounts)).recorded[0]!;
           assert.isString(paymentArrivalId);
           assert.deepInclude(yield* pulseEvents, { agentId: finance, arrivalId: paymentArrivalId });
           assert.deepInclude((yield* arrivalRows).at(-1), {
@@ -1426,9 +1420,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           body: "x",
           at: NOW + 40_000,
         });
-        const {
-          recorded: [arrivalId],
-        } = yield* readMail(hello);
+        const arrivalId = (yield* readMail(hello)).recorded[0]!;
         assert.isString(arrivalId);
         assert.lengthOf((yield* readMail(accounts)).recorded, 1);
         assert.deepStrictEqual(
