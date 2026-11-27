@@ -498,7 +498,10 @@ const sentSince = Effect.fn("KinGoogle.sentSince")(function* (
         sentAt,
         to: headerValues(message, "To").flatMap(addressesIn),
         cc: headerValues(message, "Cc").flatMap(addressesIn),
-        subject: header(message, "Subject") ?? "",
+        subject: (header(message, "Subject") ?? "").replace(
+          /=\?utf-8\?b\?([A-Za-z0-9+/]+={0,2})\?=/gi,
+          (_, encoded: string) => Buffer.from(encoded, "base64").toString("utf8"),
+        ),
       };
     }),
     { concurrency: 5 },

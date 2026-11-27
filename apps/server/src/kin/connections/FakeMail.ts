@@ -680,7 +680,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore(), now = Date.no
           },
         ].filter((header) => asked.size === 0 || asked.has(lower(header.name)));
         if (url.searchParams.get("fields") === "internalDate,payload(headers)")
-          return json({ internalDate: String(one.at), payload: { headers } });
+          return json({
+            internalDate: String(one.at),
+            payload: {
+              headers: headers.map((header) =>
+                header.name === "Subject" && /[^\x20-\x7e]/.test(header.value)
+                  ? {
+                      ...header,
+                      value: `=?UTF-8?B?${Buffer.from(header.value).toString("base64")}?=`,
+                    }
+                  : header,
+              ),
+            },
+          });
         return json({
           id: one.id,
           threadId: one.threadId,

@@ -869,7 +869,10 @@ describe("looking in Sent after an unknown send", () => {
         const first = cards.at(-1)!;
         if (outcome === "found") {
           yield* stored(first);
-          yield* saveEdited(first, owner, 1, { ...mail, subject: "Tidewater Freight quote" });
+          yield* saveEdited(first, owner, 1, {
+            ...mail,
+            subject: "Tidewater Freight devis révisé",
+          });
         }
         const connections = yield* KinConnections;
         const sql = yield* SqlClient.SqlClient;
@@ -877,13 +880,17 @@ describe("looking in Sent after an unknown send", () => {
         const reads: Array<URL> = [];
         const metadata: Array<URL> = [];
         const tick = () => connections.lookInSent(orgId, rewrite);
-        let loseAnswer = outcome === "found";
+        const accepted = outcome === "found" || outcome === "timing";
+        let loseAnswer = accepted;
+        let sentIsLagging = outcome === "timing";
         gates.mailResponse = (url, method, response) => {
           if (
             url.pathname.endsWith("/mailFolders/sentitems/messages") ||
             url.searchParams.get("labelIds") === "SENT"
-          )
+          ) {
             reads.push(url);
+            if (sentIsLagging) return Response.json({ resultSizeEstimate: 0 });
+          }
           if (url.searchParams.get("format") === "metadata") metadata.push(url);
           if (loseAnswer && method === "POST" && url.pathname.endsWith("/send") && response.ok) {
             loseAnswer = false;
@@ -893,12 +900,12 @@ describe("looking in Sent after an unknown send", () => {
         };
         yield* tick();
         assert.lengthOf(reads, 0);
-        fake.setDown(account, outcome !== "found");
+        fake.setDown(account, !accepted);
         const failed = yield* tap(first.widgetId, owner);
         fake.setDown(account, false);
         if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
           return assert.fail("Expected an unknown send and a fresh card");
-        const originalCount = outcome === "found" || sameMailElsewhere ? 1 : 0;
+        const originalCount = accepted || sameMailElsewhere ? 1 : 0;
         assert.lengthOf(fake.sent(), originalCount);
         const tried = yield* tryOn(first.widgetId);
         const retry = yield* connections.freshAsk(orgId, failed.fresh, NOW);
@@ -981,6 +988,7 @@ describe("looking in Sent after an unknown send", () => {
           });
         }
         assert.lengthOf(fake.sent(), originalCount);
+        sentIsLagging = false;
         yield* tick();
         assert.lengthOf(reads, 1);
         if (outcome === "found" || outcome === "unreadable") {
