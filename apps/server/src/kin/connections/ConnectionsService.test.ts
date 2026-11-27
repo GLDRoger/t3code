@@ -3794,6 +3794,7 @@ const withCalendars = <A, E>(
   body: (fixture: {
     fake: ReturnType<typeof makeFakeMail>;
     reads: ReadonlyArray<URL>;
+    holdNextRead: () => { readonly entered: Promise<void>; readonly release: () => void };
     connect: (
       address: string,
       provider: FakeMailProvider,
@@ -3804,12 +3805,27 @@ const withCalendars = <A, E>(
 ) => {
   const fake = makeFakeMail();
   const reads: Array<URL> = [];
+  let held: { readonly entered: () => void; readonly released: Promise<void> } | undefined;
+  const holdNextRead = () => {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    held = { entered: entered.resolve, released: released.promise };
+    return { entered: entered.promise, release: released.resolve };
+  };
   const handle = fake.handle(() => Promise.reject(new Error("Outside the calendar fixture.")));
   const fetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
-      if (url.searchParams.has("fields") || url.pathname.endsWith("/calendarView")) reads.push(url);
+      if (url.searchParams.has("fields") || url.pathname.endsWith("/calendarView")) {
+        reads.push(url);
+        const hold = held;
+        held = undefined;
+        if (hold !== undefined) {
+          hold.entered();
+          await hold.released;
+        }
+      }
       return handle(request);
     },
     { preconnect() {} },
@@ -3865,13 +3881,13 @@ const withCalendars = <A, E>(
       service: "microsoft",
       client: { clientId: MICROSOFT_APP },
     });
-    return yield* body({ fake, reads, connect });
+    return yield* body({ fake, reads, holdNextRead, connect });
   }).pipe(Effect.provide(layerFor({ fetch }, [])), Effect.scoped);
 };
 
 describe("KinConnections Dates calendar", () => {
   it.effect("checks own and company visibility on every read, even with a warm cache", () =>
-    withCalendars(({ connect, fake, reads }) =>
+    withCalendars(({ connect, fake, reads, holdNextRead }) =>
       Effect.gen(function* () {
         const connections = yield* KinConnections;
         const sql = yield* SqlClient.SqlClient;
@@ -3939,6 +3955,24 @@ describe("KinConnections Dates calendar", () => {
           [microsoft, true],
         ]);
         assert.deepStrictEqual(yield* view(zoya), [[zoyaMail, false]]);
+
+        // Moved down while a vendor answers: the company calendar is not in that answer.
+        const hold = holdNextRead();
+        const reading = yield* Effect.forkChild(
+          connections.mineCalendar(meera, { ...calendarWindow, to: "2026-12-02T00:00:00.000Z" }),
+        );
+        yield* Effect.promise(() => hold.entered);
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'meera'`;
+        hold.release();
+        const answered = yield* Fiber.join(reading);
+        assert.sameMembers(
+          answered.sources.map((source) => source.account),
+          [meeraMail, google],
+        );
+        assert.sameMembers(
+          answered.events.map((event) => event.title),
+          [meeraMail, google],
+        );
         yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = 'zoya'`;
         assert.strictEqual(
           (yield* connections.mineCalendar(zoya, calendarWindow).pipe(Effect.flip)).reason,
