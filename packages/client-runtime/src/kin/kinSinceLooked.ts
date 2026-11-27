@@ -411,6 +411,12 @@ export function kinProjectSinceLooked(
 
 // Visit pinning: keeps the summary steady after `kin.work.looked` advances the server mark.
 
+/** A copy whose mark is older than a look this app already sent was read before it: a leftover. */
+function readBeforeLook(lookedAt: string | null, lookedBefore: string | null): boolean {
+  if (lookedBefore === null) return false;
+  return lookedAt === null || Date.parse(lookedAt) < Date.parse(lookedBefore);
+}
+
 export interface KinPinnedEntryLook {
   readonly recordId: KinRecordId;
   readonly lookedAt: string | null;
@@ -458,9 +464,11 @@ export function mergePinnedDocSinceLooked(
   recordId: KinRecordId,
   lookedAt: string | null | undefined,
   sinceLooked: KinDocDetail["sinceLooked"],
+  lookedBefore: string | null = null,
 ): KinPinnedDocLook | null {
   if (lookedAt === undefined) return held?.recordId === recordId ? held : null;
   if (held === null || held.recordId !== recordId) {
+    if (readBeforeLook(lookedAt, lookedBefore)) return null;
     return {
       recordId,
       lookedAt,
@@ -526,9 +534,11 @@ export function mergePinnedProjectSinceLooked(
   recordId: KinRecordId,
   lookedAt: string | null | undefined,
   sinceLooked: KinProjectPage["sinceLooked"],
+  lookedBefore: string | null = null,
 ): KinPinnedProjectLook | null {
   if (lookedAt === undefined) return held?.recordId === recordId ? held : null;
   if (held === null || held.recordId !== recordId) {
+    if (readBeforeLook(lookedAt, lookedBefore)) return null;
     return {
       recordId,
       lookedAt,

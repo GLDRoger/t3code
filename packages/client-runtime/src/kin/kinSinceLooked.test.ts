@@ -895,6 +895,53 @@ describe("pinning across live re-reads", () => {
     expect(afterLive2?.sinceLooked?.versions.map((v) => v.version)).toEqual([5, 4, 3]);
   });
 
+  it("pins the fresh copy on a revisit, not the cached one read before this app's last look", () => {
+    const doc = KinRecordId.make("rec-d10");
+    const v3 = "2026-11-27T09:00:00.000Z";
+    const v5 = "2026-11-27T11:16:00.000Z";
+    const seenBefore: NonNullable<KinDocDetail["sinceLooked"]> = {
+      total: 2,
+      from: 3,
+      versions: [docVersion({ version: 5, at: v5 }), docVersion({ version: 4 })],
+    };
+    const newer: NonNullable<KinDocDetail["sinceLooked"]> = {
+      total: 2,
+      from: 5,
+      versions: [
+        docVersion({ version: 7, at: "2026-11-27T13:30:00.000Z" }),
+        docVersion({ version: 6, at: "2026-11-27T13:20:00.000Z" }),
+      ],
+    };
+    // The cache's copy from the earlier visit draws first; this app already moved the mark to v5.
+    const cached = mergePinnedDocSinceLooked(null, doc, v3, seenBefore, v5);
+    const fresh = mergePinnedDocSinceLooked(cached, doc, v5, newer, v5);
+    expect(fresh?.sinceLooked).toEqual(newer);
+    expect(fresh?.lookedAt).toBe(v5);
+
+    // Within one visit the line stays after this visit's own look moves the mark to v5.
+    const opened = mergePinnedDocSinceLooked(null, doc, v3, seenBefore, null);
+    const reread = mergePinnedDocSinceLooked(opened, doc, v5, undefined, v5);
+    expect(reread?.sinceLooked).toEqual(seenBefore);
+    expect(reread?.lookedAt).toBe(v3);
+
+    const project = KinRecordId.make("rec-p1");
+    const cachedPage = mergePinnedProjectSinceLooked(
+      null,
+      project,
+      v3,
+      { total: 1, items: [projectItem({ seq: 10 })] },
+      v5,
+    );
+    const freshPage = mergePinnedProjectSinceLooked(
+      cachedPage,
+      project,
+      v5,
+      { total: 1, items: [projectItem({ seq: 12 })] },
+      v5,
+    );
+    expect(freshPage?.sinceLooked?.items.map((i) => i.seq)).toEqual([12]);
+  });
+
   it("keeps a project summary when looked moves the mark and merges live arrivals", () => {
     const initial: NonNullable<KinProjectPage["sinceLooked"]> = {
       total: 1,
