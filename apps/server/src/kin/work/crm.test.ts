@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -493,6 +494,255 @@ it.effect("client tax number aliases go through the India check in both record w
     const [other] = yield* org`SELECT key FROM kin_records WHERE title = 'Tidewater Freight'`;
     assert.isUndefined(other);
   }).pipe(Effect.provide(layer)),
+);
+
+const fieldTurns = ["the owner", "a co-owner", "a teammate", "two teammates together"] as const;
+const OK = "ok";
+const HOLDS = "refused: Only whoever holds <key>, or gave it to them, can change it.";
+const OWNERS = "refused: Only the owner or a co-owner changes that.";
+const CRM =
+  "refused: Only the owner or a co-owner sets a client's terms, tax details, address, Keep private or who looks after it, closes it, or makes it a vendor.";
+const UNSEEN = "refused: No entry <key> in Work.";
+const PRINTED =
+  "refused: Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed.";
+/**
+ * Each value is sent once at the top level and once under fields, to a twin of its target or as a
+ * new row on its list; both must end the same way: [the owner, a co-owner, a teammate, two].
+ */
+const fieldCells = [
+  ["update", "client", { terms: "Net 45" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { address: "2 Harbour Road" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { tags: ["cold-chain"] }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { gstin: "29ABCDE1234F1Z5" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { taxNumber: "29ABCDE1234F1Z5" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { gstin: null }, [PRINTED, PRINTED, HOLDS, OWNERS]],
+  ["update", "client", { taxNumber: null }, [PRINTED, PRINTED, HOLDS, OWNERS]],
+  ["update", "their client", { terms: "Net 45" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { address: "2 Harbour Road" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { taxNumber: "29ABCDE1234F1Z5" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { taxPlace: "Karnataka" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "contact", { email: "zoya@tidewater.invalid" }, [OK, OK, OK, OWNERS]],
+  ["update", "contact", { role: "Dispatch" }, [OK, OK, OK, OWNERS]],
+  ["update", "task", { size: "M" }, [OK, OK, OK, UNSEEN]],
+  ["update", "project", { billing: "fixed" }, [OK, OK, UNSEEN, UNSEEN]],
+  ["update", "goal", { current: 6 }, [OK, OK, UNSEEN, UNSEEN]],
+  ["create", "clients", { terms: "Net 45" }, [OK, OK, OWNERS, OWNERS]],
+  [
+    "create",
+    "clients",
+    { category: "prospect", cameFrom: "a referral from Meera" },
+    [OK, OK, OK, OWNERS],
+  ],
+  [
+    "create",
+    "clients",
+    { category: "prospect", taxNumber: "29ABCDE1234F1Z5" },
+    [OK, OK, CRM, OWNERS],
+  ],
+  [
+    "create",
+    "contacts",
+    { client: "Tidewater Freight", email: "arjun@tidewater.invalid" },
+    [OK, OK, OK, OWNERS],
+  ],
+  ["create", "work", { size: "S" }, [OK, OK, OK, OK]],
+  ["create", "projects", { repos: ["tidewater/dispatch"] }, [OK, OK, OWNERS, OWNERS]],
+  [
+    "create",
+    "goals",
+    { due: "2026-12-31", measure: "manual", target: "12" },
+    [OK, OK, OWNERS, OWNERS],
+  ],
+] as const;
+const SHARED_COLUMNS = new Set(["client", "category", "due"]);
+/** The cell's value split into what stays a column and what goes under fields. */
+const nestedOf = (value: Readonly<Record<string, unknown>>) => {
+  const columns = Object.fromEntries(
+    Object.entries(value).filter(([key]) => SHARED_COLUMNS.has(key)),
+  );
+  const fields = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !SHARED_COLUMNS.has(key)),
+  );
+  return { ...columns, fields };
+};
+
+it.effect.each(fieldTurns)(
+  "a record value under fields meets the same gate as at the top level in a turn of %s",
+  (name) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const column = fieldTurns.indexOf(name);
+      const turn = (["owner", "co-owner", "teammate", "shared"] as const)[column]!;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      const records = yield* KinRecords.KinRecords;
+      const created = (eventId: string, rows: ReadonlyArray<object>) =>
+        decodeCreate({ sourceEventId: eventId, records: rows }).pipe(
+          Effect.flatMap((input) => LeadWork.create(scope, input)),
+        );
+      // Twins the owner set up: each shape changes its own copy.
+      const twins = new Map<string, string>();
+      for (const shape of ["top", "nested"]) {
+        const made = yield* created("again-event", [
+          {
+            list: "clients",
+            title: `Juniper Cold Chain (${shape})`,
+            gstin: "27ABCDE1234F1Z5",
+            placeOfSupply: "Maharashtra",
+          },
+          { list: "clients", title: `Tidewater Freight (${shape})`, owner: "mate" },
+          {
+            list: "contacts",
+            title: `Zoya (${shape})`,
+            client: `Tidewater Freight (${shape})`,
+            role: "Planning",
+          },
+          { title: `Dispatch check (${shape})`, owner: "mate", size: "S" },
+          { list: "projects", title: `Tidewater site (${shape})`, billing: "hourly" },
+          {
+            list: "goals",
+            title: `Tidewater shipments (${shape})`,
+            due: "2026-12-31",
+            measure: "manual",
+            target: "12",
+            current: 4,
+          },
+        ]);
+        for (const [index, target] of [
+          "client",
+          "their client",
+          "contact",
+          "task",
+          "project",
+          "goal",
+        ].entries())
+          twins.set(`${target} ${shape}`, made.records[index]!.key);
+        const client = (yield* records.get(orgId, twins.get(`client ${shape}`)!))!;
+        yield* Clients.updateParty([owner], {
+          orgId,
+          key: client.key,
+          rev: client.rev,
+          accountsForTax: true,
+        });
+      }
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, sees_clients, sees_money)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner', 1, 1),
+          ('arjun', ${orgId}, 'arjun', 'Arjun', ${at}, 'member', 1, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const eventId = turn === "owner" ? "third-event" : `${turn}-event`;
+      if (turn !== "owner") {
+        const asker = turn === "co-owner" ? "meera" : mateId;
+        const people = turn === "shared" ? [mateId, "arjun"] : [asker];
+        const chat = `${turn}-chat`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES (${chat}, ${orgId}, ${turn === "shared" ? "team_group" : "direct"},
+            ${turn === "shared" ? null : `${asker}:lead`}, 1, ${at})`;
+        for (const person of people) {
+          yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+            VALUES (${`s-${person}`}, ${orgId}, ${person}, 0)`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${`${chat}-${person}`}, ${orgId}, ${chat}, 'person', ${person}, 'member', ${at})`;
+        }
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+            role, joined_at)
+          VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at)
+          VALUES (${`${turn}-ask`}, ${orgId}, ${chat}, 1, 'human', ${asker}, ${`${chat}-${asker}`},
+            'member', 'text', ${FIELDS_SAID}, '[]', 'posted', ${at})`;
+        const event = {
+          _tag: "chat.message",
+          orgId,
+          agentId: lead,
+          eventId,
+          receivedAt: at,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: asker, memberId: `${chat}-${asker}` },
+          chatId: chat,
+          messageId: `${turn}-ask`,
+        };
+        yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done'`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+            0, 0, 'claimed', 'wake')`;
+        yield* sql`UPDATE kin_wakeups SET event_ids = ${JSON.stringify([eventId])},
+            audience = ${turn === "co-owner" ? "owner_only" : "shared"} WHERE wakeup_id = 'wake'`;
+      }
+      const snapshot = (key: string) =>
+        records.get(orgId, key).pipe(
+          Effect.map((row) => {
+            assert.isDefined(row, key);
+            return {
+              state: row!.state,
+              category: row!.category,
+              owner: `${row!.ownerKind}:${row!.ownerId}`,
+              dueAt: row!.dueAt,
+              fields: JSON.parse(row!.fieldsJson),
+              partyId: row!.partyId,
+              projectId: row!.projectId,
+            };
+          }),
+        );
+      const outcome = <A>(effect: Effect.Effect<A, unknown, never>) =>
+        effect.pipe(
+          Effect.match({
+            onFailure: (error) =>
+              `refused: ${String(Predicate.hasProperty(error, "message") ? error.message : error)
+                .replaceAll(/ \((top|nested)\)/g, "")
+                .replaceAll(/\b(C|CT|W|P|G)-\d+\b/g, "<key>")}`,
+            onSuccess: () => "ok",
+          }),
+        );
+      const cells: Array<string> = [];
+      const expected: Array<string> = [];
+      for (const [op, target, value, outcomes] of fieldCells) {
+        const sent = { top: value, nested: nestedOf(value) };
+        const seen: Record<string, string> = {};
+        const after: Record<string, unknown> = {};
+        for (const shape of ["top", "nested"] as const) {
+          if (op === "update") {
+            const key = twins.get(`${target} ${shape}`)!;
+            const before = yield* snapshot(key);
+            seen[shape] = yield* outcome(
+              decodeUpdate({ sourceEventId: eventId, key, ...sent[shape] }).pipe(
+                Effect.flatMap((input) => LeadWork.update(scope, { ...input, key })),
+              ),
+            );
+            after[shape] = yield* snapshot(key);
+            if (seen[shape] !== "ok") assert.deepStrictEqual(after[shape], before, key);
+          } else {
+            const title = `${target} ${Object.keys(value).join(" ")} (${shape})`;
+            const row = {
+              list: target,
+              title,
+              ...sent[shape],
+              ...("client" in value ? { client: `${value.client} (${shape})` } : {}),
+            };
+            seen[shape] = yield* outcome(created(eventId, [row]));
+            const [made] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+              WHERE org_id = ${orgId} AND title = ${title}`;
+            if (seen[shape] !== "ok") assert.isUndefined(made, title);
+            else after[shape] = yield* snapshot(made!.key);
+          }
+        }
+        const cell = `${op} ${target} ${JSON.stringify(value)}`;
+        assert.strictEqual(seen.nested, seen.top, cell);
+        if (seen.top === OK) {
+          // Each twin has a client of its own.
+          const { partyId: _top, ...top } = after.top as Record<string, unknown>;
+          const { partyId: _nested, ...nested } = after.nested as Record<string, unknown>;
+          assert.deepStrictEqual(nested, top, cell);
+        }
+        cells.push(`${cell}: ${seen.top}`);
+        expected.push(`${cell}: ${outcomes[column]}`);
+      }
+      assert.deepStrictEqual(cells, expected);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

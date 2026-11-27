@@ -4387,7 +4387,10 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
       ? yield* heldBack(lead, printedAsked(input, before), before.recordId)
       : [];
   // Who may make the whole change is decided as before; only then does a part wait for a tap.
-  const checksTax = before.registerId === "clients" && input[clientTaxNumberAlias] === true;
+  // A cleared number is checked under either name: invoices may still print it.
+  const checksTax =
+    before.registerId === "clients" &&
+    (input[clientTaxNumberAlias] === true || input.gstin === null);
   if ((held.length > 0 || checksTax) && team !== undefined)
     yield* viewGuard(
       lead.orgId,
