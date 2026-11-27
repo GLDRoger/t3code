@@ -537,4 +537,63 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
 
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
+
+  it.effect.each([
+    [
+      "a pass in the bounce address",
+      [
+        "mx.google.com; spf=pass (dmarc=pass+header.from=client.example@else.example); dmarc=fail header.from=client.example",
+      ],
+      "failed",
+    ],
+    [
+      "a pass in a quoted property",
+      ['mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=client.example"'],
+      "not checked",
+    ],
+    [
+      "only the lower header carries a claimed pass",
+      ["mx.google.com; none", "mx.example; dmarc=pass header.from=client.example"],
+      "not checked",
+    ],
+    [
+      "a DMARC pass for another domain",
+      ["mx.google.com; dmarc=pass header.from=else.example"],
+      "not checked",
+    ],
+    [
+      "SPF and DKIM both pass for an unrelated domain",
+      ["mx.google.com; dkim=pass header.d=else.example; spf=pass smtp.mailfrom=else.example"],
+      "not checked",
+    ],
+    [
+      "a Gmail-shaped DMARC pass",
+      [
+        "mx.google.com; dkim=pass header.i=@client.example; spf=pass smtp.mailfrom=ana@client.example; dmarc=pass (p=REJECT) header.from=client.example",
+      ],
+      "passed",
+    ],
+    [
+      "a Microsoft-shaped DMARC pass",
+      [
+        "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
+      ],
+      "passed",
+    ],
+  ] as const)("reports the sender check for %s", ([, authResults, verdict]) =>
+    run(provider, ({ fake, call }) =>
+      Effect.gen(function* () {
+        const message = fake.deliver({
+          from: CLIENT,
+          to: BILLING,
+          subject: "Quote Q-7",
+          body: "Can you send the quote?",
+          at: NOW - HOUR,
+          authResults,
+        });
+        const thread = yield* call(MAIL_TOOL.read, { threadId: message.threadId });
+        assert.strictEqual(thread.messages[0].senderCheck, verdict);
+      }),
+    ),
+  );
 });

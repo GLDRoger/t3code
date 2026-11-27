@@ -1,5 +1,5 @@
 import type { MailArrival, MailAutomation } from "../connections/MailProvider.ts";
-import { looksLikeSignInMail, senderCheck } from "../connections/MailText.ts";
+import { looksLikeSignInMail, senderVerdictForAddress } from "../connections/MailText.ts";
 import { recordName } from "../work/recordRows.ts";
 
 /**
@@ -108,12 +108,6 @@ const keyIn = (key: string, subject: string) =>
     subject.toLowerCase(),
   );
 
-/** DMARC failed, or with no DMARC pass, SPF or DKIM failed. */
-const failsSenderChecks = (results: ReadonlyArray<string>) => {
-  if (senderCheck(results) !== "not checked") return senderCheck(results) === "failed";
-  return /\b(?:spf|dkim)=(?:fail|softfail)\b/i.test(results.join(";"));
-};
-
 const automationOf = (mail: MailAutomation, from: string) => {
   const autoSubmitted = mail.autoSubmitted?.split(";", 1)[0]?.trim().toLowerCase();
   if (autoSubmitted === "no") return undefined;
@@ -156,7 +150,10 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
       look: { by: { agentId: sender }, matched: "a reply to mail Kin sent in this thread" },
     };
   const contact = rows.contacts.get(from);
-  if (contact !== undefined && failsSenderChecks(mail.authResults)) {
+  if (
+    contact !== undefined &&
+    senderVerdictForAddress(mail.authResults, mail.fromAddress) === "failed"
+  ) {
     const reason = `This mail failed the sender checks for ${from}.`.slice(0, 200);
     return { class: "failed_checks", reason, look: { by: "chief", matched: reason } };
   }
