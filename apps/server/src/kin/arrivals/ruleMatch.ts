@@ -60,6 +60,58 @@ export const mailRulePhrase = (text: string) =>
     .replace(/\s+/gu, " ")
     .trim();
 
+const mixedScripts = [/\p{Script=Latin}/u, /\p{Script=Cyrillic}/u, /\p{Script=Greek}/u];
+const mixedSenderDomain = (domain: string) =>
+  NodeURL.domainToUnicode(domain)
+    .split(".")
+    .some((label) => mixedScripts.filter((script) => script.test(label)).length > 1);
+
+// Private suffixes too (github.io): a rule on one would trust every account under it.
+const isPublicSuffix = (domain: string) => {
+  const suffix = getPublicSuffix(domain, { allowPrivateDomains: true });
+  return suffix === null || suffix === domain;
+};
+
+export const mailRuleFilter = (sender: MailRuleFilters["from"][number]) => {
+  const address = "address" in sender && typeof sender.address === "string";
+  const raw = address ? sender.address : "domain" in sender ? sender.domain : undefined;
+  if (raw === undefined) return { problem: "invalid_sender" as const };
+  const spelling = address ? mailRuleAddress(raw) : mailRuleDomain(raw);
+  if (spelling === null) {
+    const ascii = NodeURL.domainToASCII(raw.trim()).replace(/\.$/, "");
+    return !address && /^[a-z]+$/i.test(ascii)
+      ? { problem: "public_suffix" as const }
+      : { problem: "invalid_sender" as const };
+  }
+  const domain = spelling.slice(spelling.lastIndexOf("@") + 1);
+  if (mixedSenderDomain(domain)) return { problem: "mixed_scripts" as const };
+  if (!address && isPublicSuffix(domain)) return { problem: "public_suffix" as const };
+  return { spelling };
+};
+
+// A person reads the card, so nothing in a filter or the words may be invisible or reorder text.
+const hidden = /(?![\t\n\r])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+export const hasHiddenCharacters = (text: string) => hidden.test(text);
+
+export const mailRuleMatchProblem = (match: MailRuleFilters) => {
+  const raw = [
+    ...match.from.map((sender) => ("address" in sender ? sender.address : sender.domain)),
+    ...match.subjectHas,
+  ];
+  if (raw.some((text) => typeof text === "string" && hasHiddenCharacters(text)))
+    return "hidden_characters" as const;
+  for (const sender of match.from) {
+    const filter = mailRuleFilter(sender);
+    if (filter.problem !== undefined) return filter.problem;
+  }
+  return match.subjectHas.some((text) => {
+    const phrase = mailRulePhrase(text);
+    return phrase.length < 2 || phrase.length > 60;
+  })
+    ? ("invalid_phrase" as const)
+    : undefined;
+};
+
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const excluded = new Set<string>(["gap", "own", "sign_in", "failed_checks"]);
 
@@ -88,7 +140,7 @@ export const mailRuleHeaderFacts = (
 export const matchMailRule = (
   rule: MailRuleFilters & { readonly connectionId: string },
   mail: Facts,
-  options?: { readonly subject?: "defer"; readonly senderCheck?: "manual" },
+  options?: { readonly subject?: "defer" },
 ): "match" | "held_unverified" | "no_match" => {
   if (
     rule.connectionId !== mail.connectionId ||
@@ -104,11 +156,11 @@ export const matchMailRule = (
     const domain = address.slice(address.lastIndexOf("@") + 1);
     if (
       !rule.from.some((sender) => {
-        if ("address" in sender && typeof sender.address === "string")
-          return mailRuleAddress(sender.address) === address;
-        if (!("domain" in sender)) return false;
-        const expected = mailRuleDomain(sender.domain);
-        return expected !== null && (domain === expected || domain.endsWith(`.${expected}`));
+        const { spelling } = mailRuleFilter(sender);
+        if (spelling === undefined) return false;
+        return "address" in sender && sender.address !== undefined
+          ? spelling === address
+          : domain === spelling || domain.endsWith(`.${spelling}`);
       })
     )
       return "no_match";
@@ -130,10 +182,7 @@ export const matchMailRule = (
       }))
   )
     return "no_match";
-  if (
-    options?.senderCheck !== "manual" &&
-    (mail.senderCheck === "failed" || (rule.from.length > 0 && mail.senderCheck !== "passed"))
-  )
+  if (mail.senderCheck === "failed" || (rule.from.length > 0 && mail.senderCheck !== "passed"))
     return "held_unverified";
   return "match";
 };

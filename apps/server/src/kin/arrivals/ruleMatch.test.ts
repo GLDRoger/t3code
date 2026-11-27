@@ -1,6 +1,13 @@
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 
-import { mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
+import { prepareMailRule } from "./ruleDraft.ts";
+import {
+  mailRuleFilter,
+  mailRuleHeaderFacts,
+  mailRuleMatchProblem,
+  matchMailRule,
+} from "./ruleMatch.ts";
 
 const rule = {
   connectionId: "company",
@@ -260,4 +267,85 @@ describe("mail rule matching", () => {
       ),
     ).toBe(result);
   });
+});
+
+// The rows `tldts` must keep green when it replaces the vendored suffix list.
+describe("a sender domain filter that is a public suffix", () => {
+  it.each([
+    ["co.uk", "public_suffix"],
+    ["CO.UK.", "public_suffix"],
+    ["uk", "public_suffix"],
+    ["example", "public_suffix"],
+    ["junipercold.example", "junipercold.example"],
+    ["junipercold.co.uk", "junipercold.co.uk"],
+    ["github.io", "public_suffix"],
+    ["tidewater.github.io", "tidewater.github.io"],
+    ["a.ck", "public_suffix"],
+    ["www.ck", "www.ck"],
+    ["x.kobe.jp", "public_suffix"],
+    ["city.kobe.jp", "city.kobe.jp"],
+    ["x.c.ts.net", "public_suffix"],
+    ["c.ts.net", "c.ts.net"],
+    ["公司.cn", "public_suffix"],
+    ["xn--55qx5d.cn", "public_suffix"],
+  ] as const)("%s", (domain, result) => {
+    const filter = mailRuleFilter({ domain });
+    expect(filter.problem ?? filter.spelling).toBe(result);
+  });
+
+  it("never refuses an address for its domain", () => {
+    expect(mailRuleFilter({ address: "orders@co.uk" })).toEqual({ spelling: "orders@co.uk" });
+  });
+});
+
+describe("filters and words a person can't see", () => {
+  const match = { from: [], subjectHas: [], withFile: null, classes: null };
+  it.each([
+    ["zero-width space in an address", { from: [{ address: "orders\u200b@junipercold.example" }] }],
+    [
+      "right-to-left override in an address",
+      { from: [{ address: "ord\u202eers@junipercold.example" }] },
+    ],
+    ["combining grapheme joiner in a domain", { from: [{ domain: "juniper\u034fcold.example" }] }],
+    ["Hangul filler in a domain", { from: [{ domain: "juniper\u3164cold.example" }] }],
+    ["right-to-left override in a phrase", { subjectHas: ["\u202eeciovni"] }],
+    ["tag characters in a phrase", { subjectHas: ["invoice\u{e0041}\u{e0042}"] }],
+    ["a control character in a phrase", { subjectHas: ["inv\u0000oice"] }],
+  ] as const)("%s", (_label, filters) => {
+    expect(mailRuleMatchProblem({ ...match, ...filters })).toBe("hidden_characters");
+  });
+
+  it("keeps spaces and visible punctuation", () => {
+    expect(
+      mailRuleMatchProblem({
+        ...match,
+        from: [{ domain: " JUNIPER.Example " }],
+        subjectHas: [" Invoice   42 ", "INV.42"],
+      }),
+    ).toBeUndefined();
+  });
+
+  it.effect.each([
+    ["tag characters", "File the bill.\u{e0020}\u{e0050}\u{e0061}\u{e0079}"],
+    ["a zero-width space", "File the\u200b bill."],
+    ["a right-to-left override", "File the bill. \u202edias\u202c"],
+    ["a variation selector", "File the bill \u2764\ufe0f"],
+    ["a control character", "File the bill.\u0007"],
+  ] as const)("refuses an instruction with %s", ([, what]) =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(prepareMailRule({ match, what, monthlyCap: undefined }));
+      assert.strictEqual(
+        error.message,
+        "Write the instruction without invisible or control characters.",
+      );
+    }),
+  );
+
+  it.effect("keeps line breaks and tabs in an instruction", () =>
+    Effect.gen(function* () {
+      const what = "File the bill.\n\tThen tell Rhea.\r\n";
+      const prepared = yield* prepareMailRule({ match, what, monthlyCap: undefined });
+      assert.strictEqual(prepared.monthlyCap, 30);
+    }),
+  );
 });
