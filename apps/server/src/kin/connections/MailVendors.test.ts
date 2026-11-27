@@ -39,6 +39,22 @@ type Run = {
   ) => Effect.Effect<any, KinGatewayError>;
 };
 
+// What a vendor could send on an event though Dates never asks: none of it may come through.
+const UNASKED = {
+  description: "Private trip notes",
+  body: { contentType: "html", content: "Private trip notes" },
+  bodyPreview: "Private trip notes",
+  location: { displayName: "Private trip location" },
+  attendees: [{ email: "zoya@tidewater.example" }],
+  organizer: { email: "meera@tidewater.example" },
+  hangoutLink: "https://meet.google.com/abc-defg-hij",
+  conferenceData: { entryPoints: [{ uri: "https://meet.google.com/abc-defg-hij" }] },
+  onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/trip" },
+  attachments: [{ fileUrl: "https://drive.google.com/file/d/trip" }],
+  calendarId: "primary",
+  etag: '"3181161784712000"',
+};
+
 const harness = (provider: MailProvider) => {
   const fake = makeFakeMail();
   fake.addAccount({
@@ -57,6 +73,15 @@ const harness = (provider: MailProvider) => {
     // Also exercise Kin's cancellation filter when Google sends a cancelled event.
     if (url.searchParams.has("fields")) url.searchParams.set("showDeleted", "true");
     const response = await handle(new Request(url, request));
+    const agenda =
+      url.searchParams.has("fields") ||
+      url.searchParams.get("$select")?.includes("originalStartTimeZone");
+    if (agenda && response.ok) {
+      const page = (await response.json()) as Record<string, Array<object> | undefined>;
+      for (const key of ["items", "value"])
+        page[key] = page[key]?.map((event) => ({ ...UNASKED, ...event }));
+      return Response.json(page);
+    }
     if (!omitLinkId || !response.ok) return response;
     const body = (await response.json()) as {
       messages?: Array<Record<string, unknown>>;
