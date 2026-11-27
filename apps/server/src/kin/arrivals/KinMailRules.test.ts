@@ -14,6 +14,7 @@ import {
   KinWakeupId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,7 +27,10 @@ import * as TestClock from "effect/testing/TestClock";
 import * as EventQueue from "../lead/KinEventQueue.ts";
 import { turnAudience, turnChat } from "../lead/Audience.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
+import * as ChatHub from "../chat/KinChatHub.ts";
+import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "../chat/refreshes.ts";
@@ -34,7 +38,13 @@ import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
 import { pauseMailRulesFor } from "./ruleLifecycle.ts";
-import { checkRuleWake, mailRuleLimitNotice } from "./ruleWake.ts";
+import {
+  checkRuleWake,
+  claimRuleMail,
+  flushRuleMail,
+  mailRuleLimitNotice,
+  matchingRules,
+} from "./ruleWake.ts";
 
 const orgId = KinOrgId.make("org");
 const agentId = KinAgentId.make("finance");
@@ -200,6 +210,227 @@ it.effect(
     }).pipe(Effect.provide(fixture)),
 );
 
+it.effect("lists only recently removed rules and reads history after mailbox removal", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const old = yield* rules.createFromTap(owners, tap);
+    yield* rules.remove(owners, { orgId, ruleId: old.ruleId });
+    yield* TestClock.adjust(28 * DAY_MS);
+    const recent = yield* rules.createFromTap(owners, { ...tap, tapId: "recent-tap" });
+    const ref = { orgId, ruleId: recent.ruleId };
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
+      from_address, noticed_at, class, state, sender_check)
+      VALUES ('org', 'juniper-invoice', 'mail', 'juniper-invoice', 'bill@juniper.example',
+        ${28 * DAY_MS}, 'known_biller', 'settled', 'passed')`;
+    const run = yield* rules.runNow(owners, ref);
+    assert.strictEqual(run.status, "queued");
+    yield* rules.remove(owners, ref);
+    yield* TestClock.adjust(3 * DAY_MS);
+    const active = yield* rules.createFromTap(owners, { ...tap, tapId: "active-tap" });
+    yield* sql`UPDATE kin_connections SET removed_at = ${31 * DAY_MS} WHERE connection_id = 'mail'`;
+    const removed = { orgId, removed: true } as const;
+    assert.deepStrictEqual(
+      (yield* rules.list(owners, removed)).rules.map(({ ruleId }) => ruleId),
+      [recent.ruleId],
+    );
+    assert.isEmpty((yield* rules.list(owners, { ...removed, connectionId: "own" })).rules);
+    assert.strictEqual(
+      (yield* rules.list(teammates, removed).pipe(Effect.flip)).reason,
+      "not_allowed",
+    );
+    assert.deepStrictEqual(
+      (yield* rules.list(owners, { orgId })).rules.map(({ ruleId }) => ruleId),
+      [active.ruleId],
+    );
+    const { entries } = yield* rules.history(owners, ref);
+    assert.lengthOf(entries, 1);
+    assert.include(entries[0], { arrivalId: "juniper-invoice", kind: "mail" });
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("applies a changed cap to the next matching mail and keeps held mail held", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    yield* TestClock.setTime(Date.parse("2026-11-27T12:00:00Z"));
+    const rule = yield* rules.createFromTap(owners, { ...tap, monthlyCap: 10 });
+    const ref = { orgId, ruleId: rule.ruleId };
+    const feed = Effect.fn("KinMailRulesTest.feed")(function* (arrivalId: string) {
+      yield* TestClock.adjust(10 * MINUTE_MS);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
+            from_address, received_at, noticed_at, class, state, sender_check)
+            VALUES ('org', ${arrivalId}, 'mail', ${arrivalId}, 'bill@juniper.example',
+              ${now}, ${now}, 'known_biller', 'settled', 'passed')`;
+          const matches = yield* matchingRules(orgId, connectionId);
+          yield* claimRuleMail(matches[0]!.rule, arrivalId, null, "match", null);
+          yield* flushRuleMail(matches, now);
+        }),
+      );
+    });
+    const before =
+      yield* sql`SELECT content_sha256, said_by, source_event, activation FROM kin_mail_rules`;
+    yield* feed("first");
+    const lower = yield* rules.setLimit(owners, { ...ref, monthlyCap: 1 });
+    assert.include(lower, { ...ref, monthlyCap: 1, fired: 1, atLimit: true, setterName: "Meera" });
+    yield* feed("held");
+    assert.deepInclude((yield* rules.history(owners, ref)).entries, {
+      kind: "mail",
+      arrivalId: "held",
+      fromAddress: "bill@juniper.example",
+      receivedAt: yield* Clock.currentTimeMillis,
+      noticedAt: yield* Clock.currentTimeMillis,
+      state: "held_cap",
+      outcome: null,
+      holdReason: "monthly_limit",
+      runOutcome: "held",
+      eventId: null,
+      wakeupId: null,
+      settledAt: yield* Clock.currentTimeMillis,
+      refs: null,
+    });
+    assert.include(yield* rules.runNow(owners, ref), { status: "queued", arrivalId: "held" });
+    const higher = yield* rules.setLimit(owners, { ...ref, monthlyCap: 10 });
+    assert.include(higher, { monthlyCap: 10, fired: 1, atLimit: false });
+    yield* feed("next");
+    const { entries } = yield* rules.history(owners, ref);
+    assert.sameDeepMembers(
+      entries.flatMap((entry) =>
+        entry.kind === "mail" ? [[entry.arrivalId, entry.state, "manual" in entry]] : [],
+      ),
+      [
+        ["next", "woke", false],
+        ["held", "held_cap", false],
+        ["held", "woke", true],
+        ["first", "woke", false],
+      ],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT content_sha256, said_by, source_event, activation FROM kin_mail_rules`,
+      before,
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        rulesWithQueue,
+        ChatHub.layer.pipe(Layer.provideMerge(ChatRepository.layer)),
+      ).pipe(Layer.provideMerge(sqlLayer)),
+    ),
+  ),
+);
+
+it.effect("refuses limit changes for a teammate and for a proposed or removed rule", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const rule = yield* rules.createFromTap(owners, tap);
+    const input = { orgId, ruleId: rule.ruleId, monthlyCap: 10 };
+    assert.strictEqual(
+      (yield* rules.setLimit(teammates, input).pipe(Effect.flip)).reason,
+      "not_allowed",
+    );
+    yield* rules.pause(owners, input);
+    assert.include(yield* rules.setLimit(owners, input), { state: "paused", monthlyCap: 10 });
+    yield* sql`UPDATE kin_mail_rules SET state = 'proposed'`;
+    assert.strictEqual(
+      (yield* rules.setLimit(owners, input).pipe(Effect.flip)).reason,
+      "invalid_state",
+    );
+    yield* rules.remove(owners, input);
+    assert.strictEqual(
+      (yield* rules.setLimit(owners, input).pipe(Effect.flip)).reason,
+      "not_found",
+    );
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "a lower limit holds at once below what fired, and the owner's local first clears it",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* seed();
+      const rules = yield* MailRules.KinMailRules;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream,
+      full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+      VALUES ('org', 'Asia/Kolkata', '09:00', '18:00', '02:00', 1, 1, '10:00', '{}')`;
+      const last = Date.parse("2026-11-30T18:29:59Z");
+      yield* TestClock.setTime(last);
+      const rule = yield* rules.createFromTap(owners, { ...tap, monthlyCap: 10 });
+      const ref = { orgId, ruleId: rule.ruleId };
+      for (let wake = 0; wake < 3; wake++)
+        assert.strictEqual(
+          (yield* sql.withTransaction(recordMailRuleWake(ref, last))).status,
+          "counted",
+        );
+      assert.include(yield* rules.setLimit(owners, { ...ref, monthlyCap: 2 }), {
+        monthlyCap: 2,
+        fired: 3,
+        atLimit: true,
+      });
+      assert.strictEqual(
+        (yield* sql.withTransaction(recordMailRuleWake(ref, last))).status,
+        "held",
+      );
+      const elsewhere = KinOrgId.make("elsewhere");
+      assert.strictEqual(
+        (yield* rules
+          .setLimit(owners, { orgId: elsewhere, ruleId: rule.ruleId, monthlyCap: 10 })
+          .pipe(Effect.flip)).reason,
+        "not_allowed",
+      );
+      assert.strictEqual(
+        (yield* rules
+          .setLimit(owners, { orgId, ruleId: "rule_elsewhere", monthlyCap: 10 })
+          .pipe(Effect.flip)).reason,
+        "not_found",
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-30T18:30:00Z"));
+      assert.include((yield* rules.list(owners, { orgId })).rules[0], {
+        monthlyCap: 2,
+        month: "2026-12",
+        fired: 0,
+        atLimit: false,
+      });
+      assert.strictEqual(
+        (yield* sql.withTransaction(recordMailRuleWake(ref, yield* Clock.currentTimeMillis)))
+          .status,
+        "counted",
+      );
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("lists a removed rule for exactly 30 days, and no path turns it back on", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const rule = yield* rules.createFromTap(owners, tap);
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.remove(owners, ref);
+    const removed = { orgId, removed: true } as const;
+    yield* TestClock.adjust(30 * DAY_MS);
+    const resume = { ...ref, agentId, chatId, tapId: "resume-tap" };
+    assert.strictEqual(
+      (yield* rules.resume(owners, resume).pipe(Effect.flip)).reason,
+      "invalid_state",
+    );
+    assert.strictEqual(
+      (yield* rules.setLimit(owners, { ...ref, monthlyCap: 5 }).pipe(Effect.flip)).reason,
+      "not_found",
+    );
+    yield* rules.remove(owners, ref);
+    assert.deepInclude((yield* rules.list(owners, removed)).rules[0], {
+      ruleId: rule.ruleId,
+      state: "removed",
+      updatedAt: 0,
+    });
+    yield* TestClock.adjust(1);
+    assert.isEmpty((yield* rules.list(owners, removed)).rules);
+  }).pipe(Effect.provide(fixture)),
+);
+
 it.effect(
   "counts only admitted automatic wakes and resets on the local first, not UTC midnight",
   () =>
@@ -310,6 +541,8 @@ it.effect(
       );
       assert.strictEqual(draft.matches[0]?.subject, "Juniper invoice");
       assert.strictEqual(draft.matches.at(-1)?.arrivalId, "a-3");
+      yield* sql`INSERT INTO kin_mail_rule_runs (org_id, event_id, arrival_id, rule_id, state, manual)
+        VALUES ('org', 'automatic', 'a-201', ${rule.ruleId}, 'woke', 0)`;
       // a-202 is the newest match, but its sender check failed: Run now never picks it.
       const result = yield* rules.runNow(owners, ref);
       assert.include(result, { status: "queued", arrivalId: "a-201" });
@@ -326,8 +559,15 @@ it.effect(
         calls.slice(1).flat(),
         Array.from({ length: 50 }, (_, i) => `m-${201 - i}`),
       );
-      assert.deepStrictEqual(yield* rules.history(owners, ref), {
-        entries: [
+      const history = yield* rules.history(owners, ref);
+      const automatic = history.entries.find(
+        (entry) => entry.kind === "mail" && entry.eventId === "automatic",
+      );
+      assert.include(automatic, { kind: "mail", arrivalId: "a-201" });
+      assert.notProperty(automatic, "manual");
+      assert.deepStrictEqual(
+        history.entries.filter((entry) => entry !== automatic),
+        [
           {
             kind: "mail",
             arrivalId: "a-201",
@@ -342,10 +582,11 @@ it.effect(
             refs: null,
             holdReason: null,
             runOutcome: null,
+            manual: true,
           },
           { kind: "gap", arrivalId: "gap", from: 20, to: 40 },
         ],
-      });
+      );
       assert.deepStrictEqual(
         yield* sql`SELECT fired, last_wake_at FROM kin_mail_rules ORDER BY rule_id`,
         [
@@ -489,6 +730,13 @@ it.effect("every rule change and run reaches each owner-level screen, and never 
     const rule = yield* rules.createFromTap(owners, tap);
     yield* settles("turned on");
     const ref = { orgId, ruleId: rule.ruleId };
+    const limit = { ...ref, monthlyCap: 10 };
+    const updated = yield* rules.setLimit(owners, limit);
+    yield* settles("limit changed");
+    assert.strictEqual((yield* rules.setLimit(owners, limit)).updatedAt, updated.updatedAt);
+    yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+    for (const screen of [...ownerScreens, zoyaLaptop])
+      assert.strictEqual(yield* Queue.size(screen), 0);
     yield* rules.pause(owners, ref);
     yield* settles("paused");
     yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
