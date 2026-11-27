@@ -4036,9 +4036,9 @@ describe("KinConnections Dates calendar", () => {
   );
 
   it.effect(
-    "isolates provider errors, avoids ungranted and paused sources, and changes no database rows",
+    "isolates provider errors, avoids ungranted and paused sources, and marks only dead sign-ins",
     () =>
-      withCalendars(({ connect, fake, reads }) =>
+      withCalendars(({ connect, fake, reads, holdNextRead }) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const connections = yield* KinConnections;
@@ -4047,7 +4047,9 @@ describe("KinConnections Dates calendar", () => {
           const limited = "rhea@tidewater.example";
           const paused = "warehouse@tidewater.example";
           const googleId = yield* connect(google, "google");
-          yield* connect(outlook, "microsoft");
+          const outlookId = yield* connect(outlook, "microsoft");
+          const own = "meera@tidewater.example";
+          const ownId = yield* connect(own, "google", meera);
           yield* connect(limited, "google", rhea, "https://www.googleapis.com/auth/gmail.readonly");
           const pausedId = yield* connect(paused, "microsoft");
           yield* connections.update(rhea, { orgId, connectionId: pausedId, paused: true });
@@ -4098,17 +4100,48 @@ describe("KinConnections Dates calendar", () => {
           );
           assert.lengthOf(reads, 3);
 
-          fake.failWith(google, null);
-          fake.setExpired(google, true);
-          yield* TestClock.adjust("5 seconds");
-          assert.strictEqual(
-            (yield* connections.mineCalendar(rhea, {
-              ...calendarWindow,
-              fresh: true,
-            })).sources.find((source) => source.account === google)?.status,
-            "signed_out",
+          const hold = holdNextRead();
+          const reading = yield* Effect.forkChild(
+            connections.mineCalendar(rhea, { ...calendarWindow, to: "2026-12-02T00:00:00.000Z" }),
+          );
+          yield* Effect.promise(() => hold.entered);
+          yield* TestClock.adjust("8 seconds");
+          hold.release();
+          assert.include(
+            (yield* Fiber.join(reading)).sources.map((source) => source.status),
+            "unreachable",
           );
           assert.deepStrictEqual(yield* sql`SELECT total_changes() AS changes`, before);
+
+          fake.failWith(google, null);
+          fake.failWith(own, 401);
+          fake.setExpired(outlook, true);
+          const signedOut = yield* connections.mineCalendar(meera, calendarWindow);
+          assert.sameMembers(
+            signedOut.sources
+              .filter((source) => source.status === "signed_out")
+              .map((source) => source.account),
+            [own, outlook],
+          );
+          assert.strictEqual(
+            (yield* connections.mine(meera, { orgId })).mailboxes?.find(
+              (mailbox) => mailbox.connectionId === ownId,
+            )?.state,
+            "needs_sign_in",
+          );
+          const settings = yield* connections.list(rhea, { orgId });
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === outlookId)?.state,
+            "needs_sign_in",
+          );
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === googleId)?.state,
+            "active",
+          );
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === pausedId)?.state,
+            "active",
+          );
           assert.deepStrictEqual(yield* sql`SELECT * FROM kin_connection_cursors`, cursors);
         }),
       ),

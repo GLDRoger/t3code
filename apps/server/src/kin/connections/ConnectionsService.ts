@@ -411,7 +411,7 @@ export const KinConnectionNoteInput = Schema.Struct({
 export const KinConnectionNoteResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
-type SignInMode = "record_expiry" | "read_only";
+type SignInMode = "default" | "calendar";
 
 class CalendarKey extends Data.Class<{
   readonly orgId: KinOrgId;
@@ -1131,21 +1131,29 @@ const make = Effect.gen(function* () {
     Effect.uninterruptible,
   );
 
+  const markSignInExpired = Effect.fn("KinConnections.markSignInExpired")(function* (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    mode: SignInMode,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    // A late calendar answer cannot expire a replacement sign-in or a paused mailbox.
+    const current =
+      mode === "calendar"
+        ? sql`AND sign_in_gen = ${row.signInGen} AND paused_at IS NULL AND person_id IS ${row.personId ?? null}`
+        : sql``;
+    yield* sql`UPDATE kin_connections SET state = 'needs_sign_in', updated_at = ${now}
+      WHERE org_id = ${orgId} AND connection_id = ${row.connectionId} AND removed_at IS NULL ${current}`;
+  });
   const needsSignIn = Effect.fn("KinConnections.needsSignIn")(
-    function* (orgId: KinOrgId, connectionId: string) {
-      const now = yield* Clock.currentTimeMillis;
-      yield* sql`UPDATE kin_connections SET state = 'needs_sign_in', updated_at = ${now}
-        WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND removed_at IS NULL`;
+    function* (orgId: KinOrgId, row: ConnectionRow, mode: SignInMode) {
+      yield* markSignInExpired(orgId, row, mode);
       yield* touched(orgId);
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin couldn't mark a sign-in expired", { cause }),
     ),
   );
-  const expired = (orgId: KinOrgId, row: ConnectionRow) =>
-    needsSignIn(orgId, row.connectionId).pipe(
-      Effect.andThen(Effect.fail(fail("unavailable", signedOut(row.label)))),
-    );
 
   const refreshing = yield* Semaphore.make(1);
   const stamp = (orgId: KinOrgId, connectionId: string) =>
@@ -1158,10 +1166,11 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: ConnectionRow,
     force: boolean,
-    mode: SignInMode = "record_expiry",
+    mode: SignInMode = "default",
   ) {
-    const onExpired =
-      mode === "read_only" ? Effect.fail(calendarSignInExpired) : expired(orgId, row);
+    const expired =
+      mode === "calendar" ? calendarSignInExpired : fail("unavailable", signedOut(row.label));
+    const onExpired = needsSignIn(orgId, row, mode).pipe(Effect.andThen(Effect.fail(expired)));
     const stored = yield* secrets.getSignIn(row.connectionId);
     if (Option.isNone(stored)) return yield* onExpired;
     const seen = Redacted.value(stored.value);
@@ -1199,11 +1208,7 @@ const make = Effect.gen(function* () {
             )
               return { _tag: "moved" as const, stored };
             if (Option.isNone(tokens)) {
-              if (mode === "record_expiry")
-                yield* sql`UPDATE kin_connections SET state = 'needs_sign_in',
-                    updated_at = ${yield* Clock.currentTimeMillis}
-                  WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
-                    AND removed_at IS NULL`;
+              yield* markSignInExpired(orgId, row, mode);
               return { _tag: "expired" as const };
             }
             const next = withTokens(secret, tokens.value);
@@ -1217,9 +1222,8 @@ const make = Effect.gen(function* () {
         }
         if (settled._tag === "moved" && Option.isSome(settled.stored)) return settled.stored.value;
         if (settled._tag === "moved") return yield* onExpired;
-        if (mode === "read_only") return yield* calendarSignInExpired;
         yield* touched(orgId);
-        return yield* fail("unavailable", signedOut(row.label));
+        return yield* expired;
       }).pipe(Effect.catchTags({ SqlError: () => Effect.fail(unavailable) })),
     );
   });
@@ -1281,7 +1285,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: ConnectionRow,
     use: (force: boolean) => Effect.Effect<A, E>,
-    mode: SignInMode = "record_expiry",
+    mode: SignInMode = "default",
   ): Effect.Effect<A, E> =>
     use(false).pipe(
       Effect.catchIf(
@@ -1289,9 +1293,7 @@ const make = Effect.gen(function* () {
         () =>
           use(true).pipe(
             Effect.tapError((error) =>
-              mode === "record_expiry" && refusedKey(error)
-                ? needsSignIn(orgId, row.connectionId)
-                : Effect.void,
+              refusedKey(error) ? needsSignIn(orgId, row, mode) : Effect.void,
             ),
           ),
       ),
@@ -1346,15 +1348,14 @@ const make = Effect.gen(function* () {
         return calendarStatus("signed_out");
 
       const saved = yield* secrets.getSignIn(connectionId);
-      if (Option.isNone(saved)) return calendarStatus("signed_out");
-      if (!provider.readsCalendar(Redacted.value(saved.value).scope))
+      if (Option.isSome(saved) && !provider.readsCalendar(Redacted.value(saved.value).scope))
         return calendarStatus("no_calendar_permission");
 
       return yield* withSignIn(
         orgId,
         row,
         (force) =>
-          signInOf(orgId, row, force, "read_only").pipe(
+          signInOf(orgId, row, force, "calendar").pipe(
             Effect.flatMap((signIn) =>
               Effect.gen(function* (): Effect.fn.Return<CalendarRead, KinGatewayError> {
                 if (!provider.readsCalendar(signIn.scope))
@@ -1367,7 +1368,7 @@ const make = Effect.gen(function* () {
               }),
             ),
           ),
-        "read_only",
+        "calendar",
       );
     },
     Effect.catch((error) =>
