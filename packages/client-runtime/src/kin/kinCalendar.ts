@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
+import { KIN_RETRY } from "./kinAnswers.ts";
 import { kinHostLacksCall } from "./kinHost.ts";
 import {
   kinWorkAllDay,
@@ -263,15 +264,19 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
     (source) => source.status === "unreachable" || source.status === "busy",
   );
   const [first] = unreached;
-  if (first !== undefined)
-    return withCap(
-      unreached.length > 1
-        ? `Couldn't reach ${unreached.length} of your calendars. Your Work dates are all here.`
-        : first.account === null
-          ? `Couldn't reach ${SERVICE[first.service]}. Your Work dates are all here.`
-          : `Couldn't reach ${SERVICE[first.service]} for ${first.account}. Your Work dates are all here.`,
-      { retry: true },
-    );
+  if (first !== undefined) {
+    const account = first.account === null ? "" : ` for ${first.account}`;
+    const service = SERVICE[first.service];
+    const allBusy = unreached.every((source) => source.status === "busy");
+    const text = allBusy
+      ? unreached.length > 1
+        ? `${unreached.length} of your calendars are busy. ${KIN_RETRY} in a minute.`
+        : `${service} is busy${account}. ${KIN_RETRY} in a minute.`
+      : unreached.length > 1
+        ? `Couldn't reach ${unreached.length} of your calendars.`
+        : `Couldn't reach ${service}${account}.`;
+    return withCap(`${text} Your Work dates are all here.`, { retry: true });
+  }
   const stuck = sources.find((source) => source.status !== "ok");
   if (stuck !== undefined) {
     const where = stuck.company ? "Settings → Connections" : "Your mailboxes";

@@ -9,9 +9,7 @@ import {
   type KinDateRow,
   type KinRecord,
 } from "@t3tools/contracts";
-import { it as effectIt } from "@effect/vitest";
 import * as Cause from "effect/Cause";
-import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -216,23 +214,49 @@ describe("calendar events beside Work dates", () => {
     expect([order(cell.entries).length, cell.rows.length]).toEqual([5, 2]);
   });
 
-  effectIt.effect("keeps the event cap notice alongside a source that needs retry", () =>
-    Effect.sync(() => {
-      const notice = kinCalendarNotice({
+  const [google, outlook] = sources;
+  const busy = (source: KinCalendarSource, account = source.account): KinCalendarSource => ({
+    ...source,
+    account,
+    status: "busy",
+  });
+  it.each([
+    {
+      failing: [busy(google!)],
+      text: "Google Calendar is busy for rhea@tidewater.example. Try again in a minute. Your Work dates are all here.",
+    },
+    {
+      failing: [busy(outlook!)],
+      text: "Outlook is busy for office@tidewater.example. Try again in a minute. Your Work dates are all here.",
+    },
+    {
+      failing: [busy(google!, null)],
+      text: "Google Calendar is busy. Try again in a minute. Your Work dates are all here.",
+    },
+    {
+      failing: [busy(outlook!, null)],
+      text: "Outlook is busy. Try again in a minute. Your Work dates are all here.",
+    },
+    {
+      failing: [busy(google!), { ...outlook!, status: "unreachable" as const }],
+      text: "Couldn't reach 2 of your calendars. Your Work dates are all here.",
+    },
+    {
+      failing: [busy(google!), busy(outlook!)],
+      text: "2 of your calendars are busy. Try again in a minute. Your Work dates are all here.",
+    },
+  ])("keeps the event cap alongside $text", ({ failing, text }) => {
+    expect(
+      kinCalendarNotice({
         _tag: "ready",
-        calendar: {
-          sources: sources.map((source) => ({ ...source, status: source.company ? "busy" : "ok" })),
-          events: [],
-          more: true,
-        },
+        calendar: { sources: failing, events: [], more: true },
         refreshing: false,
-      });
-      expect(notice).toMatchObject({
-        retry: true,
-        text: expect.stringContaining("Some events don't fit here. Your calendar has them all."),
-      });
-    }),
-  );
+      }),
+    ).toMatchObject({
+      retry: true,
+      text: `${text} Some events don't fit here. Your calendar has them all.`,
+    });
+  });
 
   it("treats a host without the calendar as unavailable, not as a failure", () => {
     const scope = "env-1:org-tidewater";
