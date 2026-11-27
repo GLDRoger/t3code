@@ -78,8 +78,8 @@ import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeG
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { KinGitHubApp, make as makeApp } from "./KinGitHubApp.ts";
 import { appHost, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
-import { setRepo } from "./githubWatchStore.ts";
-import { triagedKey } from "./boundIssue.ts";
+import { setRepo, setTriage } from "./githubWatchStore.ts";
+import { ownerFlagKey, triagedKey } from "./boundIssue.ts";
 import { isOutsideTriage } from "../lead/outsideTriage.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
@@ -2395,6 +2395,40 @@ it.effect(
       assert.deepStrictEqual(
         github.world.comments.map(({ repo, number, user }) => [repo, number, user]),
         [[TRIAGE_REPO, triage.number, "invented-kin[bot]"]],
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect.each(["triage", "triage_reply"] as const)(
+  "%s refuses to post when the owner turns triage off during the turn",
+  (kind) => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { startIssue, end, handled, sql, orgId } = yield* tidewater(github, true);
+      const initial = yield* startIssue();
+      if (kind === "triage_reply") {
+        assert.isTrue((yield* postTriage("Which shipment is delayed?")).ok);
+        yield* end("completed");
+      }
+      const turn = kind === "triage_reply" ? yield* startIssue(true, initial.number) : initial;
+      const posted = yield* handled(triagedKey(TRIAGE_REPO, turn.number));
+      const calls = github.world.calls.length;
+      yield* setTriage(orgId, TRIAGE_REPO, false, yield* Clock.currentTimeMillis);
+
+      const result = yield* postTriage("The digest arrives early.", "rule");
+      assert.isFalse(result.ok, `${kind} posted after triage was off`);
+      assert.strictEqual(
+        result.value.message,
+        "Issue triage is off for this repository. Nothing was posted. End the turn.",
+      );
+      assert.isFalse(github.world.calls.slice(calls).some((call) => call.startsWith("POST ")));
+      assert.deepStrictEqual(yield* handled(turn.key), [{ outcome: "woke", url: null }]);
+      assert.deepStrictEqual(yield* handled(triagedKey(TRIAGE_REPO, turn.number)), posted);
+      assert.isEmpty(yield* handled(ownerFlagKey(turn.key)));
+      assert.isEmpty(
+        yield* sql`SELECT call_key FROM kin_lead_tool_calls
+        WHERE org_id = ${orgId} AND wakeup_id = ${turn.wakeupId} AND request_hash = 'issue-comment'`,
       );
     }).pipe(Effect.provide(layer));
   },
