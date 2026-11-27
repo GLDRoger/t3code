@@ -10,6 +10,7 @@ import {
   type KinWidget,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -523,6 +524,190 @@ it.effect("a three-paragraph waiting message supplies a single short row to the 
         },
       ]);
     }),
+  ),
+);
+
+it.effect(
+  "a co-owner's lead sees the company mailbox and its own, never the owner's or a teammate's",
+  () =>
+    withFixture(
+      [],
+      Effect.gen(function* () {
+        yield* seedCheckIn;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', 'co_owner', ${timestamp})`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+          auth, reach, state, account_label, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'meera', 'google', 'Meera mail', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'needs_sign_in', 'meera@tidewater.example', 0, 0, 'meera')`;
+        yield* sql`UPDATE kin_agents SET owner_person_id = 'meera' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        const facts = yield* readMorning();
+        assert.deepStrictEqual(facts.now.lines, [
+          "Accounts (accounts@tidewater.example): signed in",
+          "Meera mail (meera@tidewater.example): needs signing in again",
+          "https://github.com/acme/app/pull/7: Kin couldn't check it now",
+        ]);
+      }),
+    ),
+);
+
+it.effect("a member's lead gets no live state and marks nothing sensitive", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = 'W-12'`;
+      yield* sql`UPDATE kin_agents SET owner_person_id = 'zoya' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      const facts = yield* readMorning("zoya-checkin");
+      assert.notProperty(facts, "now");
+      assert.isFalse(yield* turnSensitive(orgId, "zoya-checkin"));
+    }),
+  ),
+);
+
+it.effect("a Work key in another company or no longer there adds no line and marks nothing", () =>
+  withFixture(
+    [
+      [
+        "commitments/com-keys.md",
+        memoryFile("com-keys", {
+          kind: "commitment",
+          title: "Check the other keys",
+          due: "2026-11-09T08:00Z",
+          recorded_at: "2026-11-08T00:30:00Z",
+          links: ["W-77", "W-99"],
+        }),
+      ],
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs VALUES ('other-org', 'Other', ${timestamp})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES ('other-org', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, sensitive)
+        VALUES ('other-org', 'r-W-77', 'work', 'W-77', 'Invented other secret', 'open',
+          'person', 'owner', 'person', 'owner', 'o-W-77', 0, 0, 1)`;
+      const facts = yield* readMorning("keys-checkin");
+      assert.notInclude(facts.now.lines.join("\n"), "W-77");
+      assert.notInclude(facts.now.lines.join("\n"), "W-99");
+      assert.isFalse(yield* turnSensitive(orgId, "keys-checkin"));
+    }),
+  ),
+);
+
+const agedItem = (id: string, recordedAt: string, due: string): [string, string] => [
+  `commitments/${id}.md`,
+  memoryFile(id, { kind: "commitment", title: id, due, recorded_at: recordedAt }),
+];
+const ages = (facts: MorningFacts) =>
+  Object.fromEntries(
+    [...facts.dueToday, ...facts.overdue].map((row) => [row.title, row.written ?? "none"]),
+  );
+
+it.effect("written ages by the owner's calendar day just after midnight in Kolkata", () =>
+  withFixture(
+    [
+      agedItem("late-sunday", "2026-11-08T18:29:00Z", "2026-11-09T08:00Z"),
+      agedItem("first-minute", "2026-11-08T18:30:00Z", "2026-11-09T08:00Z"),
+      agedItem("ahead", "2026-11-09T19:00:00Z", "2026-11-09T08:00Z"),
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      assert.deepStrictEqual(ages(yield* readMorning()), {
+        "late-sunday": "Sun 8 Nov, 1 day ago",
+        "first-minute": "Mon 9 Nov, today",
+        ahead: "Tue 10 Nov, in 1 day",
+      });
+    }),
+    { at: Date.parse("2026-11-08T18:31:00Z") },
+  ),
+);
+
+it.effect("written ages by calendar day across the end of summer time in London", () =>
+  withFixture(
+    [
+      agedItem("sat-late-bst", "2026-10-24T22:30:00Z", "2026-10-26T09:00Z"),
+      agedItem("sun-early-bst", "2026-10-24T23:30:00Z", "2026-10-26T09:00Z"),
+      agedItem("sun-late-gmt", "2026-10-25T23:59:00Z", "2026-10-26T09:00Z"),
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Europe/London' WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(ages(yield* readMorning()), {
+        "sat-late-bst": "Sat 24 Oct, 2 days ago",
+        "sun-early-bst": "Sun 25 Oct, 1 day ago",
+        "sun-late-gmt": "Sun 25 Oct, 1 day ago",
+      });
+    }),
+    { at: Date.parse("2026-10-26T00:30:00Z") },
+  ),
+);
+
+const hangStarted = Deferred.makeUnsafe<void>();
+it.effect("a GitHub read that never answers leaves the morning facts whole after its budget", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const fiber = yield* readMorning().pipe(Effect.forkChild);
+      yield* Deferred.await(hangStarted);
+      yield* TestClock.adjust("10 seconds");
+      const facts = yield* Fiber.join(fiber);
+      assert.deepStrictEqual(facts.now.lines, [
+        "Accounts (accounts@tidewater.example): signed in",
+        "Rhea mail (rhea@tidewater.example): signed in",
+        "https://github.com/tidewater/app/pull/41: Kin couldn't check it now",
+        "https://github.com/tidewater/app/issues/44: Kin couldn't check it now",
+        "https://github.com/acme/app/pull/7: Kin couldn't check it now",
+        "W-12 Invented site copy: done",
+      ]);
+      assert.lengthOf(facts.dueToday, 1);
+    }),
+    {
+      linkReader: {
+        readRepo: () => Deferred.succeed(hangStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      },
+    },
+  ),
+);
+
+const githubCalls: Array<string> = [];
+it.effect("a company with nothing linked reads GitHub only for its reviews and adds one read", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const statements: Array<string> = [];
+      const transformer: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          statements.push(statement.compile()[0]);
+          return statement;
+        });
+      yield* readMorning().pipe(
+        Effect.provideService(Statement.CurrentTransformer, transformer),
+        Effect.provideService(Statement.SpanPropagationEnabled, true),
+      );
+      assert.deepStrictEqual(githubCalls, ["acme/app 7"]);
+      assert.lengthOf(
+        statements.filter((statement) => statement.includes("kin_connections")),
+        1,
+      );
+      assert.lengthOf(statements, 12);
+    }),
+    {
+      linkReader: {
+        readRepo: (_org, repo, numbers) =>
+          Effect.sync(() => {
+            githubCalls.push(`${repo} ${numbers.join(",")}`);
+            return new Map();
+          }),
+      },
+    },
   ),
 );
 
