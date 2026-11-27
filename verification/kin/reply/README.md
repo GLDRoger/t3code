@@ -60,3 +60,5 @@ On 2026-11-26, against `fix/kin-save-failure-says-why` (`5a47e4d617`, on `train/
 The guard "Steer waits after a Stop" (rule 12) now rests on code, from kin's `152baf9783e`: `KinStop` stores `_personStopped` on the wake-up's events in the same `UPDATE` that ends them, `KinEventQueue.steer` refuses a wake-up with that mark (`personStopExists`), the runner declines adoption and reports such a wake-up interrupted (`wasPersonStopped`), and `KinReplyBridge.flushReplies` checks the same mark inside each reply write. Rule 12 is closed; variant `steer-after-stop` is the code before that change.
 
 **Re-confirmed 2026-11-26** against the waiting line (#919), no spec change: it changed the working-line labels in `reply/classify.ts` `TOOL_LABELS`. They are status words; the spec reads `classify.ts` only for `uniqueParagraphs` and `isProviderErrorText`, and models the line as on or off (`presence`), so no rule reads them.
+
+**Re-confirmed 2026-11-27** on `d89236440b` with the TLC scratch cleanup (no spec change). All 15 rules hold over 4,773,315 states in 912.435 s.
