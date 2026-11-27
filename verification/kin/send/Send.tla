@@ -33,11 +33,12 @@ VARIABLES
   cardAs,    \* kin_connection_asks.account: the account the card showed
   cardGen,   \* kin_connection_asks.sign_in_gen
   wentAs,    \* whose mailbox the mail went out from
+  look,      \* result_json.sentLook of an unknown try: "" before the look, then found, missing, unreadable
   asks, restarts, remakes, expiries, errors, switches
 
 acct == <<signedAs, label, gen, cardAs, cardGen, wentAs, switches>>
 vars == <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
-          latestDoc, account, asks, restarts, remakes, expiries, errors, acct>>
+          latestDoc, account, asks, restarts, remakes, expiries, errors, acct, look>>
 
 Free == {c \in Cards : card[c] = "none"}
 \* The bound: at most two kinds of trouble in one run, each at most once.
@@ -58,6 +59,7 @@ Init ==
   /\ owes = [c \in Cards |-> FALSE]
   /\ went = [c \in Cards |-> 0]
   /\ wentDoc = [c \in Cards |-> 0]
+  /\ look = [c \in Cards |-> ""]
   /\ pending = None
   /\ latestDoc = 1
   /\ account = "ok"
@@ -84,14 +86,14 @@ AgentAsks ==
        /\ IF Broken \in {"no-replace", "replace-after-post"}
             THEN /\ card' = [card EXCEPT ![c] = "open"]
                  /\ pending' = IF Broken = "replace-after-post" /\ Olds(c) # {} THEN c ELSE None
-                 /\ UNCHANGED <<why, next>>
+                 /\ UNCHANGED <<look, why, next>>
             ELSE /\ card' = [o \in Cards |-> IF o = c THEN "open"
                                             ELSE IF o \in Olds(c) THEN "stale" ELSE card[o]]
                  /\ why' = [o \in Cards |-> IF o \in Olds(c) THEN "replaced" ELSE why[o]]
                  /\ next' = [o \in Cards |-> IF o \in Olds(c) THEN c ELSE next[o]]
                  /\ pending' = None
   /\ asks' = asks + 1
-  /\ UNCHANGED <<by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, restarts,
+  /\ UNCHANGED <<look, by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, restarts,
                  remakes, expiries, errors, signedAs, label, gen, wentAs, switches>>
 
 (* Only in the variant "replace-after-post", as the code was before: a later statement. *)
@@ -101,16 +103,29 @@ AgentReplacesOlder ==
   /\ why' = [o \in Cards |-> IF o \in Olds(pending) THEN "replaced" ELSE why[o]]
   /\ next' = [o \in Cards |-> IF o \in Olds(pending) THEN pending ELSE next[o]]
   /\ pending' = None
-  /\ UNCHANGED <<text, doc, by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, asks,
+  /\ UNCHANGED <<look, text, doc, by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, asks,
                  restarts, remakes, expiries, errors, acct>>
 
 NewerShowing(c) == \E n \in Cards : card[n] # "none" /\ text[n] > text[c]
 
 (* All cards here concern the same invoice and audience. Card order stands for the order of
-   earlier settled tries that earlierGone searches; a newer known result supersedes the warning. *)
+   earlier settled tries that earlierGone searches; a newer known result supersedes the warning.
+   An unknown try whose look in Sent found nothing, as persisted, stands aside: the rule. *)
+Missing(o) == why[o] = "unknown" /\ look[o] = "missing"
 MayHaveGone(c) ==
-  \E o \in Cards : o < c /\ why[o] = "unknown"
+  \E o \in Cards : o < c /\ why[o] = "unknown" /\ ~Missing(o)
+    /\ ~\E n \in Cards : o < n /\ n < c /\ card[n] \in {"sent", "failed"} /\ ~Missing(n)
+
+(* earlierGone as the code reads it. "no-persisted-miss": no look yet, or an unreadable one,
+   clears the warning too; "newest-miss-wins": a newer try not found hides every older one. *)
+Clears(o) ==
+  /\ why[o] = "unknown"
+  /\ \/ look[o] = "missing"
+     \/ Broken = "no-persisted-miss" /\ look[o] \in {"", "unreadable"}
+Warns(c) ==
+  \E o \in Cards : o < c /\ why[o] = "unknown" /\ ~Clears(o)
     /\ ~\E n \in Cards : o < n /\ n < c /\ card[n] \in {"sent", "failed"}
+                         /\ (Broken = "newest-miss-wins" \/ ~Clears(n))
 
 (* connections/ConnectionsService.ts answerAsk, in the tap's transaction (work/cardAnswers.ts
    answerChoice), then sql.afterCommit forks sendAsked. *)
@@ -129,17 +144,17 @@ TapConfirm(p, c, checked) ==
                     /\ why' = [why EXCEPT ![c] = "account"]
                     /\ job' = [job EXCEPT ![c] = "fresh"]
                     /\ owes' = [owes EXCEPT ![c] = TRUE]
-                    /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc,
+                    /\ UNCHANGED <<look, text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc,
                                    account, asks, restarts, remakes, expiries, errors, acct>>
                  \/ /\ account = "ok" /\ AsShown(c) /\ doc[c] # latestDoc /\ Broken # "no-file-check"
                     /\ card' = [card EXCEPT ![c] = "stale"]
                     /\ why' = [why EXCEPT ![c] = "doc"]
                     /\ job' = [job EXCEPT ![c] = "fresh"]
                     /\ owes' = [owes EXCEPT ![c] = TRUE]
-                    /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc,
+                    /\ UNCHANGED <<look, text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc,
                                    account, asks, restarts, remakes, expiries, errors, acct>>
                  \/ /\ account = "ok" /\ AsShown(c) /\ (doc[c] = latestDoc \/ Broken = "no-file-check")
-                    /\ checked \/ ~MayHaveGone(c) \/ Broken = "no-sent-check"
+                    /\ checked \/ ~Warns(c) \/ Broken = "no-sent-check"
                     /\ why' = IF ~checked /\ MayHaveGone(c)
                                   THEN [why EXCEPT ![c] = "unchecked"] ELSE why
                     /\ card' = [card EXCEPT ![c] = "sending"]
@@ -147,13 +162,13 @@ TapConfirm(p, c, checked) ==
                     /\ tapLate' = [tapLate EXCEPT ![c] = tapLate[c] \/ NewerShowing(c)]
                     /\ oldFile' = [oldFile EXCEPT ![c] = oldFile[c] \/ doc[c] # latestDoc]
                     /\ job' = [job EXCEPT ![c] = "queued"]
-                    /\ UNCHANGED <<text, doc, next, owes, went, wentDoc, pending, latestDoc, account,
+                    /\ UNCHANGED <<look, text, doc, next, owes, went, wentDoc, pending, latestDoc, account,
                                    asks, restarts, remakes, expiries, errors, acct>>
 
 TapCancel(p, c) ==
   /\ card[c] = "open" /\ p \in OwnerLevel
   /\ card' = [card EXCEPT ![c] = "declined"]
-  /\ UNCHANGED <<text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+  /\ UNCHANGED <<look, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
                  latestDoc, account, asks, restarts, remakes, expiries, errors, acct>>
 
 (* sendAsk: only an ask in 'sending'; withSignIn calls the provider with the card's own files
@@ -163,10 +178,10 @@ ProviderSends(c) ==
   /\ job[c] = "queued" /\ card[c] = "sending"
   /\ \/ /\ account = "expired"
         /\ job' = [job EXCEPT ![c] = "signin"]
-        /\ UNCHANGED <<went, wentDoc, wentAs, errors>>
+        /\ UNCHANGED <<look, went, wentDoc, wentAs, errors>>
      \/ /\ account = "ok" /\ ~AsShown(c)
         /\ job' = [job EXCEPT ![c] = "moved"]
-        /\ UNCHANGED <<went, wentDoc, wentAs, errors>>
+        /\ UNCHANGED <<look, went, wentDoc, wentAs, errors>>
      \/ /\ account = "ok" /\ AsShown(c)
         /\ went' = [went EXCEPT ![c] = went[c] + 1]
         /\ wentDoc' = [wentDoc EXCEPT ![c] = IF Broken = "send-latest-file" THEN latestDoc ELSE doc[c]]
@@ -175,14 +190,14 @@ ProviderSends(c) ==
         /\ UNCHANGED errors
      \/ /\ account = "ok" /\ AsShown(c) /\ errors < 1 /\ Calm
         /\ \/ /\ job' = [job EXCEPT ![c] = "error"]
-              /\ UNCHANGED <<went, wentDoc, wentAs>>
+              /\ UNCHANGED <<look, went, wentDoc, wentAs>>
            \/ /\ job' = [job EXCEPT ![c] = "unknown"]
-              /\ \/ UNCHANGED <<went, wentDoc, wentAs>>
+              /\ \/ UNCHANGED <<look, went, wentDoc, wentAs>>
                  \/ /\ went' = [went EXCEPT ![c] = went[c] + 1]
                     /\ wentDoc' = [wentDoc EXCEPT ![c] = doc[c]]
                     /\ wentAs' = [wentAs EXCEPT ![c] = signedAs]
         /\ errors' = errors + 1
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, owes, pending, latestDoc, account,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, owes, pending, latestDoc, account,
                  asks, restarts, remakes, expiries, signedAs, label, gen, cardAs, cardGen, switches>>
 
 (* sendAsk's finish: sent, or failed with the same mail returned for a fresh card; owes_card is set
@@ -194,7 +209,7 @@ SendRecorded(c) ==
   /\ job' = [job EXCEPT ![c] = IF job[c] = "went" \/ (job[c] = "error" /\ Broken = "error-loses-mail")
                                 THEN "idle" ELSE "fresh"]
   /\ owes' = [owes EXCEPT ![c] = job'[c] = "fresh"]
-  /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
+  /\ UNCHANGED <<look, text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
                  restarts, remakes, expiries, errors, acct>>
 
 Newer(c) == {n \in Cards : card[n] # "none" /\ text[n] > text[c]}
@@ -208,7 +223,7 @@ FreshCard(c) ==
   /\ job[c] = "fresh"
   /\ IF Newer(c) # {} /\ Broken # "copy-beside-correction"
        THEN /\ next' = [next EXCEPT ![c] = CHOOSE n \in Newer(c) : TRUE]
-            /\ UNCHANGED <<card, text, doc, cardAs, cardGen>>
+            /\ UNCHANGED <<look, card, text, doc, cardAs, cardGen>>
        ELSE /\ Free # {}
             /\ LET n == NewCard(Free) IN
                  /\ card' = [card EXCEPT ![n] = "open"]
@@ -219,7 +234,7 @@ FreshCard(c) ==
                  /\ next' = [next EXCEPT ![c] = n]
   /\ job' = [job EXCEPT ![c] = "idle"]
   /\ owes' = [owes EXCEPT ![c] = FALSE]
-  /\ UNCHANGED <<why, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks, restarts,
+  /\ UNCHANGED <<look, why, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks, restarts,
                  remakes, expiries, errors, signedAs, label, gen, wentAs, switches>>
 
 (* The server stops and starts: forked after-tap fibers are gone; every row stays. layer.ts then
@@ -232,7 +247,7 @@ Restart ==
                                    THEN "recover-unknown" ELSE "recover"
                             ELSE IF owes[c] /\ Broken # "no-owed-card" THEN "fresh" ELSE "idle"]
   /\ pending' = None
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, owes, went, wentDoc, latestDoc,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, owes, went, wentDoc, latestDoc,
                  account, asks, remakes, expiries, errors, acct>>
 
 (* interruptedSends: failed, "may or may not have gone", the same mail on a fresh card. *)
@@ -242,18 +257,32 @@ Recovered(c) ==
   /\ why' = [why EXCEPT ![c] = IF job[c] = "recover-unknown" THEN "unknown" ELSE "restart"]
   /\ job' = [job EXCEPT ![c] = "fresh"]
   /\ owes' = [owes EXCEPT ![c] = TRUE]
-  /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
+  /\ UNCHANGED <<look, text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
                  restarts, remakes, expiries, errors, acct>>
+
+(* connections/ConnectionsService.ts lookInSent, five minutes after an unknown try: one read of
+   that mailbox's Sent, under its fence, and one write of what it saw on the try. It sends nothing;
+   in the variant "look-sends", a look that finds nothing confirms the mail's new card itself. *)
+LookInSent(c) ==
+  /\ why[c] = "unknown" /\ look[c] = ""
+  /\ \E seen \in {"found", "missing", "unreadable"} :
+       /\ look' = [look EXCEPT ![c] = seen]
+       /\ IF Broken = "look-sends" /\ seen = "missing" /\ next[c] # None /\ card[next[c]] = "open"
+            THEN /\ card' = [card EXCEPT ![next[c]] = "sending"]
+                 /\ job' = [job EXCEPT ![next[c]] = "queued"]
+            ELSE UNCHANGED <<card, job>>
+  /\ UNCHANGED <<text, doc, why, next, by, tapLate, oldFile, owes, went, wentDoc, pending, latestDoc,
+                 account, asks, restarts, remakes, expiries, errors, acct>>
 
 SignInExpires ==
   /\ account = "ok" /\ expiries < 1 /\ Calm
   /\ account' = "expired" /\ expiries' = expiries + 1
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
                  latestDoc, asks, restarts, remakes, errors, acct>>
 
 SignInAgain ==
   /\ account = "expired" /\ account' = "ok"
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
                  latestDoc, asks, restarts, remakes, expiries, errors, acct>>
 
 (* ConnectionsService.ts signInFinish, again: the mail account is signed in again as someone
@@ -266,19 +295,20 @@ SignInAsOther(readable) ==
   /\ ~readable /\ Broken \in {"old-reconnect", "no-account-bind"}
   /\ signedAs' = "B" /\ account' = "ok" /\ switches' = switches + 1
   /\ gen' = IF Broken = "no-account-bind" THEN gen + 1 ELSE gen
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
                  latestDoc, asks, restarts, remakes, expiries, errors, label, cardAs, cardGen, wentAs>>
 
 InvoiceRemade ==
   /\ remakes < 1 /\ Calm
   /\ latestDoc' = latestDoc + 1 /\ remakes' = remakes + 1
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+  /\ UNCHANGED <<look, card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
                  account, asks, restarts, expiries, errors, acct>>
 
 Next ==
   \/ AgentAsks \/ AgentReplacesOlder
   \/ \E p \in People, c \in Cards, checked \in BOOLEAN : TapConfirm(p, c, checked) \/ TapCancel(p, c)
   \/ \E c \in Cards : ProviderSends(c) \/ SendRecorded(c) \/ FreshCard(c) \/ Recovered(c)
+                    \/ LookInSent(c)
   \/ Restart \/ SignInExpires \/ SignInAgain \/ InvoiceRemade
   \/ \E readable \in BOOLEAN : SignInAsOther(readable)
 
