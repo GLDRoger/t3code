@@ -1,6 +1,7 @@
 import * as DateTime from "effect/DateTime";
 
 import type { AlertMail, AlertReading, AlertRejection, BankAlertFormat } from "./bankAlerts.ts";
+import { dmarcPassedFor } from "../../connections/MailText.ts";
 import { DAY_MS } from "../../durations.ts";
 
 /**
@@ -22,16 +23,6 @@ const isHdfcAlertSender = (address: string | null | undefined) =>
 const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", reason });
 
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
-
-/**
- * Only the topmost `Authentication-Results`, the one the receiving server added: a sender can
- * write its own lower down. It must say DMARC passed for the sender's own domain.
- */
-const vouched = (results: ReadonlyArray<string>, domain: string) => {
-  const top = (results[0] ?? "").toLowerCase();
-  const dmarc = /\bdmarc=(\w+)[^;]*?\bheader\.from=([a-z0-9.-]+)/.exec(top);
-  return dmarc !== null && dmarc[1] === "pass" && dmarc[2] === domain;
-};
 
 const MAX_TEXT = 20_000;
 // oxlint-disable-next-line t3code/kin-one-format -- an HDFC alert's "Rs." and "INR" name the rupee, whatever the home.
@@ -141,7 +132,7 @@ export const readHdfcAlert = (mail: AlertMail): AlertReading => {
   const from = mail.fromAddress?.toLowerCase() ?? null;
   if (!isHdfcAlertSender(from) || /^\s*(?:re|fwd?)\s*:/i.test(mail.subject))
     return rejected("sender");
-  if (!vouched(mail.authResults, domainOf(from!))) return rejected("unverified");
+  if (!dmarcPassedFor(mail.authResults, domainOf(from!))) return rejected("unverified");
   const sentAt = mail.date === null ? Number.NaN : Date.parse(mail.date);
   if (!Number.isFinite(sentAt) || mail.text.length > MAX_TEXT) return rejected("unparsed");
   const text = tidy(mail.text);

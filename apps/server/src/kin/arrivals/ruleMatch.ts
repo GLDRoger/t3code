@@ -2,7 +2,7 @@
 import * as NodeURL from "node:url";
 
 import type { MailArrival } from "../connections/MailProvider.ts";
-import { senderCheck } from "../connections/MailText.ts";
+import { senderVerdict } from "../connections/MailText.ts";
 import type { ArrivalClass } from "./classify.ts";
 
 export type MailRuleFilters = {
@@ -12,7 +12,7 @@ export type MailRuleFilters = {
   readonly classes: ReadonlyArray<ArrivalClass> | null;
 };
 
-type SenderCheck = ReturnType<typeof senderCheck>;
+type SenderCheck = ReturnType<typeof senderVerdict>;
 type Facts = {
   readonly connectionId: string;
   readonly fromAddress: string | null;
@@ -65,15 +65,13 @@ export const mailRuleHeaderFacts = (
       : raw !== undefined && raw.includes("@")
         ? mailRuleAddress(raw)
         : mailRuleAddress(mail.fromAddress ?? "");
-  const checked: SenderCheck = senderCheck(mail.authResults);
   return {
     fromAddress,
     hasFile: mail.hasFile,
-    senderCheck:
-      checked === "not checked" &&
-      /\b(?:spf|dkim)=(?:fail|softfail)\b/i.test(mail.authResults.join(";"))
-        ? ("failed" as const)
-        : checked,
+    senderCheck: senderVerdict(
+      mail.authResults,
+      fromAddress === null ? null : fromAddress.slice(fromAddress.lastIndexOf("@") + 1),
+    ),
   };
 };
 

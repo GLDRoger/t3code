@@ -182,6 +182,15 @@ describe("an HDFC alert mail", () => {
         mail(UPI_DEBIT, { authResults: ["mx.google.com; dmarc=fail", VOUCHED[0]!] }),
         "unverified",
       ],
+      [
+        "a pass spelt in the sender's own bounce address",
+        mail(UPI_DEBIT, {
+          authResults: [
+            "mx.google.com; spf=pass (google.com: domain of dmarc=pass+header.from=hdfcbank.net@evil.test designates 192.0.2.9 as permitted sender) smtp.mailfrom=dmarc=pass+header.from=hdfcbank.net@evil.test; dmarc=fail (p=NONE) header.from=hdfcbank.net",
+          ],
+        }),
+        "unverified",
+      ],
     ];
     for (const [name, input, reason] of cases)
       assert.deepStrictEqual(readHdfcAlert(input), { _tag: "rejected", reason }, name);
