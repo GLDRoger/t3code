@@ -6,7 +6,6 @@ import {
   KIN_MAIL_RULES_IDLE,
   KIN_MAIL_RULE_HISTORY_IDLE,
   kinMailRuleActions,
-  kinMailRuleBreaks,
   kinMailRuleHistoryRows,
   kinMailRulePageView,
   kinMailRulePermissions,
@@ -40,6 +39,7 @@ import {
 } from "../../components/ui/select";
 import { randomUUID } from "../../lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Breakable } from "../KinBreakable";
 import { KinConfirm } from "../KinConfirm";
 import { kinClient } from "../kinClient";
 import { useNowMinuteMs } from "../useKinClock";
@@ -62,31 +62,6 @@ const HISTORY_FIRST = 20;
 const NO_LEADS: Atom.Atom<AsyncResult.AsyncResult<KinLeadsListResult, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
-
-/** Each piece of `text` with where it starts, for a key that stays put. */
-function piecesOf(text: string) {
-  const pieces: Array<{ readonly start: number; readonly part: string }> = [];
-  let start = 0;
-  for (const part of kinMailRuleBreaks(text)) {
-    pieces.push({ start, part });
-    start += part.length;
-  }
-  return pieces;
-}
-
-/** An address or domain broken only after `@` and `.`, never cut. */
-function Breakable(props: { readonly text: string }) {
-  return (
-    <>
-      {piecesOf(props.text).map(({ start, part }) => (
-        <span key={start}>
-          {start === 0 ? null : <wbr />}
-          {part}
-        </span>
-      ))}
-    </>
-  );
-}
 
 function useMailRulePermissions(environmentId: EnvironmentId) {
   const list = useAtomValue(kinClient.mailRulesList.permissionStateAtom(environmentId));

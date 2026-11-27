@@ -1,7 +1,9 @@
 import {
   EnvironmentAuthorizationError,
   formatKinWhen,
+  KIN_MAIL_RULE_CARD_ACTIONS,
   KinChatError,
+  KinMailRuleCardState,
   kinWhenParts,
   type EnvironmentId,
   type KinMailRule,
@@ -11,9 +13,12 @@ import {
   type KinMailRuleRef,
   type KinMailRuleRunNow,
   type KinMailRulesListInput,
+  type KinWidget,
+  type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -23,8 +28,10 @@ import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinListSend } from "./kinLists.ts";
 import type { AtomCommandResult } from "../state/runtime.ts";
 import type { kinGuardedRead } from "./kinClient.ts";
+import { createKinCardActions, type KinCardStatus } from "./kinDeferralPresentation.ts";
 import { kinHostLacksCall } from "./kinHost.ts";
 import { createKinRefreshTriggers } from "./kinRefresh.ts";
+import { kinSentences } from "./kinScreenState.ts";
 
 /**
  * Mail rules under a company mailbox in Settings → Connections, said once for web and phone.
@@ -123,8 +130,9 @@ export const KIN_MAIL_RULES = {
   goneLead: "A lead no longer here",
   goneSetter: "Someone no longer on the team",
   retired: (name: string) => `${name} (retired)`,
-  limitLine: (cap: number, fired: number) =>
-    `${cap === 1 ? "Runs at most once a month" : `Runs at most ${cap} times a month`} · ${fired} this month`,
+  capLine: (cap: number) =>
+    cap === 1 ? "Runs at most once a month" : `Runs at most ${cap} times a month`,
+  limitLine: (cap: number, fired: number) => `${KIN_MAIL_RULES.capLine(cap)} · ${fired} this month`,
   counts: (fired: number, cap: number) => `${fired} of ${cap} this month`,
   lastRan: (when: string) => `last ran ${when}`,
   neverRan: "hasn't run yet",
@@ -187,7 +195,7 @@ export const KIN_MAIL_RULES = {
   runNow: "Run now",
   running: "Looking for mail",
   runNowFailed: "Couldn't run it.",
-  runNowDone: "Started. The lead answers in your chat with it.",
+  runNowDone: "Queued. The lead answers in the chat where this rule's runs post.",
   runNowNothing: "Nothing ran.",
   actionsTitle: "Pause or remove",
   pageTitle: "Mail rule",
@@ -271,25 +279,37 @@ export function kinMailRuleAscii(domain: string): string {
   return domain.trim().normalize("NFC").toLowerCase().split(".").map(punyLabel).join(".");
 }
 
-/** One sender filter in words; a domain that isn't plain ASCII shows its punycode beside it. */
-function senderWords(sender: KinMailRuleSender): string {
+/**
+ * One sender filter in words; one whose ASCII spelling differs shows it beside it. `ascii` is the
+ * spelling the host sent, when it sent one; otherwise this device works it out.
+ */
+function senderWords(sender: KinMailRuleSender, ascii?: string): string {
   if (sender.address !== undefined) {
     const at = sender.address.lastIndexOf("@");
     const domain = at === -1 ? "" : sender.address.slice(at + 1);
-    const ascii = kinMailRuleAscii(domain);
-    return ascii === domain.toLowerCase() ? sender.address : `${sender.address} (${ascii})`;
+    if (ascii !== undefined)
+      return ascii === sender.address.toLowerCase()
+        ? sender.address
+        : `${sender.address} (${ascii})`;
+    const own = kinMailRuleAscii(domain);
+    return own === domain.toLowerCase() ? sender.address : `${sender.address} (${own})`;
   }
-  const ascii = kinMailRuleAscii(sender.domain);
-  return ascii === sender.domain.toLowerCase() ? sender.domain : `${sender.domain} (${ascii})`;
+  const spelt = ascii ?? kinMailRuleAscii(sender.domain);
+  return spelt === sender.domain.toLowerCase() ? sender.domain : `${sender.domain} (${spelt})`;
 }
 
 const quoted = (phrases: ReadonlyArray<string>) => orList(phrases.map((phrase) => `“${phrase}”`));
 
 /** What a rule matches, in one plain line: "From junipercold.example, with a file". */
-export function kinMailRuleMatchLine(match: KinMailRuleMatch | null): string {
+export function kinMailRuleMatchLine(
+  match: KinMailRuleMatch | null,
+  /** The host's ASCII spelling of each From filter, in the same order (a proposal card's). */
+  fromAscii?: ReadonlyArray<string>,
+): string {
   if (match === null) return KIN_MAIL_RULES.changedTitle;
+  const senders = match.from.map((sender, index) => senderWords(sender, fromAscii?.[index]));
   const parts = [
-    ...(match.from.length === 0 ? [] : [`From ${orList(match.from.map(senderWords))}`]),
+    ...(senders.length === 0 ? [] : [`From ${orList(senders)}`]),
     ...(match.subjectHas.length === 0 ? [] : [`subject has ${quoted(match.subjectHas)}`]),
     ...(match.withFile === true ? ["with a file"] : []),
     ...(match.classes === null
@@ -445,7 +465,10 @@ export function kinMailRulePageView(
       : [
           {
             label: copy.facts.from,
-            value: match.from.length === 0 ? copy.anyone : orList(match.from.map(senderWords)),
+            value:
+              match.from.length === 0
+                ? copy.anyone
+                : orList(match.from.map((sender) => senderWords(sender))),
           },
           {
             label: copy.facts.subjectHas,
@@ -670,17 +693,24 @@ export function kinMailRulePreviewView(
   };
 }
 
+/** A host with the wake answers a started run with its ids and no sentence. */
+type KinMailRuleRunNowQueued = {
+  readonly status: "queued";
+  readonly arrivalId: string;
+  readonly eventId: string;
+};
+
 /**
  * What Run now answered, in the host's own sentence: "not yet" and "no match" ran nothing; any
  * other answer a later host gives means a run started.
  */
-export function kinMailRuleRunNowAnswer(result: KinMailRuleRunNow): {
+export function kinMailRuleRunNowAnswer(result: KinMailRuleRunNow | KinMailRuleRunNowQueued): {
   readonly text: string;
   readonly ran: boolean;
 } {
   const status: string = result.status;
   const ran = status !== "no_match" && status !== "not_yet";
-  const said = result.message.trim();
+  const said = "message" in result ? result.message.trim() : "";
   return {
     text: said !== "" ? said : ran ? KIN_MAIL_RULES.runNowDone : KIN_MAIL_RULES.runNowNothing,
     ran,
@@ -731,6 +761,183 @@ export async function kinMailRuleResumeSend(input: {
   return done.ok
     ? { ok: true }
     : { ok: false, problem: done.problem || KIN_MAIL_RULES.resumeFailed };
+}
+
+export type KinMailRuleCardAction = (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
+
+export const KIN_MAIL_RULE_CARD = {
+  eyebrow: "Mail rule",
+  turnOn: "Turn on",
+  notNow: "Not now",
+  open: (until: string) => `Nothing runs until Turn on is tapped. The card is open until ${until}.`,
+  on: (at: string) => `Turned on ${at}.`,
+  dismissed: (at: string) => `Not now was tapped ${at}, so nothing was turned on.`,
+  expired: "This card expired, so nothing was turned on. Ask the lead for a new one.",
+  closed: "This card closed, so nothing was turned on.",
+} as const;
+
+/** A lead's proposed mail rule in chat, exactly as the host sealed it. */
+export interface KinMailRuleCardView {
+  readonly orgId: KinWidget["orgId"];
+  readonly widgetId: KinWidget["widgetId"];
+  readonly revision: number;
+  readonly connectionId: string;
+  readonly eyebrow: string;
+  /** What it matches, with the host's ASCII spelling beside any sender that differs. */
+  readonly title: string;
+  readonly facts: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  readonly whatLabel: string;
+  /** The lead's instruction whole: never shortened, its line breaks kept. */
+  readonly what: string;
+  readonly status: string;
+  /** Empty unless it is open and this viewer may answer it; the host decides in any case. */
+  readonly actions: ReadonlyArray<{ readonly id: KinMailRuleCardAction; readonly label: string }>;
+  readonly accessibilityLabel: string;
+}
+
+const decodeMailRuleCard = Schema.decodeUnknownOption(KinMailRuleCardState);
+
+// A model or an outsider chose these words: a character that draws nothing, or turns the text
+// around it, is shown by its code instead.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const visible = (text: string) =>
+  text
+    .replace(/\r\n?/g, "\n")
+    .replace(HIDDEN, (char) =>
+      char === "\n" || char === "\t"
+        ? char
+        : `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`,
+    );
+
+/** The proposal card's view; null when its state can't be read. */
+export function kinMailRuleCardView(
+  widget: KinWidget,
+  options: {
+    readonly nowMs: number;
+    /** False below the owner level; unknown offers the buttons, and the host decides. */
+    readonly ownerLevel?: boolean | undefined;
+    /** The viewer may only read this chat. */
+    readonly readOnly?: boolean | undefined;
+    readonly words?: KinMailRuleWords | undefined;
+  },
+): KinMailRuleCardView | null {
+  const decoded = decodeMailRuleCard(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const card = decoded.value;
+  const copy = KIN_MAIL_RULE_CARD;
+  const words = options.words ?? {};
+  const closedAt = widget.closedAt === null ? null : Date.parse(widget.closedAt);
+  const settledAt = closedAt === null || Number.isNaN(closedAt) ? null : when(closedAt, words);
+  const proposed = card.decision.status === "proposed";
+  const open = proposed && closedAt === null && options.nowMs < card.expiresAt;
+  const status =
+    card.decision.status === "on"
+      ? settledAt === null
+        ? "Turned on."
+        : copy.on(settledAt)
+      : card.decision.status === "dismissed"
+        ? settledAt === null
+          ? "Not now was tapped, so nothing was turned on."
+          : copy.dismissed(settledAt)
+        : closedAt !== null
+          ? copy.closed
+          : open
+            ? copy.open(when(card.expiresAt, words))
+            : copy.expired;
+  const match = {
+    ...card.match,
+    from: card.match.from.map((sender) =>
+      sender.address !== undefined
+        ? { address: visible(sender.address) }
+        : { domain: visible(sender.domain) },
+    ),
+    subjectHas: card.match.subjectHas.map(visible),
+  };
+  const title = kinMailRuleMatchLine(match, card.fromAscii.map(visible));
+  const labels = KIN_MAIL_RULES.facts;
+  const facts = [
+    { label: labels.mailbox, value: visible(card.mailbox.label) },
+    { label: labels.lead, value: visible(card.lead.name) },
+    { label: labels.limit, value: KIN_MAIL_RULES.capLine(card.monthlyCap) },
+  ];
+  const what = visible(card.what);
+  const answers = open && options.ownerLevel !== false && options.readOnly !== true;
+  return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    revision: widget.revision,
+    connectionId: card.mailbox.connectionId,
+    eyebrow: copy.eyebrow,
+    title,
+    facts,
+    whatLabel: KIN_MAIL_RULES.pageWhat,
+    what,
+    status,
+    actions: answers
+      ? [
+          { id: "turn_on", label: copy.turnOn },
+          { id: "not_now", label: copy.notNow },
+        ]
+      : [],
+    accessibilityLabel: kinSentences([
+      `${copy.eyebrow}: ${title}`,
+      ...facts.map((fact) => `${fact.label}: ${fact.value}`),
+      `${KIN_MAIL_RULES.pageWhat}: ${what.replace(/\s+/g, " ")}`,
+      status,
+    ]),
+  };
+}
+
+/** The Settings rule lists that show a rule this card turned on: its mailbox's, and the company's. */
+export const kinMailRuleListsAfterTurnOn = (
+  card: Pick<KinMailRuleCardView, "orgId" | "connectionId">,
+): ReadonlyArray<KinMailRulesListInput> => [
+  { orgId: card.orgId, connectionId: card.connectionId },
+  { orgId: card.orgId },
+];
+
+/**
+ * The card's taps through the shared action queue: a double tap posts once, and a retry after a
+ * dropped send reuses its id. A refusal shows the host's own sentence; one that says the card is
+ * behind keeps the buttons held until its newer revision arrives.
+ */
+export function createKinMailRuleCardActions(options: {
+  readonly post: (
+    input: KinWidgetsActInput,
+  ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly cause: unknown }>;
+  readonly newId: () => string;
+  /** After Turn on is taken: read the Settings lists again (`kinMailRuleListsAfterTurnOn`). */
+  readonly onTurnedOn: () => void;
+}) {
+  const queue = createKinCardActions<
+    Pick<KinMailRuleCardView, "widgetId" | "revision">,
+    KinMailRuleCardAction
+  >({
+    post: options.post,
+    newId: options.newId,
+    toInput: (card, actionId, clientActionId) => ({
+      widgetId: card.widgetId,
+      revision: card.revision,
+      actionId,
+      clientActionId,
+    }),
+    failureNotice: (cause) => ({
+      kind: cause.reason === "widget_changed" ? "stale" : "error",
+      text: cause.message,
+    }),
+  });
+  return async (
+    card: Pick<KinMailRuleCardView, "widgetId" | "revision">,
+    actionId: KinMailRuleCardAction,
+    onStart?: () => void,
+  ): Promise<KinCardStatus | null> => {
+    const outcome = await queue(card, actionId, onStart);
+    if (outcome.status === "ignored") return null;
+    if (outcome.status === "failed")
+      return { revision: card.revision, notice: outcome.notice, holding: outcome.behind === true };
+    if (actionId === "turn_on") options.onTurnedOn();
+    return { revision: card.revision, notice: null, holding: true };
+  };
 }
 
 /** Stands in for a read the viewer may not make, so no request goes out. */

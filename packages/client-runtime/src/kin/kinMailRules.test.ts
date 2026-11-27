@@ -4,10 +4,13 @@ import {
   type KinAgentId,
   type KinChatId,
   type KinMailRule,
+  type KinMailRuleCardState,
   type KinMailRuleHistory,
   type KinMailRulePreview,
   type KinOrgId,
   type KinPersonId,
+  type KinWidget,
+  type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -17,10 +20,13 @@ import { kinPermission } from "./kinAccess.ts";
 import {
   KIN_MAIL_RULES,
   KIN_MAIL_RULE_METHODS,
+  createKinMailRuleCardActions,
   kinMailRuleActions,
   kinMailRuleAscii,
   kinMailRuleBreaks,
+  kinMailRuleCardView,
   kinMailRuleHistoryRows,
+  kinMailRuleListsAfterTurnOn,
   kinMailRuleMatchLine,
   kinMailRulePageView,
   kinMailRulePermissions,
@@ -740,6 +746,19 @@ describe("kinMailRuleRunNowAnswer", () => {
       ran: true,
     });
   });
+
+  it("says a queued run plainly; the host's queued answer carries ids and no sentence", () => {
+    expect(
+      kinMailRuleRunNowAnswer({
+        status: "queued",
+        arrivalId: "arr_01JDCXG1",
+        eventId: "evt_01JDCXG2",
+      }),
+    ).toEqual({
+      text: "Queued. The lead answers in the chat where this rule's runs post.",
+      ran: true,
+    });
+  });
 });
 
 describe("kinMailRuleBreaks: addresses never cut, broken only after @ and .", () => {
@@ -836,4 +855,281 @@ describe("kinMailRuleResumeSend: the viewer's own chat with the lead, then Resum
     expect(sent).toBe(false);
     expect(outcome).toEqual({ ok: false, problem: "You're offline. Try again when you're back." });
   });
+});
+
+describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
+  const EXPIRES = Date.UTC(2026, 10, 28, 12, 0);
+  const cardState = (overrides: Partial<KinMailRuleCardState> = {}): KinMailRuleCardState => ({
+    mailbox: { connectionId: MAILBOX, label: "Accounts" },
+    lead: { agentId: FINANCE, name: "Finance" },
+    match: {
+      from: [{ domain: "junipercold.example" }, { address: "Billing@Bücher.example" }],
+      subjectHas: ["invoice"],
+      withFile: true,
+      classes: null,
+    },
+    fromAscii: ["junipercold.example", "billing@xn--bcher-kva.example"],
+    what: "File the bill under Juniper Cold Chain\nand tell me the amount.",
+    monthlyCap: 30,
+    contentSha256: "9f".repeat(32),
+    expiresAt: EXPIRES,
+    decision: { status: "proposed" },
+    ...overrides,
+  });
+  const cardWidget = (
+    state: unknown = cardState(),
+    overrides: Partial<Pick<KinWidget, "closedAt" | "revision">> = {},
+  ) =>
+    ({
+      orgId: ORG,
+      chatId: "chat_01JDCXC8D2E4F6G8H0J2K4M6N8",
+      widgetId: "wid_01JDCXK2M4P6R8T0V2X4Z6B8D0",
+      messageId: "msg_01JDCXK3N5Q7S9U1W3Y5A7C9E1",
+      widgetClass: "native",
+      type: "mail_rule",
+      revision: 1,
+      state,
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: "2026-11-27T12:00:00.000Z",
+      ...overrides,
+    }) as unknown as KinWidget;
+  const view = (
+    widget: KinWidget,
+    options: {
+      readonly nowMs?: number;
+      readonly ownerLevel?: boolean;
+      readonly readOnly?: boolean;
+    } = {},
+  ) => kinMailRuleCardView(widget, { nowMs: NOW, words: WORDS, ...options });
+  const BUTTONS = [
+    { id: "turn_on", label: "Turn on" },
+    { id: "not_now", label: "Not now" },
+  ];
+
+  it("shows the mailbox, the match in plain words, the lead, the limit and the words whole", () => {
+    expect(view(cardWidget())).toEqual({
+      orgId: ORG,
+      widgetId: "wid_01JDCXK2M4P6R8T0V2X4Z6B8D0",
+      revision: 1,
+      connectionId: MAILBOX,
+      eyebrow: "Mail rule",
+      title:
+        "From junipercold.example or Billing@Bücher.example (billing@xn--bcher-kva.example), subject has “invoice”, with a file",
+      facts: [
+        { label: "Mailbox", value: "Accounts" },
+        { label: "Lead", value: "Finance" },
+        { label: "Monthly limit", value: "Runs at most 30 times a month" },
+      ],
+      whatLabel: "What the lead is asked to do",
+      what: "File the bill under Juniper Cold Chain\nand tell me the amount.",
+      status: "Nothing runs until Turn on is tapped. The card is open until 28 Nov, 12:00.",
+      actions: BUTTONS,
+      accessibilityLabel:
+        "Mail rule: From junipercold.example or Billing@Bücher.example (billing@xn--bcher-kva.example), subject has “invoice”, with a file. Mailbox: Accounts. Lead: Finance. Monthly limit: Runs at most 30 times a month. What the lead is asked to do: File the bill under Juniper Cold Chain and tell me the amount. Nothing runs until Turn on is tapped. The card is open until 28 Nov, 12:00.",
+    });
+  });
+
+  it("shows the IDNA spelling the host sent, not one this device works out", () => {
+    const card = view(
+      cardWidget(
+        cardState({
+          match: {
+            from: [{ domain: "bücher.example" }],
+            subjectHas: [],
+            withFile: null,
+            classes: null,
+          },
+          fromAscii: ["xn--bcher-kva.example"],
+        }),
+      ),
+    );
+    expect(card?.title).toBe("From bücher.example (xn--bcher-kva.example)");
+    const odd = view(
+      cardWidget(
+        cardState({
+          match: {
+            from: [{ domain: "bücher.example" }],
+            subjectHas: [],
+            withFile: null,
+            classes: null,
+          },
+          fromAscii: ["xn--host-spelling.example"],
+        }),
+      ),
+    );
+    expect(odd?.title).toBe("From bücher.example (xn--host-spelling.example)");
+  });
+
+  it("keeps a long instruction whole and makes hidden characters visible", () => {
+    const what = `${"Check the bill against the purchase order and ".repeat(40)}tell me.`;
+    expect(view(cardWidget(cardState({ what })))?.what).toBe(what);
+    const sneaky = view(
+      cardWidget(
+        cardState({
+          what: "Reply that we got it\u202E.lla ti dnes\u200B\r\nthen file it.",
+          match: { from: [], subjectHas: ["inv\u200Boice"], withFile: null, classes: null },
+          fromAscii: [],
+        }),
+      ),
+    );
+    expect(sneaky?.what).toBe("Reply that we got it[U+202E].lla ti dnes[U+200B]\nthen file it.");
+    expect(sneaky?.title).toBe("Subject has “inv[U+200B]oice”");
+  });
+
+  it.each([
+    ["the owner level", { ownerLevel: true }, BUTTONS],
+    ["a viewer whose level isn't known yet (the host decides)", {}, BUTTONS],
+    ["a viewer below the owner level", { ownerLevel: false }, []],
+    ["a viewer who may only read the chat", { ownerLevel: true, readOnly: true }, []],
+  ] as const)("offers Turn on and Not now to %s", (_who, options, actions) => {
+    expect(view(cardWidget(), options)?.actions).toEqual(actions);
+  });
+
+  it.each([
+    [
+      "turned on, with when",
+      cardWidget(cardState({ decision: { status: "on", ruleId: RULE } }), {
+        closedAt: "2026-11-27T09:15:00.000Z",
+        revision: 2,
+      }),
+      "Turned on 27 Nov, 09:15.",
+    ],
+    [
+      "not now, with when",
+      cardWidget(cardState({ decision: { status: "dismissed" } }), {
+        closedAt: "2026-11-27T09:15:00.000Z",
+        revision: 2,
+      }),
+      "Not now was tapped 27 Nov, 09:15, so nothing was turned on.",
+    ],
+    [
+      "expired without an answer",
+      cardWidget(cardState({ expiresAt: NOW })),
+      "This card expired, so nothing was turned on. Ask the lead for a new one.",
+    ],
+    [
+      "closed without an answer",
+      cardWidget(cardState(), { closedAt: "2026-11-27T09:15:00.000Z" }),
+      "This card closed, so nothing was turned on.",
+    ],
+  ] as const)("settles %s, with no buttons", (_state, widget, status) => {
+    const card = view(widget, { ownerLevel: true });
+    expect(card?.status).toBe(status);
+    expect(card?.actions).toEqual([]);
+    expect(card?.accessibilityLabel.endsWith(status)).toBe(true);
+  });
+
+  it("draws nothing from a state it can't read", () => {
+    expect(view(cardWidget({ ...cardState(), what: "" }))).toBeNull();
+    expect(view(cardWidget({ mailbox: "Accounts" }))).toBeNull();
+  });
+
+  it("names the Settings lists to read again once a rule is turned on", () => {
+    const card = view(cardWidget());
+    expect(card === null ? [] : kinMailRuleListsAfterTurnOn(card)).toEqual([
+      { orgId: ORG, connectionId: MAILBOX },
+      { orgId: ORG },
+    ]);
+  });
+});
+
+describe("createKinMailRuleCardActions: a tap posts once, through the card's action queue", () => {
+  type Reply = { ok: true } | { ok: false; cause: unknown };
+  const CARD = {
+    widgetId: "wid_01JDCXK2M4P6R8T0V2X4Z6B8D0",
+    revision: 3,
+  } as const;
+  const setup = (respond: (call: number) => Promise<Reply>) => {
+    const posted: KinWidgetsActInput[] = [];
+    const turnedOn: string[] = [];
+    let id = 0;
+    const act = createKinMailRuleCardActions({
+      newId: () => `client-${++id}`,
+      post: (input) => {
+        posted.push(input);
+        return respond(posted.length);
+      },
+      onTurnedOn: () => turnedOn.push("lists"),
+    });
+    return { posted, turnedOn, act };
+  };
+  const ok = () => Promise.resolve({ ok: true } as const);
+  const dropped = () => Promise.reject(new Error("socket hang up ECONNRESET"));
+  const refused = (reason: "widget_changed" | "not_allowed" | "invalid_state", message: string) =>
+    Promise.resolve({ ok: false, cause: new KinChatError({ reason, message }) } as const);
+
+  it.each(["turn_on", "not_now"] as const)(
+    "%s posts one action with no value",
+    async (actionId) => {
+      const { posted, turnedOn, act } = setup(ok);
+      expect(await act(CARD as never, actionId)).toEqual({
+        revision: 3,
+        notice: null,
+        holding: true,
+      });
+      expect(posted).toEqual([{ ...CARD, actionId, clientActionId: "client-1" }]);
+      expect(turnedOn).toEqual(actionId === "turn_on" ? ["lists"] : []);
+    },
+  );
+
+  it("posts a double tap once, Turn on and Not now together included", async () => {
+    let release: (value: { ok: true }) => void = () => undefined;
+    const { posted, act } = setup(() => new Promise((resolve) => (release = resolve)));
+    const first = act(CARD as never, "turn_on");
+    expect(await act(CARD as never, "turn_on")).toBeNull();
+    expect(await act(CARD as never, "not_now")).toBeNull();
+    release({ ok: true });
+    await first;
+    expect(posted).toHaveLength(1);
+  });
+
+  it("retries a dropped send with the same id, so the host takes it once", async () => {
+    const replies = [dropped, ok];
+    const { posted, turnedOn, act } = setup((call) => replies[call - 1]!());
+    const failed = await act(CARD as never, "turn_on");
+    expect(failed?.notice?.kind).toBe("error");
+    expect(failed?.holding).toBe(false);
+    expect(turnedOn).toEqual([]);
+    await act(CARD as never, "turn_on");
+    expect(posted.map((input) => input.clientActionId)).toEqual(["client-1", "client-1"]);
+    expect(turnedOn).toEqual(["lists"]);
+  });
+
+  it.each([
+    [
+      "widget_changed",
+      "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
+      { kind: "stale", holding: true },
+    ],
+    [
+      "widget_changed",
+      "This mail rule card has expired, so ask for a new one.",
+      { kind: "stale", holding: true },
+    ],
+    [
+      "not_allowed",
+      "Only the owner or a co-owner can answer this mail rule card.",
+      { kind: "error", holding: false },
+    ],
+    [
+      "invalid_state",
+      "This company mailbox is no longer connected.",
+      { kind: "error", holding: false },
+    ],
+  ] as const)(
+    "a %s refusal says the host's sentence verbatim: %s",
+    async (reason, message, shown) => {
+      const { turnedOn, act } = setup(() => refused(reason, message));
+      expect(await act(CARD as never, "turn_on")).toEqual({
+        revision: 3,
+        notice: { kind: shown.kind, text: message },
+        holding: shown.holding,
+      });
+      expect(turnedOn).toEqual([]);
+    },
+  );
 });

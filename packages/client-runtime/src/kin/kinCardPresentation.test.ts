@@ -177,6 +177,31 @@ describe("kinCardView", () => {
     );
   });
 
+  it("draws a mail rule proposal with the reader's clock, and falls back on a bad one", () => {
+    const state = {
+      mailbox: { connectionId: "con_01JDCXB3M5N7P9Q2R4S6T8V0WX", label: "Accounts" },
+      lead: { agentId: "agt_01JDCX9P2W7R4KQ5M8T3V6YB1N", name: "Finance" },
+      match: {
+        from: [{ domain: "junipercold.example" }],
+        subjectHas: [],
+        withFile: true,
+        classes: null,
+      },
+      fromAscii: ["junipercold.example"],
+      what: "File the bill under Juniper Cold Chain.",
+      monthlyCap: 30,
+      contentSha256: "9f".repeat(32),
+      expiresAt: Date.UTC(2026, 10, 28, 12, 0),
+      decision: { status: "proposed" },
+    };
+    const card = widget({ type: "mail_rule", state });
+    expect(kinCardView(card, HOST, known())).toEqual({ kind: "mail_rule", widget: card });
+    expect(kinCardDraws(card, HOST, false)).toBe(true);
+    expect(
+      kinCardView(widget({ type: "mail_rule", state: { ...state, what: "" } }), HOST, known()).kind,
+    ).toBe("unknown");
+  });
+
   it("ignores fields this build doesn't know", () => {
     expect(task(widget({ state: taskState({ progressText: "<b>hi</b>" }) })).title).toBe(
       "Fix the payments test",
