@@ -26,7 +26,11 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./lead/orgLeads.ts";
 import { DAY_MS, HOUR_MS } from "./durations.ts";
 import { accessSql } from "./people/KinAccess.ts";
 import { personHoldNow } from "./triggers/quietHold.ts";
-import { MEMORY_WRITE_FAILURE_WORDS, savedMemoryWriteFailure } from "./memory/writeFailure.ts";
+import {
+  MEMORY_WRITE_FAILURE_WORDS,
+  savedMemoryWriteFailure,
+  savedSilentMemoryWriteFailure,
+} from "./memory/writeFailure.ts";
 
 /** Written by ops/kin/host/backup.sh into the server's state directory after every run. */
 export const BACKUP_STATUS_FILE = "kin-backup-status.json";
@@ -133,7 +137,7 @@ export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* 
         readonly id: string;
         readonly body: string;
         readonly outsideQuietHours?: true;
-        readonly replaceOnChange?: true;
+        readonly scope?: "cause" | "nightly-streak";
         readonly silentDuringQuietHours?: true;
       }
     | undefined,
@@ -153,19 +157,24 @@ export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* 
       if (
         activeId !== undefined &&
         open.some(({ messageId }) =>
-          episode?.replaceOnChange === true ? messageId.startsWith(`${activeId}:`) : true,
+          episode?.scope === "cause"
+            ? messageId.startsWith(`${activeId}:`)
+            : episode?.scope === "nightly-streak"
+              ? /^\d{4}-\d{2}-\d{2}$/.test(messageId.slice(prefix.length))
+              : true,
         )
       )
         return;
-      for (const { waitingId } of open)
-        yield* chat.resolveNotice({
-          orgId,
-          waitingId: KinWaitingId.make(waitingId),
-          resolution: "closed",
-        });
+      if (episode === undefined)
+        for (const { waitingId } of open)
+          yield* chat.resolveNotice({
+            orgId,
+            waitingId: KinWaitingId.make(waitingId),
+            resolution: "closed",
+          });
       if (episode === undefined || activeId === undefined) return;
       const messageId = KinMessageId.make(
-        episode.replaceOnChange === true ? `${activeId}:${SecureRandom.uuidV4Unsafe()}` : activeId,
+        episode.scope === "cause" ? `${activeId}:${SecureRandom.uuidV4Unsafe()}` : activeId,
       );
       if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
       const [owner] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
@@ -254,27 +263,35 @@ export const checkDreamNotice = Effect.fn("KinHostBackup.checkDreamNotice")(func
   const failing =
     runs.length === DREAM_NIGHTS_NOTICE &&
     runs.every(
-      (run) => run.status === "failed" && savedMemoryWriteFailure(run.failure ?? "") === undefined,
+      (run) =>
+        run.status === "failed" &&
+        savedMemoryWriteFailure(run.failure ?? "") === undefined &&
+        !savedSilentMemoryWriteFailure(run.failure ?? ""),
     );
+  const prefix = `kin-dream-failed:${orgId}:`;
+  if (writeFailure !== undefined) {
+    yield* episodeNotice(orgId, prefix, {
+      id: writeFailure,
+      body: MEMORY_WRITE_FAILURE_WORDS[writeFailure],
+      outsideQuietHours: true,
+      scope: "cause",
+    });
+    return;
+  }
+  if (!failing && latest?.status !== "succeeded") return;
   const first = runs.at(-1);
   const reason = dreamReason(latest?.failure ?? "");
   yield* episodeNotice(
     orgId,
-    `kin-dream-failed:${orgId}:`,
-    writeFailure !== undefined
+    prefix,
+    failing && first !== undefined
       ? {
-          id: writeFailure,
-          body: MEMORY_WRITE_FAILURE_WORDS[writeFailure],
+          id: first.ownerDate,
           outsideQuietHours: true,
-          replaceOnChange: true,
+          scope: "nightly-streak",
+          body: `Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.${reason === "" ? "" : `\n\nFor whoever looks after Kin, the last night stopped on: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
         }
-      : failing && first !== undefined
-        ? {
-            id: first.ownerDate,
-            outsideQuietHours: true,
-            body: `Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.${reason === "" ? "" : `\n\nFor whoever looks after Kin, the last night stopped on: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
-          }
-        : undefined,
+      : undefined,
   );
 });
 
