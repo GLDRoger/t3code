@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import { parseFields } from "../lists.ts";
+import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
 import { endOfDay, ownerZone } from "../recordRows.ts";
 import { orgOwner } from "../toolNames.ts";
@@ -20,6 +21,7 @@ import {
   rowTitle,
 } from "./bankList.ts";
 import { hdfcAlerts } from "./hdfcAlerts.ts";
+import * as BankAlertReader from "./BankAlertReader.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
 
@@ -27,7 +29,7 @@ import { DAY_MS } from "../../durations.ts";
  * Bank alert mails into Bank transactions, one entry per bank reference, whichever mailbox or
  * statement saw it first. Each mail Kin looked at is kept once in `kin_bank_alerts` with what
  * came of it, never its text; the newest available balance an alert printed is that account's.
- * Each bank's own mail is one format module behind `BankAlertFormat`.
+ * Each bank's sender checks are one format module behind `BankAlertFormat`.
  */
 
 /** The parts of one message a format reads. */
@@ -62,7 +64,7 @@ export type AlertRejection =
   | "sender"
   /** From the address, but the receiving server didn't vouch for it. */
   | "unverified"
-  /** From the bank, verified, but not one transaction read one way. */
+  /** From the bank, verified, but not one transaction read one way, or no model could read it. */
   | "unparsed";
 
 export type AlertReading =
@@ -76,7 +78,11 @@ export interface BankAlertFormat {
   readonly bank: string;
   readonly sends: (address: string | null | undefined) => boolean;
   readonly names: (bank: string) => boolean;
-  readonly read: (mail: AlertMail) => AlertReading;
+  readonly read: (
+    mail: AlertMail,
+    fallbackCurrency: string,
+    reader: BankAlertReader.BankAlertReader["Service"],
+  ) => Effect.Effect<AlertReading, BankAlertReader.BankAlertReaderUnavailable>;
 }
 
 const FORMATS: ReadonlyArray<BankAlertFormat> = [hdfcAlerts];
@@ -173,25 +179,49 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
     currency: string | null;
     dateAt: number;
     fieldsJson: string;
-  }>`SELECT record_id AS "recordId", currency, date_at AS "dateAt", fields_json AS "fieldsJson"
+    createdByKind: string;
+    originKey: string;
+  }>`SELECT record_id AS "recordId", currency, date_at AS "dateAt", fields_json AS "fieldsJson",
+      created_by_kind AS "createdByKind", origin_key AS "originKey"
     FROM kin_records WHERE org_id = ${orgId} AND register_id = ${def.id}
       AND amount_minor = ${alert.amountMinor}
       AND date_at >= ${day - 2 * DAY_MS} AND date_at <= ${day + 3 * DAY_MS}
     ORDER BY date_at, record_id`;
   const reference = referenceKey(alert.reference);
-  return near.find((one) => {
-    if ((one.currency ?? def.currency) !== alert.currency) return false;
+  const candidates = near.flatMap((one) => {
+    if ((one.currency ?? def.currency) !== alert.currency) return [];
     const fields = parseFields(one.fieldsJson);
     const said = typeof fields.reference === "string" ? referenceKey(fields.reference) : "";
     const account = last4(typeof fields.account === "string" ? fields.account : null);
-    const day = dayIn(one.dateAt, zone);
-    return (
-      said === reference &&
-      directionOf(fields) !== (alert.direction === "debit" ? "credit" : "debit") &&
-      (account === null || account === alert.account) &&
-      Math.abs(Date.parse(`${day}T00:00:00Z`) - Date.parse(`${alert.date}T00:00:00Z`)) <= 2 * DAY_MS
-    );
-  })?.recordId;
+    const date = dayIn(one.dateAt, zone);
+    const direction = directionOf(fields);
+    const exact = account === alert.account && direction === alert.direction && date === alert.date;
+    return [
+      {
+        ...one,
+        said,
+        exact,
+        matchesReference:
+          said === reference &&
+          direction !== (alert.direction === "debit" ? "credit" : "debit") &&
+          (account === null || account === alert.account) &&
+          Math.abs(Date.parse(`${date}T00:00:00Z`) - day) <= 2 * DAY_MS,
+      },
+    ];
+  });
+  const matching = candidates.find((one) => one.matchesReference);
+  if (matching !== undefined) return matching.recordId;
+  const manual = candidates.filter((one) => one.exact);
+  for (const one of manual) {
+    if (one.said !== "" || one.createdByKind !== "agent" || one.originKey.startsWith("alert:"))
+      continue;
+    const claims = yield* sql<{ reference: string }>`SELECT DISTINCT reference FROM kin_bank_alerts
+      WHERE org_id = ${orgId} AND record_id = ${one.recordId} AND bank = ${format.bank}
+        AND account = ${alert.account} AND currency = ${alert.currency} AND reference IS NOT NULL`;
+    if (claims.some((claim) => referenceKey(claim.reference) === reference)) return one.recordId;
+    if (claims.length === 0 && manual.length === 1) return one.recordId;
+  }
+  return undefined;
 });
 
 const recordAlert = Effect.fn("KinBankAlerts.record")(function* (
@@ -240,12 +270,14 @@ export const threadSeen = Effect.fn("KinBankAlerts.threadSeen")(function* (
   return row?.last !== null && row?.last !== undefined && row.last >= newest;
 });
 
-const RETRY_WINDOW = 14 * DAY_MS;
+export const ALERT_RETRY_WINDOW = 14 * DAY_MS;
 // Only unparsed rows use reference for an ordered parser marker instead of a bank reference.
-const PARSER_MARKER = "parser:0002";
+const PARSER_MARKER = "parser:0003";
+/** An alert no model was available to read: retried like an older parser's, and told as such. */
+export const UNREAD_ALERT_MARKER = "parser:0000";
 
 const canRetryAlert = (sql: SqlClient.SqlClient, now: number) =>
-  sql`outcome = 'unparsed' AND sent_at BETWEEN ${now - RETRY_WINDOW} AND ${now}
+  sql`outcome = 'unparsed' AND sent_at BETWEEN ${now - ALERT_RETRY_WINDOW} AND ${now}
     AND COALESCE(reference, '') < ${PARSER_MARKER}`;
 
 export const retryAlertThreads = Effect.fn("KinBankAlerts.retryThreads")(function* (
@@ -279,18 +311,68 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
   const tally = { recorded: 0, duplicate: 0, rejected: 0 };
   const owner = yield* orgOwner(orgId);
   if (owner === null) return tally satisfies AlertTally;
+  const reader = yield* BankAlertReader.BankAlertReader;
   const retryable = canRetryAlert(sql, input.now);
+  const seenAlert = (alertId: string) =>
+    sql<{ retry: number | null }>`SELECT
+      (${retryable} AND thread_id = ${input.threadId}) AS retry FROM kin_bank_alerts
+    WHERE org_id = ${orgId} AND alert_id = ${alertId}`.pipe(Effect.map((rows) => rows[0]));
+  const skip = (seen: { retry: number | null } | undefined) =>
+    seen === undefined ? input.retryOnly === true : seen.retry !== 1;
+  const currency = (yield* findBankList(orgId))?.currency ?? (yield* homeCurrency(orgId));
+  const reads = new Map<
+    string,
+    {
+      message: AlertMessage;
+      format: BankAlertFormat | undefined;
+      reading: AlertReading | "unread" | undefined;
+    }
+  >();
+  let unread = false;
+  for (const message of input.messages) {
+    const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
+    if (sentAt < input.now - ALERT_RETRY_WINDOW) continue;
+    const alertId = alertIdOf(input.connectionId, input.threadId, message);
+    if (reads.has(alertId) || skip(yield* seenAlert(alertId))) continue;
+    const format = formatSending(message.fromAddress);
+    const reading =
+      format === undefined
+        ? undefined
+        : yield* format.read(message, currency, reader).pipe(
+            Effect.catchTags({
+              BankAlertReaderUnavailable: () => {
+                unread = true;
+                return Effect.succeed("unread" as const);
+              },
+            }),
+          );
+    reads.set(alertId, { message, format, reading });
+  }
+  if (reads.size === 0 && !input.recheckedThread) return tally satisfies AlertTally;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      for (const message of input.messages) {
-        const alertId = alertIdOf(input.connectionId, input.threadId, message);
-        const [seen] = yield* sql<{ retry: number | null }>`SELECT
-            (${retryable} AND thread_id = ${input.threadId}) AS retry FROM kin_bank_alerts
-          WHERE org_id = ${orgId} AND alert_id = ${alertId}
-          ORDER BY alert_id`;
-        if (seen === undefined ? input.retryOnly : seen.retry !== 1) continue;
-        const format = formatSending(message.fromAddress);
-        const reading = format?.read(message);
+      for (const [alertId, { message, format, reading }] of reads) {
+        const seen = yield* seenAlert(alertId);
+        if (skip(seen)) continue;
+        if (reading === "unread") {
+          if (seen === undefined) {
+            yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
+              org_id: orgId,
+              alert_id: alertId,
+              connection_id: input.connectionId,
+              thread_id: input.threadId,
+              sent_at: message.date === null ? null : Date.parse(message.date),
+              seen_at: input.now,
+              outcome: "unparsed",
+              reference: UNREAD_ALERT_MARKER,
+            })}`;
+            tally.rejected++;
+          } else {
+            yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+              WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
+          }
+          continue;
+        }
         if (format === undefined || reading === undefined || reading._tag === "rejected") {
           if (seen !== undefined) {
             yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
@@ -341,7 +423,7 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
         }
         tally[done.outcome]++;
       }
-      if (input.recheckedThread) {
+      if (input.recheckedThread && !unread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
           WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
             AND thread_id = ${input.threadId} AND ${retryable}`;

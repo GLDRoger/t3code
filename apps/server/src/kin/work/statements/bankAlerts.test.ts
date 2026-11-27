@@ -6,6 +6,7 @@ import { KinChatError, KinConnectionId, KinOrgId, KinPersonId } from "@t3tools/c
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -25,7 +26,9 @@ import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import { parseFields } from "../lists.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { MAIL_TOOL, type MailMessage } from "../../connections/MailProvider.ts";
-import { takeAlertMail } from "./alertMail.ts";
+import { alertsOnMail, takeAlertMail } from "./alertMail.ts";
+import * as BankAlertReader from "./BankAlertReader.ts";
+import { fixtureBankAlertReader } from "./bankAlerts.testkit.ts";
 import {
   alertBalances,
   alertCheck,
@@ -33,6 +36,7 @@ import {
   rejectedAlerts,
   takeAlerts,
   threadSeen,
+  UNREAD_ALERT_MARKER,
 } from "./bankAlerts.ts";
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
 import { creditMatches } from "./invoiceCredits.ts";
@@ -62,6 +66,7 @@ const debit = (reference: string, balance = "4,10,000.00") =>
 
 const layer = Layer.mergeAll(
   KinRecords.layer,
+  Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader),
   Layer.mock(KinIdentity)({
     owner: { _tag: "person" as const, orgId, personId: rhea },
     isAgentThread: () => true,
@@ -267,8 +272,8 @@ it.layer(layer)((it) => {
   it.effect("a pass reads only HDFC's threads, and each only until Kin has its newest mail", () =>
     Effect.gen(function* () {
       const reads: Array<string> = [];
-      const message = (text: string): MailMessage => ({
-        threadId: "t-hdfc",
+      const message = (text: string, threadId: string): MailMessage => ({
+        threadId,
         from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
         fromAddress: "alerts@hdfcbank.net",
         to: [],
@@ -280,7 +285,7 @@ it.layer(layer)((it) => {
         subject: "You have done a UPI txn. Check details!",
         preview: "",
         unread: true,
-        messageId: "<m8@hdfc>",
+        messageId: `<${threadId}@hdfc>`,
         references: null,
         authResults: AUTH,
         body: { text, attachments: [] },
@@ -289,7 +294,9 @@ it.layer(layer)((it) => {
         readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
           Effect.sync(() => {
             reads.push(threadId);
-            return [message(debit("632211110008").replace("**4821", "**7001"))];
+            const [reference, account] =
+              threadId === "t-hdfc" ? ["632211110008", "**7001"] : ["632211110018", "**7002"];
+            return [message(debit(reference).replace("**4821", account), threadId)];
           }),
       };
       const activity = {
@@ -310,6 +317,14 @@ it.layer(layer)((it) => {
             unread: true,
           },
           {
+            threadId: "t-hdfc-2",
+            receivedBy: null,
+            subject: "You have done a UPI txn. Check details!",
+            from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+            date: "Wed, 18 Nov 2026 10:00:00 +0530",
+            unread: true,
+          },
+          {
             threadId: "t-client",
             receivedBy: null,
             subject: "Invoice 004",
@@ -319,11 +334,70 @@ it.layer(layer)((it) => {
           },
         ],
       };
+      yield* TestClock.setTime(NOW);
+      const sql = yield* SqlClient.SqlClient;
+      const [before] = yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`;
+      let calls = 0;
+      const onMail = yield* alertsOnMail(connections).pipe(
+        Effect.provideService(BankAlertReader.BankAlertReader, {
+          read: Effect.fnUntraced(function* () {
+            calls++;
+            assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
+            return yield* new BankAlertReader.BankAlertReaderUnavailable();
+          }),
+        }),
+      );
+      // The mailbox moves on, each alert is kept as one no model read, and one failed call
+      // stands for the pass.
+      assert.isTrue(yield* onMail(orgId, activity));
+      assert.strictEqual(calls, 1);
+      assert.deepStrictEqual(reads, ["t-hdfc", "t-hdfc-2"]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_id AS thread, outcome, reference FROM kin_bank_alerts
+          WHERE org_id = ${orgId} AND connection_id = ${activity.connectionId}
+            AND thread_id LIKE 't-hdfc%' ORDER BY thread_id`,
+        ["t-hdfc", "t-hdfc-2"].map((thread) => ({
+          thread,
+          outcome: "unparsed",
+          reference: UNREAD_ALERT_MARKER,
+        })),
+      );
+      assert.lengthOf(yield* sql`SELECT alert_id FROM kin_bank_alerts`, Number(before!.count) + 2);
+      assert.isTrue(
+        yield* threadSeen(
+          orgId,
+          activity.connectionId,
+          "t-hdfc",
+          Date.parse(activity.mail[0]!.date),
+        ),
+      );
+      // Still down on the next pass: nothing is marked read past it.
+      reads.length = 0;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES (${orgId}, ${activity.connectionId}, 'google', 'Work', 'builtin', 'example.test',
+          'oauth', 'closed', 'active', ${NOW}, ${NOW})`;
+      for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read]) {
+        yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+          definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, ${activity.connectionId}, ${tool}, '{}', 'digest', 'read', 'read', 0,
+            ${NOW})`;
+      }
+      // One read by an older parser, retried while no model is available, stays to be read.
+      yield* sql`UPDATE kin_bank_alerts SET reference = 'parser:0002'
+        WHERE org_id = ${orgId} AND thread_id = 't-hdfc-2'`;
+      assert.isTrue(yield* onMail(orgId, activity));
+      assert.strictEqual(calls, 2);
+      assert.lengthOf(
+        yield* sql`SELECT alert_id FROM kin_bank_alerts WHERE reference = ${UNREAD_ALERT_MARKER}`,
+        2,
+      );
+      reads.length = 0;
       const first = yield* takeAlertMail(connections, orgId, activity);
-      assert.deepStrictEqual(first, { threads: 1, recorded: 1, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(first, { threads: 2, recorded: 2, duplicate: 0, rejected: 0 });
       const again = yield* takeAlertMail(connections, orgId, activity);
       assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
-      assert.deepStrictEqual(reads, ["t-hdfc"]);
+      assert.deepStrictEqual(reads, ["t-hdfc", "t-hdfc-2"]);
     }),
   );
 
@@ -354,11 +428,37 @@ it.layer(layer)((it) => {
           connectionId: mailbox,
           threadId,
           messages: [message],
-          now: NOW,
+          now: Date.parse(message.date),
         });
       }
-      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}
+      yield* sql`UPDATE kin_bank_alerts SET reference = 'parser:0002' WHERE org_id = ${orgId}
         AND outcome = 'unparsed' AND connection_id IN (${connectionId}, 'other-mail')`;
+
+      const def = yield* ensureBankList(orgId, NOW);
+      const hand = Effect.fn("test.handBankEntry")(function* (
+        id: string,
+        reference: string | null,
+        account: string,
+        direction: "debit" | "credit",
+        dateAt = Date.parse("2026-11-18T18:29:59Z"),
+      ) {
+        const fields = JSON.stringify({
+          direction,
+          account,
+          ...(reference === null ? {} : { reference }),
+        });
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, amount_minor, currency, date_at, date_all_day, fields_json,
+          created_by_kind, created_by_id, origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, ${def.id}, ${id}, 'Juniper Cold Chain', 'open',
+          'person', ${rhea}, 125000, 'INR', ${dateAt}, 1,
+          ${fields}, 'agent', 'finance', ${`manual:finance:${id}`}, ${NOW}, ${NOW})`;
+        return id;
+      });
+      yield* hand("a-wrong-reference", "OTHER99876", "HDFC Bank ••7061", "debit");
+      yield* hand("b-wrong-account", "632211119876", "HDFC Bank ••7062", "debit");
+      yield* hand("c-wrong-direction", "632211119876", "HDFC Bank ••7061", "credit");
+      const manual = yield* hand("d-matching", "632211119876", "HDFC Bank ••7061", "debit");
 
       yield* takeAlerts(orgId, {
         connectionId,
@@ -415,18 +515,59 @@ it.layer(layer)((it) => {
       assert.deepStrictEqual(reads, []);
       yield* sql`UPDATE kin_connection_tools SET mode = 'read' WHERE org_id = ${orgId}
         AND connection_id = ${connectionId} AND tool_name = ${MAIL_TOOL.list}`;
-      assert.deepStrictEqual(yield* pass, { threads: 2, recorded: 1, duplicate: 0, rejected: 1 });
+      assert.deepStrictEqual(yield* pass, { threads: 2, recorded: 0, duplicate: 1, rejected: 1 });
       assert.deepStrictEqual(reads, ["fixed", "unknown"]);
       assert.deepStrictEqual(yield* pass, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
       assert.deepStrictEqual(reads, ["fixed", "unknown"]);
-      const rows = yield* sql`SELECT thread_id AS thread, outcome FROM kin_bank_alerts
+      const rows =
+        yield* sql`SELECT thread_id AS thread, outcome, record_id AS "recordId" FROM kin_bank_alerts
         WHERE org_id = ${orgId} AND connection_id = ${connectionId} ORDER BY thread_id`;
       assert.deepStrictEqual(rows, [
-        { thread: "current", outcome: "unparsed" },
-        { thread: "fixed", outcome: "recorded" },
-        { thread: "old", outcome: "unparsed" },
-        { thread: "unknown", outcome: "unparsed" },
+        { thread: "current", outcome: "unparsed", recordId: null },
+        { thread: "fixed", outcome: "duplicate", recordId: manual },
+        { thread: "old", outcome: "unparsed", recordId: null },
+        { thread: "unknown", outcome: "unparsed", recordId: null },
       ]);
+
+      const noReference = yield* hand("e-no-reference", null, "HDFC Bank ••7063", "debit");
+      yield* hand("f-ambiguous", null, "HDFC Bank ••7064", "debit");
+      yield* hand("g-ambiguous", null, "HDFC Bank ••7064", "debit");
+      // Entered by hand the next morning, the reference typed in small letters with spaces.
+      const nextDay = yield* hand(
+        "h-next-day",
+        "ab 6322 1111 9882",
+        "HDFC Bank ••7065",
+        "debit",
+        Date.parse("2026-11-19T04:30:00Z"),
+      );
+      for (const [i, [digits, reference, expected, linked]] of (
+        [
+          ["7063", "632211119879", { recorded: 0, duplicate: 1 }, noReference],
+          ["7063", "632211119879", { recorded: 0, duplicate: 1 }, noReference],
+          ["7063", "632211119880", { recorded: 1, duplicate: 0 }, null],
+          ["7064", "632211119881", { recorded: 1, duplicate: 0 }, null],
+          ["7065", "AB632211119882", { recorded: 0, duplicate: 1 }, nextDay],
+        ] as const
+      ).entries()) {
+        const threadId = `reference-${i}`;
+        const taken = yield* takeAlerts(orgId, {
+          connectionId,
+          threadId,
+          now: NOW,
+          messages: [alert(null, debit(reference).replace("**4821", `**${digits}`))],
+        });
+        assert.deepInclude(taken, expected);
+        if (linked !== null) {
+          const [picked] = yield* sql`SELECT record_id AS "recordId" FROM kin_bank_alerts
+            WHERE org_id = ${orgId} AND thread_id = ${threadId}`;
+          assert.strictEqual(picked?.recordId, linked);
+        }
+      }
+      const [unchanged] = yield* sql<{ fields: string; kind: string; origin: string | null }>`
+        SELECT fields_json AS fields, created_by_kind AS kind, origin_key AS origin
+        FROM kin_records WHERE org_id = ${orgId} AND record_id = ${noReference}`;
+      assert.deepInclude(unchanged, { kind: "agent", origin: `manual:finance:${noReference}` });
+      assert.notProperty(parseFields(unchanged!.fields), "reference");
     }),
   );
 

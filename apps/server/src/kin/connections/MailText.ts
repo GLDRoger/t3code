@@ -44,6 +44,7 @@ export const htmlToText = (html: string) => {
       (_, href, label) => `${label} (${href})`,
     )
     .replace(/<(br|hr)\b[^>]*>/gi, "\n")
+    .replace(/<\/t[dh]\s*>/gi, " ")
     .replace(/<\/(p|div|tr|li|h[1-6]|blockquote|table|section)\s*>/gi, "\n")
     .replace(/<li\b[^>]*>/gi, "- ")
     .replace(/<[^>]+>/g, "");

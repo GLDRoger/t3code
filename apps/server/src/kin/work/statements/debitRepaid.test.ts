@@ -25,6 +25,8 @@ import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { presetDefinition } from "../registers.ts";
 import { takeAlerts } from "./bankAlerts.ts";
+import * as BankAlertReader from "./BankAlertReader.ts";
+import { fixtureBankAlertReader } from "./bankAlerts.testkit.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine } from "./repaidCard.ts";
@@ -40,6 +42,7 @@ const AUTH = [
 
 const layer = Layer.mergeAll(
   KinRecords.layer,
+  Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader),
   Layer.mock(KinIdentity)({
     owner: { _tag: "person" as const, orgId, personId: rhea },
     isAgentThread: () => true,
@@ -154,7 +157,7 @@ it.layer(layer)((it) => {
         }));
         assert.sameDeepMembers(matches, [
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 12_400_00,
             partner: "Zoya Rao",
             repays: ["EXP-4", "EXP-7", "EXP-9"],
@@ -163,7 +166,7 @@ it.layer(layer)((it) => {
           },
           // A rupee short, or counting an expense from after it: nothing adds up, nothing is split.
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 12_399_00,
             partner: "Zoya Rao",
             repays: undefined,
@@ -171,7 +174,7 @@ it.layer(layer)((it) => {
             marked: undefined,
           },
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 13_400_00,
             partner: "Zoya Rao",
             repays: undefined,
@@ -180,7 +183,7 @@ it.layer(layer)((it) => {
           },
           // Arjun's 2,000 adds up to EXP-5, but the same money was marked repaid by hand that day.
           {
-            title: "ARJUN MEHTA arjun.m@invented",
+            title: "ARJUN MEHTA",
             minor: 2_000_00,
             partner: "Arjun Mehta",
             repays: ["EXP-5"],
@@ -246,7 +249,7 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
     sql,
     expense: (key: string, rupees: number, on: string, fields: object = {}) =>
       row(key, "expenses", `Phone bill ${key}`, rupees, on, { fundedBy: zoya, ...fields }, "done"),
-    debit: (key: string, rupees: number, on: string, title = "ZOYA RAO zoya.rao@invented") =>
+    debit: (key: string, rupees: number, on: string, title = "ZOYA RAO") =>
       row(key, bank.id, title, rupees, on, { direction: "debit" }, "open"),
     credit: (key: string, rupees: number, on: string) =>
       row(key, bank.id, "Tidewater Freight", rupees, on, { direction: "credit" }, "open"),

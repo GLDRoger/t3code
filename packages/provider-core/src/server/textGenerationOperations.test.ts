@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import { decodeJsonReply, fromRunner } from "./textGenerationOperations.ts";
 
@@ -24,5 +25,39 @@ it.effect("fails a thread title reply that is only the schema key", () =>
 
     assert.instanceOf(outcome, TextGenerationError);
     assert.strictEqual(outcome.operation, "generateThreadTitle");
+  }),
+);
+
+it.effect.each([
+  ["valid JSON", '{"kind":"other"}', true],
+  ["malformed JSON", "not JSON", false],
+  ["prose around JSON", 'Answer: {"kind":"other"}', false],
+  ["wrong shape", '{"kind":"unexpected"}', false],
+] as const)("decodes structured text once: %s", ([, text, valid]) =>
+  Effect.gen(function* () {
+    let calls = 0;
+    const capable = fromRunner(
+      "Stub",
+      (request) => {
+        calls++;
+        return decodeJsonReply(request, "Stub", text);
+      },
+      { toolFree: true },
+    );
+    assert.isFunction(capable.generateStructuredText);
+    const generate = capable.generateStructuredText!;
+    const outcome = yield* generate({
+      cwd: process.cwd(),
+      prompt: "Read the data.",
+      modelSelection: { instanceId: ProviderInstanceId.make("stub"), model: "small" },
+      outputSchema: Schema.Struct({ kind: Schema.Literal("other") }),
+    }).pipe(Effect.result);
+    assert.strictEqual(calls, 1);
+    assert.strictEqual(outcome._tag, valid ? "Success" : "Failure");
+    if (outcome._tag === "Success") {
+      assert.deepStrictEqual(outcome.success, { kind: "other" });
+    } else {
+      assert.isTrue(Schema.isSchemaError(outcome.failure.cause));
+    }
   }),
 );
