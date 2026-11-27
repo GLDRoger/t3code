@@ -3620,7 +3620,8 @@ const legacyBankAlerts = Effect.gen(function* () {
   yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
   yield* sql`DROP TABLE kin_bank_alerts`;
   yield* LegacyBankAlerts;
-  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
+  yield* sql`DROP TABLE IF EXISTS kin_looks`;
+  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 229`;
   yield* sql`INSERT INTO kin_orgs VALUES
     ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
   yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
@@ -3676,7 +3677,7 @@ it.effect("K229 carries only companies and endings with existing bank alerts", (
     const sql = yield* legacyBankAlerts;
     const rows = yield* bankAlertRows(sql);
     const indexes = yield* bankAlertIndexes(sql);
-    assert.deepStrictEqual(yield* runKinMigrations(), [[229, "BankSenders"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(229));
     // Every old row and value survives the table rebuild, and so do the old indexes.
     assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
     assert.deepStrictEqual(
