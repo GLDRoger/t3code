@@ -150,6 +150,7 @@ import LapsedTextQuestions from "./migrations/K226_LapsedTextQuestions.ts";
 import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
 import ChatsSettleAfter from "./migrations/K228_ChatsSettleAfter.ts";
 import BankSenders from "./migrations/K229_BankSenders.ts";
+import WaitingMessageIndex from "./migrations/K230_WaitingMessageIndex.ts";
 import MailRules from "./migrations/K231_MailRules.ts";
 import MailRuleRuns from "./migrations/K232_MailRuleRuns.ts";
 
@@ -383,6 +384,7 @@ const migrations = {
   "227_DeclinedNudges": DeclinedNudges,
   "228_ChatsSettleAfter": ChatsSettleAfter,
   "229_BankSenders": BankSenders,
+  "230_WaitingMessageIndex": WaitingMessageIndex,
   "231_MailRules": MailRules,
   "232_MailRuleRuns": MailRuleRuns,
 };
