@@ -4,6 +4,7 @@ import {
   kinMoneyView,
   type KinListOpen,
   type KinMoneyFigure,
+  type KinMoneyView,
 } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
@@ -167,6 +168,21 @@ function AmountRow(props: {
     <button type="button" onClick={props.onOpen} className={cn(shape, OPENS)}>
       {body}
     </button>
+  );
+}
+
+function ExpensesRow(props: {
+  readonly expenses: NonNullable<KinMoneyView["expenses"]>;
+  readonly onOpen: (open: KinListOpen) => void;
+}) {
+  const { expenses } = props;
+  return (
+    <KinWorkSection
+      title={expenses.label}
+      fold={{ summary: expenses.summary, onOpen: () => props.onOpen(expenses.open) }}
+    >
+      {null}
+    </KinWorkSection>
   );
 }
 
@@ -603,6 +619,9 @@ function MoneyScreen(props: MoneyProps) {
             />
           )}
           <KinBudgetsSection {...props} seq={seq} rates={rates} lists={props.lists} />
+          {view.expenses === null ? null : (
+            <ExpensesRow expenses={view.expenses} onOpen={props.onOpenList} />
+          )}
           <KinSubscriptionsSection
             {...props}
             lists={kinListsOf(props.lists)}

@@ -97,6 +97,9 @@ export const KIN_MONEY = {
   chooseCountry: "Open Company details",
   /** Cash in the bank, as one line, before Kin has any statement or recorded money to show. */
   noBank: "No bank statement yet",
+  /** The Expenses row's quiet line: "₹32,590 spent this month". */
+  spentThisMonth: (totals: KinMoneyTotals) =>
+    totals.length === 0 ? "Nothing spent this month" : `${kinTotalsText(totals)} spent this month`,
 };
 
 /**
@@ -217,6 +220,12 @@ export interface KinMoneyView {
   readonly charts: ReadonlyArray<KinChartSpec>;
   /** Newest first. */
   readonly months: ReadonlyArray<KinMoneyMonthView>;
+  /** One row opening every expense, paid or not; null without an Expenses list. */
+  readonly expenses: {
+    readonly label: string;
+    readonly summary: string;
+    readonly open: KinListOpen;
+  } | null;
 }
 
 const lines = (totals: KinMoneyTotals) =>
@@ -461,6 +470,15 @@ export function kinMoneyView(
         openSpent: point.spent.length === 0 ? null : spentIn(period),
       };
     }),
+    expenses:
+      expenses === undefined
+        ? null
+        : {
+            label: expenses.name,
+            summary: KIN_MONEY.spentThisMonth(summary.spent.thisMonth.total),
+            // Unnarrowed, so a reload of its `?list=` link opens the same list.
+            open: { list: expenses.list, filter: KIN_LIST_DEFAULT_FILTER },
+          },
   };
 }
 

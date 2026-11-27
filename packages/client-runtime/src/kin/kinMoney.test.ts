@@ -28,7 +28,7 @@ import {
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinReadDates, kinZonedDayStart } from "./kinDates.ts";
-import { kinListFilterParam, kinListQuery } from "./kinLists.ts";
+import { KIN_LIST_DEFAULT_FILTER, kinListFilterParam, kinListQuery } from "./kinLists.ts";
 import {
   KIN_MONEY_BLOCKS,
   kinCashEmpty,
@@ -276,6 +276,27 @@ describe("the Money summary", () => {
         open: { list: "expenses", filter: expect.objectContaining({ kept: false }) },
       },
     ]);
+  });
+
+  it("opens every expense from one row that says what went out this month", () => {
+    const expenses = { ...list("expenses"), name: "Expenses" as KinListDefinition["name"] };
+    const one = kinMoneyView(summary, [expenses]).expenses;
+    expect(one).toEqual({
+      label: "Expenses",
+      summary: "₹48,210 spent this month",
+      open: { list: "expenses", filter: KIN_LIST_DEFAULT_FILTER },
+    });
+    const spent = (total: KinMoneySummary["spent"]["thisMonth"]["total"]) =>
+      kinMoneyView(
+        { ...summary, spent: { ...summary.spent, thisMonth: { total, byCategory: [] } } },
+        [expenses],
+      ).expenses?.summary;
+    expect(spent([...inr(4_821_000), { minor: 12_000, currency: "USD" }])).toBe(
+      "₹48,210 and $120 spent this month",
+    );
+    expect(spent([])).toBe("Nothing spent this month");
+    // No Expenses list to open, no row.
+    expect(kinMoneyView(summary, [list("invoices")]).expenses).toBeNull();
   });
 
   it("names and opens the company's own financial year", () => {
