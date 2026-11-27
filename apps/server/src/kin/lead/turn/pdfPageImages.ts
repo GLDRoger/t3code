@@ -4,7 +4,7 @@
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
-import { inflatedTooFar } from "../../work/statements/statementFiles.ts";
+import { inflatedTooFar } from "../../work/statements/pdfStreamLimits.ts";
 
 /**
  * What a Kin turn takes of its PDFs as page images, on every provider. A page is ~1-2k tokens;
@@ -45,22 +45,11 @@ const assetUrls = () => {
   }
 };
 
-/**
- * A PDF's first pages as JPEGs, within `budget`, which it spends. Undefined when the PDF can't be
- * drawn here (damaged, password-protected, too large, or no canvas for this platform): the turn
- * keeps its text layer.
- */
-export const renderPdfPages = async (
-  bytes: Uint8Array,
-  budget: PageBudget,
-): Promise<RenderedPages | undefined> => {
-  if (inflatedTooFar(bytes) !== undefined) return undefined;
-  const canvas = await import("@napi-rs/canvas").catch(() => undefined);
-  if (canvas === undefined) return undefined;
+export const openPdfPageDocument = async (bytes: Uint8Array) => {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   // pdf.js runs its worker in this thread, from this global; bundled, its own path to it is gone.
   Reflect.set(globalThis, "pdfjsWorker", await import("pdfjs-dist/legacy/build/pdf.worker.mjs"));
-  const task = pdfjs.getDocument({
+  return pdfjs.getDocument({
     // pdf.js takes ownership of the buffer it is given, so it reads a copy.
     data: new Uint8Array(bytes),
     ...assetUrls(),
@@ -77,6 +66,21 @@ export const renderPdfPages = async (
     isImageDecoderSupported: false,
     maxImageSize: PDF_PAGE_IMAGES.imagePixels,
   });
+};
+
+/**
+ * A PDF's first pages as JPEGs, within `budget`, which it spends. Undefined when the PDF can't be
+ * drawn here (damaged, password-protected, too large, or no canvas for this platform): the turn
+ * keeps its text layer.
+ */
+export const renderPdfPages = async (
+  bytes: Uint8Array,
+  budget: PageBudget,
+): Promise<RenderedPages | undefined> => {
+  if (inflatedTooFar(bytes) !== undefined) return undefined;
+  const canvas = await import("@napi-rs/canvas").catch(() => undefined);
+  if (canvas === undefined) return undefined;
+  const task = await openPdfPageDocument(bytes);
   try {
     const document = await task.promise;
     const images: Array<Uint8Array> = [];

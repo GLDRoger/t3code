@@ -6,8 +6,21 @@ export interface ImageDimensions {
 /** Allows several 64 KiB JPEG metadata segments before the dimensions header. */
 export const IMAGE_DIMENSIONS_HEADER_BYTES = 256 * 1024;
 
+export function readJpegOrientation(bytes: Uint8Array): number {
+  return readJpeg(bytes)?.orientation ?? 1;
+}
+
 export function readImageDimensions(bytes: Uint8Array): ImageDimensions | null {
-  const dimensions = readPng(bytes) ?? readGif(bytes) ?? readWebp(bytes) ?? readJpeg(bytes);
+  const jpeg = readJpeg(bytes);
+  const dimensions =
+    readPng(bytes) ??
+    readGif(bytes) ??
+    readWebp(bytes) ??
+    (jpeg === null
+      ? null
+      : jpeg.orientation >= 5 && jpeg.orientation <= 8
+        ? { width: jpeg.height, height: jpeg.width }
+        : { width: jpeg.width, height: jpeg.height });
   return dimensions && dimensions.width > 0 && dimensions.height > 0 ? dimensions : null;
 }
 
@@ -77,11 +90,11 @@ function readWebp(bytes: Uint8Array): ImageDimensions | null {
   }
 }
 
-function readJpeg(bytes: Uint8Array): ImageDimensions | null {
+function readJpeg(bytes: Uint8Array): (ImageDimensions & { orientation: number }) | null {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
   const data = view(bytes);
   let offset = 2;
-  let rotated = false;
+  let orientation: number | undefined;
   while (offset + 9 <= bytes.length) {
     if (bytes[offset] !== 0xff) return null;
     const marker = bytes[offset + 1]!;
@@ -93,7 +106,7 @@ function readJpeg(bytes: Uint8Array): ImageDimensions | null {
     if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
       const height = data.getUint16(offset + 5);
       const width = data.getUint16(offset + 7);
-      return rotated ? { width: height, height: width } : { width, height };
+      return { width, height, orientation: orientation ?? 1 };
     }
     if (marker === 0xd9 || marker === 0xda) return null;
     // TEM and the restart markers stand alone, with no length field.
@@ -102,34 +115,33 @@ function readJpeg(bytes: Uint8Array): ImageDimensions | null {
       continue;
     }
     const length = data.getUint16(offset + 2);
-    // EXIF rotation swaps the displayed axes.
-    if (marker === 0xe1 && !rotated) {
-      rotated = exifOrientationSwapsAxes(bytes, offset + 4, offset + 2 + length);
+    if (marker === 0xe1 && orientation === undefined) {
+      orientation = exifOrientation(bytes, offset + 4, offset + 2 + length);
     }
     offset += 2 + length;
   }
   return null;
 }
 
-function exifOrientationSwapsAxes(bytes: Uint8Array, start: number, end: number): boolean {
+function exifOrientation(bytes: Uint8Array, start: number, end: number): number | undefined {
   end = Math.min(end, bytes.length);
   if (end - start < 14 || String.fromCharCode(...bytes.subarray(start, start + 4)) !== "Exif") {
-    return false;
+    return undefined;
   }
   const tiff = start + 6;
   const data = view(bytes);
   const littleEndian = bytes[tiff] === 0x49 && bytes[tiff + 1] === 0x49;
-  if (!littleEndian && !(bytes[tiff] === 0x4d && bytes[tiff + 1] === 0x4d)) return false;
+  if (!littleEndian && !(bytes[tiff] === 0x4d && bytes[tiff + 1] === 0x4d)) return undefined;
   const ifd = tiff + data.getUint32(tiff + 4, littleEndian);
-  if (ifd + 2 > end) return false;
+  if (ifd + 2 > end) return undefined;
   const entries = data.getUint16(ifd, littleEndian);
   for (let i = 0; i < entries; i += 1) {
     const entry = ifd + 2 + i * 12;
-    if (entry + 12 > end) return false;
+    if (entry + 12 > end) return undefined;
     if (data.getUint16(entry, littleEndian) === 0x0112) {
       const orientation = data.getUint16(entry + 8, littleEndian);
-      return orientation >= 5 && orientation <= 8;
+      return orientation >= 1 && orientation <= 8 ? orientation : undefined;
     }
   }
-  return false;
+  return undefined;
 }
