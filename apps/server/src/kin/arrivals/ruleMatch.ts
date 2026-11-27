@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Node's IDNA conversion is pure.
-import { domainToASCII } from "node:url";
+import * as NodeURL from "node:url";
 
 import type { MailArrival } from "../connections/MailProvider.ts";
 import { senderCheck } from "../connections/MailText.ts";
@@ -25,7 +25,7 @@ type Facts = {
 export const mailRuleDomain = (value: string) => {
   const name = value.trim().toLowerCase();
   if (!/^[\p{L}\p{M}\p{N}.\u3002\uff0e\uff61-]+$/u.test(name)) return null;
-  const ascii = domainToASCII(name).replace(/\.$/, "");
+  const ascii = NodeURL.domainToASCII(name).replace(/\.$/, "");
   return ascii.length <= 253 &&
     /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
       ascii,
