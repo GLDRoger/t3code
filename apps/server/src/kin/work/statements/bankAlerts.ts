@@ -29,8 +29,7 @@ import { DAY_MS } from "../../durations.ts";
  * Bank alert mails into Bank transactions, one entry per bank reference, whichever mailbox or
  * statement saw it first. Each mail Kin looked at is kept once in `kin_bank_alerts` with what
  * came of it, never its text; the newest available balance an alert printed is that account's.
- * Each bank's sender checks are one format module behind `BankAlertFormat`; one model reading,
- * checked against the mail by `verifyBankAlert`, serves them all.
+ * Each bank's sender checks are one format module behind `BankAlertFormat`.
  */
 
 /** The parts of one message a format reads. */
@@ -340,9 +339,11 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       format === undefined
         ? undefined
         : yield* format.read(message, currency, reader).pipe(
-            Effect.catchTag("BankAlertReaderUnavailable", () => {
-              unread = true;
-              return Effect.succeed("unread" as const);
+            Effect.catchTags({
+              BankAlertReaderUnavailable: () => {
+                unread = true;
+                return Effect.succeed("unread" as const);
+              },
             }),
           );
     reads.set(alertId, { message, format, reading });
