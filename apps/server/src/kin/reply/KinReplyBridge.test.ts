@@ -69,11 +69,12 @@ import {
 } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import {
-  authorityLayer,
+  authorityLayerWithDatabase,
   startAgentWakeup,
   type WakeupEventBase,
 } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -93,16 +94,18 @@ import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 import { markPrivate } from "../connections/privateTurn.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
 const rescueRunId = RunId.make("rescue-run");
 
+const database = KinPersistence.layer.pipe(Layer.provideMerge(makeMigratedSqliteLayer()));
 const layer = Kin.layer.pipe(
   Layer.provide(kinSecretsTest),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(environment),
-  Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(authorityLayerWithDatabase(database)),
 );
 
 type Fake = {

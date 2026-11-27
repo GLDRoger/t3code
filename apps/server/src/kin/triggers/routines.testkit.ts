@@ -50,11 +50,12 @@ export function fixture<E = never>(
   options: {
     query?: (sql: SqlClient.SqlClient) => Memory.Memory["Service"]["query"];
     register?: Scheduler.Scheduler["Service"]["register"];
+    sqlite?: typeof Sqlite.layerMemory;
     /** Replaces the mock, e.g. with the real layer over a fake repository. */
     memory?: Layer.Layer<Memory.Memory, E, SqlClient.SqlClient | Repository.KinChatRepository>;
   } = {},
 ) {
-  const database = Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+  const database = Persistence.layer.pipe(Layer.provideMerge(options.sqlite ?? Sqlite.layerMemory));
   const repositories = Layer.mergeAll(
     Repository.layer,
     TriggerStore.layer,
