@@ -69,10 +69,7 @@ const syncConflicts = [
   ["The dream's base is no longer in memory history", "earlier version"],
   ["Dream branch push rejected", "send the nightly memory update"],
   ["Memory writes to the default branch are refused", "set up to accept"],
-  [
-    "Memory changed since the dream read it, so it did not land",
-    "memory changed while it ran",
-  ],
+  ["Memory changed since the dream read it, so it did not land", "memory changed while it ran"],
 ] as const;
 
 const taggedFailures = [

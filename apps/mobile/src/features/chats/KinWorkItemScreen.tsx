@@ -242,10 +242,7 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={kinWorkEntryKind(null).title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
-          {...kinWorkGone(null)}
-        />
+        <EmptyState variant="plain" {...kinWorkGone(null)} />
       </KinWorkFrame>
     );
   }
