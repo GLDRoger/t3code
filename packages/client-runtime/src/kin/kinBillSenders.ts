@@ -29,14 +29,16 @@ export const KIN_BILL_SENDER_METHODS = {
   decline: "kin.billSenders.decline",
   remove: "kin.billSenders.remove",
   add: "kin.billSenders.add",
+  readSince: "kin.billSenders.readSince",
 } as const;
 
 // The host's own normalizeAddress check, so the form refuses only what the host would.
 const ADDRESS_RE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
 const MAX_ADDRESS_LEN = 254;
 
+// The second sentence is the approval card's own, so both ask the same thing.
 const READS =
-  "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep.";
+  "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep. Approving also reads the mail Kin held from it in the last 30 days.";
 
 export const KIN_BILL_SENDERS = {
   title: "Billing senders",
@@ -67,7 +69,6 @@ export const KIN_BILL_SENDERS = {
   addressInvalid: "Enter a full email address for the billing sender.",
   readTitle: (address: string) => `Read bills from ${address}?`,
   readDetail: READS,
-  readBackDetail: `${READS} Bills it sent while declined are read too.`,
   readConfirm: "Approve",
   declineTitle: (address: string) => `Decline ${address}?`,
   declineDetail:
@@ -100,7 +101,62 @@ export const KIN_BILL_SENDERS = {
   declinedByOn: (by: string, date: string) => `Declined by ${by} on ${date}`,
   declinedBy: (by: string) => `Declined by ${by}`,
   declinedOn: (date: string) => `Declined on ${date}`,
+  readSince: {
+    open: "Read this sender's bills since…",
+    title: (address: string) => `Read bills from ${address} since…`,
+    detail:
+      "Kin looks through the company's mailboxes for mail from this address since the day below and suggests its bills as expenses. It reads up to 200 mails at a time.",
+    day: "Since",
+    submit: "Read bills",
+    working: "Looking through mail…",
+    failed: "Couldn't read this sender's mail.",
+    choices: {
+      lastMonth: "First of last month",
+      thisMonth: "First of this month",
+      thisYear: "First of this year",
+    },
+  },
 } as const;
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** Today as `YYYY-MM-DD` in `zone`, the reader's own when absent. */
+export function kinBillSenderToday(now: Date | number, zone?: string): string {
+  const part = kinWhenParts(now, zone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone);
+  return `${part.year}-${pad(part.month)}-${pad(part.day)}`;
+}
+
+/** Days offered first: the first of last month (the default), of this month, and of this year. */
+export function kinBillSenderSinceChoices(
+  now: Date | number,
+  zone?: string,
+): ReadonlyArray<{ readonly label: string; readonly day: string }> {
+  const [year, month] = kinBillSenderToday(now, zone).split("-").map(Number) as [number, number];
+  const last = month === 1 ? `${year - 1}-12-01` : `${year}-${pad(month - 1)}-01`;
+  const words = KIN_BILL_SENDERS.readSince.choices;
+  return [
+    { label: words.lastMonth, day: last },
+    { label: words.thisMonth, day: `${year}-${pad(month)}-01` },
+    ...(month > 2 ? [{ label: words.thisYear, day: `${year}-01-01` }] : []),
+  ];
+}
+
+/** The day the control starts on: the first of last month in the reader's zone. */
+export const kinBillSenderSinceDefault = (now: Date | number, zone?: string) =>
+  kinBillSenderSinceChoices(now, zone)[0]!.day;
+
+/**
+ * A finished read, as the row shows it: the host's sentence whole, and whether pressing again does
+ * more (older mail remains, or Kin stopped early). Nothing presses again by itself.
+ */
+export function kinBillSenderReadResult(result: {
+  readonly queued: number;
+  readonly older: boolean;
+  readonly stopped?: true | undefined;
+  readonly text: string;
+}): { readonly line: string; readonly again: boolean } {
+  return { line: result.text, again: result.older || result.stopped === true };
+}
 
 /** The address the host will store, or the host's own sentence for one it can't read. */
 export function kinBillSenderAddInput(
@@ -128,16 +184,10 @@ export function kinBillSenderConfirm(
   switch (action) {
     case "approve":
     case "add":
-      return {
-        title: KIN_BILL_SENDERS.readTitle(address),
-        detail: KIN_BILL_SENDERS.readDetail,
-        action: KIN_BILL_SENDERS.readConfirm,
-        destructive: false,
-      };
     case "addBack":
       return {
         title: KIN_BILL_SENDERS.readTitle(address),
-        detail: KIN_BILL_SENDERS.readBackDetail,
+        detail: KIN_BILL_SENDERS.readDetail,
         action: KIN_BILL_SENDERS.readConfirm,
         destructive: false,
       };
@@ -243,12 +293,14 @@ export function kinBillSenderGroups(
 }
 
 /** Whether the section shows at all, and which taps it offers, from the commands' permissions. */
+type KinBillSenderGrant = KinBillSenderAction | "add" | "readSince";
+
 export function kinBillSenderPermissions(input: {
   readonly list: KinPermission;
-  readonly grants: Readonly<Record<KinBillSenderAction | "add", boolean>>;
+  readonly grants: Readonly<Record<KinBillSenderGrant, boolean>>;
 }): {
   readonly visible: boolean;
-  readonly can: (action: KinBillSenderAction | "add") => boolean;
+  readonly can: (action: KinBillSenderGrant) => boolean;
 } {
   if (input.list === "refused") return { visible: false, can: () => false };
   const ready = input.list === "granted";
@@ -303,6 +355,12 @@ export function makeKinBillSenders<R, ER>(
     billSendersAdd: createKinRpcCommand(runtime, {
       label: "kin:bill-senders:add",
       tag: KIN_BILL_SENDER_METHODS.add,
+      concurrency: oneAtATime,
+    }),
+    // Up to about 20 seconds on the host: one read per address at a time, never repeated by itself.
+    billSendersReadSince: createKinRpcCommand(runtime, {
+      label: "kin:bill-senders:read-since",
+      tag: KIN_BILL_SENDER_METHODS.readSince,
       concurrency: oneAtATime,
     }),
   };

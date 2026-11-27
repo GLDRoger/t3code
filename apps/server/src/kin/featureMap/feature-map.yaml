@@ -1272,7 +1272,9 @@ features:
       (Approve, Decline), approved (Remove) and declined (Add back), each with mails seen and who
       decided when. Approve and Add ask first with what reading means; only an owner's or a
       co-owner's tap changes the list, here or on the card "Read bills from {address}?" in chat.
-      Teammates do not see the section.
+      An approved row's "Read this sender's bills since…" reads its past mail from a picked day
+      and shows the host's sentence under the row; pressing again continues. Teammates do not see
+      the section.
     proof:
       - packages/client-runtime/src/kin/kinBillSenders.test.ts
       - apps/server/src/kin/connections/MailEndToEnd.test.ts

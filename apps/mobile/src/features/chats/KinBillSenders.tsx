@@ -7,6 +7,10 @@ import {
   kinBillSenderConfirm,
   kinBillSenderGroups,
   kinBillSenderPermissions,
+  kinBillSenderReadResult,
+  kinBillSenderSinceChoices,
+  kinBillSenderSinceDefault,
+  kinBillSenderToday,
   type KinBillSenderAction,
   type KinBillSenderRowView,
 } from "@t3tools/client-runtime/kin/kinBillSenders";
@@ -25,6 +29,7 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { KinDayField } from "./components/KinDayField";
 import { KinLoadFailedRow } from "./components/KinLoadFailed";
 import { KinSenderAddress } from "./components/KinSenderAddress";
 import {
@@ -58,6 +63,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
   const canDecline = useAtomValue(kinClient.billSendersDecline.permissionAtom(environmentId));
   const canRemove = useAtomValue(kinClient.billSendersRemove.permissionAtom(environmentId));
   const canAdd = useAtomValue(kinClient.billSendersAdd.permissionAtom(environmentId));
+  const canReadSince = useAtomValue(kinClient.billSendersReadSince.permissionAtom(environmentId));
   const permissions = kinBillSenderPermissions({
     list: listPermission,
     grants: {
@@ -66,6 +72,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
       remove: canRemove,
       addBack: canAdd,
       add: canAdd,
+      readSince: canReadSince,
     },
   });
   const gate = useKinGate(
@@ -169,6 +176,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
                 can={permissions.can}
                 busy={busy !== null}
                 onAct={(action) => ask(action, row.address)}
+                target={props}
               />
             ))}
           </Fragment>
@@ -188,9 +196,10 @@ export function KinBillSendersSection(props: KinWorkTarget) {
 
 function BillSenderMobileRow(props: {
   readonly row: KinBillSenderRowView;
-  readonly can: (action: KinBillSenderAction) => boolean;
+  readonly can: ReturnType<typeof kinBillSenderPermissions>["can"];
   readonly busy: boolean;
   readonly onAct: (action: KinBillSenderAction) => void;
+  readonly target: KinWorkTarget;
 }) {
   const { row } = props;
   const lines = [row.seenLine, row.askedLine, row.decidedLine].filter((line) => line !== null);
@@ -217,6 +226,91 @@ function BillSenderMobileRow(props: {
             />
           ))}
         </View>
+      )}
+      {row.state === "approved" && props.can("readSince") ? (
+        <ReadSince target={props.target} address={row.address} />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * "Read this sender's bills since…" on an approved row: a day, then one read that may take about
+ * 20 seconds. Only this control waits; the host's sentence stays under the row, and pressing again
+ * continues where it stopped. Nothing presses it by itself.
+ */
+function ReadSince(props: { readonly target: KinWorkTarget; readonly address: string }) {
+  const { environmentId, orgId } = props.target;
+  const command = useAtomCommand(kinClient.billSendersReadSince, { reportFailure: false });
+  const [opened] = useState(() => kinNow());
+  const [open, setOpen] = useState(false);
+  const [since, setSince] = useState(() => kinBillSenderSinceDefault(opened));
+  const [reading, setReading] = useState(false);
+  const [result, setResult] = useState<{ line: string; problem: boolean } | null>(null);
+
+  const read = async () => {
+    if (reading) return;
+    setReading(true);
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => command({ environmentId, input: { orgId, address: props.address, since } }),
+    });
+    setReading(false);
+    setResult(
+      outcome.ok
+        ? { line: kinBillSenderReadResult(outcome.value).line, problem: false }
+        : { line: outcome.problem || KIN_BILL_SENDERS.readSince.failed, problem: true },
+    );
+  };
+
+  return (
+    <View className="gap-2 pt-1">
+      {!open ? (
+        <View className="flex-row">
+          <Button
+            tone="outline"
+            size="compact"
+            label={KIN_BILL_SENDERS.readSince.open}
+            accessibilityLabel={`${KIN_BILL_SENDERS.readSince.open} ${props.address}`}
+            onPress={() => setOpen(true)}
+          />
+        </View>
+      ) : (
+        <>
+          <KinDayField
+            label={KIN_BILL_SENDERS.readSince.day}
+            day={since}
+            zone={null}
+            now={opened}
+            none={null}
+            choices={kinBillSenderSinceChoices(opened)}
+            latest={kinBillSenderToday(opened)}
+            disabled={reading}
+            onPick={(day) => setSince(day ?? since)}
+          />
+          <View className="flex-row">
+            <Button
+              tone="primary"
+              size="compact"
+              label={
+                reading ? KIN_BILL_SENDERS.readSince.working : KIN_BILL_SENDERS.readSince.submit
+              }
+              accessibilityLabel={`${reading ? KIN_BILL_SENDERS.readSince.working : KIN_BILL_SENDERS.readSince.submit} ${props.address}`}
+              loading={reading}
+              disabled={reading}
+              onPress={() => void read()}
+            />
+          </View>
+        </>
+      )}
+      {result === null ? null : (
+        <Text
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className={result.problem ? "text-danger-foreground" : "text-foreground"}
+        >
+          {result.line}
+        </Text>
       )}
     </View>
   );

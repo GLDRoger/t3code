@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 
+import { kinBillSenderSinceDefault } from "@t3tools/client-runtime/kin/kinBillSenders";
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
+
 import { render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { KinBillSendersSection } from "./KinBillSendersSection";
@@ -13,6 +16,8 @@ const host = vi.hoisted(() => ({
   rows: [] as Array<Row>,
   calls: [] as Array<string>,
   refuse: null as string | null,
+  /** Answers the read-since call that is waiting, as the host does after its search. */
+  finish: null as null | ((text: string, older: boolean) => void),
   show: () => {},
 }));
 
@@ -54,6 +59,8 @@ vi.mock(import("../kinClient"), async (importOriginal) => {
       return R.success(undefined);
     },
   });
+  // Spread through a type parameter, as `command` is, so the fake keeps the real command's type.
+  const waiting = <C extends object>(real: C, fake: object) => ({ ...real, ...fake });
   return {
     ...real,
     kinClient: {
@@ -64,6 +71,21 @@ vi.mock(import("../kinClient"), async (importOriginal) => {
       billSendersDecline: command(real.kinClient.billSendersDecline, "decline", "declined"),
       billSendersRemove: command(real.kinClient.billSendersRemove, "remove", null),
       billSendersAdd: command(real.kinClient.billSendersAdd, "add", "approved"),
+      billSendersReadSince: waiting(real.kinClient.billSendersReadSince, {
+        permissionAtom: () => allowed,
+        run: (
+          _registry: unknown,
+          { input }: { readonly input: { readonly address: string; readonly since: string } },
+        ) => {
+          host.calls.push(`readSince:${input.address}:${input.since}`);
+          return new Promise((resolve) => {
+            host.finish = (text, older) => {
+              host.finish = null;
+              resolve(R.success({ queued: 200, older, text }));
+            };
+          });
+        },
+      }),
     },
   };
 });
@@ -102,6 +124,7 @@ function setup() {
   ];
   host.calls.length = 0;
   host.refuse = null;
+  host.finish = null;
   host.show();
 }
 
@@ -127,7 +150,7 @@ describe("Settings → Billing senders", () => {
     await expect
       .element(
         ask.getByText(
-          "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep.",
+          "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep. Approving also reads the mail Kin held from it in the last 30 days.",
         ),
       )
       .toBeVisible();
@@ -152,5 +175,37 @@ describe("Settings → Billing senders", () => {
       "remove:bills@harborpower.example",
     ]);
     await expect.element(page.getByText(/^Approved by Meera on /)).toBeVisible();
+  });
+
+  it("reads an approved sender's mail since a day: working while it runs, then the host's sentence", async () => {
+    setup();
+    await using _screen = await render(section());
+    const open = page.getByRole("button", {
+      name: "Read this sender's bills since… bills@harborpower.example",
+    });
+    await userEvent.click(open);
+    const since = page.getByLabelText("Since");
+    const day = kinBillSenderSinceDefault(kinNow());
+    await expect.element(since).toHaveValue(day);
+    await userEvent.click(page.getByRole("button", { name: "Read bills" }));
+
+    const working = page.getByRole("button", {
+      name: "Looking through mail… bills@harborpower.example",
+    });
+    await expect.element(working).toBeDisabled();
+    await expect
+      .element(page.getByRole("button", { name: "Remove: bills@harborpower.example" }))
+      .toBeEnabled();
+    expect(host.calls).toEqual([`readSince:bills@harborpower.example:${day}`]);
+
+    const text =
+      "Kin is reading 200 mails from bills@harborpower.example since 1 Oct. There are older mails. Run this again to read the next 200.";
+    host.finish?.(text, true);
+    await expect.element(page.getByRole("status").getByText(text)).toBeVisible();
+    await expect.element(open).toBeEnabled();
+    expect(host.calls).toHaveLength(1);
+
+    await userEvent.click(open);
+    await expect.element(page.getByLabelText("Since")).toHaveValue(day);
   });
 });

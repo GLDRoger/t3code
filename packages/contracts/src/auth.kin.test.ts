@@ -32,7 +32,7 @@ it.each(KinBankSenderRpcs)(
   },
 );
 
-const billSenderRpcs = ["list", "approve", "decline", "remove", "add"] as const;
+const billSenderRpcs = ["list", "approve", "decline", "remove", "add", "readSince"] as const;
 it.each(billSenderRpcs)("guards billing sender %s for owners and co-owners", (method) => {
   const tag = `kin.billSenders.${method}`;
   expect(clientRpcRequiredScopes(tag, undefined)).toEqual([AuthKinChatScope]);

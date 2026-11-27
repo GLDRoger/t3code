@@ -9,7 +9,11 @@ import {
   kinBillSenderConfirm,
   kinBillSenderGroups,
   kinBillSenderPermissions,
+  kinBillSenderReadResult,
   kinBillSenderRowView,
+  kinBillSenderSinceChoices,
+  kinBillSenderSinceDefault,
+  kinBillSenderToday,
 } from "./kinBillSenders.ts";
 
 const ORG = "org-tidewater" as KinOrgId;
@@ -137,23 +141,19 @@ describe("adding a billing sender", () => {
     expect(kinBillSenderAddInput(ORG, typed)).toEqual(expected);
   });
 
-  it("asks before reading, with the address whole, and says held bills are read on Add back", () => {
+  it("asks before reading, with the address whole, in the approval card's words on held mail", () => {
     const address = "bills@harborpower.example";
     expect(kinBillSenderConfirm("approve", address)).toEqual({
       title: "Read bills from bills@harborpower.example?",
       detail:
-        "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep.",
+        "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep. Approving also reads the mail Kin held from it in the last 30 days.",
       action: "Approve",
       destructive: false,
     });
     expect(kinBillSenderConfirm("add", address)).toEqual(kinBillSenderConfirm("approve", address));
-    expect(kinBillSenderConfirm("addBack", address)).toEqual({
-      title: "Read bills from bills@harborpower.example?",
-      detail:
-        "Kin will read bills this address sends to the company's mailboxes and suggest them as expenses for you to keep. Bills it sent while declined are read too.",
-      action: "Approve",
-      destructive: false,
-    });
+    expect(kinBillSenderConfirm("addBack", address)).toEqual(
+      kinBillSenderConfirm("approve", address),
+    );
     expect(kinBillSenderConfirm("remove", address)).toMatchObject({
       title: "Stop reading bills from bills@harborpower.example?",
       destructive: true,
@@ -182,11 +182,74 @@ describe("who sees billing senders", () => {
   });
 
   it("hides the section on a refusal and offers taps only once granted", () => {
-    const grants = { approve: true, decline: true, remove: true, addBack: true, add: false };
+    const grants = {
+      approve: true,
+      decline: true,
+      remove: true,
+      addBack: true,
+      add: false,
+      readSince: true,
+    };
     expect(kinBillSenderPermissions({ list: "refused", grants }).visible).toBe(false);
     const unknown = kinBillSenderPermissions({ list: "unknown", grants });
     expect([unknown.visible, unknown.can("approve")]).toEqual([true, false]);
     const granted = kinBillSenderPermissions({ list: "granted", grants });
-    expect([granted.can("approve"), granted.can("add")]).toEqual([true, false]);
+    expect([granted.can("approve"), granted.can("add"), granted.can("readSince")]).toEqual([
+      true,
+      false,
+      true,
+    ]);
+    expect(unknown.can("readSince")).toBe(false);
+    expect(kinBillSenderPermissions({ list: "refused", grants }).can("readSince")).toBe(false);
+  });
+});
+
+describe("reading an approved sender's bills since a day", () => {
+  it.each([
+    // 1 Mar 00:30 in Kolkata is still 28 Feb in UTC, so last month differs by zone.
+    ["UTC", Date.UTC(2026, 1, 28, 19, 0), "2026-01-01", "2026-02-28"],
+    ["Asia/Kolkata", Date.UTC(2026, 1, 28, 19, 0), "2026-02-01", "2026-03-01"],
+    ["America/Los_Angeles", Date.UTC(2026, 0, 1, 3, 0), "2025-11-01", "2025-12-31"],
+    ["UTC", Date.UTC(2026, 0, 1, 3, 0), "2025-12-01", "2026-01-01"],
+  ])("in %s starts on the first of last month, and today is the latest day", (zone, now, day, today) => {
+    expect(kinBillSenderSinceDefault(now, zone)).toBe(day);
+    expect(kinBillSenderToday(now, zone)).toBe(today);
+    expect(kinBillSenderSinceChoices(now, zone).every((choice) => choice.day <= today)).toBe(true);
+  });
+
+  it("offers the first of last month, this month and this year, without repeats", () => {
+    expect(kinBillSenderSinceChoices(NOW, "UTC")).toEqual([
+      { label: "First of last month", day: "2026-10-01" },
+      { label: "First of this month", day: "2026-11-01" },
+      { label: "First of this year", day: "2026-01-01" },
+    ]);
+    expect(kinBillSenderSinceChoices(Date.UTC(2026, 1, 10), "UTC").map((c) => c.day)).toEqual([
+      "2026-01-01",
+      "2026-02-01",
+    ]);
+  });
+
+  const INK = "billing@inkspot.example";
+  it.each([
+    [{ queued: 0, older: false }, `Kin found no new mail from ${INK} since 1 Oct.`, false],
+    [{ queued: 1, older: false }, `Kin is reading 1 mail from ${INK} since 1 Oct.`, false],
+    [{ queued: 12, older: false }, `Kin is reading 12 mails from ${INK} since 1 Oct.`, false],
+    [
+      { queued: 200, older: true },
+      `Kin is reading 200 mails from ${INK} since 1 Oct. There are older mails. Run this again to read the next 200.`,
+      true,
+    ],
+    [
+      { queued: 0, older: false, stopped: true as const },
+      `Kin is reading 0 mails from ${INK} since 1 Oct. Kin stopped looking after 20 seconds. Run this again to continue.`,
+      true,
+    ],
+    [
+      { queued: 1, older: true, stopped: true as const },
+      `Kin is reading 1 mail from ${INK} since 1 Oct. There are older mails. Run this again to read the next 200. Gmail asked Kin to wait before looking further: run this again in a few minutes.`,
+      true,
+    ],
+  ])("%j shows the host's sentence whole", (counts, text, again) => {
+    expect(kinBillSenderReadResult({ ...counts, text })).toEqual({ line: text, again });
   });
 });

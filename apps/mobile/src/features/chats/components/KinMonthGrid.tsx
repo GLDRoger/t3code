@@ -15,6 +15,8 @@ export function KinMonthGrid(props: {
   readonly weeks: ReadonlyArray<ReadonlyArray<KinMonthCell>>;
   readonly selected: string | null;
   readonly disabled?: boolean;
+  /** The last day that can be picked, `YYYY-MM-DD`; later ones show but can't be tapped. */
+  readonly latest?: string;
   readonly onPick: (day: string) => void;
   readonly onShift: (by: number) => void;
 }) {
@@ -90,12 +92,12 @@ export function KinMonthGrid(props: {
         <View key={week[0]?.day} className="flex-row">
           {week.map((cell) => {
             const selected = cell.day === props.selected;
+            const tooLate = props.latest !== undefined && cell.day > props.latest;
             const late = cell.rows.some((row) => row.late);
             return (
               <Pressable
                 key={cell.day}
                 accessibilityRole="button"
-                accessibilityState={{ selected }}
                 accessibilityLabel={[
                   cell.day,
                   cell.today ? "Today" : null,
@@ -107,11 +109,13 @@ export function KinMonthGrid(props: {
                 ]
                   .filter((part) => part !== null)
                   .join(", ")}
-                disabled={props.disabled}
+                accessibilityState={{ selected, disabled: tooLate || props.disabled === true }}
+                disabled={props.disabled === true || tooLate}
                 onPress={() => props.onPick(cell.day)}
                 className={cn(
                   "flex-1 items-center justify-center gap-0.5 py-0.5 active:opacity-60",
                   grows ? "min-h-13" : "h-12",
+                  tooLate && "opacity-30",
                 )}
               >
                 <View

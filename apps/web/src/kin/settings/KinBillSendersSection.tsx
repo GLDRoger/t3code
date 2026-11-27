@@ -6,6 +6,9 @@ import {
   kinBillSenderConfirm,
   kinBillSenderGroups,
   kinBillSenderPermissions,
+  kinBillSenderReadResult,
+  kinBillSenderSinceDefault,
+  kinBillSenderToday,
   type KinBillSenderAction,
   type KinBillSenderRowView,
 } from "@t3tools/client-runtime/kin/kinBillSenders";
@@ -34,6 +37,13 @@ import {
 } from "./KinSettingsLayout";
 
 type Ask = { readonly action: KinBillSenderAction | "add"; readonly address: string };
+/** The last read-since answer under a row: the host's sentence, and whether pressing again does more. */
+type ReadLine = {
+  readonly line: string;
+  readonly problem: boolean;
+  readonly again: boolean;
+  readonly since: string;
+};
 
 /** Settings → Company details → Billing senders, for the owner and co-owners only. */
 export function KinBillSendersSection(props: KinWorkTarget) {
@@ -46,6 +56,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
   const canDecline = useAtomValue(kinClient.billSendersDecline.permissionAtom(environmentId));
   const canRemove = useAtomValue(kinClient.billSendersRemove.permissionAtom(environmentId));
   const canAdd = useAtomValue(kinClient.billSendersAdd.permissionAtom(environmentId));
+  const canReadSince = useAtomValue(kinClient.billSendersReadSince.permissionAtom(environmentId));
   const permissions = kinBillSenderPermissions({
     list: listPermission,
     grants: {
@@ -54,6 +65,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
       remove: canRemove,
       addBack: canAdd,
       add: canAdd,
+      readSince: canReadSince,
     },
   });
   const gate = useKinGate(
@@ -68,6 +80,9 @@ export function KinBillSendersSection(props: KinWorkTarget) {
     remove: useAtomCommand(kinClient.billSendersRemove, { reportFailure: false }),
     add: useAtomCommand(kinClient.billSendersAdd, { reportFailure: false }),
   };
+  const readSinceCommand = useAtomCommand(kinClient.billSendersReadSince, {
+    reportFailure: false,
+  });
 
   const [ask, setAsk] = useState<Ask | null>(null);
   const [adding, setAdding] = useState<{ draft: string; problem: string | null } | null>(null);
@@ -75,6 +90,9 @@ export function KinBillSendersSection(props: KinWorkTarget) {
   const [problem, setProblem] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const [now] = useState(() => kinNow().getTime());
+  const [picking, setPicking] = useState<{ address: string; since: string } | null>(null);
+  const [reading, setReading] = useState<ReadonlySet<string>>(() => new Set());
+  const [readLines, setReadLines] = useState<Readonly<Record<string, ReadLine>>>({});
 
   if (!permissions.visible || state._tag === "refused") return null;
 
@@ -137,6 +155,30 @@ export function KinBillSendersSection(props: KinWorkTarget) {
       setSaid(String(value.message));
   };
 
+  // Runs beside everything else: only this sender's control waits, and nothing presses it again.
+  const readSince = async (address: string, since: string) => {
+    setReading((current) => new Set(current).add(address));
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => readSinceCommand({ environmentId, input: { orgId, address, since } }),
+    });
+    setReading((current) => {
+      const next = new Set(current);
+      next.delete(address);
+      return next;
+    });
+    const line: ReadLine = outcome.ok
+      ? { ...kinBillSenderReadResult(outcome.value), problem: false, since }
+      : {
+          line: outcome.problem || KIN_BILL_SENDERS.readSince.failed,
+          problem: true,
+          again: false,
+          since,
+        };
+    setReadLines((current) => ({ ...current, [address]: line }));
+  };
+  const today = kinBillSenderToday(now);
+
   const addButton = permissions.can("add") ? (
     <Button
       size="xs"
@@ -167,6 +209,14 @@ export function KinBillSendersSection(props: KinWorkTarget) {
                   can={permissions.can}
                   busy={busy !== null}
                   onAct={(action) => setAsk({ action, address: row.address })}
+                  reading={reading.has(row.address)}
+                  readLine={readLines[row.address] ?? null}
+                  onReadSince={() =>
+                    setPicking({
+                      address: row.address,
+                      since: readLines[row.address]?.since ?? kinBillSenderSinceDefault(now),
+                    })
+                  }
                 />
               ))}
             </Fragment>
@@ -183,6 +233,33 @@ export function KinBillSendersSection(props: KinWorkTarget) {
         }}
         onClose={() => setAsk(null)}
       />
+      {picking === null ? null : (
+        <KinSettingsFormDialog
+          title={KIN_BILL_SENDERS.readSince.title(picking.address)}
+          description={KIN_BILL_SENDERS.readSince.detail}
+          submitLabel={KIN_BILL_SENDERS.readSince.submit}
+          busy={false}
+          notReady={picking.since === "" ? KIN_BILL_SENDERS.readSince.day : null}
+          onSubmit={() => {
+            const target = picking;
+            setPicking(null);
+            void readSince(target.address, target.since);
+          }}
+          onClose={() => setPicking(null)}
+        >
+          <KinSettingsField name="since" label={KIN_BILL_SENDERS.readSince.day}>
+            {(ids) => (
+              <Input
+                id={ids.control}
+                type="date"
+                max={today}
+                value={picking.since}
+                onChange={(event) => setPicking({ ...picking, since: event.target.value })}
+              />
+            )}
+          </KinSettingsField>
+        </KinSettingsFormDialog>
+      )}
       {adding === null ? null : (
         <KinSettingsFormDialog
           title={KIN_BILL_SENDERS.addTitle}
@@ -222,41 +299,72 @@ export function KinBillSendersSection(props: KinWorkTarget) {
 
 function BillSenderRow(props: {
   readonly row: KinBillSenderRowView;
-  readonly can: (action: KinBillSenderAction) => boolean;
+  readonly can: ReturnType<typeof kinBillSenderPermissions>["can"];
   readonly busy: boolean;
   readonly onAct: (action: KinBillSenderAction) => void;
+  readonly reading: boolean;
+  readonly readLine: ReadLine | null;
+  readonly onReadSince: () => void;
 }) {
-  const { row } = props;
+  const { row, readLine } = props;
   const lines = [row.seenLine, row.askedLine, row.decidedLine].filter((line) => line !== null);
   const actions = row.actions.filter(props.can);
+  const canRead = row.state === "approved" && props.can("readSince");
   return (
     <KinSettingsRow
       stack
       title={<KinSenderAddress segments={row.addressSegments} />}
       detail={
-        lines.length === 0 ? null : (
+        lines.length === 0 && readLine === null ? null : (
           <span className="flex flex-col gap-0.5">
             {lines.map((line) => (
               <span key={line}>{line}</span>
             ))}
+            {readLine === null || !canRead ? null : (
+              <span
+                role={readLine.problem ? "alert" : "status"}
+                className={readLine.problem ? "text-destructive-foreground" : "text-foreground"}
+              >
+                {readLine.line}
+              </span>
+            )}
           </span>
         )
       }
       control={
-        actions.length === 0
+        actions.length === 0 && !canRead
           ? null
-          : actions.map((action) => (
-              <Button
-                key={action}
-                size="xs"
-                variant={action === "approve" ? "default" : "outline"}
-                disabled={props.busy}
-                aria-label={`${KIN_BILL_SENDERS.action[action]}: ${row.address}`}
-                onClick={() => props.onAct(action)}
-              >
-                {KIN_BILL_SENDERS.action[action]}
-              </Button>
-            ))
+          : [
+              ...(canRead
+                ? [
+                    <Button
+                      key="readSince"
+                      size="xs"
+                      variant="outline"
+                      disabled={props.reading}
+                      aria-busy={props.reading}
+                      aria-label={`${props.reading ? KIN_BILL_SENDERS.readSince.working : KIN_BILL_SENDERS.readSince.open} ${row.address}`}
+                      onClick={props.onReadSince}
+                    >
+                      {props.reading
+                        ? KIN_BILL_SENDERS.readSince.working
+                        : KIN_BILL_SENDERS.readSince.open}
+                    </Button>,
+                  ]
+                : []),
+              ...actions.map((action) => (
+                <Button
+                  key={action}
+                  size="xs"
+                  variant={action === "approve" ? "default" : "outline"}
+                  disabled={props.busy}
+                  aria-label={`${KIN_BILL_SENDERS.action[action]}: ${row.address}`}
+                  onClick={() => props.onAct(action)}
+                >
+                  {KIN_BILL_SENDERS.action[action]}
+                </Button>
+              )),
+            ]
       }
     />
   );
