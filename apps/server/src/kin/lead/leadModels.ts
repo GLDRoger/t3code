@@ -19,6 +19,12 @@ import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { deriveProviderInstanceConfigMap } from "../../provider/ProviderInstanceRegistryHydration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
+// These read and mark; neither drafts for a person nor decides what to bring.
+const BACKGROUND_EVENT_TAGS = new Set(["bills.read", "watchdog"]);
+
+export const backgroundWake = (tags: ReadonlyArray<string>): boolean =>
+  tags.length > 0 && tags.every((tag) => BACKGROUND_EVENT_TAGS.has(tag));
+
 const decodeModel = Schema.decodeUnknownOption(Schema.fromJsonString(KinLead.fields.model));
 const encodeSelection = Schema.encodeSync(KinLead.fields.model);
 /** Rows from before K163 also carry `strong` and `cheap`; decoding ignores them. */
