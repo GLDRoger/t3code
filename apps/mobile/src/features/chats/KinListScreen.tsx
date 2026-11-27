@@ -83,6 +83,7 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import {
+  KinMissingLink,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkStaleNotice,
@@ -137,10 +138,11 @@ export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
   if (environmentId === null || orgId === null || list === null) {
     return (
       <KinWorkFrame title={KIN_LISTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't open a list"
-          detail="Open Lists from Work."
+          kind="entry"
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );
@@ -839,10 +841,11 @@ export function KinDatesScreen({ route }: StaticScreenProps<KinDatesParams>) {
   if (environmentId === null || orgId === null) {
     return (
       <KinWorkFrame title={KIN_DATES.title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't open anything"
-          detail="Open Work from your Kin chats."
+          kind="date"
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );
