@@ -23,7 +23,6 @@ import {
   kinUnreadToMark,
   kinNextNewLineHold,
   kinOwnReadSeq,
-  latestKinSeq,
   type KinNewLineHold,
   type KinChatScreenState,
   type KinFeedRow,
@@ -62,6 +61,7 @@ import {
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
   kinWorkingLines,
+  kinLatestReadableSeq,
   type KinWorkingLine,
 } from "@t3tools/client-runtime/kin/kinLive";
 import { KIN_MESSAGE_MAX_LENGTH, KIN_COMPOSER_COPY } from "@t3tools/client-runtime/kin/kinOutbox";
@@ -627,7 +627,9 @@ function KinChatFeed(props: {
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
   const [follow, setFollow] = useState(() =>
-    initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
+    initialKinFeedFollow(
+      kinLatestReadableSeq(props.chat.value.messages, props.chat.value.presence),
+    ),
   );
   // Per wake-up, so a new run starts with a fresh Stop and one agent's Stop never shows on another.
   const [stops, setStops] = useState<ReadonlyMap<string, StopState>>(new Map());
@@ -643,7 +645,7 @@ function KinChatFeed(props: {
     heldLine,
     props.chatId,
     kinOwnReadSeq(live, viewerMemberId),
-    latestKinSeq(live.messages),
+    heldLine?.upTo ?? kinLatestReadableSeq(live.messages, live.presence),
   );
   if (newLine !== heldLine) setHeldLine(newLine);
   const feed = kinChatFeedView({

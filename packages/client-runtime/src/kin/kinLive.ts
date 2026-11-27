@@ -2,6 +2,9 @@
 import {
   KinAgentId,
   KinDraft,
+  kinHasActiveWakeup,
+  type KinChatSummary,
+  type KinWaitingItem,
   type KinChatStreamEvent,
   type KinPresence,
   type KinMessage,
@@ -36,6 +39,90 @@ export const kinReplyKey = (draftId: string) => `reply:${draftId}`;
 
 const agentOf = (message: KinMessage) =>
   message.author._tag === "agent" ? message.author.agentId : null;
+
+export function kinPostedReplyWakeup(message: KinMessage) {
+  return message.progress !== true &&
+    message.author._tag === "agent" &&
+    message.kind === "text" &&
+    message.status === "posted" &&
+    message.relay === undefined &&
+    message.body.trim() !== ""
+    ? message.sourceWakeupId
+    : undefined;
+}
+
+export function kinAskTurnKey(message: KinMessage) {
+  return message.author._tag === "agent" && message.sourceWakeupId !== undefined
+    ? JSON.stringify([
+        message.orgId,
+        message.chatId,
+        message.author.agentId,
+        message.author.threadId,
+        message.sourceWakeupId,
+      ])
+    : null;
+}
+
+export function kinWaitingAskHeld(
+  item: KinWaitingItem,
+  active: KinChatSummary["activeWakeups"],
+): boolean {
+  const turn = item.ordinaryTurnAsk;
+  return (
+    turn !== undefined &&
+    active?.some(
+      ({ agentId, wakeupId }) => agentId === turn.agentId && wakeupId === turn.wakeupId,
+    ) === true
+  );
+}
+
+export function kinHeldAskCards(
+  messages: ReadonlyArray<KinMessage>,
+  presence: ReadonlyArray<KinPresence>,
+) {
+  if (presence.length === 0) return null;
+  const active = new Map(
+    presence.filter(kinHasActiveWakeup).map((line) => [line.agentId, line.wakeupId]),
+  );
+  if (active.size === 0) return null;
+
+  const replies = new Set<string>();
+  const asks: Array<{ message: KinMessage; turn: string }> = [];
+  for (const message of messages) {
+    const { author, sourceWakeupId } = message;
+    if (
+      author._tag !== "agent" ||
+      sourceWakeupId === undefined ||
+      active.get(author.agentId) !== sourceWakeupId
+    )
+      continue;
+    const turn = kinAskTurnKey(message);
+    if (turn === null) continue;
+    if (kinPostedReplyWakeup(message) !== undefined) replies.add(turn);
+    else if (
+      message.ordinaryTurnAsk === true &&
+      message.status === "posted" &&
+      message.widgetId !== null &&
+      message.body.trim() === ""
+    )
+      asks.push({ message, turn });
+  }
+  const ids = new Set<string>();
+  let readThroughSeq: number | undefined;
+  for (const { message, turn } of asks) {
+    if (replies.has(turn)) continue;
+    readThroughSeq ??= message.seq - 1;
+    ids.add(message.messageId);
+  }
+  return readThroughSeq === undefined ? null : { readThroughSeq, ids };
+}
+
+export function kinLatestReadableSeq(
+  messages: ReadonlyArray<KinMessage>,
+  presence: ReadonlyArray<KinPresence>,
+) {
+  return kinHeldAskCards(messages, presence)?.readThroughSeq ?? messages.at(-1)?.seq ?? 0;
+}
 
 /** The durable message that ends this draft: its reply id, or the same agent's text grown from it. */
 function settles(message: KinMessage, draft: KinHeldDraft): boolean {
@@ -100,7 +187,7 @@ export function applyKinPresence(
   return [...rest, event.presence];
 }
 
-/** A backlog's snapshot replaces what's held, keeping when each held draft started. */
+/** An opening snapshot replaces live state; a checkpoint has no live snapshot. */
 export function applyKinLiveBacklog(
   state: KinLiveState,
   backlog: Pick<BacklogEvent, "drafts" | "presence">,
@@ -108,14 +195,17 @@ export function applyKinLiveBacklog(
   now: string,
 ): KinLiveState {
   const startedAt = new Map(state.drafts.map((draft) => [draft.draftId, draft.startedAt]));
-  const drafts = settleKinDrafts(
-    (backlog.drafts ?? []).map((draft) => ({
-      ...draft,
-      startedAt: startedAt.get(draft.draftId) ?? now,
-    })),
-    messages,
-  );
-  return { drafts, presence: backlog.presence ?? [] };
+  const drafts =
+    backlog.drafts === undefined
+      ? state.drafts
+      : backlog.drafts.map((draft) => ({
+          ...draft,
+          startedAt: startedAt.get(draft.draftId) ?? now,
+        }));
+  return {
+    drafts: settleKinDrafts(drafts, messages),
+    presence: backlog.presence ?? state.presence,
+  };
 }
 
 // The presence line

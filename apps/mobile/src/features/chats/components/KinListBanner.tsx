@@ -35,9 +35,11 @@ export function KinListBanner(props: {
         <Text textRole="body" className="font-t3-medium text-foreground">
           {props.title}
         </Text>
-        <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
-          {props.summary}
-        </Text>
+        {props.summary === "" ? null : (
+          <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
+            {props.summary}
+          </Text>
+        )}
       </View>
       <SymbolView
         name="chevron.right"

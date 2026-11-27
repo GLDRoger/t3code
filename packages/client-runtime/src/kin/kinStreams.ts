@@ -36,6 +36,7 @@ import {
   type KinChatClosedReason,
   type KinInboxEvent,
 } from "./kinInboxModel.ts";
+import { kinHeldAskCards } from "./kinLive.ts";
 
 /**
  * Forgets a chat's cached record when the viewer leaves it or loses access. Clients with a device
@@ -60,17 +61,19 @@ export const KIN_CHAT_LABEL = "kin:chat";
 const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
 
 const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
-/** Offline the viewer sees their own waiting only: someone else's rows are kept live, never here. */
-const ownWaiting = <A extends { readonly inbox: KinInboxState }>(cached: A): A =>
-  cached.inbox.waiting.some((item) => item.waitsFor !== undefined)
-    ? {
-        ...cached,
-        inbox: {
-          ...cached.inbox,
-          waiting: cached.inbox.waiting.filter((item) => item.waitsFor === undefined),
-        },
-      }
-    : cached;
+/** Another person's rows and live wake-ups belong to the stream, not the offline cache. */
+const cacheableInbox = <A extends { readonly inbox: KinInboxState }>(cached: A): A => {
+  const { chats, waiting } = cached.inbox;
+  const own = waiting.some((item) => item.waitsFor !== undefined)
+    ? waiting.filter((item) => item.waitsFor === undefined)
+    : waiting;
+  const withoutWakeups = chats.some((chat) => chat.activeWakeups !== undefined)
+    ? chats.map(({ activeWakeups: _active, ...chat }) => chat)
+    : chats;
+  return own === waiting && withoutWakeups === chats
+    ? cached
+    : { ...cached, inbox: { chats: withoutWakeups, waiting: own } };
+};
 const chatCache = persistQuery(
   Schema.Struct({
     chat: KinChatState,
@@ -221,7 +224,26 @@ function clearUpdatesOf(environmentId: EnvironmentId): PubSub.PubSub<boolean> {
     pubsub = Effect.runSync(PubSub.unbounded<boolean>());
     clearUpdatesByEnvironment.set(environmentId, pubsub);
   }
+  clearUpdatesTabs();
   return pubsub;
+}
+
+// Other tabs of this browser hear a saved flip too; the phone has no BroadcastChannel.
+let clearUpdatesChannel: BroadcastChannel | undefined;
+function clearUpdatesTabs(): BroadcastChannel | undefined {
+  if (clearUpdatesChannel !== undefined || typeof BroadcastChannel === "undefined") {
+    return clearUpdatesChannel;
+  }
+  clearUpdatesChannel = new BroadcastChannel("kin-clear-updates");
+  (clearUpdatesChannel as { unref?: () => void }).unref?.();
+  clearUpdatesChannel.addEventListener("message", (event: MessageEvent) => {
+    const { environmentId, clearUpdates } = (event.data ?? {}) as Record<string, unknown>;
+    const pubsub = clearUpdatesByEnvironment.get(environmentId as EnvironmentId);
+    if (pubsub !== undefined && typeof clearUpdates === "boolean") {
+      Effect.runSync(PubSub.publish(pubsub, clearUpdates));
+    }
+  });
+  return clearUpdatesChannel;
 }
 
 /**
@@ -234,7 +256,10 @@ export async function applyKinClearUpdatesSave(
   save: () => Promise<boolean>,
 ): Promise<boolean> {
   const saved = await save();
-  if (saved) Effect.runSync(PubSub.publish(clearUpdatesOf(environmentId), clearUpdates));
+  if (saved) {
+    Effect.runSync(PubSub.publish(clearUpdatesOf(environmentId), clearUpdates));
+    clearUpdatesTabs()?.postMessage({ environmentId, clearUpdates });
+  }
   return saved;
 }
 
@@ -309,11 +334,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
     Effect.gen(function* () {
       const environmentId = yield* currentEnvironmentId;
       const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
-      const cached = Option.map(yield* inboxCache.load(environmentId, key), ownWaiting);
+      const cached = Option.map(yield* inboxCache.load(environmentId, key), cacheableInbox);
       let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
       let live = false;
       const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
-        inboxCache.save(environmentId, key, ownWaiting(value)),
+        inboxCache.save(environmentId, key, cacheableInbox(value)),
       );
       const events: Stream.Stream<
         KinInboxEvent,
@@ -368,7 +393,10 @@ const kinCachedPartChanged = (a: KinChatState, b: KinChatState) =>
   a.reads !== b.reads ||
   a.reactions !== b.reactions ||
   a.needsHistoryReload !== b.needsHistoryReload ||
-  a.clearUpdates !== b.clearUpdates;
+  a.clearUpdates !== b.clearUpdates ||
+  (a.presence !== b.presence &&
+    kinHeldAskCards(a.messages, a.presence)?.readThroughSeq !==
+      kinHeldAskCards(b.messages, b.presence)?.readThroughSeq);
 
 /** Reads one page of `kin.chat.history`; the client wires in its scope-checked command. */
 export type KinReadHistory<E, R> = (
@@ -428,7 +456,7 @@ export function makeKinChatStream<E, R>(
           shownClosed = false;
           const savedAt = nowIso();
           shownAt = savedAt;
-          // Drafts and presence are never cached, so their frames don't schedule a save.
+          // Live state is not cached, but a presence change can release the cached tail.
           if (next !== state && kinCachedPartChanged(state, next)) save(next, savedAt);
           state = next;
           live = true;

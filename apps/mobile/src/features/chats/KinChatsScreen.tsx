@@ -374,8 +374,10 @@ export function KinChatsView(props: {
   readonly settleAfterHours?: KinChatsSettleAfterHours;
 }) {
   const { state, onOpenChat } = props;
-  const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
-  const banner = view === null ? null : kinWaitingBannerView(view.waiting, view.waitsFor);
+  const inbox = state._tag === "ready" ? state.inbox.value : null;
+  const view = inbox === null ? null : selectKinInboxView(inbox);
+  const banner =
+    view === null ? null : kinWaitingBannerView(view.waiting, view.waitsFor, inbox?.chats);
   const agents =
     props.agents === undefined ||
     props.agents.length === 0 ||

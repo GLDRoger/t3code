@@ -12,6 +12,12 @@ import {
   EnvironmentId,
   KIN_CHAT_WS_METHODS,
   KinChatError,
+  KinAgentId,
+  KinMemberId,
+  KinPersonId,
+  KinWakeupId,
+  KinWidgetId,
+  ThreadId,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatListEvent,
@@ -19,12 +25,10 @@ import {
   type KinChatSubscribeInput,
   type KinChatSummary,
   type KinMessage,
-  type KinPersonId,
   type KinPulseEvent,
   type KinPulseFact,
   type KinPulseSubscribeInput,
   type KinWaitingItem,
-  type KinWakeupId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -700,7 +704,88 @@ describe("Kin streams", () => {
     }),
   );
 
-  it.effect("never keeps what waits for someone else in the offline inbox", () =>
+  it.effect("replays a cached ask only after reconnect, but caches it after a wordless end", () =>
+    Effect.gen(function* () {
+      const rows = new Map<string, string>();
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      const subs = yield* Queue.unbounded<KinChatSubscribeInput>();
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(
+            fakeSession({
+              chat: (input) =>
+                Stream.fromQueue(events).pipe(Stream.onStart(Queue.offer(subs, input))),
+              inbox: Stream.never,
+            }),
+          ),
+        ),
+        rows,
+      );
+      const watch = makeKinChatStream(() => Effect.die("Unexpected history request"))({
+        chatId,
+      }).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+      const agentId = KinAgentId.make("lead");
+      const wakeupId = KinWakeupId.make("tidewater-turn");
+      const ask: KinMessage = {
+        ...message(2, ""),
+        ordinaryTurnAsk: true,
+        sourceWakeupId: wakeupId,
+        widgetId: KinWidgetId.make("choice:m2"),
+        author: {
+          _tag: "agent",
+          agentId,
+          threadId: ThreadId.make("thread"),
+          memberId: KinMemberId.make("lead-member"),
+          ownerPersonId: KinPersonId.make("rhea"),
+        },
+      };
+      const presence = {
+        agentId,
+        wakeupId,
+        state: "working",
+        label: null,
+        startedAt: at,
+        since: at,
+      } as const;
+      const first = yield* watch;
+      expect(yield* Queue.take(subs)).toEqual({ chatId });
+      yield* Queue.offer(events, {
+        _tag: "backlog",
+        messages: [message(1), ask],
+        widgets: [],
+        lastSeq: 2,
+        lastChangeSeq: 5,
+        presence: [presence],
+      });
+      expect((yield* Queue.take(views)).value.messages).toHaveLength(2);
+      yield* Fiber.interrupt(first);
+      const cached = () => decodeCachedChat(rows.get(chatRowKey) ?? "").chat;
+      expect(cached()).toMatchObject({ messages: [message(1)], contiguousSeq: 1 });
+      const reopened = yield* watch;
+      expect((yield* Queue.take(views)).value.messages).toHaveLength(1);
+      expect(yield* Queue.take(subs)).toEqual({ chatId, afterSeq: 1, afterChangeSeq: 5 });
+      yield* Queue.offer(events, {
+        _tag: "backlog",
+        messages: [ask],
+        widgets: [],
+        lastSeq: 2,
+        lastChangeSeq: 5,
+        presence: [presence],
+      });
+      expect((yield* Queue.take(views)).value.presence).toEqual([presence]);
+      yield* Queue.offer(events, { _tag: "presence", agentId, presence: null });
+      expect((yield* Queue.take(views)).value.presence).toEqual([]);
+      yield* Fiber.interrupt(reopened);
+      expect(cached()).toMatchObject({ messages: [message(1), ask], contiguousSeq: 2 });
+    }),
+  );
+
+  it.effect("keeps only the viewer’s waiting rows and no live wake-ups in the offline inbox", () =>
     Effect.gen(function* () {
       const row = (waitingId: string, personId: string) =>
         ({
@@ -715,7 +800,9 @@ describe("Kin streams", () => {
           resolvedAt: null,
           resolution: null,
         }) as KinWaitingItem;
-      const own = row("w-own", "meera");
+      const turn = { agentId: KinAgentId.make("chief"), wakeupId: KinWakeupId.make("w1") };
+      const own = { ...row("w-own", "meera"), ordinaryTurnAsk: turn };
+      const chats = [{ ...summary("c1"), activeWakeups: [turn] }];
       const owners = {
         ...row("w-rhea", "rhea"),
         waitsFor: { personId: "rhea", name: "Rhea Rao" },
@@ -723,10 +810,7 @@ describe("Kin streams", () => {
       const ids = (inbox: KinInboxState) => inbox.waiting.map((item) => item.waitingId);
       // A cache an older build saved with the owner's row in it shows her own row only.
       const rows = new Map([
-        [
-          inboxRowKey,
-          encodeCachedInbox({ inbox: { chats: [], waiting: [own, owners] }, savedAt: at }),
-        ],
+        [inboxRowKey, encodeCachedInbox({ inbox: { chats, waiting: [own, owners] }, savedAt: at })],
       ]);
       const inbox = yield* Queue.unbounded<KinChatListEvent>();
       const views = yield* Queue.unbounded<KinSynced<KinInboxState>>();
@@ -741,11 +825,15 @@ describe("Kin streams", () => {
       );
       const cached = yield* Queue.take(views);
       expect([cached.live, ids(cached.value)]).toEqual([false, ["w-own"]]);
-      // Live, both show; what is saved keeps her own only.
-      yield* Queue.offer(inbox, { _tag: "snapshot", chats: [], waiting: [own, owners] });
-      expect(ids((yield* Queue.take(views)).value)).toEqual(["w-own", "w-rhea"]);
+      expect(cached.value.chats[0]?.activeWakeups).toBeUndefined();
+      yield* Queue.offer(inbox, { _tag: "snapshot", chats, waiting: [own, owners] });
+      const live = (yield* Queue.take(views)).value;
+      expect(ids(live)).toEqual(["w-own", "w-rhea"]);
+      expect(live.chats[0]?.activeWakeups).toEqual([turn]);
       yield* Fiber.interrupt(fiber);
-      expect(ids(decodeCachedInbox(rows.get(inboxRowKey) ?? "").inbox)).toEqual(["w-own"]);
+      const saved = decodeCachedInbox(rows.get(inboxRowKey) ?? "").inbox;
+      expect(saved.waiting).toEqual([own]);
+      expect(saved.chats[0]?.activeWakeups).toBeUndefined();
     }),
   );
 
@@ -1118,6 +1206,17 @@ describe("Kin streams", () => {
         );
         expect((yield* Queue.take(views1)).value.clearUpdates).toBe(true);
         expect((yield* Queue.take(views2)).value.clearUpdates).toBe(true);
+
+        // A flip saved in another tab of this browser reaches the open chat too, for its host only.
+        const otherTab = new BroadcastChannel("kin-clear-updates");
+        for (const host of ["other-host", environmentId]) {
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no target origin
+          otherTab.postMessage({ environmentId: host, clearUpdates: false });
+        }
+        otherTab.close();
+        expect((yield* Queue.take(views1)).value.clearUpdates).toBe(false);
+        expect((yield* Queue.take(views2)).value.clearUpdates).toBe(false);
+        expect([yield* Queue.size(views1), yield* Queue.size(views2)]).toEqual([0, 0]);
         yield* Fiber.interrupt(f1);
         yield* Fiber.interrupt(f2);
       }),

@@ -9,7 +9,9 @@ import {
   type KinMemberId,
   type KinMessage,
   type KinOrgId,
+  type KinPresence,
   type KinWakeupId,
+  type KinWidgetId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -19,7 +21,7 @@ import {
   KIN_FIXTURE_OWNER,
   makeKinFixtureMessages,
 } from "./kinChatFixtures.ts";
-import { KIN_HISTORY_PAGE_SIZE, type KinFeedViewer } from "./kinChatFeed.ts";
+import { KIN_HISTORY_PAGE_SIZE, kinSeqToMarkRead, type KinFeedViewer } from "./kinChatFeed.ts";
 import {
   kinChatFeedFollow,
   kinChatFeedRows,
@@ -28,7 +30,12 @@ import {
   kinChatScreen,
 } from "./kinChatScreen.ts";
 import { initialKinFeedFollow, resolveKinFeedFollow } from "./kinFeedFollow.ts";
-import { emptyKinChat } from "./kinInboxModel.ts";
+import {
+  applyKinChatEvent,
+  applyKinChatHistory,
+  emptyKinChat,
+  trimKinChatForCache,
+} from "./kinInboxModel.ts";
 import type { KinOutboxEntry } from "./kinOutbox.ts";
 
 const ORG = "fixture-org" as KinOrgId;
@@ -223,6 +230,182 @@ describe("kinChatFeedView", () => {
     expect(view.pending).toEqual([]);
     expect(view.messages.map(ownBody).at(-1)).toBe("Invented acked");
     expect(view.latestSeq).toBe(5);
+  });
+
+  const wakeupId = "pickup-turn" as KinWakeupId;
+  const otherWakeupId = "other-turn" as KinWakeupId;
+  const presence: KinPresence = {
+    agentId: KIN_FIXTURE_AGENT,
+    wakeupId,
+    state: "working",
+    label: null,
+    startedAt: AT,
+    since: AT,
+  };
+  const prior = messages[0]!;
+  const ask = (seq: number): KinMessage => ({
+    ...messages[1]!,
+    seq,
+    messageId: `pickup-card-${seq}` as KinMessage["messageId"],
+    widgetId: `choice:pickup-card-${seq}` as KinWidgetId,
+    body: "",
+    sourceWakeupId: wakeupId,
+    ordinaryTurnAsk: true,
+  });
+  const first = ask(2);
+  const second = ask(3);
+  const words: KinMessage = {
+    ...messages[1]!,
+    seq: 4,
+    body: "Rhea, Tidewater Freight can collect on either day.",
+    sourceWakeupId: wakeupId,
+  };
+  const append = (
+    state: typeof emptyKinChat,
+    ...events: ReadonlyArray<Parameters<typeof applyKinChatEvent>[1]>
+  ) => events.reduce((held, event) => applyKinChatEvent(held, event, AT), state);
+  const working = append(
+    { ...emptyKinChat, messages: [prior] },
+    { _tag: "presence", agentId: presence.agentId, presence },
+    { _tag: "message", message: first },
+  );
+  const ended = { _tag: "presence", agentId: presence.agentId, presence: null } as const;
+  const order = (view: ReturnType<typeof feed>) =>
+    view.feedRows.flatMap((row) => (row.type === "message" ? [row.message.messageId] : []));
+
+  it.each([
+    ["card first", working, [prior.messageId]],
+    [
+      "first posted words and two cards",
+      append(working, { _tag: "message", message: second }, { _tag: "message", message: words }),
+      [prior.messageId, words.messageId, first.messageId, second.messageId],
+    ],
+    [
+      "interleaved messages do not split two cards away from their reply",
+      append(
+        working,
+        {
+          _tag: "message",
+          message: { ...prior, messageId: "extra" as KinMessage["messageId"], seq: 3 },
+        },
+        { _tag: "message", message: ask(4) },
+        { _tag: "message", message: { ...words, seq: 5 } },
+      ),
+      [prior.messageId, "extra", words.messageId, first.messageId, ask(4).messageId],
+    ],
+    [
+      "wordless end with two cards",
+      append(working, { _tag: "message", message: second }, ended),
+      [prior.messageId, first.messageId, second.messageId],
+    ],
+    [
+      "Stop clears presence without posting held words",
+      append(
+        working,
+        {
+          _tag: "draft",
+          draftId: "discarded",
+          agentId: presence.agentId,
+          sourceWakeupId: wakeupId,
+          offset: 0,
+          text: "Half the answer",
+        },
+        ended,
+      ),
+      [prior.messageId, first.messageId],
+    ],
+    [
+      "presence moves to another wake-up",
+      append(working, { ...ended, presence: { ...presence, wakeupId: otherWakeupId } }),
+      [prior.messageId, first.messageId],
+    ],
+    [
+      "joined row fills in place",
+      append(working, { _tag: "message", message: { ...first, body: words.body } }),
+      [prior.messageId, first.messageId],
+    ],
+    [
+      "an older host, Confirm or run control never waits",
+      { ...working, messages: [prior, { ...first, ordinaryTurnAsk: undefined }] },
+      [prior.messageId, first.messageId],
+    ],
+    [
+      "false opts out",
+      { ...working, messages: [prior, { ...first, ordinaryTurnAsk: false }] },
+      [prior.messageId, first.messageId],
+    ],
+    ["no known running turn", { ...working, presence: [] }, [prior.messageId, first.messageId]],
+  ] as const)("%s", (_label, live, expected) => {
+    expect(order(feed({ live }))).toEqual(expected);
+  });
+
+  it("keeps an ask hidden through cache reload, a fresh backlog, a checkpoint and a reset", () => {
+    const cached = trimKinChatForCache({ ...working, contiguousSeq: first.seq });
+    expect([order(feed({ live: cached, caughtUp: false })), cached.contiguousSeq]).toEqual([
+      [prior.messageId],
+      prior.seq,
+    ]);
+    const backlog = {
+      _tag: "backlog",
+      lastSeq: first.seq,
+      messages: [first],
+      widgets: [],
+      presence: [presence],
+    } as const;
+    const reloaded = append(cached, backlog);
+    expect(order(feed({ live: reloaded }))).toEqual([prior.messageId]);
+    const checkpointed = append(reloaded, {
+      _tag: "backlog",
+      lastSeq: first.seq,
+      messages: [],
+      widgets: [],
+    });
+    expect(order(feed({ live: checkpointed }))).toEqual([prior.messageId]);
+    const reset = append(emptyKinChat, {
+      _tag: "reset",
+      lastSeq: first.seq,
+      presence: [presence],
+    });
+    const page = applyKinChatHistory(reset, {
+      messages: [prior, first],
+      widgets: [],
+      hasMore: false,
+    });
+    expect(order(feed({ live: page }))).toEqual([prior.messageId]);
+    const reconnected = append(reloaded, { ...backlog, presence: [] });
+    expect(order(feed({ live: reconnected }))).toEqual([prior.messageId, first.messageId]);
+  });
+
+  it("does not mark or seek past a held deep-link target, even when other rows have arrived", () => {
+    const priorSeq = prior.seq + 10;
+    const later = { ...words, seq: words.seq + 10, sourceWakeupId: otherWakeupId };
+    const live = append(
+      {
+        ...working,
+        messages: working.messages.map((message) => ({ ...message, seq: message.seq + 10 })),
+      },
+      { _tag: "message", message: later },
+    );
+    const follow = resolveKinFeedFollow(initialKinFeedFollow(priorSeq), {
+      type: "navigated",
+      seq: priorSeq,
+    });
+    const target = { exhausted: false, landOn: first.messageId, follow };
+    const pending = feed({ ...target, live });
+    const mark = (view: ReturnType<typeof feed>) =>
+      kinSeqToMarkRead({
+        seesEnd: true,
+        latestSeq: view.latestSeq,
+        markedSeq: priorSeq,
+        attemptedSeq: priorSeq,
+        unread: 2,
+      });
+    expect(pending.earlierPage).not.toBeNull();
+    expect(pending).toMatchObject({ unseen: 1, landPage: null, openRow: null });
+    expect(mark(pending)).toBeNull();
+    const released = feed({ ...target, live: append(live, ended) });
+    expect(released).toMatchObject({ unseen: 2, openRow: { kind: "land", key: first.messageId } });
+    expect(mark(released)).toBe(later.seq);
   });
 
   it("keeps the last copy of a notice the host repeated", () => {
