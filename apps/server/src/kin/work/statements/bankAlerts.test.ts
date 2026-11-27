@@ -1147,7 +1147,7 @@ it.effect.each([
   ["ABC", "alerts@abc-alerts.example", false],
   ["ABC", "alerts@abc.harborbank.example", false],
   ["港灣銀行", "alerts@harborbank.example", false],
-  ["港灣銀行", "alerts@xn--yetr50b301appd.example", false],
+  ["港灣銀行", "alerts@xn--j6wy0cx42brkj.example", false],
 ] as const)("the candidate name rule: %s and %s gives %s", ([bankName, address, raised]) =>
   Effect.gen(function* () {
     const sql = yield* senderSetup;
