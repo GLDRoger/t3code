@@ -308,18 +308,32 @@ it.layer(layer)((it) => {
     }),
   );
 
-  // The same phone bill each month: Zoya is paid 5,000 on the 20th and the owner marks the
-  // older one repaid by hand two days later. That 5,000 must not also repay the newer one.
-  it.effect("a hand mark of the same money within ten days of the debit stops the card", () =>
+  it.effect("an individual or total same-day hand mark stops another repayment card", () =>
     Effect.gen(function* () {
-      const kin = yield* company(KinOrgId.make("ambermill-recurring"));
-      yield* kin.expense("EXP-4", 5_000, "2026-10-01", {
+      const org = KinOrgId.make("ambermill-recurring");
+      const kin = yield* company(org);
+      const repaid = {
         reimbursement: "repaid",
         repaidOn: "2026-11-22",
-      });
-      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
-      yield* kin.debit("BNK-9", 5_000, "2026-11-20");
-      assert.deepStrictEqual(yield* kin.told(), []);
+      };
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", repaid);
+      yield* kin.expense("EXP-5", 800, "2026-10-02", repaid);
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", { reimbursement: "owed" });
+      for (const [key, amount] of [
+        ["BNK-9", 1_200],
+        ["BNK-10", 2_000],
+        ["BNK-11", 500],
+      ] as const)
+        yield* kin.debit(key, amount, "2026-11-23");
+      const matches = yield* repaidMatches(org, NOW);
+      assert.sameDeepMembers(
+        matches.map((match) => [match.debit.key, match.marked]),
+        [
+          ["BNK-9", "2026-11-22"],
+          ["BNK-10", "2026-11-22"],
+          ["BNK-11", undefined],
+        ],
+      );
       assert.strictEqual(
         yield* kin.draw("BNK-9"),
         "BNK-9 may be the repayment already marked by hand for Zoya Rao on 2026-11-22, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
@@ -333,6 +347,10 @@ it.layer(layer)((it) => {
       Effect.gen(function* () {
         const org = KinOrgId.make("ambermill-second-debit");
         const { kin, records, owner } = yield* cardMarkedCompany(org);
+        yield* kin.expense("EXP-5", 800, "2026-10-02", {
+          reimbursement: "repaid",
+          repaidOn: "2026-11-20",
+        });
 
         const at = day("2026-11-25");
         yield* TestClock.setTime(at);

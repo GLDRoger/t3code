@@ -10,14 +10,7 @@ import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { expenseContests } from "./debitBill.ts";
 import { openEntries } from "./invoiceCredits.ts";
-import {
-  daysBetween,
-  identifies,
-  markedByHand,
-  repayment,
-  SALARIES,
-  suggest,
-} from "./statementMatch.ts";
+import { identifies, markedByHand, repayment, SALARIES, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -28,8 +21,7 @@ export const MARKED_REPAID = "Marked repaid";
 /**
  * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
  * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
- * `marked`: the day the same money was marked repaid within ten days (`markedByHand`), excluding
- * amounts tied to another Bank transactions entry dated more than two days away.
+ * `marked`: the day `markedByHand` found an individual or total repayment for the same money.
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -107,21 +99,9 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
     const payee = payees.find((one) => one.id === id);
-    const tiedElsewhere = new Map<string, number>();
-    for (const tied of payee?.tied ?? []) {
-      if (
-        tied.bankRecordId === debit.recordId ||
-        tied.currency !== debit.currency ||
-        Math.abs(daysBetween(tied.bankDay, debit.date)) <= 2
-      )
-        continue;
-      tiedElsewhere.set(tied.day, (tiedElsewhere.get(tied.day) ?? 0) + tied.amountMinor);
-    }
-    const marked = payee?.repaid.find((one) => {
-      if (one.currency !== debit.currency) return false;
-      const amountMinor = one.amountMinor - (tiedElsewhere.get(one.day) ?? 0);
-      return amountMinor !== 0 && markedByHand(debit.row, debit.currency, { ...one, amountMinor });
-    })?.day;
+    const marked = payee?.repaid.find((one) =>
+      markedByHand(debit.row, debit.currency, one, debit.recordId),
+    )?.day;
     const candidate = repayment(debit.row, partner, 0, true)?.candidate;
     const found = candidate?.repays;
     const repays = found?.flatMap((one) =>

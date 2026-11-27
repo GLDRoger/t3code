@@ -79,7 +79,7 @@ export type Repaid = {
 };
 /**
  * Anyone who has funded an expense, in any currency, owed or not, with the repayments marked by
- * hand (no bank row) as one total per currency and day: a line naming them is never a new expense.
+ * hand (no statement row) as totals and individual marks per currency and day.
  */
 export type PayeeCandidate = {
   readonly name: string;
@@ -89,6 +89,10 @@ export type PayeeCandidate = {
     readonly currency: string;
     readonly day: string;
     readonly amountMinor: number;
+    readonly marks: ReadonlyArray<{
+      readonly amountMinor: number;
+      readonly bankRecordId: string | null;
+    }>;
   }>;
 };
 /** A past expense, to name a new one the way the owner named the last. */
@@ -882,12 +886,27 @@ const openInvoices = (
 export const markedByHand = (
   row: StatementRow,
   currency: string,
-  marked: { readonly currency: string; readonly day: string; readonly amountMinor: number },
-) =>
-  marked.currency === currency &&
-  BigInt(marked.amountMinor) ===
-    BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor) &&
-  Math.abs(daysBetween(marked.day, row.date)) <= 10;
+  marked: PayeeCandidate["repaid"][number],
+  bankRecordId?: string,
+): boolean => {
+  if (marked.currency !== currency) return false;
+  const days = Math.abs(daysBetween(marked.day, row.date));
+  if (!Number.isFinite(days) || days > 10) return false;
+  const amount = BigInt(row.amountMinor);
+  let total = BigInt(marked.amountMinor);
+  if (row.direction === "credit") return total === -amount;
+  if (amount === 0n) return false;
+  for (const mark of marked.marks) {
+    const minor = BigInt(mark.amountMinor);
+    if (mark.bankRecordId === null || mark.bankRecordId === bankRecordId) {
+      if (minor === amount) return true;
+    } else if (days > 2) {
+      // A nearby entry may be the same payment twice, so its mark still counts in the total.
+      total -= minor;
+    }
+  }
+  return total === amount;
+};
 
 /** Each row's candidates, best first, and whether one is clear enough to propose on its own. */
 export const matchRows = (
@@ -903,6 +922,7 @@ export const matchRows = (
     readonly partners?: ReadonlyArray<PartnerCandidate>;
     /** Everyone who has funded an expense: a line naming one is theirs to place, not a new expense. */
     readonly payees?: ReadonlyArray<PayeeCandidate>;
+    readonly bankRows?: ReadonlyMap<number, { readonly recordId: string }>;
     readonly ownAccounts: ReadonlyArray<string>;
     readonly known: ReadonlyArray<KnownVendor>;
     readonly bank: string | null;
@@ -934,8 +954,11 @@ export const matchRows = (
     identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
   /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
   const markedFor = (row: StatementRow) => {
+    const bankRecordId = input.bankRows?.get(row.index)?.recordId;
     for (const payee of (input.payees ?? []).filter(named(row))) {
-      const marked = payee.repaid.find((one) => markedByHand(row, input.currency, one));
+      const marked = payee.repaid.find((one) =>
+        markedByHand(row, input.currency, one, bankRecordId),
+      );
       if (marked !== undefined) return { name: payee.name, day: marked.day };
     }
     return undefined;

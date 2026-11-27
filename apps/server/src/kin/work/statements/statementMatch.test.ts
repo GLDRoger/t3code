@@ -7,6 +7,7 @@ import {
   overOffer,
   rateOffer,
   type PartnerCandidate,
+  type PayeeCandidate,
   suggest,
   vendorOf,
 } from "./statementMatch.ts";
@@ -622,10 +623,8 @@ describe("statement matching", () => {
     const placed = (
       line: ReturnType<typeof debit>,
       owing: ReadonlyArray<PartnerCandidate>,
-      payees: ReadonlyArray<{
-        name: string;
-        repaid: ReadonlyArray<{ currency: string; day: string; amountMinor: number }>;
-      }> = [],
+      payees: ReadonlyArray<PayeeCandidate> = [],
+      bankRecordId?: string,
     ) => {
       const [one] = matchRows([line], {
         currency: "INR",
@@ -637,8 +636,25 @@ describe("statement matching", () => {
         ownAccounts: [],
         known: [],
         bank: null,
+        bankRows:
+          bankRecordId === undefined
+            ? new Map()
+            : new Map([[line.index, { recordId: bankRecordId }]]),
       });
-      return [one!.group, one!.candidates.map((c) => c.repays?.map((r) => r.key)), one!.suggestion];
+      return [
+        one!.group,
+        one!.candidates.map((c) => c.repays?.map((r) => r.key)),
+        one!.suggestion,
+      ] as const;
+    };
+    const repaid = {
+      currency: "INR",
+      day: "2026-10-06",
+      amountMinor: 200_000,
+      marks: [
+        { amountMinor: 120_000, bankRecordId: null },
+        { amountMinor: 80_000, bankRecordId: null },
+      ],
     };
     assert.deepStrictEqual(
       [
@@ -650,12 +666,6 @@ describe("statement matching", () => {
           [],
           [{ name: "Dev Malhotra", repaid: [] }],
         ),
-        placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 120_000), partners, [
-          {
-            name: "Meera Rao",
-            repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 120_000 }],
-          },
-        ]),
       ],
       [
         [
@@ -674,16 +684,45 @@ describe("statement matching", () => {
             why: "It names Dev Malhotra, who is owed nothing in INR, so it isn't offered as a new expense",
           },
         ],
-        [
+      ],
+    );
+    const tied = {
+      ...repaid,
+      amountMinor: 270_000,
+      marks: [
+        { amountMinor: 120_000, bankRecordId: "r-BNK-9" },
+        { amountMinor: 80_000, bankRecordId: null },
+        { amountMinor: 70_000, bankRecordId: null },
+      ],
+    };
+    for (const [day, amount, marks, marked, bankRecordId] of [
+      ["2026-10-08", 200_000, repaid, true],
+      ["2026-10-08", 50_000, repaid, false],
+      ["2026-10-08", 120_000, repaid, true],
+      ["2026-10-17", 120_000, repaid, false],
+      ["2026-10-08", 120_000, tied, false],
+      ["2026-10-08", 150_000, tied, false],
+      ["2026-10-10", 120_000, tied, false],
+      ["2026-10-10", 150_000, tied, true],
+      ["2026-10-06", 120_000, tied, true, "r-BNK-9"],
+    ] as const) {
+      const result = placed(
+        debit(0, day, "NEFT DR-MEERA RAO", amount),
+        partners,
+        [{ name: "Meera Rao", repaid: [marks] }],
+        bankRecordId,
+      );
+      if (marked)
+        assert.deepStrictEqual(result, [
           "unmatched",
           [],
           {
             action: "later",
             why: "Looks like Meera Rao's repayment already marked on 2026-10-06, so it isn't recorded again",
           },
-        ],
-      ],
-    );
+        ]);
+      else assert.notInclude(result[2].why ?? "", "repayment already marked");
+    }
     // A line can't pay back what was spent after it.
     assert.deepStrictEqual(
       placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 10_000), [

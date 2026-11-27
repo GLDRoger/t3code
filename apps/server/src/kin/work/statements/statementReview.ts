@@ -520,7 +520,10 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     const had = known.get(row.index);
     return had === undefined || (states !== undefined && had.state === states.open);
   });
-  const results = matchRows(open, yield* candidates(orgId, statement, statementId));
+  const results = matchRows(open, {
+    ...(yield* candidates(orgId, statement, statementId)),
+    bankRows: known,
+  });
   // A possible duplicate is the owner's call: nothing is ticked or matched for it.
   const judged = open.map((row, index): RowMatch => {
     const like = found.possible.get(row.index);
