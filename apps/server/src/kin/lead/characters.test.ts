@@ -124,8 +124,8 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
   const growthNow = kinPartFor("growth", "Growth", pounds) ?? "";
   const financeNow = kinPartFor("finance", "Finance", dollars) ?? "";
   const reworded = growthNow.replace(
-    "Two to four lines, under 70 words.",
-    "Three lines at most, and never on a Sunday.",
+    "Short in the chat:",
+    "Three lines at most, and never on a Sunday:",
   );
   const rows: ReadonlyArray<{
     readonly name: string;
@@ -141,6 +141,38 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
       domain: "finance",
       own: "",
     },
+    ...[
+      {
+        domain: "chief-of-staff",
+        title: "Chief of staff",
+        line: 'Disagree with the owner plainly, once, with the reason, then do what they decide. Short and warm: one to three lines, under 50 words, a dry aside now and then. Never "circle back", "just checking in" or "as an AI".',
+      },
+      {
+        domain: "engineering",
+        title: "Tech lead",
+        line: "Two to four lines, under 60 words, the three ways in one line. Talk like an engineer: repro, edge case, flaky, footgun, spike, scope, template, behind a flag, LGTM, nit, p95. Numbers over adjectives: days, files, lines, failing tests. With someone who isn't an engineer, translate once into plain words.",
+      },
+      {
+        domain: "social",
+        title: "Social",
+        line: "Nothing public goes out without the owner's tap, and no client's work is posted before the client agrees. Show, don't describe: send the caption, the mock-up, the grid. Casual and short: two or three lines, under 50 words, lowercase, a hot take. Money is Finance's: a clause, never the figures. Emoji are your punctuation, two to four a message (👀 💀 ✨ 😭 🔥 📌 🙅), never decoration. Two hashtags at most. You clash with Tech lead over dates and with Growth over tone.",
+      },
+      {
+        domain: "growth",
+        title: "Growth",
+        line: 'Two to four lines, under 70 words. A plan, a note or a mail goes in its doc or on its card, not in the chat. Plain words; never "synergy", "leverage", "touch base" or "circle back". An emoji now and then (🎯), never a row.',
+      },
+      {
+        domain: "finance",
+        title: "Finance",
+        line: "Figure first, then the date, then the verdict: two to four short lines, under 60 words. No exclamation marks, no emoji, ever. Your humour is dry, rare and the gallows kind.",
+      },
+    ].map(({ domain, title, line }) => ({
+      name: `${title}'s length line before 27 Nov 2026, untouched`,
+      doc: `# ${title}\n\n${line}\n`,
+      domain,
+      own: "",
+    })),
     {
       name: "one line added",
       doc: growthNow.replace(
@@ -184,8 +216,8 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
   ];
   for (const row of rows) {
     const domain = row.domain ?? "growth";
-    const name = row.doc.startsWith("# Closer")
-      ? "Closer"
+    const name = row.doc.startsWith("# ")
+      ? row.doc.slice(2, row.doc.indexOf("\n"))
       : domain === "finance"
         ? "Finance"
         : "Growth";
@@ -203,6 +235,14 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
   // Split again, nothing changes.
   const once = ownersPart(rows[4]!.doc, "Growth", shippedLines("growth", pounds));
   assert.strictEqual(ownersPart(once, "Growth", shippedLines("growth", pounds)), once);
+});
+
+it("no default character caps a reply's length in words or lines", () => {
+  const caps =
+    /\bunder \d+ words\b|\b(?:one|two|three|four)(?: to | or )(?:two|three|four|five)(?: short)? lines\b/i;
+  for (const seat of KIN_CHARACTER_SEATS)
+    for (const money of [pounds, dollars])
+      assert.notMatch(defaultCharacterFor(seat, money) ?? "", caps, seat);
 });
 
 it("a turn reads Kin's part, then the owner's under one line, and neither when an agent has no default", () => {

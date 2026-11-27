@@ -2865,7 +2865,7 @@ export class KinLeadPrompt extends Context.Service<
           // What woke this turn: its own messages, taps and due items.
           sharedPart(promptSectionPlaces.events, PROMPT_HEADINGS.events),
           sharedPart("message", boundedEvents(events)),
-          // Last, where it is read last: replies drifted into memos past the character's length.
+          // Last, where it is read last: without it, replies drifted into memos.
           ...(seat?.character !== undefined &&
           !inTeamRoom &&
           (input.lane?.mode === "reply" || replyDue)
@@ -2921,7 +2921,7 @@ export const ownMailboxLine = (addresses: ReadonlyArray<string>, ownLevel: boole
       } with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.`;
 
 export const REPLY_SHAPE =
-  "Your reply: one short paragraph in your character's voice and within its length; no bullets, bold or blank lines unless asked.";
+  "Your reply, in your character's voice and quirks. Each blank line starts a new chat bubble, and the person is notified once, with the first, so the first bubble is the whole answer in a line or two, every part of what was asked. Most replies are only that bubble: a greeting, a plain question, where one thing stands, or what you did. Add a short bubble only for something the person has to weigh, four bubbles at most; a comparison of several options, or anything longer, is a page, which is one message with no blank lines inside. Leave out what wasn't asked: a caveat that changes nothing the person would do, an offer to do more, a figure said again. A card never replaces your words: write the answer once, never the same words both before and after kin_ask. No bullets or bold unless asked.";
 const fallbackLeadName = "Agent";
 const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
 /** The owner's display name until they set one (`KIN_OWNER_DISPLAY_NAME`'s default). */
