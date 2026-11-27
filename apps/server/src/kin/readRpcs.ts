@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
  * fails as readonly); `readRpcs.test.ts` runs each on a database with readers.
  */
 const READS = [
+  "kin.connections.mineCalendar",
   "kin.work.summary",
   "kin.work.list",
   "kin.work.subscribe",

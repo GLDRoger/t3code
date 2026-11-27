@@ -350,7 +350,7 @@ export interface MailVendor {
  */
 export interface MailProvider {
   /** The connection preset this provider serves; also the name that reads every account. */
-  readonly preset: string;
+  readonly preset: KinOwnerClientService;
   readonly name: string;
   /** Shown on the send card: "Send this email from Gmail?". */
   readonly mailService: string;

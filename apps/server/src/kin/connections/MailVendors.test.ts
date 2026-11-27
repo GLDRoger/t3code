@@ -428,8 +428,8 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             ...event,
             id: "timed",
             title: "Tidewater Freight check-in",
-            start: event.start + HOUR,
-            end: event.start + 2 * HOUR,
+            start: event.start,
+            end: event.start + HOUR,
             link: "http://calendar.example/timed",
           });
           fake.putEvent({
@@ -456,8 +456,8 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             {
               id: "timed",
               title: "Tidewater Freight check-in",
-              start: "2026-11-27T01:00:00.000Z",
-              end: "2026-11-27T02:00:00.000Z",
+              start: "2026-11-27T00:00:00.000Z",
+              end: "2026-11-27T01:00:00.000Z",
               allDay: false,
               zone: null,
               link: null,

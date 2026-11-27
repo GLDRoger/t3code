@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import {
   KinAgentId,
+  type KinCalendarSource,
   KinChatError,
   KinChatId,
   KinConnectionId,
@@ -32,6 +33,8 @@ import {
   type KinConnectionsInput,
   type KinConnectionsView,
   type KinConnectionToolMode,
+  type KinMineCalendarInput,
+  type KinMineCalendarResult,
   type KinMyMailbox,
   type KinMyMailboxRemoveInput,
   type KinMyMailboxSignInStartInput,
@@ -49,12 +52,15 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
+import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -130,8 +136,10 @@ import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway
 import { credentialForms } from "./Inbound.ts";
 import {
   ACROSS_ACCOUNTS,
+  AGENDA_LIMIT,
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
+  type MailAgendaEvent,
   type MailArrival,
   type MailActivity,
   type Mailbox,
@@ -140,6 +148,7 @@ import {
   type MailProvider,
   receivedAfter,
 } from "./MailProvider.ts";
+import { agendaStartOrder, agendaTime, answeredWith } from "./MailTools.ts";
 import type { Memory } from "../memory/Memory.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import { mailSenderVoices } from "./mailSenderVoice.ts";
@@ -283,6 +292,8 @@ const notOwner = fail("not_allowed", "Only the owner or a co-owner manages conne
 const isChatError = Schema.is(KinChatError);
 const isGatewayError = Schema.is(KinGatewayError);
 const unavailable = fail("unavailable", "Kin is unavailable.");
+const invalidCalendarWindow = fail("invalid_state", "Choose a calendar range of up to 125 days.");
+const calendarSignInExpired = fail("unavailable", "Calendar sign-in expired.");
 // Kin's own refusals pass through; anything else is logged and answered in one plain line.
 const settle = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -399,6 +410,25 @@ export const KinConnectionNoteInput = Schema.Struct({
 export const KinConnectionNoteResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
+type SignInMode = "record_expiry" | "read_only";
+
+class CalendarKey extends Data.Class<{
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly connectionId: string;
+  readonly signInGen: number;
+  readonly from: string;
+  readonly to: string;
+}> {}
+
+type CalendarRead = {
+  readonly status: KinCalendarSource["status"];
+  readonly events: ReadonlyArray<MailAgendaEvent>;
+};
+const calendarStatus = (status: Exclude<CalendarRead["status"], "ok">): CalendarRead => ({
+  status,
+  events: [],
+});
 
 /**
  * What changed at a connection since the last time it was marked seen, as metadata. Subjects,
@@ -733,6 +763,7 @@ export class KinConnections extends Context.Service<
     ) => Effect.Effect<KinConnectionsView, KinChatError>;
     /** The caller's own mailboxes: anyone's to connect, see and disconnect, nobody else's. */
     readonly mine: Owner<KinConnectionsInput, KinMyMailbox>;
+    readonly mineCalendar: Owner<KinMineCalendarInput, KinMineCalendarResult>;
     readonly mineSignInStart: Owner<KinMyMailboxSignInStartInput, KinConnectionSignInStart>;
     readonly mineSignInFinish: Owner<KinConnectionSignInFinishInput, KinMyMailbox>;
     readonly mineRemove: (
@@ -1113,9 +1144,12 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: ConnectionRow,
     force: boolean,
+    mode: SignInMode = "record_expiry",
   ) {
+    const onExpired =
+      mode === "read_only" ? Effect.fail(calendarSignInExpired) : expired(orgId, row);
     const stored = yield* secrets.getSignIn(row.connectionId);
-    if (Option.isNone(stored)) return yield* expired(orgId, row);
+    if (Option.isNone(stored)) return yield* onExpired;
     const seen = Redacted.value(stored.value);
     const now = yield* Clock.currentTimeMillis;
     const due =
@@ -1128,11 +1162,11 @@ const make = Effect.gen(function* () {
         const [gen, again] = yield* sql.withTransaction(
           Effect.all([stamp(orgId, row.connectionId), secrets.getSignIn(row.connectionId)]),
         );
-        if (Option.isNone(again)) return yield* expired(orgId, row);
+        if (Option.isNone(again)) return yield* onExpired;
         const secret = Redacted.value(again.value);
         // Another call refreshed it while this one waited: a rotated refresh token is used once.
         if (secret.accessToken !== seen.accessToken) return secret;
-        if (secret.refreshToken === undefined) return yield* expired(orgId, row);
+        if (secret.refreshToken === undefined) return yield* onExpired;
         const tokens = yield* OAuth.refresh(http, {
           server: { tokenEndpoint: secret.tokenEndpoint, basicOnly: secret.basicOnly },
           client: { clientId: secret.clientId, clientSecret: secret.clientSecret },
@@ -1151,10 +1185,11 @@ const make = Effect.gen(function* () {
             )
               return { _tag: "moved" as const, stored };
             if (Option.isNone(tokens)) {
-              yield* sql`UPDATE kin_connections SET state = 'needs_sign_in',
-                  updated_at = ${yield* Clock.currentTimeMillis}
-                WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
-                  AND removed_at IS NULL`;
+              if (mode === "record_expiry")
+                yield* sql`UPDATE kin_connections SET state = 'needs_sign_in',
+                    updated_at = ${yield* Clock.currentTimeMillis}
+                  WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
+                    AND removed_at IS NULL`;
               return { _tag: "expired" as const };
             }
             const next = withTokens(secret, tokens.value);
@@ -1167,7 +1202,8 @@ const make = Effect.gen(function* () {
           return settled.next;
         }
         if (settled._tag === "moved" && Option.isSome(settled.stored)) return settled.stored.value;
-        if (settled._tag === "moved") return yield* expired(orgId, row);
+        if (settled._tag === "moved") return yield* onExpired;
+        if (mode === "read_only") return yield* calendarSignInExpired;
         yield* touched(orgId);
         return yield* fail("unavailable", signedOut(row.label));
       }).pipe(Effect.catchTags({ SqlError: () => Effect.fail(unavailable) })),
@@ -1231,6 +1267,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: ConnectionRow,
     use: (force: boolean) => Effect.Effect<A, E>,
+    mode: SignInMode = "record_expiry",
   ): Effect.Effect<A, E> =>
     use(false).pipe(
       Effect.catchIf(
@@ -1238,7 +1275,9 @@ const make = Effect.gen(function* () {
         () =>
           use(true).pipe(
             Effect.tapError((error) =>
-              refusedKey(error) ? needsSignIn(orgId, row.connectionId) : Effect.void,
+              mode === "record_expiry" && refusedKey(error)
+                ? needsSignIn(orgId, row.connectionId)
+                : Effect.void,
             ),
           ),
       ),
@@ -1257,6 +1296,72 @@ const make = Effect.gen(function* () {
   });
   const tokenOf = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
     signInOf(orgId, row, force).pipe(Effect.map((secret) => secret.accessToken));
+  const readCalendar = Effect.fn("KinConnections.readCalendar")(
+    function* (key: CalendarKey): Effect.fn.Return<CalendarRead, unknown> {
+      const { orgId, connectionId, signInGen, from, to } = key;
+      const row = yield* connectionById(orgId, connectionId).pipe(provideSql);
+      const provider = row === undefined ? undefined : mailProviderOf(row);
+      if (
+        row === undefined ||
+        provider === undefined ||
+        row.signInGen !== signInGen ||
+        row.pausedAt !== null ||
+        row.state === "needs_sign_in"
+      )
+        return calendarStatus("signed_out");
+
+      const saved = yield* secrets.getSignIn(connectionId);
+      if (Option.isNone(saved)) return calendarStatus("signed_out");
+      if (!provider.readsCalendar(Redacted.value(saved.value).scope))
+        return calendarStatus("no_calendar_permission");
+
+      return yield* withSignIn(
+        orgId,
+        row,
+        (force) =>
+          signInOf(orgId, row, force, "read_only").pipe(
+            Effect.flatMap((signIn) =>
+              provider.readsCalendar(signIn.scope)
+                ? provider
+                    .agenda(http, signIn.accessToken, { from, to })
+                    .pipe(Effect.map((events): CalendarRead => ({ status: "ok", events })))
+                : Effect.succeed(calendarStatus("no_calendar_permission")),
+            ),
+          ),
+        "read_only",
+      );
+    },
+    Effect.catch((error) =>
+      Effect.succeed(
+        calendarStatus(
+          error === calendarSignInExpired || refusedKey(error)
+            ? "signed_out"
+            : isGatewayError(error) && answeredWith(error, 429)
+              ? "busy"
+              : "unreachable",
+        ),
+      ),
+    ),
+    Effect.timeoutOption("8 seconds"),
+    Effect.map(Option.getOrElse(() => calendarStatus("unreachable"))),
+  );
+
+  const calendarCache = yield* Cache.makeWith(readCalendar, {
+    capacity: 64,
+    timeToLive: (exit) =>
+      Exit.isSuccess(exit) && exit.value.status === "ok" ? "60 seconds" : "15 seconds",
+  });
+  const invalidateCalendar = Effect.fn("KinConnections.invalidateCalendar")(function* (
+    connectionId: string,
+  ) {
+    const keys = Array.from(yield* Cache.keys(calendarCache));
+    yield* Effect.forEach(
+      keys.filter((key) => key.connectionId === connectionId),
+      (key) => Cache.invalidate(calendarCache, key),
+      { discard: true },
+    );
+  });
+
   const mailboxOf = (row: ConnectionRow): Mailbox => ({
     account: row.accountLabel,
     addresses: sendAsOf(row).map((one) => one.address),
@@ -1742,6 +1847,7 @@ const make = Effect.gen(function* () {
       (connectionId) =>
         gateway.invalidate(connectionId).pipe(
           Effect.andThen(secrets.remove(connectionId)),
+          Effect.ensuring(invalidateCalendar(connectionId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("Kin couldn't drop a removed mailbox's key", { cause }),
           ),
@@ -1768,6 +1874,7 @@ const make = Effect.gen(function* () {
             AND removed_at IS NULL`;
         yield* sql`DELETE FROM kin_connection_cursors
           WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
+        yield* invalidateCalendar(input.connectionId);
         yield* touched(input.orgId);
         yield* gateway.invalidate(input.connectionId);
         yield* secrets.remove(input.connectionId);
@@ -1812,6 +1919,101 @@ const make = Effect.gen(function* () {
   ) {
     return yield* myMailbox(input.orgId, yield* self(people, input.orgId));
   }, settle);
+  const calendarSources = Effect.fn("KinConnections.calendarSources")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    const [person] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+        AND person_id = ${personId} AND removed_at IS NULL`;
+    if (person === undefined) return yield* notFound;
+    const own = yield* personConnections(orgId, personId).pipe(provideSql);
+    const company = (yield* ownerLevel(orgId, personId).pipe(provideSql))
+      ? yield* liveConnections(orgId).pipe(provideSql)
+      : [];
+    return [...own, ...company].flatMap((row) => {
+      const provider = mailProviderOf(row);
+      return provider !== undefined && row.pausedAt === null ? [{ row, provider }] : [];
+    });
+  }, sql.withTransaction);
+
+  const mineCalendar = Effect.fn("KinConnections.mineCalendar")(function* (
+    people: People,
+    input: KinMineCalendarInput,
+  ): Effect.fn.Return<KinMineCalendarResult, unknown> {
+    const { orgId } = input;
+    const personId = yield* self(people, orgId);
+    const from = agendaTime(input.from, false);
+    const to = agendaTime(input.to, false);
+    if (from === null || to === null) return yield* invalidCalendarWindow;
+    const span = Date.parse(to) - Date.parse(from);
+    if (span <= 0 || span > 125 * DAY_MS) return yield* invalidCalendarWindow;
+
+    const visible = yield* calendarSources(orgId, personId);
+    const reads = yield* Effect.forEach(
+      visible,
+      (source) =>
+        Effect.gen(function* () {
+          const { row } = source;
+          if (row.state === "needs_sign_in")
+            return { ...source, read: calendarStatus("signed_out") };
+          const key = new CalendarKey({
+            orgId,
+            personId,
+            connectionId: row.connectionId,
+            signInGen: row.signInGen,
+            from,
+            to,
+          });
+          if (input.fresh) {
+            // Invalidate settled values only, so concurrent retries still join the active lookup.
+            const settled = Array.from(yield* Cache.entries(calendarCache));
+            if (settled.some(([existing]) => Equal.equals(key, existing)))
+              yield* Cache.invalidate(calendarCache, key);
+          }
+          return { ...source, read: yield* Cache.get(calendarCache, key) };
+        }),
+      { concurrency: 4 },
+    );
+
+    // A source can move, or a viewer can lose access, while the vendor answers.
+    const current = new Map(
+      (yield* calendarSources(orgId, personId)).map(({ row }) => [row.connectionId, row]),
+    );
+    const sources: Array<KinCalendarSource> = [];
+    const events: Array<KinMineCalendarResult["events"][number]> = [];
+    for (const { row, provider, read } of reads) {
+      const latest = current.get(row.connectionId);
+      if (
+        latest === undefined ||
+        latest.personId !== row.personId ||
+        latest.signInGen !== row.signInGen
+      )
+        continue;
+      const connectionId = KinConnectionId.make(row.connectionId);
+      const status = latest.state === "needs_sign_in" ? "signed_out" : read.status;
+      sources.push({
+        connectionId,
+        account: latest.accountLabel,
+        company: latest.personId == null,
+        service: provider.preset,
+        status,
+      });
+      if (status === "ok")
+        for (const event of read.events)
+          events.push({
+            ...event,
+            connectionId,
+            id:
+              event.id.length <= 200
+                ? event.id
+                : NodeCrypto.createHash("sha256").update(event.id).digest("hex"),
+            title: event.title?.slice(0, 300) ?? null,
+          });
+    }
+    events.sort(agendaStartOrder);
+    return { sources, events: events.slice(0, AGENDA_LIMIT), more: events.length > AGENDA_LIMIT };
+  }, settle);
+
   /**
    * Signs in to one of the caller's own mailboxes again (`connectionId`), or to another one
    * (`another`). With neither, as a build from before several asks: the oldest again, or a first.
@@ -2282,6 +2484,7 @@ const make = Effect.gen(function* () {
           yield* secrets.setSignIn(row.connectionId, Redacted.make(secret));
         }),
       );
+      if (provider !== undefined) yield* invalidateCalendar(row.connectionId);
       yield* gateway.invalidate(row.connectionId);
       yield* sql`UPDATE kin_connections SET state = 'active', last_error = NULL,
             account_label = COALESCE(${account}, account_label), issuer = ${issuer},
@@ -4985,6 +5188,7 @@ const make = Effect.gen(function* () {
     setReach,
     remove,
     mine,
+    mineCalendar,
     mineSignInStart,
     mineSignInFinish,
     mineRemove,

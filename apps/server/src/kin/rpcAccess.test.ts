@@ -55,6 +55,7 @@ const MEMBER = [
   // Their own mailbox only: `KinConnections.mine*` finds the caller's own row and no one
   // else's (`MailEndToEnd.test.ts` pins that the owner level can't reach it either).
   "kin.connections.mine",
+  "kin.connections.mineCalendar",
   "kin.connections.mineRemove",
   "kin.connections.mineSignInFinish",
   "kin.connections.mineSignInStart",

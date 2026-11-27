@@ -85,19 +85,18 @@ export const agendaTime = (value: string | undefined, allDay: boolean) => {
   return Number.isFinite(at) ? DateTime.formatIso(DateTime.makeUnsafe(at)) : null;
 };
 
+type MailAgendaPage = {
+  readonly events: ReadonlyArray<MailAgendaEvent>;
+  readonly next: string | null;
+};
+
 export const agendaPages = Effect.fn("KinMail.agendaPages")(function* (
-  read: (next: string | null) => Effect.Effect<
-    {
-      readonly events: ReadonlyArray<MailAgendaEvent>;
-      readonly next: string | null;
-    },
-    KinGatewayError
-  >,
+  read: (next: string | null) => Effect.Effect<MailAgendaPage, KinGatewayError>,
 ) {
   let earliest: ReadonlyArray<MailAgendaEvent> = [];
   let next: string | null = null;
   do {
-    const page = yield* read(next);
+    const page: MailAgendaPage = yield* read(next);
     earliest = [...earliest, ...page.events].sort(agendaStartOrder).slice(0, AGENDA_LIMIT + 1);
     next = page.next;
   } while (next !== null);

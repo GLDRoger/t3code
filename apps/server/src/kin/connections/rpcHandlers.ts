@@ -303,6 +303,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       call((c, people) => c.mineSignInStart(people, input)),
     "kin.connections.mineSignInFinish": (input) =>
       call((c, people) => c.mineSignInFinish(people, input)),
+    "kin.connections.mineCalendar": (input) => call((c, people) => c.mineCalendar(people, input)),
     "kin.connections.mineRemove": (input) =>
       call((c, people, chat) => c.mineRemove(people, input, closing(input.orgId, chat))),
     "kin.connections.moveMailbox": (input) =>
