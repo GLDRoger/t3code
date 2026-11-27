@@ -7,13 +7,17 @@ import { printedAccountEndings, verifyBankAlert } from "./bankAlertGuard.ts";
 
 const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", reason });
 
+/** The receiving server's DMARC pass for the sender's own domain, read by the one shared parser. */
+export const senderDmarcPassed = (results: ReadonlyArray<string>, address: string) =>
+  dmarcPassedFor(results, address.slice(address.lastIndexOf("@") + 1));
+
 export const authenticationRejection = (
   mail: AlertMail,
   address: string,
 ): "sender" | "unverified" | undefined =>
   /^\s*(?:re|fwd?)\s*:/i.test(mail.subject)
     ? "sender"
-    : dmarcPassedFor(mail.authResults, address.slice(address.lastIndexOf("@") + 1))
+    : senderDmarcPassed(mail.authResults, address)
       ? undefined
       : "unverified";
 

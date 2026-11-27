@@ -1050,12 +1050,13 @@ const candidatePass = (...mail: ReadonlyArray<MailMessage>) => {
     account: "accounts@tidewater.example",
     cursor: null,
     calendar: [],
-    mail: mail.map(({ threadId, from, date, subject, unread }) => ({
+    mail: mail.map(({ threadId, from, date, subject, unread, authResults }) => ({
       threadId,
       from,
       date,
       subject,
       unread,
+      authResults,
       receivedBy: null,
     })),
   };
@@ -1073,15 +1074,22 @@ it.effect.each([
   ["no_ending", "held", material("masked")],
   [
     "company_details",
-    "unverified",
+    "skipped",
     material("no-dmarc", { auth: "dmarc=fail header.from=harborbank.example" }),
   ],
   [
     "company_details",
-    "unverified",
+    "skipped",
     material("forged-look-alike", {
       fromAddress: "alerts@harborbank-notices.example",
       auth: "spf=pass (dmarc=pass header.from=harborbank-notices.example); dmarc=fail header.from=harborbank-notices.example",
+    }),
+  ],
+  [
+    "company_details",
+    "skipped",
+    material("forged-bounce-address", {
+      auth: "spf=pass (domain of dmarc=pass+header.from=harborbank.example@else.example designates 192.0.2.9 as permitted sender) smtp.mailfrom=dmarc=pass+header.from=harborbank.example@else.example; dmarc=fail (p=NONE) header.from=harborbank.example",
     }),
   ],
   [
@@ -1090,12 +1098,23 @@ it.effect.each([
     material("no-digits", { body: "Wrong account **5530, reference 99848215." }),
   ],
   ["no_ending", "sender", material("unmasked", { body: "The year is 2026. See 4821." })],
-] as const)("candidate discovery: %s gives %s for $2.threadId", ([source, outcome, mail]) =>
+  [
+    "company_details",
+    "held",
+    material("19b6b372d54a2c43"),
+    ["harborbank-alerts.example", "harborbank-notices.example", "harborbank-mail.example"].map(
+      (domain, index) =>
+        material("19b6b372d54a2c4" + index, {
+          fromAddress: "alerts@" + domain,
+          auth: "dmarc=fail header.from=" + domain,
+        }),
+    ),
+  ],
+] as const)("candidate discovery: %s gives %s for $2.threadId", ([source, outcome, mail, ahead]) =>
   Effect.gen(function* () {
     const sql = yield* candidateSetup(source);
-    const { pass, reads } = candidatePass(mail);
+    const { pass, reads } = candidatePass(...(ahead ?? []), mail);
     yield* pass;
-    assert.deepStrictEqual(reads, [mail.threadId]);
     const rows = yield* BankSenders.list(orgId);
     if (outcome === "held") {
       assert.lengthOf(rows, 1);
@@ -1108,18 +1127,21 @@ it.effect.each([
       });
       assert.deepStrictEqual(rows[0]!.seenAccounts, ["4821"]);
     } else assert.deepStrictEqual(rows, []);
+    assert.deepStrictEqual(reads, outcome === "skipped" ? [] : [mail.threadId]);
     assert.deepStrictEqual(
       yield* sql`SELECT outcome, sender_address, account, balance_minor, record_id
       FROM kin_bank_alerts`,
-      [
-        {
-          outcome,
-          sender_address: mail.fromAddress,
-          account: outcome === "held" ? "4821" : null,
-          balance_minor: null,
-          record_id: null,
-        },
-      ],
+      outcome === "skipped"
+        ? []
+        : [
+            {
+              outcome,
+              sender_address: mail.fromAddress,
+              account: outcome === "held" ? "4821" : null,
+              balance_minor: null,
+              record_id: null,
+            },
+          ],
     );
     assert.deepStrictEqual(yield* entries, []);
   }).pipe(Effect.provide(layer)),
@@ -1134,6 +1156,13 @@ it.effect.each([
   ["Harbor Bank", "alerts@bank.example", false],
   ["Harbor Bank", "alerts@example.harbor", false],
   ["Société Générale", "alerts@societegenerale.example", true],
+  ["ABC", "alerts@abc.example", true],
+  ["ABC Bank", "alerts@alerts.abc.co.uk", true],
+  ["ABC", "alerts@abcd.example", false],
+  ["ABC", "alerts@abc-alerts.example", false],
+  ["ABC", "alerts@abc.harborbank.example", false],
+  ["港灣銀行", "alerts@harborbank.example", false],
+  ["港灣銀行", "alerts@xn--j6wy0cx42brkj.example", false],
 ] as const)("the candidate name rule: %s and %s gives %s", ([bankName, address, raised]) =>
   Effect.gen(function* () {
     const sql = yield* senderSetup;
