@@ -4,12 +4,12 @@ exports[`a Codex task a lead delegated posts on GitHub through the signing gh an
 
 exports[`a Codex task a lead delegated posts on GitHub through the signing gh and asks Kin before each command, as a Claude task does; other Codex threads, and Kin off, are untouched > delegated thread/start 1`] = `"efa67a9a9c66201b45c579cefd007ea47a32cd280f414df7983e0f532002eb86"`;
 
-exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-6.1-sol thread/resume 1`] = `"637bd8c0f7e6de1e4cc8263c3da8c9efcae0ababc9e014d27b1c834508a685fe"`;
+exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-6.1-sol thread/resume 1`] = `"dd981b464dcaffe90e947f7b9d99614e95ae106211f1e6674c333ae08509a3f6"`;
 
-exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-6.1-sol thread/start 1`] = `"25c7c4340d210d229ffd7642a9e68fbc90ff27f2de1b3bbfd3d3960001745464"`;
+exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-6.1-sol thread/start 1`] = `"c66e4c65366527979bc00f9877380a029f7aca0a45176fad972adce885797c7d"`;
 
-exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-unlisted-1 thread/resume 1`] = `"ec0b2fa15a18b7558fe80bbb82edbe372db0f9b1bfe81872d86dac06dc3fb062"`;
+exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-unlisted-1 thread/resume 1`] = `"c4ee8c69589c8f12e83921407add47e5b917572c7fe9a5031565b5caf96584a7"`;
 
-exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-unlisted-1 thread/start 1`] = `"5141370b30ee913dc78b1ccce712548aad8527c2ed11ed7ff7b9ec8b6cf6636b"`;
+exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-unlisted-1 thread/start 1`] = `"9dbfe1f73db59899be315701a6303ac5e35778769010017d069e243db60302ad"`;
 
-exports[`on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn > owner thread/start 1`] = `"145ea3d8a707e78d2e1cc129515844e4f3db0716896f4f5279d1827ae920915b"`;
+exports[`on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn > owner thread/start 1`] = `"800b26e45327a516ecddcd5c2f08e285b77009c75012bcef7dae92bbbff1286c"`;
