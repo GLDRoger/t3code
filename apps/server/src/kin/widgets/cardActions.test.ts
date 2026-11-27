@@ -3931,7 +3931,7 @@ it.effect.each(["part", "split", "declined", "edited"] as const)(
         const { orgId, ownerWrites, records, sql, bank, invoice } = kin;
         const first = yield* kin.invoiceOf("TW/002", 2);
         const second = yield* kin.invoiceOf("TW/003", 2);
-        const later = yield* kin.invoiceOf("TW/004", 0);
+        yield* kin.invoiceOf("TW/004", 0);
         const asked = yield* kin.ask();
         const state = card(asked);
         const fact = yield* kin.fact();
