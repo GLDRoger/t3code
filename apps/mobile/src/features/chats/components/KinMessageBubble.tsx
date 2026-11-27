@@ -101,6 +101,8 @@ const OWN_WIDTH_CLASS_NAME = "max-w-[85%]";
 const OTHER_WIDTH_CLASS_NAME = "max-w-[88%]";
 const OWN_BUBBLE_CLASS_NAME = "rounded-[20px] bg-user-bubble px-4 py-2.5";
 const OTHER_BUBBLE_CLASS_NAME = "rounded-[20px] bg-grouped-card px-4 py-2.5";
+// An agent's progress update: in the column its next bubble's words take, with no fill.
+const UPDATE_CLASS_NAME = "px-4 py-1";
 // Tight inside one author's run, a clear step between authors.
 const rowSpacing = (continues: boolean) => (continues ? "pt-0.5" : "pt-3");
 
@@ -218,6 +220,8 @@ function KinMessageBubbleRow(props: {
   readonly markdownStyle: NativeMarkdownTextStyle;
   /** The same, recoloured for text on the user bubble. */
   readonly ownMarkdownStyle: NativeMarkdownTextStyle;
+  /** The same in muted text, for an agent's progress update. */
+  readonly updateMarkdownStyle: NativeMarkdownTextStyle;
   /** Gets any link the author wrote; the screen opens web links only (`kinLinkToOpen`). */
   readonly onLinkPress: (href: string) => void;
   /** The widget `row.message.widgetId` points at, if the feed holds it. */
@@ -259,6 +263,7 @@ function KinMessageBubbleRow(props: {
   const suggested = message.status === "suggested";
   const changed = kinChangedMark(message, formatTime);
   const hasBody = !deleted && message.body.trim().length > 0;
+  const update = hasBody && !row.own && message.progress === true;
   const window = useWindowDimensions();
   // A wide table scrolls sideways in the bubble; its bar shows only mid-swipe, so a line says so.
   // Width in body characters: the bubble's share of the screen less its padding, ~0.55em each.
@@ -268,7 +273,7 @@ function KinMessageBubbleRow(props: {
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
   const inApp = hasBody ? (message.links ?? []) : [];
-  const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
+  const layout = row.own || !hasBody || update ? "bubble" : kinMessageLayout(message);
   const hasCard =
     !deleted &&
     message.widgetId !== null &&
@@ -382,13 +387,22 @@ function KinMessageBubbleRow(props: {
           const link = links[Number(name.slice("link-".length))];
           if (link !== undefined) props.onLinkPress(link.href);
         }}
-        className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
+        className={cn(
+          "gap-1",
+          update ? UPDATE_CLASS_NAME : row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME,
+        )}
       >
         {hasBody ? (
           <KinLinkedText
             markdown={message.body}
             links={message.links}
-            textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
+            textStyle={
+              row.own
+                ? props.ownMarkdownStyle
+                : update
+                  ? props.updateMarkdownStyle
+                  : props.markdownStyle
+            }
             // A long press opens the sheet, whose Select text offers selection instead.
             selectable={onOpenActions === null}
             onLinkPress={props.onLinkPress}

@@ -59,6 +59,9 @@ const NOTE_MAX_CHARS = 160;
 const LABEL_MAX_CHARS = 60;
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
+export const UPDATES_RESCUE_PROMPT =
+  "You ended with only updates, and an update is not your reply. Write your reply now as plain text.";
+
 export const RESCUE_PROMPT =
   "You ended without a reply anyone can see: your thinking is never shown. Write your reply now as plain text.";
 /** The same, when the turn's only answer was a chart, visual or file with no words beside it. */
@@ -251,8 +254,8 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
-  [/(?:^|__|\.)(?:kin_chat_post|kin_send)$/, "Writing"],
-  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_skip)$/, null],
+  [/(?:^|__|\.)kin_chat_post$/, "Writing"],
+  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_send|kin_skip)$/, null],
   [
     /(?:^|__|\.)(?:records_query|record_get|client_read|pipeline_read|deal_stages|dates_query)$/,
     "Reading records",

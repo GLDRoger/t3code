@@ -296,6 +296,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     input.dayStart,
     live.drafts,
     input.chatId === input.teamRoomId,
+    live.clearUpdates,
   );
   const display = kinFeedDisplay({
     rows: feedRows,

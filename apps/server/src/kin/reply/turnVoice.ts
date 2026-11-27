@@ -1,5 +1,10 @@
 import type { KinEvent, KinWakeupId } from "@t3tools/contracts";
 
+import * as Digest from "effect/crypto/Digest";
+import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
+import { normalized } from "./classify.ts";
+
 type EventTag = KinEvent["_tag"];
 
 export const PERSON_TAGS = [
@@ -136,6 +141,33 @@ export const sendRescuePrompt = (asker: string) =>
   `${asker} is waiting on this, and nothing you wrote reached anyone. Send what came of it now with kin_send.`;
 
 export const sendClientMessageId = (wakeupId: KinWakeupId) => `kin-send:${wakeupId}`;
+const UPDATE_PREFIX = "kin-update:";
+export const STORED_UPDATE_PREFIX = `send:${UPDATE_PREFIX}`;
+export const updateClientMessageId = Effect.fn("KinReplyBridge.updateClientMessageId")(function* (
+  wakeupId: KinWakeupId,
+  text: string,
+) {
+  const digest = yield* Digest.Digest;
+  const hash = yield* digest.digest(Digest.sha256, new TextEncoder().encode(normalized(text)));
+  return `${UPDATE_PREFIX}${wakeupId}:${Hex.encode(hash).slice(0, 16)}`;
+});
+
+export const UPDATE_SHOWN =
+  "Shown in the chat without a notification. Carry on; write your reply when the work is done.";
+
+export const UPDATE_REFUSALS = {
+  "not running": "Not shown: this turn is no longer running.",
+  quiet: "Not shown: this turn posts to no chat.",
+  trigger:
+    "Not shown: a trigger started this turn, so no one is waiting on progress. Finish the work, then send what came of it with kin_send, or end with kin_skip.",
+  "not direct":
+    "Not shown: updates go only to a direct chat. Carry on; here your reply is the one message.",
+  "already sent": "Not shown: this turn's reply is already sent. End the turn.",
+  "too long":
+    "Not shown: an update is a line or two. The whole answer goes in your reply at the end.",
+  same: "Not shown: that update is already in the chat. Carry on with the work.",
+  limit: "Not shown: this turn has no updates left. Carry on; your reply still goes at the end.",
+} as const;
 
 // Words under eval: change them only with the send cases.
 export const SEND_REFUSALS = {

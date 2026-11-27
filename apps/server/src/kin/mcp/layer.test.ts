@@ -196,6 +196,7 @@ const t3Composition = McpHttpServer.toolkitRegistration(
   }),
 ).pipe(Layer.provideMerge(McpHttpServer.layer));
 const serverConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" });
+const serverSettings = ServerSettings.layerTest();
 const toolHandlerServices = Layer.mergeAll(
   VcsProcess.layer,
   Layer.mock(AssetSigner)({}),
@@ -243,7 +244,7 @@ const toolHandlerServices = Layer.mergeAll(
     getEnvironmentId: Effect.succeed(EnvironmentId.make("environment")),
   }),
   Layer.mock(ServerSecretStore)({}),
-  ServerSettings.layerTest(),
+  serverSettings,
   Layer.mock(SourceControlRepositoryService)({}),
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({
@@ -314,7 +315,7 @@ it.effect.each([true, false])(
           ),
         ).pipe(
           Layer.provideMerge(adapters),
-          Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry)),
+          Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry, serverSettings)),
           Layer.provideMerge(
             authorityLayerWithDatabase(
               KinPersistence.layer.pipe(

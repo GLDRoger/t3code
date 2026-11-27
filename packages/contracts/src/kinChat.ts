@@ -348,6 +348,8 @@ export const KinMessage = Schema.Struct({
   ),
   // An agent's check-in or weekly brief, drawn as one; absent on everything else.
   form: Schema.optional(Schema.Literal("brief")),
+  // An agent's progress update during a turn whose reply still comes; absent on everything else.
+  progress: Schema.optional(Schema.Literal(true)),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -880,6 +882,8 @@ export const KinChatStreamEvent = Schema.Union([
     readSeq: Schema.optional(NonNegativeInt),
     /** On a stream's first backlog: changes when what this reader may open as a link may have changed, so a client drops its cached links for the chat. Absent from older hosts. */
     accessStamp: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+    /** The host's setting: a turn's progress updates leave the feed once its reply is posted. Absent from older hosts. */
+    clearUpdates: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
