@@ -305,6 +305,7 @@ export const KinCard = memo(function KinCard(props: {
         <KinMailRuleCard
           widget={view.widget}
           environmentId={props.environmentId}
+          viewerPersonId={props.viewerPersonId}
           ownerLevel={ownerLevel}
           readOnly={props.readOnly === true}
         />
@@ -1440,6 +1441,7 @@ function KinDeferralCard(props: {
 function KinMailRuleCard(props: {
   readonly widget: KinWidget;
   readonly environmentId: EnvironmentId;
+  readonly viewerPersonId: KinPersonId | null;
   readonly ownerLevel: boolean | undefined;
   readonly readOnly: boolean;
 }) {
@@ -1454,6 +1456,7 @@ function KinMailRuleCard(props: {
     nowMs,
     ownerLevel: props.ownerLevel,
     readOnly: props.readOnly,
+    viewerPersonId: props.viewerPersonId,
   });
   if (card === null) return null;
   const status = visibleKinCardStatus(lastStatus, card.revision);

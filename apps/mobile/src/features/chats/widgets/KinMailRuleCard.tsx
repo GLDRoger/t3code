@@ -12,7 +12,7 @@ import {
   type KinMailRuleCardAction,
 } from "@t3tools/client-runtime/kin/kinMailRules";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useRef, useState } from "react";
 import { View } from "react-native";
@@ -37,6 +37,7 @@ const NOTICE_CLASSES: Record<KinCardNotice["kind"], string> = {
 export const KinMailRuleCard = memo(function KinMailRuleCard(props: {
   readonly widget: KinWidget;
   readonly environmentId: EnvironmentId;
+  readonly viewerPersonId: KinPersonId | null;
   readonly ownerLevel: boolean | undefined;
   readonly readOnly: boolean;
 }) {
@@ -51,6 +52,7 @@ export const KinMailRuleCard = memo(function KinMailRuleCard(props: {
     nowMs,
     ownerLevel: props.ownerLevel,
     readOnly: props.readOnly,
+    viewerPersonId: props.viewerPersonId,
   });
   if (card === null) return null;
   const status = visibleKinCardStatus(lastStatus, card.revision);

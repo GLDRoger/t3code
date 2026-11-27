@@ -149,6 +149,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
         <KinMailRuleCard
           widget={view.widget}
           environmentId={props.environmentId}
+          viewerPersonId={props.viewerPersonId}
           ownerLevel={ownerLevel}
           readOnly={props.readOnly === true}
         />

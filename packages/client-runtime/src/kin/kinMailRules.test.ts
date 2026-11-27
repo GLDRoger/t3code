@@ -43,6 +43,7 @@ const ORG = "org_01JDCX7M4T3F9QZ8N2RVK6WB5H" as KinOrgId;
 const FINANCE = "agt_01JDCX9P2W7R4KQ5M8T3V6YB1N" as KinAgentId;
 const SALES = "agt_01JDCXA4N6B2C8D1E5F7G9H3JK" as KinAgentId;
 const RHEA = "per_01JDCX5R8H2E3A9B7C4D6F1G0J" as KinPersonId;
+const MEERA = "per_01JDCX6T9K3F4B0C8D5E7G2H1M" as KinPersonId;
 const MAILBOX = "con_01JDCXB3M5N7P9Q2R4S6T8V0WX";
 const RULE = "rule_9b1c4e7a2d5f8c3b6e9a1d4f7c2b5e8a3d6f9c1b4e7a2d5f8c3b6e9a1d4f7c2b";
 const NOW = Date.UTC(2026, 10, 27, 12, 0);
@@ -989,6 +990,7 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
       readonly nowMs?: number;
       readonly ownerLevel?: boolean;
       readonly readOnly?: boolean;
+      readonly viewerPersonId?: KinPersonId | null;
     } = {},
   ) => kinMailRuleCardView(widget, { nowMs: NOW, words: WORDS, ...options });
   const BUTTONS = [
@@ -1077,12 +1079,58 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
 
   it.each([
     [
-      "turned on, with when",
+      "turned on, with when (older card without by)",
       cardWidget(cardState({ decision: { status: "on", ruleId: RULE } }), {
         closedAt: "2026-11-27T09:15:00.000Z",
         revision: 2,
       }),
+      { viewerPersonId: RHEA },
       "Turned on 27 Nov, 09:15.",
+    ],
+    [
+      "turned on by another person, with when",
+      cardWidget(
+        cardState({
+          decision: {
+            status: "on",
+            ruleId: RULE,
+            by: { personId: RHEA, name: "Rhea Kapoor" },
+          },
+        }),
+        { closedAt: "2026-11-27T09:15:00.000Z", revision: 2 },
+      ),
+      { viewerPersonId: MEERA },
+      "Turned on by Rhea Kapoor 27 Nov, 09:15.",
+    ],
+    [
+      "turned on by the viewer, with when",
+      cardWidget(
+        cardState({
+          decision: {
+            status: "on",
+            ruleId: RULE,
+            by: { personId: RHEA, name: "Rhea Kapoor" },
+          },
+        }),
+        { closedAt: "2026-11-27T09:15:00.000Z", revision: 2 },
+      ),
+      { viewerPersonId: RHEA },
+      "Turned on by you 27 Nov, 09:15.",
+    ],
+    [
+      "turned on by the viewer, without closedAt",
+      cardWidget(
+        cardState({
+          decision: {
+            status: "on",
+            ruleId: RULE,
+            by: { personId: RHEA, name: "Rhea Kapoor" },
+          },
+        }),
+        { closedAt: null, revision: 2 },
+      ),
+      { viewerPersonId: RHEA },
+      "Turned on by you.",
     ],
     [
       "not now, with when",
@@ -1090,16 +1138,19 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
         closedAt: "2026-11-27T09:15:00.000Z",
         revision: 2,
       }),
+      {},
       "Not now was tapped 27 Nov, 09:15, so nothing was turned on.",
     ],
     [
       "expired without an answer",
       cardWidget(cardState({ expiresAt: NOW })),
+      {},
       "This card expired, so nothing was turned on. Ask the lead for a new one.",
     ],
     [
       "closed without an answer",
       cardWidget(cardState(), { closedAt: "2026-11-27T09:15:00.000Z" }),
+      {},
       "This card closed, so nothing was turned on.",
     ],
     [
@@ -1108,10 +1159,11 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
         closedAt: "2026-11-27T09:15:00.000Z",
         revision: 2,
       }),
+      {},
       "A newer card replaced this one, so nothing was turned on.",
     ],
-  ] as const)("settles %s, with no buttons", (_state, widget, status) => {
-    const card = view(widget, { ownerLevel: true });
+  ] as const)("settles %s, with no buttons", (_state, widget, options, status) => {
+    const card = view(widget, { ownerLevel: true, ...options });
     expect(card?.status).toBe(status);
     expect(card?.actions).toEqual([]);
     expect(card?.accessibilityLabel.endsWith(status)).toBe(true);

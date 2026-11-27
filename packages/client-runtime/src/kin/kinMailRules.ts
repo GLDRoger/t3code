@@ -16,6 +16,7 @@ import {
   type KinMailRuleRef,
   type KinMailRuleRunNow,
   type KinMailRulesListInput,
+  type KinPersonId,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -675,6 +676,8 @@ export const KIN_MAIL_RULE_CARD = {
   notNow: "Not now",
   open: (until: string) => `Nothing runs until Turn on is tapped. The card is open until ${until}.`,
   on: (at: string) => `Turned on ${at}.`,
+  onBy: (who: string, at: string | null) =>
+    at === null ? `Turned on by ${who}.` : `Turned on by ${who} ${at}.`,
   dismissed: (at: string) => `Not now was tapped ${at}, so nothing was turned on.`,
   expired: "This card expired, so nothing was turned on. Ask the lead for a new one.",
   closed: "This card closed, so nothing was turned on.",
@@ -723,6 +726,8 @@ export function kinMailRuleCardView(
     readonly ownerLevel?: boolean | undefined;
     /** The viewer may only read this chat. */
     readonly readOnly?: boolean | undefined;
+    /** The reader, so a card they turned on reads "by you". */
+    readonly viewerPersonId?: KinPersonId | null | undefined;
     readonly words?: KinMailRuleWords | undefined;
   },
 ): KinMailRuleCardView | null {
@@ -735,11 +740,19 @@ export function kinMailRuleCardView(
   const settledAt = closedAt === null || Number.isNaN(closedAt) ? null : when(closedAt, words);
   const proposed = card.decision.status === "proposed";
   const open = proposed && closedAt === null && options.nowMs < card.expiresAt;
+  const turnedOnBy =
+    card.decision.status === "on" && card.decision.by !== undefined
+      ? card.decision.by.personId === options.viewerPersonId
+        ? "you"
+        : visible(card.decision.by.name)
+      : null;
   const status =
     card.decision.status === "on"
-      ? settledAt === null
-        ? "Turned on."
-        : copy.on(settledAt)
+      ? turnedOnBy === null
+        ? settledAt === null
+          ? "Turned on."
+          : copy.on(settledAt)
+        : copy.onBy(turnedOnBy, settledAt)
       : card.decision.status === "dismissed"
         ? settledAt === null
           ? "Not now was tapped, so nothing was turned on."
