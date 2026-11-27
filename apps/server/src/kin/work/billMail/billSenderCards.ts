@@ -9,7 +9,7 @@ import { isOrgPaused } from "../../lead/orgState.ts";
 import { isOwnerHimself } from "../../people/KinAccess.ts";
 import { type BillSenderPlan, sealPlans } from "../../widgets/cardPlans.ts";
 import { dayIn } from "../money.ts";
-import { ownerZone, startOfDay } from "../recordRows.ts";
+import { ownerZone } from "../recordRows.ts";
 import { billReader } from "../billReader.ts";
 import { orgOwner } from "../toolNames.ts";
 import { decisionLabel } from "./billSenders.ts";
@@ -38,7 +38,7 @@ export const offer = Effect.fn("KinBillSenders.offerCards")(function* (
       }>`SELECT address, seen_count AS "seenCount", last_seen_at AS "lastSeenAt",
         known_biller AS "knownBiller"
       FROM kin_bill_senders WHERE org_id = ${orgId} AND state = 'candidate' AND widget_id IS NULL
-        AND created_at BETWEEN ${startOfDay(day, zone)} AND ${now}
+        AND created_at <= ${now}
       ORDER BY created_at, address LIMIT ${room}`;
       if (candidates.length === 0 || (yield* isOrgPaused(orgId))) return;
       const reader = yield* billReader(orgId);

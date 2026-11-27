@@ -1860,8 +1860,8 @@ it.effect(
         yield* TestClock.adjust("24 hours");
         yield* BillSenderCards.offer(ctx.orgId, yield* Clock.currentTimeMillis);
         assert.deepStrictEqual(
-          (yield* billingCards(ctx)).map((card) => card.widgetId),
-          drawn.map((card) => card.widgetId),
+          (yield* billingCards(ctx)).map((card) => card.address),
+          [...drawn.map((card) => card.address), "receipt@harbor.example"].sort(),
         );
         // The day is the owner's: 23:30 and 00:30 in Kolkata are one UTC day but two of hers.
         yield* ctx.sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata'
@@ -1888,7 +1888,7 @@ it.effect(
           ORDER BY address`;
         assert.deepStrictEqual(
           days.map((row) => row.day),
-          ["1970-01-02", "1970-01-02", "1970-01-02", null, "1970-01-03"],
+          ["1970-01-02", "1970-01-02", "1970-01-03", "1970-01-03", "1970-01-03"],
         );
       }),
     ),
