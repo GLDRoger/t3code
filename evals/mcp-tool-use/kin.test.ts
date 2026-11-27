@@ -17,10 +17,17 @@ import {
 } from "@t3tools/contracts";
 import type { AppServer, AppServerEvent } from "./appServer.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
-import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
+import {
+  CAPTION_PROMPT,
+  RESCUE_PROMPT,
+  UPDATES_RESCUE_PROMPT,
+} from "../../apps/server/src/kin/reply/classify.ts";
+import { UPDATE_REFUSALS, UPDATE_SHOWN } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import {
+  defaultReplyMock,
   deliveredText,
+  endsTurn,
   filledEvent,
   JUDGED_CALL_BYTES,
   kinDated,
@@ -235,6 +242,17 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
     )?.prompt;
   assert.isUndefined(mate(true));
   assert.equal(mate(false), RESCUE_PROMPT);
+  // An update is not the reply: a turn of only updates is asked for one.
+  const update = replyCall("kin_send", { text: "Reading the bank feed.", level: "update" });
+  const updated = (responses: Array<ReadonlyArray<ReturnType<typeof text>>>) =>
+    replyFollowUp(
+      { testCase: replyCase(asked), responses: [[use("kin_send")], ...responses], calls: [update] },
+      "",
+    )?.prompt;
+  assert.equal(updated([[]]), UPDATES_RESCUE_PROMPT);
+  assert.isUndefined(updated([[text("Orbit paid on 4 Nov.")]]));
+  assert.isFalse(endsTurn(update));
+  assert.isTrue(endsTurn(replyCall("kin_send", { text: "Orbit paid.", level: "now" })));
 });
 
 it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
@@ -685,6 +703,34 @@ it("grades the text that reached a person in each Kin reply voice", () => {
   assert.equal(
     deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Refused" }, true)] }, true),
     "The invoice is overdue.",
+  );
+  const update = replyCall("kin_send", { text: "Reading the invoices.", level: "update" });
+  assert.equal(deliveredText({ ...person, calls: [update] }, true), "The invoice is overdue.");
+});
+
+it("answers kin_send's update level as Kin's bridge does", () => {
+  const direct = 'Your reply goes to chat "direct-1", your direct chat with the owner.';
+  const mock = (prompt: string, text: string, calls: ReadonlyArray<unknown> = []) =>
+    defaultReplyMock(
+      { testCase: replyCase(prompt), responses: [], calls: calls as never },
+      "kin_send",
+      { text, level: "update" },
+    );
+  const asked = `${direct}\n${personQuote}`;
+  const shown = replyCall("kin_send", { text: "Reading the invoices.", level: "update" });
+  assert.equal(mock(asked, "Reading the invoices."), UPDATE_SHOWN);
+  assert.deepEqual(mock(asked, " Reading  the invoices. ", [shown]), {
+    $error: UPDATE_REFUSALS.same,
+  });
+  assert.deepEqual(mock(asked, "x".repeat(601)), { $error: UPDATE_REFUSALS["too long"] });
+  assert.deepEqual(mock(pulseQuote, "Reading the invoices."), { $error: UPDATE_REFUSALS.trigger });
+  assert.deepEqual(
+    mock(`Your reply goes to chat "g-1", the group "Studio team".\n${personQuote}`, "Reading."),
+    { $error: UPDATE_REFUSALS["not direct"] },
+  );
+  assert.deepEqual(
+    mock(asked, "Reading.", [replyCall("kin_send", { text: "Done.", level: "now" })]),
+    { $error: UPDATE_REFUSALS["already sent"] },
   );
 });
 

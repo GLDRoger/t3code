@@ -19,10 +19,12 @@ import {
   type KinChatSubscribeInput,
   type KinChatSummary,
   type KinMessage,
+  type KinPersonId,
   type KinPulseEvent,
   type KinPulseFact,
   type KinPulseSubscribeInput,
   type KinWaitingItem,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -34,9 +36,11 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
+import { buildKinFeedRows } from "./kinChatFeed.ts";
 import { KinChatState, KinInboxState } from "./kinInboxModel.ts";
 import { kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
+  applyKinClearUpdatesSave,
   isKinRetryable,
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
@@ -895,4 +899,228 @@ describe("Kin streams", () => {
       expect(rereads).toEqual([["org"], ["org"]]);
     }),
   );
+
+  describe("local clearUpdates flip", () => {
+    const viewer = {
+      personId: "rhea" as KinPersonId,
+      agentNames: new Map([["chief", "Chief of staff"]]),
+    };
+    const turn1 = "turn-1" as KinWakeupId;
+    const turn2 = "turn-2" as KinWakeupId;
+    const humanAsk = (seq: number, body: string): KinMessage =>
+      ({
+        ...message(seq, body),
+        author: { _tag: "human", personId: "rhea", memberId: "m-rhea" },
+      }) as unknown as KinMessage;
+    const agentLine = (
+      seq: number,
+      body: string,
+      sourceWakeupId: KinWakeupId,
+      progress?: true,
+    ): KinMessage =>
+      ({
+        ...message(seq, body),
+        author: {
+          _tag: "agent",
+          agentId: "chief",
+          memberId: "m-chief",
+          ownerPersonId: "rhea",
+          threadId: "t1",
+        },
+        authorRole: "member",
+        sourceWakeupId,
+        ...(progress === true ? { progress: true as const } : {}),
+      }) as unknown as KinMessage;
+    const visibleKeys = (state: KinChatState) =>
+      buildKinFeedRows(state.messages, viewer, new Set(), undefined, [], false, state.clearUpdates)
+        .filter((row) => row.type === "message")
+        .map((row) => row.key);
+
+    const ask1 = humanAsk(1, "Go through every unpaid invoice.");
+    const update1 = agentLine(2, "Reading the unpaid invoices now.", turn1, true);
+    const reply1 = agentLine(3, "Two invoices are unpaid.", turn1);
+    const ask2 = humanAsk(4, "Now check open tasks.");
+    const update2 = agentLine(5, "Reading the open tasks now.", turn2, true);
+    const reply2 = agentLine(6, "Three tasks are late.", turn2);
+
+    it.effect.each([
+      {
+        name: "flip on with a finished turn's updates showing",
+        initialClearUpdates: false,
+        initialMessages: [ask1, update1, reply1],
+        flipTo: true,
+        saveOk: true,
+        expectedBefore: ["m1", "m2", "m3"],
+        expectedAfterFlip: ["m1", "m3"],
+        laterMessages: [] as ReadonlyArray<KinMessage>,
+        expectedAfterLater: ["m1", "m3"],
+        expectedClearUpdates: true,
+      },
+      {
+        name: "flip on mid-turn",
+        initialClearUpdates: false,
+        initialMessages: [ask1, update1],
+        flipTo: true,
+        saveOk: true,
+        expectedBefore: ["m1", "m2"],
+        expectedAfterFlip: ["m1", "m2"],
+        laterMessages: [reply1],
+        expectedAfterLater: ["m1", "m3"],
+        expectedClearUpdates: true,
+      },
+      {
+        name: "flip off",
+        initialClearUpdates: true,
+        initialMessages: [ask1, update1, reply1],
+        flipTo: false,
+        saveOk: true,
+        expectedBefore: ["m1", "m3"],
+        expectedAfterFlip: ["m1", "m2", "m3"],
+        laterMessages: [ask2, update2, reply2],
+        expectedAfterLater: ["m1", "m2", "m3", "m4", "m5", "m6"],
+        expectedClearUpdates: false,
+      },
+      {
+        name: "save fails",
+        initialClearUpdates: false,
+        initialMessages: [ask1, update1, reply1],
+        flipTo: true,
+        saveOk: false,
+        expectedBefore: ["m1", "m2", "m3"],
+        expectedAfterFlip: null,
+        laterMessages: [ask2, update2, reply2],
+        expectedAfterLater: ["m1", "m2", "m3", "m4", "m5", "m6"],
+        expectedClearUpdates: false,
+      },
+    ])(
+      "$name",
+      ({
+        initialClearUpdates,
+        initialMessages,
+        flipTo,
+        saveOk,
+        expectedBefore,
+        expectedAfterFlip,
+        laterMessages,
+        expectedAfterLater,
+        expectedClearUpdates,
+      }) =>
+        Effect.gen(function* () {
+          const events = yield* Queue.unbounded<KinChatStreamEvent>();
+          const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+          const rows = new Map<string, string>();
+          const provide = yield* provider(
+            yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+              Option.some(
+                fakeSession({ chat: () => Stream.fromQueue(events), inbox: Stream.never }),
+              ),
+            ),
+            rows,
+          );
+          const fiber = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+            Stream.runForEach((view) => Queue.offer(views, view)),
+            provide,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(events, {
+            _tag: "backlog",
+            messages: initialMessages,
+            widgets: [],
+            lastSeq: initialMessages.at(-1)?.seq ?? 0,
+            lastChangeSeq: initialMessages.at(-1)?.seq ?? 0,
+            clearUpdates: initialClearUpdates,
+          } as unknown as KinChatStreamEvent);
+          const opened = (yield* Queue.take(views)).value;
+          expect(visibleKeys(opened)).toEqual(expectedBefore);
+
+          const saved = yield* Effect.promise(() =>
+            applyKinClearUpdatesSave(environmentId, flipTo, () => Promise.resolve(saveOk)),
+          );
+          expect(saved).toBe(saveOk);
+
+          let latest = opened;
+          if (expectedAfterFlip !== null) {
+            latest = (yield* Queue.take(views)).value;
+            expect(latest.clearUpdates).toBe(expectedClearUpdates);
+            expect(visibleKeys(latest)).toEqual(expectedAfterFlip);
+          } else {
+            expect(yield* Queue.size(views)).toBe(0);
+          }
+
+          for (const incoming of laterMessages) {
+            yield* Queue.offer(events, { _tag: "message", message: incoming });
+            latest = (yield* Queue.take(views)).value;
+          }
+          expect(latest.clearUpdates).toBe(expectedClearUpdates);
+          expect(visibleKeys(latest)).toEqual(expectedAfterLater);
+
+          yield* Fiber.interrupt(fiber);
+          if (saveOk) {
+            expect(decodeCachedChat(rows.get(chatRowKey) ?? "").chat.clearUpdates).toBe(
+              expectedClearUpdates,
+            );
+          }
+        }),
+    );
+
+    it.effect("applies a saved flip to every open chat on that host only", () =>
+      Effect.gen(function* () {
+        const secondChatId = "c2" as KinChatId;
+        const events1 = yield* Queue.unbounded<KinChatStreamEvent>();
+        const events2 = yield* Queue.unbounded<KinChatStreamEvent>();
+        const views1 = yield* Queue.unbounded<KinSynced<KinChatState>>();
+        const views2 = yield* Queue.unbounded<KinSynced<KinChatState>>();
+        const provide = yield* provider(
+          yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+            Option.some(
+              fakeSession({
+                chat: (input) => Stream.fromQueue(input.chatId === chatId ? events1 : events2),
+                inbox: Stream.never,
+              }),
+            ),
+          ),
+          new Map(),
+        );
+        const f1 = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+          Stream.runForEach((view) => Queue.offer(views1, view)),
+          provide,
+          Effect.forkChild,
+        );
+        const f2 = yield* makeKinChatStream(() => Effect.never)({ chatId: secondChatId }).pipe(
+          Stream.runForEach((view) => Queue.offer(views2, view)),
+          provide,
+          Effect.forkChild,
+        );
+        const init: KinChatStreamEvent = {
+          _tag: "backlog",
+          messages: [ask1, update1, reply1],
+          widgets: [],
+          lastSeq: 3,
+          lastChangeSeq: 3,
+          clearUpdates: false,
+        } as unknown as KinChatStreamEvent;
+        yield* Queue.offer(events1, init);
+        yield* Queue.offer(events2, init);
+        expect((yield* Queue.take(views1)).value.clearUpdates).toBe(false);
+        expect((yield* Queue.take(views2)).value.clearUpdates).toBe(false);
+
+        // A flip on another host changes neither open chat.
+        yield* Effect.promise(() =>
+          applyKinClearUpdatesSave(EnvironmentId.make("other-host"), true, () =>
+            Promise.resolve(true),
+          ),
+        );
+        expect([yield* Queue.size(views1), yield* Queue.size(views2)]).toEqual([0, 0]);
+
+        // A flip on this host updates both open chats at once.
+        yield* Effect.promise(() =>
+          applyKinClearUpdatesSave(environmentId, true, () => Promise.resolve(true)),
+        );
+        expect((yield* Queue.take(views1)).value.clearUpdates).toBe(true);
+        expect((yield* Queue.take(views2)).value.clearUpdates).toBe(true);
+        yield* Fiber.interrupt(f1);
+        yield* Fiber.interrupt(f2);
+      }),
+    );
+  });
 });

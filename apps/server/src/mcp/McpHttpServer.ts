@@ -1353,7 +1353,12 @@ const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(f
               handle: Context.get(tool.annotations, EndsClaudeTurn)
                 ? (payload) =>
                     Effect.map(options.handle(payload), (result) =>
-                      !(result instanceof McpSchema.InputRequired) && result.isError !== true
+                      !(result instanceof McpSchema.InputRequired) &&
+                      result.isError !== true &&
+                      !(
+                        Predicate.hasProperty(result.structuredContent, "shown") &&
+                        result.structuredContent.shown === true
+                      )
                         ? new McpSchema.CallToolResult({
                             ...result,
                             _meta: { ...result._meta, "claude/endTurn": true },

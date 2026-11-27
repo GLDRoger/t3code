@@ -50,6 +50,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import type { ServerSettingsService } from "../serverSettings.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as SessionCarry from "./lead/sessionCarry.ts";
 import { KinSessionContext } from "./lead/turn/sessionContext.ts";
@@ -341,8 +342,9 @@ const taskCardUpdater = Layer.unwrap(
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
   Layer.mergeAll(KinMcp.transport(base), KinTasksKeyMcp.layer, taskCardUpdater);
 
-export const mcpRegistryLayer = <E, R>(
+export const mcpRegistryLayer = <E, R, E2, R2>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
+  settings: Layer.Layer<ServerSettingsService, E2, R2>,
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
@@ -350,5 +352,6 @@ export const mcpRegistryLayer = <E, R>(
     Layer.provide(Layer.succeed(KinNewCompanyCountryUnset, true)),
     // The chat service takes this optionally, so the running server names it here.
     Layer.provide(KinAttachmentStore.layer),
+    Layer.provide(settings),
     Layer.provide(SqlitePersistence.layerConfig),
   );

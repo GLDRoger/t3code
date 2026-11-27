@@ -211,6 +211,14 @@ export const KIN_OTHER_PROVIDER_AGENTS = {
   detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };
 
+/** The host's switch on Settings → Agents, web and phone: a reply clears its turn's progress updates. */
+export const KIN_CLEAR_UPDATES = {
+  section: "Chats",
+  row: "Clear progress updates once the reply arrives",
+  rowDetail:
+    "Applies to everyone's chats in this company; updates from a turn that ends without a reply stay, and nothing is deleted.",
+};
+
 /** What an agent on this provider can't do, from the providers table; null when nothing. */
 export function kinProviderLimitLine(driver: string | undefined): string | null {
   const facts = kinProviderFacts(driver);

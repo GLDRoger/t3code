@@ -173,14 +173,17 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
       const server = yield* McpServer.McpServer;
       const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
       const words = "Tidewater Freight booked the loading slot.";
-      const callEnding = (valid: boolean) =>
+      const callEnding = (valid: boolean, update = false) =>
         server
           .callTool({
             name,
             arguments:
               name === "kin_skip"
                 ? { note: "a".repeat(valid ? 280 : 281) }
-                : { text: words, level: valid ? "quiet" : "later" },
+                : {
+                    text: update ? "Checking the loading slot." : words,
+                    level: update ? "update" : valid ? "quiet" : "later",
+                  },
           })
           .pipe(
             Effect.provideService(McpInvocationContext, scope),
@@ -209,8 +212,21 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
       yield* sql`INSERT INTO kin_leads (
       agent_id, org_id, name, level_since, thread_id, models_json, worker_projects_json, owner_chat_id
     ) VALUES (${chief}, ${orgId}, 'Ada', 0, ${threadId}, '{}', '[]', ${chat.chatId})`;
+      const message =
+        name === "kin_send"
+          ? yield* chats.send(owner!, {
+              chatId: chat.chatId,
+              body: "Is the loading slot booked?",
+              clientMessageId: "loading-slot-question",
+            })
+          : undefined;
       const wakeupId = KinWakeupId.make(
-        yield* startAgentWakeup({ orgId, agentId: chief, threadId }),
+        yield* startAgentWakeup({
+          orgId,
+          agentId: chief,
+          threadId,
+          ...(message === undefined ? {} : { message }),
+        }),
       );
       const invalid = yield* Effect.flip(callEnding(false));
       assert.match(JSON.stringify(invalid), name === "kin_skip" ? /note/ : /level/);
@@ -225,6 +241,18 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
       );
       const bridge = yield* ReplyBridge.KinReplyBridge;
       yield* bridge.begin({ orgId, agentId: chief, wakeupId, threadId, startedAt: 0 });
+      if (name === "kin_send") {
+        const progress = yield* callEnding(true, true);
+        assert.isFalse(progress.isError);
+        assert.notProperty(progress._meta ?? {}, "claude/endTurn");
+        assert.deepStrictEqual(progress.content, [
+          {
+            type: "text",
+            text: "Shown in the chat without a notification. Carry on; write your reply when the work is done.",
+          },
+        ]);
+        assert.deepInclude(progress.structuredContent, { shown: true });
+      }
       const ended = yield* callEnding(true);
       assert.isFalse(ended.isError);
       assert.deepStrictEqual(ended._meta, { "claude/endTurn": true });
@@ -235,8 +263,9 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
       else {
         const [message] =
           yield* sql`SELECT message_id AS "messageId", body, silent FROM kin_messages
-        WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND source_wakeup_id = ${wakeupId} ORDER BY seq`;
-        assert.deepStrictEqual(message, { messageId: message?.messageId, body: words, silent: 1 });
+        WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND source_wakeup_id = ${wakeupId} ORDER BY seq DESC`;
+        // A person started this turn, so its send rings whatever level it asked for.
+        assert.deepStrictEqual(message, { messageId: message?.messageId, body: words, silent: 0 });
         assert.deepStrictEqual(
           JSON.parse(ended.content.find((part) => part.type === "text")!.text),
           {

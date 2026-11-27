@@ -1,6 +1,6 @@
 {
-  "mcpToolListJsonBytes": 64848,
-  "kinToolListJsonBytes": 3125,
+  "mcpToolListJsonBytes": 64826,
+  "kinToolListJsonBytes": 3103,
   "kinInstructionsBytes": {
     "owner": 44909,
     "confined": 44857
@@ -115,7 +115,7 @@
       "schema": 2080
     },
     "kin_chat_post": {
-      "desc": 569,
+      "desc": 547,
       "schema": 330
     },
     "kin_chat_read": {
@@ -223,8 +223,8 @@
       "schema": 941
     },
     "kin_send": {
-      "desc": 400,
-      "schema": 572
+      "desc": 462,
+      "schema": 882
     },
     "kin_skip": {
       "desc": 400,

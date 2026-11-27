@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import * as Floor from "../floor/KinFloor.ts";
@@ -764,6 +765,15 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
+  const clearUpdates = Option.match(settings, {
+    onNone: () => Effect.succeed(false),
+    onSome: (service) =>
+      service.getSettings.pipe(
+        Effect.map((value) => value.kinClearUpdatesAfterReply),
+        Effect.orElseSucceed(() => false),
+      ),
+  });
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const stop = yield* Effect.serviceOption(KinStop);
@@ -3069,6 +3079,7 @@ const make = Effect.gen(function* () {
                   ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
                 accessStamp: resumed.accessStamp,
+                clearUpdates: yield* clearUpdates,
                 readSeq: Option.match(yield* repo.getReadState(member), {
                   onNone: () => 0,
                   onSome: (read) => read.lastReadSeq,
@@ -3110,7 +3121,13 @@ const make = Effect.gen(function* () {
             );
             for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
             for (const w of widgets) revisions.set(w.widgetId, w.revision);
-            return { _tag: "backlog", ...cursor, messages, widgets } satisfies KinChatStreamEvent;
+            return {
+              _tag: "backlog",
+              ...cursor,
+              messages,
+              widgets,
+              clearUpdates: yield* clearUpdates,
+            } satisfies KinChatStreamEvent;
           });
           return Stream.concat(
             Stream.succeed(backlog),
