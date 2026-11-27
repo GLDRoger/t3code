@@ -3,6 +3,8 @@ import {
   KinMessageId,
   KinMoney,
   type KinOrgId,
+  KinPersonId,
+  KinRecordState,
   KinTrimmedText,
   type KinWidgetId,
 } from "@t3tools/contracts";
@@ -148,9 +150,44 @@ const RepaidPlan = Schema.Struct({
     }),
   ),
   owedAfterMinor: Schema.Number,
+  expense: Schema.optionalKey(
+    Schema.Struct({
+      recordId: Schema.String,
+      key: Schema.String,
+      rev: Schema.Number,
+      open: Schema.Boolean,
+      day: Schema.NullOr(Schema.String),
+    }),
+  ),
+  asExpense: Schema.optionalKey(Schema.Literal(true)),
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
+const RepaidUndoRecord = Schema.Struct({
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  change: Schema.Number,
+});
+const RepaidUndoPlan = Schema.Struct({
+  kind: Schema.Literal("undo_repaid"),
+  personId: KinPersonId,
+  bank: Schema.Struct({
+    ...RepaidUndoRecord.fields,
+    state: KinRecordState,
+    category: Schema.NullOr(Schema.String),
+  }),
+  expenses: Schema.Array(
+    Schema.Struct({
+      ...RepaidUndoRecord.fields,
+      reimbursement: Schema.NullOr(Schema.String),
+      repaidOn: Schema.NullOr(Schema.String),
+      evidence: Schema.Boolean,
+      relates: Schema.Boolean,
+    }),
+  ),
+});
+export type RepaidUndoPlan = typeof RepaidUndoPlan.Type;
 const ApplyPlan = Schema.Struct({
   kind: Schema.Literal("apply_credit"),
   key: Schema.String,
@@ -427,6 +464,7 @@ export const CardPlan = Schema.Union([
   PaymentPlan,
   ApplyPlan,
   RepaidPlan,
+  RepaidUndoPlan,
   DefaultPlan,
   RoutePlan,
   TakenPlan,

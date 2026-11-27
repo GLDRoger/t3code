@@ -17,7 +17,7 @@ import { BANK_SENDER_RULE, liveHeldMail } from "../../work/statements/bankSender
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
 import { UNREAD_ALERT_MARKER } from "../../work/statements/bankAlerts.ts";
 import { billMatches, billPaidFactKey } from "../../work/statements/debitBill.ts";
-import { repaidMatches } from "../../work/statements/debitRepaid.ts";
+import { type RepaidMatch, repaidMatches } from "../../work/statements/debitRepaid.ts";
 import {
   type CreditMatch,
   type CreditPair,
@@ -421,13 +421,40 @@ const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
  * that marks them repaid; one that doesn't is a line in the brief, and Kin marks nothing. A
  * debit matching a repayment already marked by hand that day is not raised.
  */
-export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
+const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
   ctx: SenseContext,
+  matches: ReadonlyArray<RepaidMatch>,
 ) {
-  const matches = (yield* repaidMatches(ctx.orgId, ctx.at)).filter(
-    (one) => one.marked === undefined && !one.noLine && !one.setBack && !one.ahead,
+  const exact = matches.flatMap(({ debit, repays }) =>
+    repays === undefined ? [] : [debit.recordId],
   );
-  return matches.map(({ debit, partner, repays, owedMinor, owedCount }): SensedFact => {
+  const sql = yield* SqlClient.SqlClient;
+  const undone =
+    exact.length === 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT
+      json_extract(p.plan_json, '$.bank.recordId') AS "recordId"
+    FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+    WHERE p.org_id = ${ctx.orgId} AND json_extract(p.plan_json, '$.kind') = 'undo_repaid'
+      AND json_extract(p.plan_json, '$.bank.recordId') IN ${sql.in(exact)}
+      AND json_type(w.state_json, '$.outcome.undone') = 'object'`).map((row) => row.recordId);
+  const stillOpen =
+    undone.length === 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT
+      json_extract(p.plan_json, '$.recordId') AS "recordId"
+    FROM kin_widgets w JOIN kin_card_plans p ON p.org_id = w.org_id AND p.widget_id = w.widget_id
+    JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    WHERE w.org_id = ${ctx.orgId} AND w.type = 'choice' AND w.closed_at IS NULL
+      AND m.status = 'posted' AND json_array_length(w.awaiting_json) > 0 AND p.ran_message_id IS NULL
+      AND (json_extract(w.state_json, '$.untilAnswered') = 1
+        OR w.updated_at > ${DateTime.formatIso(iso(ctx.at - KIN_CHOICE_CARD_TTL_MS))})
+      AND json_extract(p.plan_json, '$.kind') = 'mark_repaid'
+      AND json_extract(p.plan_json, '$.recordId') IN ${sql.in(undone)}`).map((row) => row.recordId);
+  const wasUndone = new Set(undone);
+  const hasOpenCard = new Set(stillOpen);
+
+  return matches.map(({ debit, partner, repays, owedMinor, owedCount, expense }): SensedFact => {
     const paid = `${debit.key}, ${plain(debit.amountMinor, debit.currency)} paid ${shortDay(debit.date)}, names ${partner.name}`;
     const shared = {
       sense: "repaid_seen" as const,
@@ -461,6 +488,14 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
         wake: "brief",
       };
     const one = repays.length === 1;
+    const unmarked =
+      expense === undefined
+        ? `${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`
+        : `It could instead pay ordinary expense ${expense.key}. Nothing is marked until the owner picks one on a mark_repaid card, which offers both.`;
+    const open = hasOpenCard.has(debit.recordId);
+    const again = !wasUndone.has(debit.recordId)
+      ? ""
+      : ` The repayment mark was undone. ${open ? "A repayment card is open." : "No repayment card is open."}`;
     return {
       ...shared,
       key: `repaid_seen:${debit.key}`,
@@ -469,10 +504,10 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`,
+          )}. ${unmarked}${again}`,
         repays.length,
       ),
-      wake: "now",
+      wake: open ? "brief" : "now",
     };
   });
 });
@@ -487,33 +522,49 @@ export const billPaidConsequence = (
 ) =>
   `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until it is confirmed on a card.`;
 
-export const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
+const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
   ctx: SenseContext,
+  contested: ReadonlySet<string>,
 ) {
   const matches = yield* billMatches(ctx.orgId, ctx.at);
-  return matches.map(({ debit, bill }): SensedFact => ({
-    sense: "bill_paid_seen",
-    family: "money",
-    key: billPaidFactKey(debit.key),
-    subject: {
-      kind: "record",
-      key: debit.key,
-      title: "Bank debit",
-      recordId: KinRecordId.make(debit.recordId),
-    },
-    scope: {},
-    since: iso(Math.min(debit.dateAt, ctx.at)),
-    consequence: billPaidConsequence(
-      debit.key,
-      plain(debit.amountMinor, debit.currency),
-      shortDay(debit.date),
-      bill.key,
-      (bill.vendor ?? bill.title).slice(0, 200),
-      bill.due === null ? "No date" : shortDay(bill.due),
-    ),
-    actor: agentOrOwner(ctx.finance),
-    sensitive: true,
-    wake: "now",
-    extraSection: "money",
-  }));
+  return matches
+    .filter(({ debit }) => !contested.has(debit.recordId))
+    .map(({ debit, bill }): SensedFact => ({
+      sense: "bill_paid_seen",
+      family: "money",
+      key: billPaidFactKey(debit.key),
+      subject: {
+        kind: "record",
+        key: debit.key,
+        title: "Bank debit",
+        recordId: KinRecordId.make(debit.recordId),
+      },
+      scope: {},
+      since: iso(Math.min(debit.dateAt, ctx.at)),
+      consequence: billPaidConsequence(
+        debit.key,
+        plain(debit.amountMinor, debit.currency),
+        shortDay(debit.date),
+        bill.key,
+        (bill.vendor ?? bill.title).slice(0, 200),
+        bill.due === null ? "No date" : shortDay(bill.due),
+      ),
+      actor: agentOrOwner(ctx.finance),
+      sensitive: true,
+      wake: "now",
+      extraSection: "money",
+    }));
+});
+
+export const bankDebitSenses = Effect.fn("KinPulse.bankDebitSenses")(function* (ctx: SenseContext) {
+  const repayments = (yield* repaidMatches(ctx.orgId, ctx.at)).filter(
+    (one) => one.marked === undefined && !one.noLine && !one.setBack && !one.ahead,
+  );
+  const contested = new Set(
+    repayments.flatMap(({ debit, expense }) => (expense === undefined ? [] : [debit.recordId])),
+  );
+  return [
+    ...(yield* repaidSeenSenses(ctx, repayments)),
+    ...(yield* billPaidSeenSenses(ctx, contested)),
+  ];
 });

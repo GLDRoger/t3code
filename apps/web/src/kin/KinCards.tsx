@@ -27,6 +27,7 @@ import {
   KIN_MAIL_CANCEL_UNDO_MS,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  kinChoiceUndoOffer,
   KIN_CHOICE_DISMISS_COPY,
   kinChoiceDismissedLine,
   kinChoiceClosedLine,
@@ -240,6 +241,7 @@ export const KinCard = memo(function KinCard(props: {
           choice={view.choice}
           environmentId={props.environmentId}
           viewerPersonId={props.viewerPersonId}
+          ownerLevel={ownerLevel}
         />
       );
     case "country":
@@ -596,6 +598,8 @@ function KinChoiceCard(props: {
   readonly choice: KinChoiceCardView;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** Whether the viewer is owner-level, for a settled card's Undo; undefined until known. */
+  readonly ownerLevel: boolean | undefined;
 }) {
   const { choice, environmentId } = props;
   const nowMs = useNowMinuteMs();
@@ -630,31 +634,33 @@ function KinChoiceCard(props: {
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
+  const undoLineId = useId();
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
   // The tick answers the press on screen: the editor's for the words typed, else the card's.
   const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
   const checked = kinSendTicked(warnedView, ticked) !== null;
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
-    choice,
-    environmentId,
-    newId: randomUUID,
-    taps,
-    heldKey,
-    state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
-    commands: { post, setSendFrom, sendEdited, saveEdited },
-    set: {
-      pending: setPending,
-      lastStatus: setLastStatus,
-      switching: setSwitching,
-      switchProblem: setSwitchProblem,
-      editBusy: setEditBusy,
-      editing: setEditing,
-      ack: setAck,
-      ticked: setTicked,
-    },
-  });
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss, undo } =
+    kinChoiceCardActions({
+      choice,
+      environmentId,
+      newId: randomUUID,
+      taps,
+      heldKey,
+      state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
+      commands: { post, setSendFrom, sendEdited, saveEdited },
+      set: {
+        pending: setPending,
+        lastStatus: setLastStatus,
+        switching: setSwitching,
+        switchProblem: setSwitchProblem,
+        editBusy: setEditBusy,
+        editing: setEditing,
+        ack: setAck,
+        ticked: setTicked,
+      },
+    });
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
     else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
@@ -696,6 +702,11 @@ function KinChoiceCard(props: {
     kinMailCancels(choice, optionId) ? setAsking(optionId) : void press(optionId);
   const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
   const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
+  const undoOffer = kinChoiceUndoOffer(
+    choice,
+    { ownerLevel: props.ownerLevel, canAct },
+    { pending, status },
+  );
 
   if (phase === "dismissed" && dismissed !== null)
     return (
@@ -879,6 +890,24 @@ function KinChoiceCard(props: {
         </>
       )}
       {decided === null ? null : <p className="text-xs text-muted-foreground">{decided}</p>}
+      {undoOffer === null ? null : (
+        <div className="flex flex-col items-start gap-0.5 pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-describedby={undoLineId}
+            aria-busy={undoOffer.busy}
+            disabled={undoOffer.disabled}
+            onClick={() => void undo()}
+          >
+            {undoOffer.label}
+          </Button>
+          <p id={undoLineId} className="px-1 text-xs text-muted-foreground">
+            {undoOffer.line}
+          </p>
+          <CardNotice notice={undoOffer.notice} />
+        </div>
+      )}
       {undone === null ? null : <p className="text-xs text-muted-foreground">{undone}</p>}
     </CardFrame>
   );

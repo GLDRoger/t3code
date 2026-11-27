@@ -9,6 +9,7 @@ import {
   KIN_CHOICE_CARD_ACTION,
   KIN_CHOICE_DISMISS_ACTION,
   KIN_CHOICE_UNDISMISS_ACTION,
+  KIN_CHOICE_UNDO_ACTION,
   KIN_MESSAGE_FIGURES_MAX,
   KIN_MESSAGE_PAGES_MAX,
   KIN_FIGURE_SCHEME,
@@ -1826,6 +1827,61 @@ const make = Effect.gen(function* () {
     }
     return message;
   });
+  const undoChoice = Effect.fn("KinChatService.undoChoice")(function* (
+    identity: PersonIdentity,
+    member: KinChatMember,
+    widget: KinWidget,
+    request: KinWidgetsActInput,
+  ) {
+    const card = yield* decodeChoiceCard(widget.state).pipe(Effect.mapError(() => invalidState));
+    if (card.outcome?.undone !== undefined)
+      return yield* invalid("This action was already undone.");
+    if (card.answer === null || card.outcome?.undo === undefined)
+      return yield* invalid("This card has no action to undo.");
+    if (widget.revision !== request.revision)
+      return yield* new KinChatError({
+        reason: "widget_changed",
+        message: "This card changed or was answered. Look at it again.",
+      });
+    const sealed = yield* CardPlans.planFor({
+      orgId: identity.orgId,
+      chatId: widget.chatId,
+      widgetId: widget.widgetId,
+      optionId: KIN_CHOICE_UNDO_ACTION,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
+    if (onChoice === undefined || sealed?.plan?.kind !== "undo_repaid")
+      return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    const outcome = yield* onChoice({
+      orgId: identity.orgId,
+      widget,
+      personId: identity.personId,
+      memberId: member.memberId,
+      option: card.outcome.undo,
+      plan: sealed.plan,
+      via: "tap",
+      now: yield* Clock.currentTimeMillis,
+    }).pipe(Effect.mapError(dismissError));
+    if (outcome === undefined) return yield* invalidState;
+    const at = yield* now;
+    const name = (yield* requireRecord(repo.getPerson(identity))).displayName;
+    const undone = yield* repo.updateWidget({
+      ...widget,
+      audience: "chat",
+      state: {
+        ...card,
+        outcome: {
+          ...outcome,
+          undone: { personId: identity.personId, name: name.slice(0, 200), at },
+        },
+      },
+      expectedRevision: widget.revision,
+      updatedAt: at,
+    });
+    yield* sql.afterCommit(
+      hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: undone }),
+    );
+    return yield* requireRecord(repo.getMessage(widget));
+  });
   /** A tap's own checks and effects, inside its transaction (`act` reads memory before it). */
   const actInside = Effect.fnUntraced(function* (
     caller: PersonCaller,
@@ -1857,6 +1913,8 @@ const make = Effect.gen(function* () {
         request.actionId === KIN_CHOICE_UNDISMISS_ACTION)
     )
       return yield* dismissOn(identity, widget, request);
+    if (widget.type === "choice" && request.actionId === KIN_CHOICE_UNDO_ACTION)
+      return yield* undoChoice(identity, member, widget, request);
     if (widget.type === "approval")
       return yield* new KinChatError({
         reason: "use_approvals",
