@@ -1,7 +1,8 @@
 import type { KinGithubTrigger, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { boundIssue, isTriage } from "../github/boundIssue.ts";
+import { boundIssue } from "../github/boundIssue.ts";
+import { isTriage } from "../github/githubTriggers.ts";
 
 export const isOutsideTriage = (trigger: Pick<KinGithubTrigger, "kind" | "inside">) =>
   !trigger.inside && isTriage(trigger.kind);

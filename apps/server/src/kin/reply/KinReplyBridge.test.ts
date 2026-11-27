@@ -3670,6 +3670,30 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
+// A stranger's issue: its seat has neither kin_send nor kin_skip, so a nudge could not be obeyed.
+const outsideTriageEvent = () =>
+  Effect.succeed((base: WakeupEventBase): KinEvent => ({
+    ...base,
+    _tag: "github",
+    provenance: { _tag: "system" },
+    deliveryId: "poll:triage:acme/app#9",
+    eventName: "issues",
+    repo: "acme/app",
+    summary: "triage on acme/app#9 by stranger-gh",
+    trigger: {
+      key: "triage:acme/app#9",
+      kind: "triage",
+      item: "issue",
+      number: 9,
+      url: "https://github.com/acme/app/issues/9",
+      title: "Typo in the README",
+      author: "stranger-gh",
+      association: "NONE",
+      inside: false,
+      text: "The README says recieve.",
+    },
+  }));
+
 it.effect.each([
   { input: "empty", ending: "none" },
   { input: "failed", ending: "failed" },
@@ -3682,6 +3706,7 @@ it.effect.each([
   { input: "owed with text", ending: "notice" },
   { input: "owed without text", ending: "notice" },
   { input: "owed without text", close: "send", ending: "rescued_sent" },
+  { input: "outside triage draft", ending: "none" },
 ] as const)("settles send voice from the structure of the turn ($input, $ending)", (row) =>
   Effect.gen(function* () {
     const owed = row.input.startsWith("owed");
@@ -3700,6 +3725,7 @@ it.effect.each([
       sendOnly: row.input === "check-in" ? true : "default",
       ...(owed ? { event: WAKE_KINDS["task.finished"].event! } : {}),
       ...(row.input === "check-in" ? { event: checkInEvent("checkin-morning") } : {}),
+      ...(row.input === "outside triage draft" ? { event: outsideTriageEvent } : {}),
     });
     const reply = row.input === "check-in" ? `## Needs you\n\n${body}` : body;
     if (row.input !== "empty" && row.input !== "owed without text")
