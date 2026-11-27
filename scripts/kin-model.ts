@@ -13,8 +13,8 @@
 // checked against its sha256. It needs Java 11 or newer on PATH, or mise to run Temurin 21.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
-import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeStreamConsumers from "node:stream/consumers";
@@ -541,7 +541,10 @@ const runTlc = async (
     );
     child = run;
     const [, stdout, stderr] = await Promise.all([
-      NodeEvents.once(run, "close"),
+      new Promise<void>((resolve, reject) => {
+        run.once("error", reject);
+        run.once("close", () => resolve());
+      }),
       NodeStreamConsumers.text(run.stdout),
       NodeStreamConsumers.text(run.stderr),
     ]);
@@ -554,8 +557,12 @@ const runTlc = async (
       ms,
     };
   } finally {
-    for (const signal of signals) process.off(signal, stop);
-    if (!keepScratch) NodeFS.rmSync(work, { recursive: true, force: true });
+    child = undefined;
+    try {
+      if (!keepScratch) await NodeFSP.rm(work, { recursive: true, force: true });
+    } finally {
+      for (const signal of signals) process.off(signal, stop);
+    }
     if (interrupted !== undefined) process.exit(128 + NodeOS.constants.signals[interrupted]);
   }
 };
