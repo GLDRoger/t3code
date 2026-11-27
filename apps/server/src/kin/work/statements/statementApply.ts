@@ -687,7 +687,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         ...(tally.payments === 0
           ? []
           : [
-              `Recorded ${tally.payments} payment${tally.payments === 1 ? "" : "s"} on invoices${tally.tds === 0 ? "" : `, ${tally.tds} with TDS deducted`}.`,
+              `Recorded ${tally.payments} payment${tally.payments === 1 ? "" : "s"} on invoices${tally.tds === 0 ? "" : `, ${tally.tds} with ${withheldTax === undefined ? "tax withheld" : `${withheldTax} deducted`}`}.`,
             ]),
         ...(tally.recorded === 0
           ? []
