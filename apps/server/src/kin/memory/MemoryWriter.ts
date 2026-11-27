@@ -1998,7 +1998,7 @@ const make = Effect.gen(function* () {
             const cutOverMs = cutOverSeconds * 1000;
             const wakeup = /^wakeup:(.+)$/.exec(item.source)?.[1];
             const event = /^kin:event:(.+)$/.exec(item.source)?.[1];
-            const cited = CHAT_SOURCE.exec(item.source)?.[1];
+            const [, cited, message] = CHAT_SOURCE.exec(item.source) ?? [];
             if (wakeup === undefined && event === undefined && cited === undefined) return false;
             if (wakeup !== undefined) {
               const [ran] = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId}
@@ -2011,6 +2011,14 @@ const make = Effect.gen(function* () {
                 AND event_id = ${event} AND agent_id = ${agentId}
                 AND queued_at < ${cutOverMs}`.pipe(toSql);
               if (queued === undefined) return false;
+            }
+            // The message's own time bounds the note, not its commit's; a cleared chat's are gone.
+            if (message !== undefined) {
+              const [said] = yield* sql<{ at: string }>`SELECT created_at AS "at" FROM kin_messages
+                WHERE org_id = ${orgId} AND chat_id = ${cited} AND message_id = ${message}`.pipe(
+                toSql,
+              );
+              if (said === undefined || !(Date.parse(said.at) < cutOverMs)) return false;
             }
             const chats = [...new Set([item.chat, cited].filter((chat) => chat !== undefined))];
             if (chats.length === 0) return true;
@@ -2136,7 +2144,6 @@ const make = Effect.gen(function* () {
                   }),
                 );
               else {
-                yield* endSharing(orgId, ending);
                 yield* ownerCommit(orgId, {
                   writer,
                   repoUrl: repo.repoUrl,
@@ -2145,7 +2152,8 @@ const make = Effect.gen(function* () {
                   headFiles,
                   files,
                   message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
-                  landed: () => landed,
+                  // With the mark, so a commit that fails leaves sharing as it was for the retry.
+                  landed: () => endSharing(orgId, ending).pipe(Effect.andThen(landed)),
                 });
               }
               if (shown.length > 0)
