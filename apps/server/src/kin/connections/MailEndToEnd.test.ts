@@ -1156,8 +1156,12 @@ it.effect("the cap holds the next arrivals, tells once, and resets on the compan
       );
       const notices = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND chat_id = 'fin-owner' AND author_kind = 'system'`;
-      assert.lengthOf(notices, 1);
-      assert.match(notices[0]!.body, /December/);
+      // Named as the Settings list names the rule, so one of several on a mailbox is clear.
+      assert.deepStrictEqual(notices, [
+        {
+          body: "Any mail to this mailbox: this mail rule on accounts@invented-co.example reached its limit of 1 run and is held until Tuesday, 1 December. Matched mail stays in the rule’s history in Settings → Connections.",
+        },
+      ]);
       ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, 4);
       yield* readMail(mailbox);
       assert.lengthOf(

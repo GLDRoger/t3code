@@ -2,6 +2,7 @@ import {
   KinMailRuleMatch,
   KinMessageId,
   formatKinWhen,
+  kinMailRuleMatchLine,
   type KinAgentId,
   type KinChatId,
   type KinEvent,
@@ -95,6 +96,15 @@ export const matchingRules = Effect.fn("KinMailRules.forMailbox")(function* (
 
 const held = (reason: KinMailRuleHoldReason) => ({ held: reason });
 
+/** Told once a month in the setter's chat; the rule is named as the Settings list names it. */
+export const mailRuleLimitNotice = (input: {
+  readonly match: KinMailRuleMatch;
+  readonly mailbox: string;
+  readonly monthlyCap: number;
+  readonly until: string;
+}) =>
+  `${kinMailRuleMatchLine(input.match)}: this mail rule on ${input.mailbox} reached its limit of ${input.monthlyCap === 1 ? "1 run" : `${input.monthlyCap} runs`} and is held until ${input.until}. Matched mail stays in the rule’s history in Settings → Connections.`;
+
 const checked = Effect.fn("KinMailRules.checkWake")(function* (rule: WakeRule) {
   if (rule.state === "removed") return held("removed");
   if (rule.state !== "on") {
@@ -116,12 +126,10 @@ const checked = Effect.fn("KinMailRules.checkWake")(function* (rule: WakeRule) {
   if (mailbox === undefined) return held("mailbox_unavailable");
   if ((yield* directRuleLead(rule.orgId, rule.saidBy, rule.agentId, rule.chatId)) === undefined)
     return held("destination_unavailable");
-  if (
-    mailRuleContentHash(rule.matchJson, rule.what) !== rule.contentHash ||
-    Option.isNone(decodeMatch(rule.matchJson))
-  )
+  const match = Option.getOrUndefined(decodeMatch(rule.matchJson));
+  if (mailRuleContentHash(rule.matchJson, rule.what) !== rule.contentHash || match === undefined)
     return held("wording_changed");
-  return { mailbox, setterName: setter.name };
+  return { mailbox, setterName: setter.name, match };
 });
 
 export const alreadyClaimedRuleMail = Effect.fn("KinMailRules.alreadyClaimedMail")(function* (
@@ -275,7 +283,12 @@ const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: num
       yield* notice(
         rule,
         `limit:${limit.month}`,
-        `The mail rule on ${destination.mailbox.label} reached its limit of ${limit.fired} runs and is held until ${until}. Matched mail stays in the rule’s history in Settings → Connections.`,
+        mailRuleLimitNotice({
+          match: destination.match,
+          mailbox: destination.mailbox.label,
+          monthlyCap: rule.monthlyCap,
+          until,
+        }),
         at,
       );
     }

@@ -38,6 +38,130 @@ export const KinMailRuleMatch = Schema.Struct({
   classes: Schema.NullOr(Schema.Array(KinMailRuleClass).check(Schema.isMinLength(1))),
 });
 export type KinMailRuleMatch = typeof KinMailRuleMatch.Type;
+type KinMailRuleSender = KinMailRuleMatch["from"][number];
+
+/** A kind of mail in words, as a rule's line and page say it. */
+export const KIN_MAIL_RULE_CLASS_NAMES: Readonly<Record<typeof KinMailRuleClass.Type, string>> = {
+  reply_to_us: "replies to mail we sent",
+  names_money: "mail that names one of our invoices or quotes",
+  client: "mail from a known contact",
+  known_biller: "mail from a sender whose bill was filed before",
+  automated_notice: "automated notices",
+  automated_file: "automated mail with a file",
+  automated: "newsletters and other automated mail",
+  copied: "mail this mailbox was copied on",
+  unknown_person: "mail from someone Kin doesn't know yet",
+  other: "mail no other kind fits",
+};
+
+/** "a", "a or b", "a, b or c". */
+const orList = (items: ReadonlyArray<string>) =>
+  items.length <= 1
+    ? (items[0] ?? "")
+    : `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+// RFC 3492 Punycode for one label, so a look-alike domain shows what it really is.
+const BASE = 36;
+const T_MIN = 1;
+const T_MAX = 26;
+const SKEW = 38;
+const DAMP = 700;
+const punyDigit = (d: number) => String.fromCharCode(d < 26 ? 97 + d : 22 + d);
+const adapt = (delta: number, points: number, first: boolean) => {
+  let next = first ? Math.floor(delta / DAMP) : delta >> 1;
+  next += Math.floor(next / points);
+  let k = 0;
+  while (next > ((BASE - T_MIN) * T_MAX) >> 1) {
+    next = Math.floor(next / (BASE - T_MIN));
+    k += BASE;
+  }
+  return k + Math.floor(((BASE - T_MIN + 1) * next) / (next + SKEW));
+};
+const punyLabel = (label: string) => {
+  const points = Array.from(label, (char) => char.codePointAt(0) ?? 0);
+  if (points.every((point) => point < 0x80)) return label;
+  let out = points
+    .filter((point) => point < 0x80)
+    .map((point) => String.fromCodePoint(point))
+    .join("");
+  const basic = out.length;
+  if (basic > 0) out += "-";
+  let n = 0x80;
+  let delta = 0;
+  let bias = 72;
+  let handled = basic;
+  while (handled < points.length) {
+    const m = Math.min(...points.filter((point) => point >= n));
+    delta += (m - n) * (handled + 1);
+    n = m;
+    for (const point of points) {
+      if (point < n) delta += 1;
+      if (point !== n) continue;
+      let q = delta;
+      for (let k = BASE; ; k += BASE) {
+        const t = k <= bias ? T_MIN : k >= bias + T_MAX ? T_MAX : k - bias;
+        if (q < t) break;
+        out += punyDigit(t + ((q - t) % (BASE - t)));
+        q = Math.floor((q - t) / (BASE - t));
+      }
+      out += punyDigit(q);
+      bias = adapt(delta, handled + 1, handled === basic);
+      delta = 0;
+      handled += 1;
+    }
+    delta += 1;
+    n += 1;
+  }
+  return `xn--${out}`;
+};
+
+/** A domain as the mail system compares it: lower case, each label in punycode. */
+export function kinMailRuleAscii(domain: string): string {
+  return domain.trim().normalize("NFC").toLowerCase().split(".").map(punyLabel).join(".");
+}
+
+/**
+ * One sender filter in words; one whose ASCII spelling differs shows it beside it. `ascii` is the
+ * spelling the host sent, when it sent one; otherwise this device works it out.
+ */
+export function kinMailRuleSenderWords(sender: KinMailRuleSender, ascii?: string): string {
+  if (sender.address !== undefined) {
+    const at = sender.address.lastIndexOf("@");
+    const domain = at === -1 ? "" : sender.address.slice(at + 1);
+    if (ascii !== undefined)
+      return ascii === sender.address.toLowerCase()
+        ? sender.address
+        : `${sender.address} (${ascii})`;
+    const own = kinMailRuleAscii(domain);
+    return own === domain.toLowerCase() ? sender.address : `${sender.address} (${own})`;
+  }
+  const spelt = ascii ?? kinMailRuleAscii(sender.domain);
+  return spelt === sender.domain.toLowerCase() ? sender.domain : `${sender.domain} (${spelt})`;
+}
+
+const quoted = (phrases: ReadonlyArray<string>) => orList(phrases.map((phrase) => `“${phrase}”`));
+
+/** What a rule matches, in one plain line: "From junipercold.example, with a file". */
+export function kinMailRuleMatchLine(
+  match: KinMailRuleMatch | null,
+  /** The host's ASCII spelling of each From filter, in the same order (a proposal card's). */
+  fromAscii?: ReadonlyArray<string>,
+): string {
+  if (match === null) return "Changed outside Kin";
+  const senders = match.from.map((sender, index) =>
+    kinMailRuleSenderWords(sender, fromAscii?.[index]),
+  );
+  const parts = [
+    ...(senders.length === 0 ? [] : [`From ${orList(senders)}`]),
+    ...(match.subjectHas.length === 0 ? [] : [`subject has ${quoted(match.subjectHas)}`]),
+    ...(match.withFile === true ? ["with a file"] : []),
+    ...(match.classes === null
+      ? []
+      : [`only ${orList(match.classes.map((one) => KIN_MAIL_RULE_CLASS_NAMES[one]))}`]),
+  ];
+  return parts.length === 0 ? "Any mail to this mailbox" : capitalize(parts.join(", "));
+}
 
 const mailbox = { orgId: KinOrgId, connectionId: id };
 const draft = { ...mailbox, match: KinMailRuleMatch, monthlyCap: Schema.optional(cap) };

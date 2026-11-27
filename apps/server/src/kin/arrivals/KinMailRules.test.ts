@@ -34,7 +34,7 @@ import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
 import { pauseMailRulesFor } from "./ruleLifecycle.ts";
-import { checkRuleWake } from "./ruleWake.ts";
+import { checkRuleWake, mailRuleLimitNotice } from "./ruleWake.ts";
 
 const orgId = KinOrgId.make("org");
 const agentId = KinAgentId.make("finance");
@@ -499,6 +499,24 @@ it.effect("every rule change and run reaches each owner-level screen, and never 
     yield* settles("removed");
   }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );
+
+it("the limit notice names the rule as Settings lists it, and counts one run or many", () => {
+  const notice = (monthlyCap: number) =>
+    mailRuleLimitNotice({
+      match: { ...match, subjectHas: ["invoice"] },
+      mailbox: "Accounts",
+      monthlyCap,
+      until: "Tuesday, 1 December",
+    });
+  assert.strictEqual(
+    notice(1),
+    "From juniper.example, subject has “invoice”: this mail rule on Accounts reached its limit of 1 run and is held until Tuesday, 1 December. Matched mail stays in the rule’s history in Settings → Connections.",
+  );
+  assert.strictEqual(
+    notice(30),
+    "From juniper.example, subject has “invoice”: this mail rule on Accounts reached its limit of 30 runs and is held until Tuesday, 1 December. Matched mail stays in the rule’s history in Settings → Connections.",
+  );
+});
 
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 
