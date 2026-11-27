@@ -12,7 +12,7 @@
 #   `?history` open as sheets), `sheet:` or `dialog:` <title>, or inline `menu:`, `card:`,
 #   `section:`, `button:` <label>, which add no depth.
 # phone steps: `tab:<dock tab>` or a first screen, then KIN_SCREENS names, plus the same inline steps.
-#   Settings paths start at `SettingsKin`: the owner's dock is five tabs, and Settings is the gear
+#   Settings paths start at `SettingsKin`: the owner's dock is up to five tabs, and Settings is the gear
 #   on Chats, so it starts its own paths as a tab does (dock tab → list → record → sheet).
 # roles: owner, co_owner, lead (a member who leads a project), member; each `both`, `web`,
 #   `phone` or `none`. A role's reach follows what the host allows, not only what the client shows.
@@ -1037,7 +1037,8 @@ features:
       One row per section with its switch; a section another holds off says why and cannot be
       switched there. Clients takes the company's own name and singular, and Use Kin's name puts it
       back. Every place, picker, fold, search box and palette row follows the same shell for
-      everyone; a record of an off section still opens, with one line.
+      everyone; a record of an off section still opens, with one line. Money, Clients and Docs each
+      have a phone-dock switch; a place out of the dock is a row on the phone's Chats.
     proof:
       - packages/client-runtime/src/kin/kinShell.test.ts
       - packages/client-runtime/src/kin/kinNavigation.test.ts
