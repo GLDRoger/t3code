@@ -59,6 +59,7 @@ import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import { personSees } from "../work/teamView.ts";
 import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
 import * as BankAlertReader from "../work/statements/BankAlertReader.ts";
@@ -2375,6 +2376,46 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // Her own Disconnect is the same way out.
         yield* connections.mineRemove(people(member), { orgId });
         assert.isNull((yield* connections.mine(people(member), { orgId })).mailbox);
+      }),
+    ),
+  );
+
+  it.effect("a file a member saves from her own mailbox is her Doc, and no other member's", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, sees_docs)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${stamp}, 'member', 1)`;
+        yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${member}`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES ('mate-session', ${orgId}, ${member}, 0)`;
+        yield* sql`UPDATE kin_registers SET next_number = 2
+          WHERE org_id = ${orgId} AND register_id = 'docs'`;
+        fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+        yield* connectOwn(fake, member, MEERA);
+        const mail = fake.deliver({
+          to: MEERA,
+          from: "Ravi Menon <ravi@lumen.example>",
+          subject: "Offer letter",
+          body: "Attached.",
+          at: NOW,
+          files: [{ name: "Offer.pdf", mimeType: "application/pdf", data: "YQ==" }],
+        });
+        yield* wake({ person: member, says: "Save the offer letter into Docs." });
+        yield* callTool(MEERA, "mail_read_thread", { threadId: mail.threadId });
+        yield* callTool(MEERA, "mail_save_attachment", {
+          messageId: mail.id,
+          attachmentId: "part:1",
+        });
+        const seen = (person: string) =>
+          sql<{ seen: number }>`SELECT ${personSees(sql, KinPersonId.make(person))} AS seen
+            FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+              AND r.origin_key LIKE 'mail-attachment:%'`.pipe(
+            Effect.map((rows) => rows.map((row) => row.seen)),
+          );
+        assert.deepStrictEqual(yield* seen(member), [1]);
+        assert.deepStrictEqual(yield* seen("zoya"), [0]);
       }),
     ),
   );

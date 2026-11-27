@@ -55,7 +55,13 @@ export const egress = Layer.unwrap(
   }),
 );
 
-const READ = ["mail_list_threads", "mail_search", "mail_read_thread", "calendar_list_events"];
+const READ = [
+  "mail_list_threads",
+  "mail_search",
+  "mail_read_thread",
+  "mail_save_attachment",
+  "calendar_list_events",
+];
 const ASK = ["mail_send", "mail_reply", "calendar_save_event", "calendar_delete_event"];
 
 /** Signs the owner in to each fake account not yet connected, through the real sign-in. */

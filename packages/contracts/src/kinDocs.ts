@@ -92,6 +92,15 @@ export type KinDocProvenance = typeof KinDocProvenance.Type;
  * stored row and the file's own bytes, never from what the worker reported.
  */
 export const KinDocFile = Schema.Struct({
+  source: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literal("mail"),
+      from: Schema.NullOr(Schema.String),
+      date: Schema.NullOr(Schema.String),
+      untrusted: Schema.Literal(true),
+      privateTo: Schema.optional(KinPersonId),
+    }),
+  ),
   attachmentId: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
   mimeType: TrimmedNonEmptyString,

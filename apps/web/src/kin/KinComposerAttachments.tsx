@@ -1,3 +1,4 @@
+import { unsupportedImageAttachmentMessage } from "@t3tools/shared/image";
 import { fileAttachmentTooLargeMessage } from "@t3tools/client-runtime/state/attachments";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -143,7 +144,7 @@ export function useKinComposerAttachments(input: {
         continue;
       }
       if (kind === "unsupported-image") {
-        refusal = `'${file.name}' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.`;
+        refusal = unsupportedImageAttachmentMessage(file.name);
         continue;
       }
       if (kind === "image") {

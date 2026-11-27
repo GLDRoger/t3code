@@ -1,4 +1,12 @@
-import { KIN_SIGN_IN_CLIENTS } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as Mime from "effect/http/Mime";
+import * as Option from "effect/Option";
+import {
+  classifyComposerAttachmentFile,
+  unsupportedImageAttachmentMessage,
+} from "@t3tools/shared/image";
+import { KIN_SIGN_IN_CLIENTS, PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -22,9 +30,12 @@ import {
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderVerdictForAddress, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
+import { type MailFile } from "./MailProvider.ts";
 import { DAY_MS } from "../durations.ts";
 
 /** Kin's mail tools, arguments, errors, cutting and limits: the same for every mail vendor. */
+
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 export const failure = (reason: KinGatewayError["reason"], message: string) =>
   new KinGatewayError({ reason, message });
@@ -33,6 +44,7 @@ export const failure = (reason: KinGatewayError["reason"], message: string) =>
 export const vendorAnswer = Effect.fn("KinMail.answer")(function* (
   vendor: Pick<MailVendor, "name" | "refused">,
   response: HttpClientResponse.HttpClientResponse,
+  limit?: { readonly bytes: number; readonly message: string },
 ) {
   const { name } = vendor;
   if (response.status === 401)
@@ -52,6 +64,22 @@ export const vendorAnswer = Effect.fn("KinMail.answer")(function* (
       "unreachable",
       `${name} answered with an error (HTTP ${response.status}).`,
     );
+  if (limit !== undefined) {
+    const tooLarge = failure("protocol", limit.message);
+    const chunks = yield* Stream.runFoldEffect(
+      response.stream.pipe(Stream.mapError(() => unreached(vendor))),
+      () => ({ bytes: 0, chunks: [] as Array<Uint8Array> }),
+      (state, chunk) => {
+        state.bytes += chunk.byteLength;
+        if (state.bytes > limit.bytes) return Effect.fail(tooLarge);
+        state.chunks.push(chunk);
+        return Effect.succeed(state);
+      },
+    );
+    return yield* decodeJson(Buffer.concat(chunks.chunks, chunks.bytes).toString("utf8")).pipe(
+      Effect.mapError(() => failure("protocol", `${name} sent an answer Kin couldn't read.`)),
+    );
+  }
   return (yield* response.json.pipe(
     Effect.mapError(() => failure("protocol", `${name} sent an answer Kin couldn't read.`)),
   )) as unknown;
@@ -61,6 +89,67 @@ export const unreached = (vendor: Pick<MailVendor, "name">) =>
 /** Whether a call failed because the vendor answered this status. */
 export const answeredWith = (error: KinGatewayError, status: number) =>
   error.message.includes(`(${status})`) || error.message.includes(`(HTTP ${status})`);
+
+const tooLarge = (name: string) =>
+  `'${name}' exceeds the ${PROVIDER_SEND_TURN_MAX_FILE_BYTES / (1024 * 1024)} MB attachment limit.`;
+export const attachmentJsonLimit = (name: string) => ({
+  bytes: Math.ceil(PROVIDER_SEND_TURN_MAX_FILE_BYTES / 3) * 4 + 64 * 1024,
+  message: tooLarge(name),
+});
+export const safeMailFileName = (name: string) => {
+  const leaf = name
+    .split(/[\\/]/)
+    .at(-1)
+    ?.toWellFormed()
+    .replace(/[\p{Cc}\p{Cf}"]/gu, "_")
+    .trim()
+    .slice(0, 200)
+    .trimEnd();
+  return leaf && leaf !== "." && leaf !== ".." ? leaf : "Attachment";
+};
+export const mailFileMimeType = (value: string | undefined) => {
+  const type = value?.split(";", 1)[0]?.trim().toLowerCase();
+  return type !== undefined &&
+    type.length <= 100 &&
+    /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type)
+    ? type
+    : "application/octet-stream";
+};
+/** A saved file's type, from its name as a browser gives an upload's; never the mail's own. */
+export const mailFileType = (name: string) =>
+  Option.getOrElse(Mime.getType(safeMailFileName(name)), () => "application/octet-stream");
+export const checkMailFile = (file: MailFile) => {
+  const name = safeMailFileName(file.name);
+  if (classifyComposerAttachmentFile({ name, type: file.type }) === "unsupported-image")
+    return failure("protocol", unsupportedImageAttachmentMessage(name));
+  if (file.bytes !== null && file.bytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES)
+    return failure("protocol", tooLarge(name));
+  if (file.bytes !== null && file.bytes <= 0)
+    return failure("protocol", `'${name}' is empty or could not be read.`);
+};
+export const attachmentBytes = Effect.fn("KinMail.attachmentBytes")(function* (
+  encoded: string | undefined,
+  file: MailFile,
+  encoding: "base64" | "base64url",
+) {
+  if (
+    encoded === undefined ||
+    encoded.length % 4 === 1 ||
+    !(encoding === "base64" ? /^[A-Za-z0-9+/]*={0,2}$/ : /^[A-Za-z0-9_-]*={0,2}$/).test(encoded)
+  )
+    return yield* failure("protocol", "Kin couldn't read that mail attachment.");
+  const size = Math.floor((encoded.replace(/=+$/, "").length * 3) / 4);
+  const problem = checkMailFile({ ...file, bytes: size });
+  if (problem !== undefined) return yield* problem;
+  if (file.bytes !== null && size !== file.bytes)
+    return yield* failure("protocol", "Kin couldn't read that mail attachment.");
+  return Buffer.from(encoded, encoding);
+});
+export const mailDate = (date: string | null, fallback: number | null = null) => {
+  const ms = Date.parse(date ?? "");
+  const at = DateTime.make(Number.isFinite(ms) ? ms : (fallback ?? Number.NaN));
+  return at._tag === "Some" ? DateTime.formatIso(at.value) : null;
+};
 
 const MAX_RECIPIENTS = 10;
 const MESSAGE_CHARS = 12_000;
@@ -100,6 +189,21 @@ const listed = (
     openWorld: false,
   }));
 
+const attachmentTools = listed(write, [
+  {
+    name: MAIL_TOOL.saveAttachment,
+    title: "Save a mail attachment to Docs",
+    description:
+      "Copy one attachment from this mailbox into Docs, only when someone asks to save or keep the file. Kin never reads the file's text, so saving won't show what it says. Use messageId and attachmentId from mail_read_thread on this mailbox; returns the Doc's key and title, also when it was already saved.",
+    inputSchema: {
+      type: "object",
+      properties: { messageId: { type: "string" }, attachmentId: { type: "string" } },
+      required: ["messageId", "attachmentId"],
+      additionalProperties: false,
+    },
+  },
+]);
+
 /** Reads, each pinned like any server's tools. */
 const readTools = (vendor: MailVendor) => {
   const words = vendor.words;
@@ -107,7 +211,7 @@ const readTools = (vendor: MailVendor) => {
     type: "string",
     description: `A calendar id; ${words.mainCalendar} when left out.`,
   };
-  return listed(read, [
+  const reads = listed(read, [
     {
       name: MAIL_TOOL.list,
       title: "List mail",
@@ -161,6 +265,7 @@ const readTools = (vendor: MailVendor) => {
       },
     },
   ]);
+  return [...reads, ...attachmentTools];
 };
 
 /** The tools that send: every call is a card the owner confirms. */
@@ -368,6 +473,7 @@ const call = Effect.fn("KinMail.call")(function* (
         account: mailbox.account,
         receivedBy: receivedBy(mailbox, incoming),
         messages: all.map((message) => ({
+          ...(!message.providerMessageId ? {} : { messageId: message.providerMessageId }),
           from: message.from,
           webLink: message.webLink,
           to: message.toLine,
@@ -513,6 +619,7 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     },
     canSend: vendor.canSend,
     tools: readTools(vendor),
+    attachment: vendor.attachment,
     sendTools: sendTools(vendor),
     account: vendor.account,
     sendAs: vendor.sendAs,
