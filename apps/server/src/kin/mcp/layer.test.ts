@@ -1081,9 +1081,15 @@ it.effect.each([true, false])(
             )
               reviewListed.push(name);
           assert.sameMembers(reviewListed, [...REVIEW_TOOLS]);
-          // A bills turn's thread lists only `bill_read`, before any seat hides it (`SEAT_HOME`).
+          // Bills tools list for any lead in a bills thread, regardless of seat.
           const billsListed: Array<string> = [];
-          for (const name of new Set([...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS, "bill_read"]))
+          for (const name of new Set([
+            ...toolNames,
+            ...kinGitHub,
+            ...LEAD_T3_TOOLS,
+            "bill_read",
+            "bill_cut",
+          ]))
             if (
               yield* visibleOnKinEndpoint(name, ThreadId.make(`${BILLS_THREAD_PREFIX}lead`)).pipe(
                 Effect.provideService(Kin.KinServer, signedIn),

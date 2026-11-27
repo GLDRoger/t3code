@@ -10,6 +10,7 @@ import * as ServerConfig from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { KinAttachmentStore } from "../../chat/KinAttachmentStore.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
@@ -58,8 +59,16 @@ export const KinBillToolkit = Toolkit.make(
   Tool.make("bill_read", {
     ...shared,
     description:
-      "Answer one bill Kin handed this turn with only what is printed on it: a blank stays blank, never guessed or converted. Kin makes the expense, or says it couldn't, itself.",
+      "Read one bill Kin handed this turn, even if it spans several pages. Send only what is printed. Leave blanks blank; never guess or convert. Use bill_cut if the file shows separate bills.",
     parameters: Bills.ReadInput,
+    success: Bills.ReadResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("bill_cut", {
+    ...shared,
+    dependencies: [...shared.dependencies, KinAttachmentStore],
+    description:
+      "Cut a photo or PDF page that shows separate bills, with one box per bill. Include the whole bill but none of a neighbour's print. Kin brings each piece back as its own bill to read. For a PDF, call once per page with bills to cut.",
+    parameters: Bills.CutInput,
     success: Bills.ReadResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
 );
