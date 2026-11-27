@@ -3818,6 +3818,11 @@ it.effect.each([
     input: { narration: "Wire TW/001" },
     fit: "rate",
   },
+  {
+    name: "gets no question without an open invoice in another currency",
+    input: { currency: "INR" },
+    fit: "over",
+  },
 ])("a foreign credit $name", ({ input, fit }) =>
   foreignCreditTest(
     Effect.gen(function* () {
@@ -3856,6 +3861,7 @@ it.effect.each([
               : {}),
       });
       const { orgId, records, ownerWrites, owner, invoice, bank } = kin;
+      const second = yield* kin.invoiceOf("TW/002", 2);
       switch (name) {
         case "names two clients": {
           const { row: other } = yield* records.create(orgId, ownerWrites, {
@@ -3868,7 +3874,8 @@ it.effect.each([
           break;
         }
         case "names a client with no open invoice":
-          yield* records.update(orgId, ownerWrites, invoice.key, { state: "dropped" });
+          for (const row of [invoice, second])
+            yield* records.update(orgId, ownerWrites, row.key, { state: "dropped" });
           break;
         case "is already explained":
           yield* records.update(orgId, ownerWrites, bank.key, { state: "done" });
@@ -3890,6 +3897,22 @@ it.effect.each([
         assert.strictEqual(match?.first[0]?.candidate.fit, "exact");
       yield* kin.tick();
       assert.lengthOf(yield* kin.cards(), expected ? 1 : 0);
+    }),
+  ),
+);
+
+// Tax a client withheld is the bank's amount explained: the ordinary offer records it, a choice can't.
+it.effect("a same-currency credit less withheld tax keeps the ordinary offer", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ currency: "INR", bankMinor: 90_000 });
+      yield* kin.invoiceOf("TW/002", 2);
+      const match = yield* creditMatch(kin.orgId, kin.bank.recordId);
+      assert.strictEqual(match?.first[0]?.candidate.fit, "tds");
+      assert.isUndefined(match?.choice);
+      yield* kin.tick();
+      assert.isEmpty(yield* kin.cards());
+      assert.include((yield* kin.fact())?.consequence, "tax the client withheld");
     }),
   ),
 );

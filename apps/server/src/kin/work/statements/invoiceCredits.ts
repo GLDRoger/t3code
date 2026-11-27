@@ -296,7 +296,9 @@ const sameCurrencyChoice = (
   });
   const options = named.filter(({ invoice }) => invoice.currency === credit.currency);
   const client = options[0]?.invoice;
+  // One invoice is no choice: the ordinary offer, or none, stands.
   if (
+    options.length < 2 ||
     client?.client == null ||
     client.clientId == null ||
     named.some(({ invoice }) => invoice.clientId !== client.clientId)
@@ -411,7 +413,8 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     const best = ranked[0];
     const round = rounds.get(credit.recordId) ?? 0;
     let choice: CreditMatch["choice"] =
-      best?.candidate.fit === "rate" || ranked.some(({ candidate }) => candidate.fit === "exact")
+      best?.candidate.fit === "rate" ||
+      ranked.some(({ candidate }) => candidate.fit === "exact" || candidate.fit === "tds")
         ? undefined
         : sameCurrencyChoice(credit, available, ranked, round);
     if (choice === undefined && best === undefined) {
