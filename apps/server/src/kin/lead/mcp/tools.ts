@@ -19,6 +19,7 @@ import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
 
+import { MailRuleProposal, MailRuleProposalResult } from "../../arrivals/proposeMailRule.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as GitHubLink from "../../github/githubLink.ts";
@@ -296,6 +297,14 @@ export const KinLeadToolkit = Toolkit.make(
       'Set a reminder or one-time follow-up: what, due (a time with offset, from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up), or something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"), is a record_create task due that day instead. In a chat others read, only onDue remind.',
     parameters: Lead.DeferInput,
     success: Lead.DeferResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("mail_rule", {
+    ...shared,
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient, KinChatService],
+    description:
+      "Propose a rule for a company mailbox when an owner or co-owner asks in their own direct message this turn. Name that message's sourceEventId, the mailbox's connectionId, the lead's agentId, the exact match filters and what to do in the person's words. Use empty From and subject lists and null for file or mail kind when the person gave no such filter. Leave monthlyCap out for 30 runs a month. Tell the person the rule starts after they tap Turn on.",
+    parameters: MailRuleProposal,
+    success: MailRuleProposalResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_schedule", {
     ...shared,

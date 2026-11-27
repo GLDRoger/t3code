@@ -117,8 +117,9 @@ const quoted = (text: string, max = 80) => {
 };
 
 const LABEL_MAX = 80;
+type ChoicePlan = Exclude<CardPlan, { readonly kind: "mail_rule" }>;
 /** The option's button for a plan: the verb and its key, written by the server, never the agent. */
-const labelOf = (plan: CardPlan): string => {
+const labelOf = (plan: ChoicePlan): string => {
   switch (plan.kind) {
     case "done":
       return plan.heldMeeting === true ? "Nothing to follow up" : `Mark ${plan.key} done`;
@@ -169,7 +170,7 @@ const labelOf = (plan: CardPlan): string => {
 };
 
 /** The line a card shows under it: the real verb and target, with its title. */
-const lineOf = (plan: CardPlan): string => {
+const lineOf = (plan: ChoicePlan): string => {
   switch (plan.kind) {
     case "done":
       return `Mark ${plan.key} ${quoted(plan.title)} done`;
@@ -465,6 +466,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
+    sealed?.kind === "mail_rule" ||
     sealed?.kind === "leaver" ||
     (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
   )
@@ -587,6 +589,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   if (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
+    sealed.kind === "mail_rule" ||
     sealed.kind === "leaver" ||
     isFactCard(sealed) ||
     isTaken(sealed) ||
@@ -601,12 +604,12 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   };
   const turn = { drawn: sealed.draw, teammates: yield* teammatesIn(orgId, chatId) };
   const plan = yield* Effect.gen(function* () {
-    const one: CardPlan =
+    const one =
       sealed.kind === "take_default"
         ? yield* drawDefault(lead, sealed.questionId, turn)
         : yield* drawRun(lead, actionOf(sealed), turn);
     return Option.some(one);
-  }).pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(Option.none<CardPlan>()) }));
+  }).pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(Option.none<ChoicePlan>()) }));
   if (Option.isNone(plan)) return undefined;
   const one = plan.value;
   if ("recordId" in one && "recordId" in sealed && one.recordId !== sealed.recordId)
@@ -686,6 +689,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (plan.kind === "mail_rule") return yield* notAllowed("Answer the mail rule on its own card.");
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
   if (isQuiet(plan)) return yield* runQuiet(tap, plan);

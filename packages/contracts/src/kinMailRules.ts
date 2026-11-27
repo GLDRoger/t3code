@@ -50,6 +50,26 @@ export const KinMailRuleCreateInput = Schema.Struct({
 });
 export type KinMailRuleCreateInput = typeof KinMailRuleCreateInput.Type;
 
+export const KIN_MAIL_RULE_CARD_TYPE = "mail_rule";
+export const KIN_MAIL_RULE_CARD_ACTIONS = ["turn_on", "not_now"] as const;
+export const KinMailRuleCardState = Schema.Struct({
+  mailbox: Schema.Struct({ connectionId: id, label: Schema.String }),
+  lead: Schema.Struct({ agentId: KinAgentId, name: Schema.String }),
+  match: KinMailRuleMatch,
+  /** ASCII spellings of the From filters, in the same order, for showing internationalized domains. */
+  fromAscii: Schema.Array(Schema.String),
+  what: KinMailRuleCreateInput.fields.what,
+  monthlyCap: cap,
+  contentSha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  expiresAt: Schema.Int,
+  decision: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("proposed") }),
+    Schema.Struct({ status: Schema.Literal("on"), ruleId: id }),
+    Schema.Struct({ status: Schema.Literal("dismissed") }),
+  ]),
+});
+export type KinMailRuleCardState = typeof KinMailRuleCardState.Type;
+
 export const KinMailRuleRef = Schema.Struct({ orgId: KinOrgId, ruleId: id });
 export type KinMailRuleRef = typeof KinMailRuleRef.Type;
 

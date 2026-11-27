@@ -4,6 +4,7 @@ import * as NodeURL from "node:url";
 import type { MailArrival } from "../connections/MailProvider.ts";
 import { senderVerdict } from "../connections/MailText.ts";
 import type { ArrivalClass } from "./classify.ts";
+import { isMailRulePublicSuffix } from "./mailRulePublicSuffixes.ts";
 
 export type MailRuleFilters = {
   readonly from: ReadonlyArray<{ readonly address: string } | { readonly domain: string }>;
@@ -50,6 +51,42 @@ export const mailRulePhrase = (text: string) =>
     .replace(/\s+/gu, " ")
     .trim();
 
+const mixedScripts = [/\p{Script=Latin}/u, /\p{Script=Cyrillic}/u, /\p{Script=Greek}/u];
+const mixedSenderDomain = (domain: string) =>
+  NodeURL.domainToUnicode(domain)
+    .split(".")
+    .some((label) => mixedScripts.filter((script) => script.test(label)).length > 1);
+
+export const mailRuleFilter = (sender: MailRuleFilters["from"][number]) => {
+  const address = "address" in sender && typeof sender.address === "string";
+  const raw = address ? sender.address : "domain" in sender ? sender.domain : undefined;
+  if (raw === undefined) return { problem: "invalid_sender" as const };
+  const spelling = address ? mailRuleAddress(raw) : mailRuleDomain(raw);
+  if (spelling === null) {
+    const ascii = NodeURL.domainToASCII(raw.trim()).replace(/\.$/, "");
+    return !address && /^[a-z]+$/i.test(ascii)
+      ? { problem: "public_suffix" as const }
+      : { problem: "invalid_sender" as const };
+  }
+  const domain = spelling.slice(spelling.lastIndexOf("@") + 1);
+  if (mixedSenderDomain(domain)) return { problem: "mixed_scripts" as const };
+  if (!address && isMailRulePublicSuffix(domain)) return { problem: "public_suffix" as const };
+  return { spelling };
+};
+
+export const mailRuleMatchProblem = (match: MailRuleFilters) => {
+  for (const sender of match.from) {
+    const filter = mailRuleFilter(sender);
+    if (filter.problem !== undefined) return filter.problem;
+  }
+  return match.subjectHas.some((text) => {
+    const phrase = mailRulePhrase(text);
+    return phrase.length < 2 || phrase.length > 60;
+  })
+    ? ("invalid_phrase" as const)
+    : undefined;
+};
+
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const excluded = new Set<string>(["gap", "own", "sign_in", "failed_checks"]);
 
@@ -94,11 +131,11 @@ export const matchMailRule = (
     const domain = address.slice(address.lastIndexOf("@") + 1);
     if (
       !rule.from.some((sender) => {
-        if ("address" in sender && typeof sender.address === "string")
-          return mailRuleAddress(sender.address) === address;
-        if (!("domain" in sender)) return false;
-        const expected = mailRuleDomain(sender.domain);
-        return expected !== null && (domain === expected || domain.endsWith(`.${expected}`));
+        const { spelling } = mailRuleFilter(sender);
+        if (spelling === undefined) return false;
+        return "address" in sender && sender.address !== undefined
+          ? spelling === address
+          : domain === spelling || domain.endsWith(`.${spelling}`);
       })
     )
       return "no_match";

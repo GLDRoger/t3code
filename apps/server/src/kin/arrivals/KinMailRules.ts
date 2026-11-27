@@ -1,9 +1,7 @@
 import {
   KinChatError,
   KinMailRuleCreateInput,
-  KinMailRuleMatch,
-  type KinAgentId,
-  type KinChatId,
+  type KinMailRuleMatch,
   type KinMailRule,
   type KinMailRuleHistory,
   type KinMailRulePreview,
@@ -13,7 +11,6 @@ import {
   type KinMailRuleRunNow,
   type KinMailRulesListInput,
   type KinOrgId,
-  type KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -29,34 +26,32 @@ import { looksLikeSignInMail } from "../connections/MailText.ts";
 import { DAY_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
-import { companyRuleMailbox, isDirectRuleLead, ruleSetter } from "./ruleAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
 import { heldRuleReason, holdRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
 import { recordManualRuleMail, wakeRuleMail, type WakeMail } from "./ruleWake.ts";
-import { mailRuleAddress, mailRuleDomain, mailRulePhrase, matchMailRule } from "./ruleMatch.ts";
+import { mailRuleMatchProblem, matchMailRule } from "./ruleMatch.ts";
+import {
+  badMailRule as badRule,
+  checkMailRuleOwner as stillOwner,
+  companyMailRuleMailbox as companyMailbox,
+  mailRuleDirectLead as directLead,
+  mailRuleMatchJson as MatchJson,
+  mailRuleOwnerOnly as notAllowed,
+  prepareMailRule,
+  DEFAULT_MAIL_RULE_CAP,
+} from "./ruleDraft.ts";
 
-const DEFAULT_CAP = 30;
 const PREVIEW_HEADERS = 200;
 const RUN_HEADERS = 50;
 const KEEP_MS = 30 * DAY_MS;
 
 const failure = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
-const notAllowed = failure("not_allowed", "Only the owner or a co-owner can manage mail rules.");
 const notFound = failure("not_found", "Kin can't find that mail rule.");
-const badRule = failure(
-  "invalid_state",
-  "Check the sender filters, subject words, instruction and monthly limit.",
-);
 const changed = failure(
   "invalid_state",
   "This mail rule was changed outside Kin, so it won't run. Remove it and set it up again.",
-);
-const noMailbox = failure("invalid_state", "Choose a connected company mailbox.");
-const noLead = failure(
-  "invalid_state",
-  "Choose an active lead and your direct chat with that lead.",
 );
 const notPaused = failure(
   "invalid_state",
@@ -69,9 +64,7 @@ const tapUsed = failure(
 );
 const oldResume = failure("invalid_state", "Tap Resume again to turn on this mail rule.");
 const unavailable = failure("unavailable", "Kin couldn't load or save mail rules. Try again.");
-const MatchJson = Schema.fromJsonString(KinMailRuleMatch);
 const decodeMatch = Schema.decodeUnknownOption(MatchJson);
-const encodeMatch = Schema.encodeEffect(MatchJson);
 const decodeRefs = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 const isChatError = Schema.is(KinChatError);
 const isCreate = Schema.is(KinMailRuleCreateInput);
@@ -82,7 +75,11 @@ type Method<Input, Result> = (people: People, input: Input) => Effect.Effect<Res
 export class KinMailRules extends Context.Service<
   KinMailRules,
   {
-    readonly createFromTap: Method<KinMailRuleCreateInput, KinMailRule>;
+    readonly createFromTap: (
+      people: People,
+      input: KinMailRuleCreateInput,
+      expectedHash?: string,
+    ) => Effect.Effect<KinMailRule, KinChatError>;
     readonly pause: Method<KinMailRuleRef, KinMailRule>;
     readonly resume: Method<KinMailRuleResumeInput, KinMailRule>;
     readonly remove: Method<KinMailRuleRef, KinMailRule>;
@@ -108,17 +105,6 @@ type Candidate = WakeMail & {
   readonly senderCheck: "passed" | "failed" | "not checked" | null;
 };
 
-const validMatch = (match: KinMailRuleMatch) =>
-  match.from.every((sender) =>
-    sender.address !== undefined
-      ? mailRuleAddress(sender.address) !== null
-      : mailRuleDomain(sender.domain) !== null,
-  ) &&
-  match.subjectHas.every((text) => {
-    const phrase = mailRulePhrase(text);
-    return phrase.length >= 2 && phrase.length <= 60;
-  });
-
 const toPreviewMail = ({ arrivalId, fromAddress, receivedAt }: Candidate) => ({
   arrivalId,
   fromAddress,
@@ -131,32 +117,17 @@ const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue;
   const zoneFor = (orgId: KinOrgId) =>
     readOwnerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-  const settle = <A, E>(effect: Effect.Effect<A, E>) =>
-    effect.pipe(Effect.mapError((error) => (isChatError(error) ? error : unavailable)));
+  const settle = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    effect.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+    );
   const owner = Effect.fn("KinMailRules.owner")(function* (people: People, orgId: KinOrgId) {
     const person = people.find((one) => one._tag === "person" && one.orgId === orgId);
     if (person === undefined) return yield* notAllowed;
     yield* stillOwner(orgId, person.personId);
     return person.personId;
   });
-  const stillOwner = (orgId: KinOrgId, personId: KinPersonId) =>
-    Effect.flatMap(ruleSetter(orgId, personId), (setter) =>
-      setter === "owner" ? Effect.void : notAllowed,
-    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-  const companyMailbox = (orgId: KinOrgId, connectionId: string) =>
-    Effect.flatMap(companyRuleMailbox(orgId, connectionId), (mailbox) =>
-      mailbox === undefined ? noMailbox : Effect.void,
-    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-  const directLead = (
-    orgId: KinOrgId,
-    personId: KinPersonId,
-    agentId: KinAgentId,
-    chatId: KinChatId,
-  ) =>
-    Effect.flatMap(isDirectRuleLead(orgId, personId, agentId, chatId), (available) =>
-      available ? Effect.void : noLead,
-    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-
   const rules = sql`SELECT r.org_id AS "orgId", r.rule_id AS "ruleId",
     r.connection_id AS "connectionId", r.match_json AS "matchJson", r.what,
     r.agent_id AS "agentId", r.chat_id AS "chatId", r.said_by AS "saidBy",
@@ -192,19 +163,20 @@ const make = Effect.gen(function* () {
   const view = Effect.fn("KinMailRules.read")(function* (input: KinMailRuleRef) {
     return toView(yield* one(input), yield* Clock.currentTimeMillis, yield* zoneFor(input.orgId));
   });
-  const transaction = <A, E>(effect: Effect.Effect<A, E>) => settle(sql.withTransaction(effect));
+  const transaction = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    settle(sql.withTransaction(effect));
 
   const createFromTap = Effect.fn("KinMailRules.createFromTap")(function* (
     people: People,
     input: KinMailRuleCreateInput,
+    expectedHash?: string,
   ) {
     const { orgId, connectionId, agentId, chatId, what, tapId } = input;
     const personId = yield* owner(people, orgId);
-    if (!isCreate(input) || what.trim() === "" || !validMatch(input.match)) return yield* badRule;
-    const matchJson = yield* encodeMatch(input.match).pipe(Effect.mapError(() => badRule));
-    const hash = mailRuleContentHash(matchJson, what);
+    if (!isCreate(input)) return yield* badRule;
+    const { matchJson, contentSha256: hash, monthlyCap } = yield* prepareMailRule(input);
+    if (expectedHash !== undefined && hash !== expectedHash) return yield* changed;
     const ruleId = `rule_${mailRuleContentHash(`${personId.length}:${personId}`, tapId)}`;
-    const monthlyCap = input.monthlyCap ?? DEFAULT_CAP;
     const now = yield* Clock.currentTimeMillis;
     yield* companyMailbox(orgId, connectionId);
     yield* directLead(orgId, personId, agentId, chatId);
@@ -370,7 +342,7 @@ const make = Effect.gen(function* () {
         if (!("match" in rule)) return yield* notFound;
         if (snapshot?.state === "removed") return yield* notFound;
         if (rule.match === null) return yield* changed;
-        if (!validMatch(rule.match)) return yield* badRule;
+        if (mailRuleMatchProblem(rule.match) !== undefined) return yield* badRule;
         yield* companyMailbox(orgId, rule.connectionId);
         const filter = { connectionId: rule.connectionId, ...rule.match };
         const rows = (yield* candidates(orgId, rule.connectionId)).filter(
@@ -420,7 +392,7 @@ const make = Effect.gen(function* () {
       const match = select(filter, row, subject, {});
       if (match === "no_match") continue;
       const limit = monthlyMailRuleLimit(
-        { ...counter, monthlyCap: rule.monthlyCap ?? DEFAULT_CAP },
+        { ...counter, monthlyCap: rule.monthlyCap ?? DEFAULT_MAIL_RULE_CAP },
         row.receivedAt ?? row.noticedAt,
         zone,
       );
