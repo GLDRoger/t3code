@@ -71,7 +71,7 @@ const syncConflicts = [
   ["Memory writes to the default branch are refused", "set up to accept"],
   [
     "Memory changed since the dream read it, so it did not land",
-    "changed during the nightly update",
+    "memory changed while it ran",
   ],
 ] as const;
 
@@ -146,5 +146,26 @@ it.effect.each([
     assert.deepStrictEqual(seen, []);
     assert.isUndefined(memoryWriteFailure(failure));
     assert.isUndefined(savedMemoryWriteFailure(`${_tag}: ${reason}`));
+  }),
+);
+
+// The agent's own memory_write gets these refusals as its tool result and can fix them itself.
+it.effect.each([
+  ["stage-note", "MemoryWriteRejected", QUOTE_MISSING, undefined],
+  ["stage-note", "MemoryWriteRejected", "Kind does not match path", undefined],
+  ["stage-note", "MemorySecretBlocked", "fixture diagnostic", undefined],
+  ["stage-journal", "MemoryJournalError", "fixture diagnostic", undefined],
+  ["stage-note", "MemoryCheckoutInvalid", "fixture diagnostic", "checkout"],
+  ["wake-up", "MemoryWriteRejected", QUOTE_MISSING, "quote-missing"],
+] as const)("%s refused by %s (%s) tells the owner %s", ([operation, _tag, reason, told]) =>
+  Effect.gen(function* () {
+    const seen: Array<MemoryWriteFailure | undefined> = [];
+    yield* observeMemoryWrite(
+      (_org, _operation, observed) => Effect.sync(() => void seen.push(observed)),
+      orgId,
+      operation,
+      Effect.fail({ _tag, reason }),
+    ).pipe(Effect.result);
+    assert.deepStrictEqual(seen, told === undefined ? [] : [told]);
   }),
 );

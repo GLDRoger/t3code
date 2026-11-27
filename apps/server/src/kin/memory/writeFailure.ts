@@ -28,7 +28,8 @@ export const MEMORY_WRITE_FAILURE_WORDS = {
     "Kin held a memory update back because the check for passwords and keys couldn't finish.",
   note: "Kin couldn't save a memory update because a memory note couldn't be read.",
   journal: "Kin couldn't save a journal entry because its date or time zone couldn't be read.",
-  storage: "Kin couldn't read or write what a memory update needed.",
+  storage:
+    "Kin couldn't read or write what a memory update needed. Ask whoever looks after Kin to check it.",
   refused: "Kin couldn't save a memory update because the changes didn't meet memory's rules.",
   context: "Kin couldn't tell which turn the memory update belonged to.",
   "file-name":
@@ -71,14 +72,14 @@ export const MEMORY_WRITE_FAILURE_WORDS = {
     "Kin couldn't finish the nightly memory update because the earlier version it read is gone.",
   "dream-remote": "Kin couldn't send the nightly memory update to the online copy.",
   "dream-changed":
-    "Kin couldn't save the nightly update because memory changed during the nightly update.",
+    "Kin couldn't save the nightly memory update because memory changed while it ran.",
   "missing-note": "Kin couldn't find the memory note it needed to update.",
   "note-conflict": "Kin couldn't save a memory update because it conflicted with an existing note.",
   "unknown-source-person": "Kin couldn't save a note because it couldn't identify who said it.",
   "missing-history":
-    "Kin couldn't save an update because part of memory is missing from this server.",
+    "Kin couldn't save an update because part of memory is missing from this server. Ask whoever looks after Kin to check it.",
   "unexpected-online-copy":
-    "Kin couldn't open memory for an update because it got an unexpected result from the online copy.",
+    "Kin couldn't open memory for an update because it got an unexpected result from the online copy. Ask whoever looks after Kin to check it.",
 } as const;
 
 export type MemoryWriteFailure = keyof typeof MEMORY_WRITE_FAILURE_WORDS;
@@ -225,6 +226,21 @@ export const MEMORY_WRITE_OPERATION_WORDS = {
 
 export type MemoryWriteOperation = keyof typeof MEMORY_WRITE_OPERATION_WORDS;
 
+// An agent's own memory_write gets these as its tool result and fixes or reports them itself.
+const toldToCaller: ReadonlySet<MemoryWriteFailure> = new Set([
+  ...Object.values(rejectionReasons),
+  "refused",
+  "secret",
+  "note",
+  "note-conflict",
+  "missing-note",
+  "journal",
+]);
+const callerOperations: ReadonlySet<MemoryWriteOperation> = new Set([
+  "stage-note",
+  "stage-journal",
+]);
+
 export type WriteEpisode = (
   orgId: KinOrgId,
   operation: MemoryWriteOperation,
@@ -246,6 +262,8 @@ export const observeMemoryWrite = <A, E, R>(
           if (Cause.hasInterruptsOnly(cause)) return Effect.void;
           const error = Cause.squash(cause);
           if (isSilent(writeError(error))) return Effect.void;
-          return tell(orgId, operation, memoryWriteFailure(error) ?? "storage");
+          const failure = memoryWriteFailure(error) ?? "storage";
+          if (callerOperations.has(operation) && toldToCaller.has(failure)) return Effect.void;
+          return tell(orgId, operation, failure);
         }),
       );
