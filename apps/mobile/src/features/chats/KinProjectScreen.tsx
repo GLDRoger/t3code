@@ -534,7 +534,10 @@ function KinProjectHistorySheet(
   const history = useKinWorkHistory(props, props.projectKey, props.seq);
   return (
     <Sheet title={KIN_CLIENTS.history} onClose={props.onClose}>
-      <ScrollView className="max-h-[70vh]" contentContainerStyle={{ padding: 16, gap: 12 }}>
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{ padding: 16, gap: 12 }}
+      >
         {history.state.loading ? (
           <KinWorkLoading label={KIN_CLIENTS.history} />
         ) : history.state.failed !== null ? (
