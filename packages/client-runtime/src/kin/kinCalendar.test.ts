@@ -258,5 +258,20 @@ describe("calendar events beside Work dates", () => {
       retry: true,
       text: expect.stringMatching(/^Couldn't reach 2 /),
     });
+    // An address keeps its own case; only the "your … mailbox" stand-in starts a sentence.
+    const ungranted = (account: string | null) =>
+      kinCalendarNotice({
+        _tag: "ready",
+        calendar: {
+          sources: [{ ...sources[0]!, account, status: "no_calendar_permission" }],
+          events: [],
+          more: false,
+        },
+        refreshing: false,
+      })?.text;
+    expect([ungranted("rhea@tidewater.example"), ungranted(null)]).toEqual([
+      "rhea@tidewater.example was connected without calendar access. Connect it again under Your mailboxes and allow Calendar.",
+      "Your Google mailbox was connected without calendar access. Connect it again under Your mailboxes and allow Calendar.",
+    ]);
   });
 });

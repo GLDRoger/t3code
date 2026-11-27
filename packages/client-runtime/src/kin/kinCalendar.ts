@@ -278,7 +278,7 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
     return withCap(
       stuck.status === "signed_out"
         ? `Sign in to ${mailboxOf(stuck)} again under ${where}.`
-        : `${capitalised(mailboxOf(stuck))} was connected without calendar access. Connect it again under ${where} and allow Calendar.`,
+        : `${stuck.account ?? capitalised(mailboxOf(stuck))} was connected without calendar access. Connect it again under ${where} and allow Calendar.`,
       { mailboxes: !stuck.company },
     );
   }
