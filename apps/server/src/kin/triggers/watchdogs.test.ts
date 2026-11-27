@@ -169,6 +169,7 @@ function services(harness: Harness) {
           ),
         );
       return Layer.mock(Memory.Memory)({
+        withWriterLock: (_org, effect) => effect,
         query: (org, query) =>
           outside(
             "query",
