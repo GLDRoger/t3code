@@ -57,10 +57,17 @@ export function KinWorkSection(props: {
   readonly title: string;
   readonly action?: React.ReactNode;
   /** One line instead; `onOpen` makes the line open a page rather than unfold the block. */
-  readonly fold?: { readonly summary: string | null; readonly onOpen?: () => void };
+  readonly fold?: {
+    readonly summary: string | null;
+    readonly onOpen?: () => void;
+    readonly open?: boolean;
+    readonly onOpenChange?: (open: boolean) => void;
+  };
   readonly children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = props.fold?.open ?? localOpen;
+  const setOpen = props.fold?.onOpenChange ?? setLocalOpen;
   if (props.fold === undefined)
     return (
       <section className="flex flex-col gap-2">

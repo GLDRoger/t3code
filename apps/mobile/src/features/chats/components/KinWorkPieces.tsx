@@ -137,10 +137,12 @@ export function KinWorkFrame(
       /** The space under it with the keyboard closed, which the keyboard covers when open. */
       readonly bottomInset: number;
     };
+    /** Optional handle to scroll this frame's scroll view to a section. */
+    readonly scrollRef?: React.RefObject<ComponentRef<typeof ScreenScrollView> | null>;
     readonly children: React.ReactNode;
   },
 ) {
-  const { form, showTop, footer, children, ...bar } = props;
+  const { form, showTop, footer, scrollRef, children, ...bar } = props;
   const navigation = useNavigation();
   const guarded = props.guardBack === true;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a guarded step turns its screen's swipe and Back off (AppBar); options merge, so leaving the step must turn them on again
@@ -167,7 +169,10 @@ export function KinWorkFrame(
       <AppBar {...bar} />
       <ScreenContent surface="screen">
         <ScreenScrollView
-          ref={scroll}
+          ref={(node) => {
+            scroll.current = node;
+            if (scrollRef !== undefined) scrollRef.current = node;
+          }}
           className="flex-1"
           // Every frame, not only a form: a task page's pickers have a search field too, and
           // without these a tap on a found row only closes the keyboard.
@@ -948,9 +953,13 @@ export function KinFoldSection(props: {
   readonly title: string;
   readonly summary: string | null;
   readonly onOpen?: () => void;
+  readonly open?: boolean;
+  readonly onOpenChange?: (open: boolean) => void;
   readonly children?: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = props.open ?? localOpen;
+  const setOpen = props.onOpenChange ?? setLocalOpen;
   const { onOpen } = props;
   return (
     <ListSection>

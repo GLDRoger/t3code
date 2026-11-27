@@ -101,7 +101,12 @@ import {
   FlagIcon,
   XIcon,
 } from "lucide-react";
-import { useId, useState, type ComponentProps } from "react";
+import {
+  kinEntryLookedUpTo,
+  kinEntrySinceLooked,
+  type KinSinceLookedView,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
+import { useId, useRef, useState, type ComponentProps } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
@@ -157,10 +162,17 @@ import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { KinWatchLine } from "./KinWatchLine";
+import {
+  KinSinceLookedLine,
+  scrollIntoViewRespectingMotion,
+  useKinPageVisible,
+} from "./KinSinceLookedLine";
 import { useNowMinuteMs } from "./useKinClock";
 import { KIN_WEB_ONLY } from "./kinWebOnly";
 import {
   useKinPickerSearch,
+  useKinPinnedEntryLook,
+  useKinRecordLooked,
   useKinWorkItemWatch,
   useKinWorkPlace,
   type KinWorkChangesHandle,
@@ -248,6 +260,19 @@ export function KinWorkItemSheet(
   const ownerLevel = useKinOwnerLevel(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
+  const pageVisible = useKinPageVisible();
+  const readyItem = state._tag === "ready" ? state.item : null;
+  const pinnedLookedAt = useKinPinnedEntryLook(readyItem);
+  const lookedUpTo = readyItem === null ? null : kinEntryLookedUpTo(readyItem);
+  useKinRecordLooked(
+    props,
+    readyItem === null || lookedUpTo === null
+      ? null
+      : { recordId: readyItem.recordId, upTo: lookedUpTo },
+    pageVisible,
+  );
+  const sinceLooked =
+    readyItem === null ? null : kinEntrySinceLooked(readyItem, pinnedLookedAt, names, now);
   useKinWorkItemWatch(
     props,
     itemKey,
@@ -310,6 +335,7 @@ export function KinWorkItemSheet(
           />
         }
         offLine={offLine}
+        sinceLooked={sinceLooked}
       />
     ) : state._tag === "ready" ? (
       <KinWorkItem
@@ -317,6 +343,7 @@ export function KinWorkItemSheet(
         frame={Frame}
         item={state.item}
         shown={kinWorkApplied(state.item, changed)}
+        sinceLooked={sinceLooked}
         view={kinWorkItemView(
           kinWorkApplied(state.item, changed),
           names,
@@ -648,6 +675,7 @@ function KinWorkItem(
     readonly item: KinRecordDetail;
     /** The task with this browser's unsaved changes applied, as `view` reads it. */
     readonly shown: KinRecordDetail;
+    readonly sinceLooked: KinSinceLookedView | null;
     readonly view: KinWorkItemView;
     readonly directory: KinWorkDirectory;
     readonly now: Date;
@@ -680,6 +708,7 @@ function KinWorkItem(
     useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
   );
   const [handingBack, setHandingBack] = useState(false);
+  const activityRef = useRef<HTMLDivElement>(null);
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -856,6 +885,10 @@ function KinWorkItem(
             </p>
           ))}
           <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
+          <KinSinceLookedLine
+            view={props.sinceLooked}
+            onOpen={() => scrollIntoViewRespectingMotion(activityRef.current)}
+          />
         </div>
       </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -1298,17 +1331,19 @@ function KinWorkItem(
             />
           </Section>
         )}
-        <KinTaskActivity
-          environmentId={environmentId}
-          orgId={orgId}
-          itemKey={props.item.key}
-          item={props.item}
-          names={names}
-          now={props.now}
-          note={view.historyNote}
-          reason={step.words === view.reason ? null : view.reason}
-          onOpenProject={props.onOpenProject}
-        />
+        <div ref={activityRef}>
+          <KinTaskActivity
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={props.item.key}
+            item={props.item}
+            names={names}
+            now={props.now}
+            note={view.historyNote}
+            reason={step.words === view.reason ? null : view.reason}
+            onOpenProject={props.onOpenProject}
+          />
+        </div>
         <KinWorkLinks
           {...props}
           item={props.shown}

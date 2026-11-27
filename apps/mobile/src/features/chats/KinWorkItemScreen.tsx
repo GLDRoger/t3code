@@ -138,6 +138,8 @@ import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
 import {
+  useKinPinnedEntryLook,
+  useKinRecordLooked,
   useKinWork,
   useKinWorkAnswer,
   useKinWorkChanges,
@@ -151,7 +153,13 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import {
+  kinEntryLookedUpTo,
+  kinEntrySinceLooked,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinSinceLookedLine, useKinScreenVisible } from "./components/KinSinceLookedLine";
 import { KinTaskWithRow } from "./components/KinTaskWithRow";
 import { kinTaskLeftAtom } from "./state/kinTaskLeft";
 import { useKinSectionOn, useKinShell } from "./state/useKinShell";
@@ -327,6 +335,28 @@ function KinWorkItemBody(props: ItemTarget) {
     useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
   );
   const now = new Date(useNowMinuteMs());
+  const visible = useKinScreenVisible();
+  const readyItem = state._tag === "ready" ? state.item : null;
+  const pinnedLookedAt = useKinPinnedEntryLook(readyItem);
+  const lookedUpTo = readyItem === null ? null : kinEntryLookedUpTo(readyItem);
+  useKinRecordLooked(
+    props,
+    readyItem === null || lookedUpTo === null
+      ? null
+      : { recordId: readyItem.recordId, upTo: lookedUpTo },
+    visible && making === null,
+  );
+  const sinceLooked =
+    readyItem === null
+      ? null
+      : kinEntrySinceLooked(readyItem, pinnedLookedAt, directory.names, now);
+  const scrollRef = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const historyY = useRef<number | null>(null);
+  const jumpToHistory = () => {
+    if (historyY.current !== null) {
+      scrollRef.current?.scrollTo({ y: Math.max(0, historyY.current - 12), animated: true });
+    }
+  };
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
   const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
@@ -452,7 +482,7 @@ function KinWorkItemBody(props: ItemTarget) {
     const section = kinSectionOf({ list: item.list });
     const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
-      <KinWorkFrame title={listName} onBack={back}>
+      <KinWorkFrame title={listName} onBack={back} scrollRef={scrollRef}>
         {offLine === null ? null : (
           <Text textRole="footnote" className="px-2 text-foreground-muted">
             {offLine}
@@ -465,8 +495,18 @@ function KinWorkItemBody(props: ItemTarget) {
           view={read}
           directory={directory}
           now={now}
+          sinceLooked={sinceLooked}
+          onOpenSinceLooked={jumpToHistory}
           links={linkedSection(item, read.links)}
-          history={<KinWorkHistory view={read} />}
+          history={
+            <View
+              onLayout={(event) => {
+                historyY.current = event.nativeEvent.layout.y;
+              }}
+            >
+              <KinWorkHistory view={read} />
+            </View>
+          }
         />
       </KinWorkFrame>
     );
@@ -704,6 +744,7 @@ function KinWorkItemBody(props: ItemTarget) {
       form={edit !== null}
       // The form opens at the top, wherever the page was scrolled to.
       showTop={edit === null ? null : edit.key}
+      scrollRef={scrollRef}
       {...(footer === undefined ? {} : { footer })}
     >
       <View className="gap-2.5 px-1">
@@ -731,6 +772,7 @@ function KinWorkItemBody(props: ItemTarget) {
         ))}
       </View>
       <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={itemKey} />
+      <KinSinceLookedLine view={sinceLooked} onPress={jumpToHistory} className="px-1" />
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>
@@ -1077,24 +1119,30 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         </View>
       )}
-      <KinActivity
-        lines={kinTaskActivity(
-          { changes: item.changes, comments },
-          names,
-          now,
-          // The card on top quotes it already when it is all there is to say.
-          step.words === view.reason ? null : view.reason,
-        )}
-        note={view.historyNote}
-        environmentId={environmentId}
-        onPressPreview={setPreviewFile}
-        onRemove={askRemove}
-        {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
-        {...(item.projectNote === undefined
-          ? {}
-          : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
-        onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
-      />
+      <View
+        onLayout={(event) => {
+          historyY.current = event.nativeEvent.layout.y;
+        }}
+      >
+        <KinActivity
+          lines={kinTaskActivity(
+            { changes: item.changes, comments },
+            names,
+            now,
+            // The card on top quotes it already when it is all there is to say.
+            step.words === view.reason ? null : view.reason,
+          )}
+          note={view.historyNote}
+          environmentId={environmentId}
+          onPressPreview={setPreviewFile}
+          onRemove={askRemove}
+          {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+          {...(item.projectNote === undefined
+            ? {}
+            : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
+          onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
+        />
+      </View>
       {linkedSection(shown, view.links, canLink && view.can.links === true)}
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
     </KinWorkFrame>

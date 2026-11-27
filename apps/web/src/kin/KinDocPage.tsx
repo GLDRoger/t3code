@@ -29,6 +29,7 @@ import {
 import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
+import { kinDocLookedUpTo, kinDocSinceLooked } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey, KinWidgetId } from "@t3tools/contracts";
@@ -94,6 +95,7 @@ import { KinDocReadersRow } from "./KinDocReadersRow";
 import { openDestination } from "./KinNotifications";
 import { KinLinkedGroups } from "./KinWorkItemSheet";
 import { KinWatchLine } from "./KinWatchLine";
+import { useKinPageVisible } from "./KinSinceLookedLine";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -102,7 +104,12 @@ import { useKinDoc, useKinDocAsk, useKinDocHistory } from "./useKinDocs";
 import { useKinDocDelete } from "./useKinDocDelete";
 import { toastDocDeleted, toastDocRestored } from "./kinDocDeleteToasts";
 import { kinHostConnected } from "./useKinHost";
-import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import {
+  useKinPinnedDocLook,
+  useKinRecordLooked,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./useKinWork";
 
 /** Which doc is open and how: read, or compared with another version, with its history beside. */
 export interface KinDocWhere {
@@ -185,6 +192,26 @@ export function KinDocPage(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const deleting = useKinDocDelete(props);
   const nowMs = useNowMinuteMs();
+  const pageVisible = useKinPageVisible();
+  const isLatestView =
+    comparing === undefined && where.version === undefined && where.card === undefined;
+  const pinnedLook = useKinPinnedDocLook(doc, isLatestView);
+  const lookedUpTo = doc === null ? null : kinDocLookedUpTo(doc, { isLatest: isLatestView });
+  useKinRecordLooked(
+    props,
+    doc === null || lookedUpTo === null ? null : { recordId: doc.recordId, upTo: lookedUpTo },
+    pageVisible && isLatestView,
+  );
+  const sinceLooked =
+    doc === null || !isLatestView
+      ? null
+      : kinDocSinceLooked(
+          doc,
+          pinnedLook?.lookedAt,
+          pinnedLook?.sinceLooked,
+          names,
+          new Date(nowMs),
+        );
   const mayDelete = doc !== null && deleting.allowed && doc.deletable === true;
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
@@ -458,6 +485,15 @@ export function KinDocPage(
           onCopyText={copyText}
           onEdit={kinDocCanEdit(doc) ? (section) => setEditing(kinDocEditOpen(doc, section)) : null}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
+          sinceLooked={sinceLooked}
+          onOpenSinceLooked={() => {
+            if (sinceLooked?.opens.kind === "diff") {
+              onGo({
+                doc: key,
+                changes: { to: sinceLooked.opens.to, from: sinceLooked.opens.from },
+              });
+            }
+          }}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
           onExportPdf={canPdf ? () => void exportPdf() : null}

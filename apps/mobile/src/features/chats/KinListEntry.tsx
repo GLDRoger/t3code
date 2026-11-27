@@ -134,7 +134,9 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import type { KinSinceLookedView } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinSinceLookedLine } from "./components/KinSinceLookedLine";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -271,6 +273,8 @@ export function KinListEntryBody(
     readonly now: Date;
     readonly links: React.ReactNode;
     readonly history: React.ReactNode;
+    readonly sinceLooked?: KinSinceLookedView | null;
+    readonly onOpenSinceLooked?: () => void;
     /** Make invoice and Make its PDF turn the sheet into their form. */
     readonly onMake: (step: KinMakeStep) => void;
   },
@@ -559,6 +563,11 @@ export function KinListEntryBody(
       )}
       <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
       <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={item.key} />
+      <KinSinceLookedLine
+        view={props.sinceLooked ?? null}
+        onPress={() => props.onOpenSinceLooked?.()}
+        className="px-2"
+      />
       <ListSection>
         {!canChange || quote !== null || creditNote !== null ? null : (
           <Menu
