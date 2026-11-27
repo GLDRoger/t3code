@@ -29,7 +29,8 @@ import { DAY_MS } from "../../durations.ts";
  * Bank alert mails into Bank transactions, one entry per bank reference, whichever mailbox or
  * statement saw it first. Each mail Kin looked at is kept once in `kin_bank_alerts` with what
  * came of it, never its text; the newest available balance an alert printed is that account's.
- * Each bank's own mail is one format module behind `BankAlertFormat`.
+ * Each bank's sender checks are one format module behind `BankAlertFormat`; one model reading,
+ * checked against the mail by `verifyBankAlert`, serves them all.
  */
 
 /** The parts of one message a format reads. */
@@ -64,7 +65,7 @@ export type AlertRejection =
   | "sender"
   /** From the address, but the receiving server didn't vouch for it. */
   | "unverified"
-  /** From the bank, verified, but not one transaction read one way. */
+  /** From the bank, verified, but not one transaction read one way, or no model could read it. */
   | "unparsed";
 
 export type AlertReading =
@@ -203,11 +204,9 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
         exact,
         matchesReference:
           said === reference &&
-          (one.createdByKind === "agent"
-            ? exact
-            : direction !== (alert.direction === "debit" ? "credit" : "debit") &&
-              (account === null || account === alert.account) &&
-              Math.abs(Date.parse(`${date}T00:00:00Z`) - day) <= 2 * DAY_MS),
+          direction !== (alert.direction === "debit" ? "credit" : "debit") &&
+          (account === null || account === alert.account) &&
+          Math.abs(Date.parse(`${date}T00:00:00Z`) - day) <= 2 * DAY_MS,
       },
     ];
   });
@@ -275,6 +274,8 @@ export const threadSeen = Effect.fn("KinBankAlerts.threadSeen")(function* (
 export const ALERT_RETRY_WINDOW = 14 * DAY_MS;
 // Only unparsed rows use reference for an ordered parser marker instead of a bank reference.
 const PARSER_MARKER = "parser:0003";
+/** An alert no model was available to read: retried like an older parser's, and told as such. */
+export const UNREAD_ALERT_MARKER = "parser:0000";
 
 const canRetryAlert = (sql: SqlClient.SqlClient, now: number) =>
   sql`outcome = 'unparsed' AND sent_at BETWEEN ${now - ALERT_RETRY_WINDOW} AND ${now}
@@ -325,9 +326,10 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     {
       message: AlertMessage;
       format: BankAlertFormat | undefined;
-      reading: AlertReading | undefined;
+      reading: AlertReading | "unread" | undefined;
     }
   >();
+  let unread = false;
   for (const message of input.messages) {
     const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
     if (sentAt < input.now - ALERT_RETRY_WINDOW) continue;
@@ -335,7 +337,14 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     if (reads.has(alertId) || skip(yield* seenAlert(alertId))) continue;
     const format = formatSending(message.fromAddress);
     const reading =
-      format === undefined ? undefined : yield* format.read(message, currency, reader);
+      format === undefined
+        ? undefined
+        : yield* format.read(message, currency, reader).pipe(
+            Effect.catchTag("BankAlertReaderUnavailable", () => {
+              unread = true;
+              return Effect.succeed("unread" as const);
+            }),
+          );
     reads.set(alertId, { message, format, reading });
   }
   if (reads.size === 0 && !input.recheckedThread) return tally satisfies AlertTally;
@@ -344,6 +353,22 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       for (const [alertId, { message, format, reading }] of reads) {
         const seen = yield* seenAlert(alertId);
         if (skip(seen)) continue;
+        if (reading === "unread") {
+          if (seen === undefined) {
+            yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
+              org_id: orgId,
+              alert_id: alertId,
+              connection_id: input.connectionId,
+              thread_id: input.threadId,
+              sent_at: message.date === null ? null : Date.parse(message.date),
+              seen_at: input.now,
+              outcome: "unparsed",
+              reference: UNREAD_ALERT_MARKER,
+            })}`;
+            tally.rejected++;
+          }
+          continue;
+        }
         if (format === undefined || reading === undefined || reading._tag === "rejected") {
           if (seen !== undefined) {
             yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
@@ -397,7 +422,8 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       if (input.recheckedThread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
           WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
-            AND thread_id = ${input.threadId} AND ${retryable}`;
+            AND thread_id = ${input.threadId} AND ${retryable}
+            AND (${unread ? 0 : 1} = 1 OR COALESCE(reference, '') <> ${UNREAD_ALERT_MARKER})`;
       }
     }),
   );

@@ -64,7 +64,16 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
       for (const { threadId } of pending) retries.add(threadId);
   }
 
-  let deferred: BankAlertReader.BankAlertReaderUnavailable | undefined;
+  // One unavailable read stands for the whole pass: the rest wait for the next without a call.
+  const reader = yield* BankAlertReader.BankAlertReader;
+  let down = false;
+  const onceDown = BankAlertReader.BankAlertReader.of({
+    read: Effect.fn("KinBankAlertReader.readOnce")((mail) =>
+      down
+        ? Effect.fail(new BankAlertReader.BankAlertReaderUnavailable())
+        : reader.read(mail).pipe(Effect.tapError(() => Effect.sync(() => (down = true)))),
+    ),
+  });
   for (const threadId of new Set([...threads, ...retries])) {
     const retryOnly = !threads.has(threadId);
     tally.threads++;
@@ -101,16 +110,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
             ],
       ),
       now,
-    }).pipe(
-      Effect.catchTags({
-        BankAlertReaderUnavailable: (error) =>
-          Effect.sync(() => {
-            if (!retryOnly) deferred = error;
-            return undefined;
-          }),
-      }),
-    );
-    if (taken === undefined) break;
+    }).pipe(Effect.provideService(BankAlertReader.BankAlertReader, onceDown));
     tally.recorded += taken.recorded;
     tally.duplicate += taken.duplicate;
     tally.rejected += taken.rejected;
@@ -121,7 +121,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
       connectionId: activity.connectionId,
       ...tally,
     });
-  return deferred === undefined ? tally : yield* deferred;
+  return tally;
 });
 
 /**
@@ -147,7 +147,6 @@ export const alertsOnMail = Effect.fn("KinBankAlerts.onMail")(function* (
         Option.getOrElse(reader, () => unavailable),
       ),
       Effect.provideContext(context),
-      Effect.catchTags({ BankAlertReaderUnavailable: () => Effect.succeed(false) }),
       Effect.catchCause((cause) => {
         const failed = Cause.squash(cause);
         return Effect.logWarning("Kin couldn't read bank alert mail", {
