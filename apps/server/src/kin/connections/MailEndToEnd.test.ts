@@ -785,7 +785,7 @@ const pulseEvents = Effect.gen(function* () {
 const ruleMail = (fake: FakeMail, to: string, at: number, number: number, verified = true) =>
   fake.deliver({
     to,
-    from: "Juniper Cold Chain <billing@juniper.example>",
+    from: "Juniper Cold Chain <ledger@juniper.example>",
     subject: "Invoice 42",
     body: "Juniper Cold Chain invoice.",
     messageId: `<invoice-${number}@juniper.example>`,
