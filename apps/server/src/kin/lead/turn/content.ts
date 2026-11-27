@@ -20,6 +20,9 @@ import { PDF_PAGE_IMAGES, type PageBudget, renderPdfPages } from "./pdfPageImage
 
 /** About 50k tokens across a turn's documents: a long contract, not a book. */
 export const TURN_TEXT_CHARS = 200_000;
+// A file's own "[Text of" or "[End of", anywhere in it, as "(…)": only Kin's lines open or close its text.
+const FRAME_MARKER =
+  /[[\uff3b]([\t \p{Zs}\p{Cf}]*(?:text|end)[\t \p{Zs}\p{Cf}]+of\b[^\]\uff3d\n\r\u0085\u2028\u2029]*)[\]\uff3d]?/giu;
 
 /**
  * A turn's own files, newest kept: past 20 images a request's images shrink on Claude, and its
@@ -148,8 +151,9 @@ export class KinTurnContent extends Context.Service<
           };
           let chars = TURN_TEXT_CHARS;
           const quoted = (name: string, body: string, heading: string) => {
-            const cut = body.length > chars;
-            const kept = body.slice(0, chars);
+            const shown = body.replace(FRAME_MARKER, "($1)");
+            const cut = shown.length > chars;
+            const kept = shown.slice(0, chars);
             chars -= kept.length;
             return `[${heading}${cut ? `, cut at ${kept.length} characters` : ""}]\n${kept}\n[End of "${name}"]`;
           };
