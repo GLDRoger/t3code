@@ -607,6 +607,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_bill_reads_event" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
+          { name: "idx_kin_chat_pins_source" },
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_client_touches_party" },
           { name: "idx_kin_connection_calls_connection" },
@@ -3652,7 +3653,10 @@ it.effect("K229 carries only companies and endings with existing bank alerts", (
     const sql = yield* legacyBankAlerts;
     const rows = yield* bankAlertRows(sql);
     const indexes = yield* bankAlertIndexes(sql);
-    assert.deepStrictEqual(yield* runKinMigrations(), [[229, "BankSenders"]]);
+    assert.deepStrictEqual(
+      yield* runKinMigrations(),
+      kinMigrations.filter(([id]) => id >= 229),
+    );
     // Every old row and value survives the table rebuild, and so do the old indexes.
     assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
     assert.deepStrictEqual(
