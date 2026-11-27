@@ -70,15 +70,11 @@ const hasReference = (text: string, reference: string) => {
   );
 };
 
-const accountIn = (text: string, digits: string) => {
-  if (!/^\d{4,34}$/.test(digits)) return undefined;
-  const lastFour = digits.slice(-4);
-  const marked = new RegExp(
-    String.raw`(?:\b(?:account|a/c|card)(?:\s+(?:no\.?|number|ending in))?\s*:?\s*[*x•]*|[*x•]{2,})\d*${lastFour}(?!\d)`,
-    "i",
-  );
-  return marked.test(text) ? lastFour : undefined;
-};
+const MARKED_ACCOUNT =
+  /(?:\b(?:account|a\/c|card)(?:\s+(?:no\.?|number|ending in))?\s*:?\s*[*x•]*|[*x•]{2,})(\d{4,})/gi;
+
+export const printedAccountEndings = (text: string) =>
+  new Set([...text.matchAll(MARKED_ACCOUNT)].map((match) => match[1]!.slice(-4)));
 
 export const verifyBankAlert = (
   text: string,
@@ -99,8 +95,8 @@ export const verifyBankAlert = (
   )
     return null;
 
-  const account = accountIn(text, read.account);
-  if (account === undefined) return null;
+  const account = read.account.slice(-4);
+  if (!/^\d{4,34}$/.test(read.account) || !printedAccountEndings(text).has(account)) return null;
   const figures = [...figuresIn(text)];
   const currencyLabels = [...text.matchAll(CURRENCY_LABEL)].map((m) => m[1]!);
   const currency = read.currency === null ? fallbackCurrency : currencyCode(read.currency);

@@ -20,7 +20,9 @@ import {
   rowFields,
   rowTitle,
 } from "./bankList.ts";
-import { hdfcAlerts } from "./hdfcAlerts.ts";
+import { readApprovedAlert } from "./bankAlertMailReading.ts";
+import { normalizeAddress, sendersOf, type ApprovedSender } from "./bankSenders.ts";
+import { MAIL_PRESETS } from "../../connections/mailProviders.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
@@ -29,7 +31,6 @@ import { DAY_MS } from "../../durations.ts";
  * Bank alert mails into Bank transactions, one entry per bank reference, whichever mailbox or
  * statement saw it first. Each mail Kin looked at is kept once in `kin_bank_alerts` with what
  * came of it, never its text; the newest available balance an alert printed is that account's.
- * Each bank's own mail is one format module behind `BankAlertFormat`.
  */
 
 /** The parts of one message a format reads. */
@@ -65,33 +66,12 @@ export type AlertRejection =
   /** From the address, but the receiving server didn't vouch for it. */
   | "unverified"
   /** From the bank, verified, but not one transaction read one way. */
-  | "unparsed";
+  | "unparsed"
+  | "other_account";
 
 export type AlertReading =
   | { readonly _tag: "alert"; readonly alert: BankAlert }
   | { readonly _tag: "rejected"; readonly reason: AlertRejection };
-
-/** One bank's alert mail: who sends it, how it reads, and how a statement names the bank. */
-export interface BankAlertFormat {
-  /** Short and stable: part of each entry's origin key. */
-  readonly key: string;
-  readonly bank: string;
-  readonly sends: (address: string | null | undefined) => boolean;
-  readonly names: (bank: string) => boolean;
-  readonly read: (
-    mail: AlertMail,
-    fallbackCurrency: string,
-    reader: BankAlertReader.BankAlertReader["Service"],
-  ) => Effect.Effect<AlertReading, BankAlertReader.BankAlertReaderUnavailable>;
-}
-
-const FORMATS: ReadonlyArray<BankAlertFormat> = [hdfcAlerts];
-
-const formatSending = (address: string | null | undefined) =>
-  FORMATS.find((format) => format.sends(address));
-
-export const isBankAlertSender = (address: string | null | undefined) =>
-  formatSending(address) !== undefined;
 
 const writer: Writer = { actor: { _tag: "system" }, via: "import" };
 
@@ -118,14 +98,13 @@ const alertIdOf = (connectionId: string, threadId: string, message: AlertMessage
       : `${connectionId}\0${message.messageId}`,
   );
 
-const keyPrefix = (format: BankAlertFormat, account: string) => `alert:${format.key}:${account}:`;
 /** A reversal quotes its debit's reference, so the way the money moved is part of the key. */
-const alertOriginKey = (format: BankAlertFormat, alert: BankAlert) =>
-  `${keyPrefix(format, alert.account)}${alert.direction}:${referenceKey(alert.reference)}`;
+const alertOriginKey = (sender: ApprovedSender, alert: BankAlert) =>
+  `alert:${sender.bankKey}:${alert.account}:${alert.direction}:${referenceKey(alert.reference)}`;
 
 /** An alert as the one statement row it is, so its entry reads as a statement's would. */
 const asStatement = (
-  format: BankAlertFormat,
+  sender: ApprovedSender,
   alert: BankAlert,
 ): { statement: Statement; row: StatementRow } => {
   const row: StatementRow = {
@@ -144,7 +123,7 @@ const asStatement = (
     row,
     statement: {
       kind: "account",
-      bank: format.bank,
+      bank: sender.bankName,
       account: alert.account,
       currency: alert.currency,
       from: alert.date,
@@ -163,14 +142,14 @@ const asStatement = (
  */
 const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
   orgId: KinOrgId,
-  format: BankAlertFormat,
+  sender: ApprovedSender,
   alert: BankAlert,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const def = yield* findBankList(orgId);
   if (def === undefined) return undefined;
   const [own] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = ${def.id} AND origin_key = ${alertOriginKey(format, alert)}`;
+    WHERE org_id = ${orgId} AND register_id = ${def.id} AND origin_key = ${alertOriginKey(sender, alert)}`;
   if (own !== undefined) return own.recordId;
   const zone = yield* ownerZone(orgId);
   const day = Date.parse(`${alert.date}T00:00:00Z`);
@@ -218,7 +197,7 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
     if (one.said !== "" || one.createdByKind !== "agent" || one.originKey.startsWith("alert:"))
       continue;
     const claims = yield* sql<{ reference: string }>`SELECT DISTINCT reference FROM kin_bank_alerts
-      WHERE org_id = ${orgId} AND record_id = ${one.recordId} AND bank = ${format.bank}
+      WHERE org_id = ${orgId} AND record_id = ${one.recordId} AND bank = ${sender.bankName}
         AND account = ${alert.account} AND currency = ${alert.currency} AND reference IS NOT NULL`;
     if (claims.some((claim) => referenceKey(claim.reference) === reference)) return one.recordId;
     if (claims.length === 0 && manual.length === 1) return one.recordId;
@@ -229,19 +208,19 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
 const recordAlert = Effect.fn("KinBankAlerts.record")(function* (
   orgId: KinOrgId,
   owner: KinPersonId,
-  format: BankAlertFormat,
+  sender: ApprovedSender,
   alert: BankAlert,
   now: number,
 ) {
-  const found = yield* existingEntry(orgId, format, alert);
+  const found = yield* existingEntry(orgId, sender, alert);
   if (found !== undefined) return { outcome: "duplicate" as const, recordId: found };
   const records = yield* KinRecords;
   const def = yield* ensureBankList(orgId, now);
-  const { statement, row } = asStatement(format, alert);
+  const { statement, row } = asStatement(sender, alert);
   const title = rowTitle(row);
   const { row: made } = yield* records.create(orgId, writer, {
     list: def.id,
-    originKey: alertOriginKey(format, alert),
+    originKey: alertOriginKey(sender, alert),
     title,
     owner: { _tag: "person", personId: owner },
     state: bankStates(def).open,
@@ -251,11 +230,22 @@ const recordAlert = Effect.fn("KinBankAlerts.record")(function* (
     fields: rowFields(def, statement, row),
     notes:
       title === row.description
-        ? `From an alert mail from ${format.bank}.`
-        : `${row.description}\nFrom an alert mail from ${format.bank}.`,
+        ? `From an alert mail from ${sender.bankName}.`
+        : `${row.description}\nFrom an alert mail from ${sender.bankName}.`,
     sensitive: true,
   });
   return { outcome: "recorded" as const, recordId: made.recordId };
+});
+
+export const bankAlertMailbox = Effect.fn("KinBankAlerts.companyMailbox")(function* (
+  orgId: KinOrgId,
+  connectionId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [mailbox] = yield* sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
+    AND connection_id = ${connectionId} AND person_id IS NULL AND state = 'active'
+    AND removed_at IS NULL AND paused_at IS NULL AND preset IN ${sql.in(MAIL_PRESETS)}`;
+  return mailbox !== undefined;
 });
 
 /** Whether Kin already looked at a thread's mail up to its newest, so it needn't read it again. */
@@ -303,6 +293,7 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     readonly threadId: string;
     readonly messages: ReadonlyArray<AlertMessage>;
     readonly now: number;
+    readonly senders?: ReadonlyMap<string, ApprovedSender>;
     readonly retryOnly?: boolean;
     readonly recheckedThread?: boolean;
   },
@@ -310,7 +301,9 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
   const sql = yield* SqlClient.SqlClient;
   const tally = { recorded: 0, duplicate: 0, rejected: 0 };
   const owner = yield* orgOwner(orgId);
-  if (owner === null) return tally satisfies AlertTally;
+  if (owner === null || !(yield* bankAlertMailbox(orgId, input.connectionId)))
+    return tally satisfies AlertTally;
+  const senders = input.senders ?? (yield* sendersOf(orgId));
   const reader = yield* BankAlertReader.BankAlertReader;
   const retryable = canRetryAlert(sql, input.now);
   const seenAlert = (alertId: string) =>
@@ -324,8 +317,9 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     string,
     {
       message: AlertMessage;
-      format: BankAlertFormat | undefined;
-      reading: AlertReading | undefined;
+      address: string | undefined;
+      sender: ApprovedSender | undefined;
+      reading: AlertReading;
     }
   >();
   for (const message of input.messages) {
@@ -333,51 +327,69 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     if (sentAt < input.now - ALERT_RETRY_WINDOW) continue;
     const alertId = alertIdOf(input.connectionId, input.threadId, message);
     if (reads.has(alertId) || skip(yield* seenAlert(alertId))) continue;
-    const format = formatSending(message.fromAddress);
+    const address = normalizeAddress(message.fromAddress);
+    const sender = address === undefined ? undefined : senders.get(address);
     const reading =
-      format === undefined ? undefined : yield* format.read(message, currency, reader);
-    reads.set(alertId, { message, format, reading });
+      address === undefined || sender === undefined
+        ? ({ _tag: "rejected", reason: "sender" } as const)
+        : yield* readApprovedAlert(message, address, sender.accounts, currency, reader);
+    reads.set(alertId, { message, address, sender, reading });
   }
   if (reads.size === 0 && !input.recheckedThread) return tally satisfies AlertTally;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      for (const [alertId, { message, format, reading }] of reads) {
+      if (!(yield* bankAlertMailbox(orgId, input.connectionId))) return;
+      const current = yield* sendersOf(orgId);
+      for (const [alertId, { message, address, sender, reading }] of reads) {
         const seen = yield* seenAlert(alertId);
         if (skip(seen)) continue;
-        if (format === undefined || reading === undefined || reading._tag === "rejected") {
-          if (seen !== undefined) {
-            yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
-              WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
-            tally.rejected++;
-            continue;
-          }
-          const outcome = reading?._tag === "rejected" ? reading.reason : "sender";
-          const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
-          yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
-            org_id: orgId,
-            alert_id: alertId,
-            connection_id: input.connectionId,
-            thread_id: input.threadId,
-            sent_at: Number.isFinite(sentAt) ? sentAt : null,
-            seen_at: input.now,
-            outcome,
-            reference: outcome === "unparsed" ? PARSER_MARKER : null,
-          })}`;
-          // Another sender's mail in the thread isn't an alert to count.
-          if (outcome !== "sender") tally.rejected++;
-          continue;
-        }
-        const { alert } = reading;
-        const done = yield* recordAlert(orgId, KinPersonId.make(owner), format, alert, input.now);
-        const result = {
-          outcome: done.outcome,
-          bank: format.bank,
-          account: alert.account,
-          reference: alert.reference,
-          record_id: done.recordId,
-          currency: alert.currency,
-          balance_minor: alert.balanceMinor,
+        const authorized = address === undefined ? undefined : current.get(address);
+        const revoked =
+          sender !== undefined &&
+          (authorized?.bankKey !== sender.bankKey || authorized.bankName !== sender.bankName);
+        const refusal = revoked
+          ? "sender"
+          : reading._tag === "rejected"
+            ? reading.reason
+            : authorized?.accounts.includes(reading.alert.account) !== true
+              ? "other_account"
+              : undefined;
+        const parsedTime = message.date === null ? Number.NaN : Date.parse(message.date);
+        const identity = {
+          sender_address: address ?? null,
+          sent_at: Number.isFinite(parsedTime) ? parsedTime : null,
         };
+        const result = yield* Effect.gen(function* () {
+          if (refusal !== undefined || reading._tag !== "alert" || authorized === undefined) {
+            const outcome = refusal ?? "sender";
+            if (outcome !== "sender") tally.rejected++;
+            return {
+              ...identity,
+              outcome,
+              reference: outcome === "unparsed" ? PARSER_MARKER : null,
+            };
+          }
+          const { alert } = reading;
+          const done = yield* recordAlert(
+            orgId,
+            KinPersonId.make(owner),
+            authorized,
+            alert,
+            input.now,
+          );
+          tally[done.outcome]++;
+          return {
+            ...identity,
+            sent_at: alert.sentAt,
+            outcome: done.outcome,
+            bank: authorized.bankName,
+            account: alert.account,
+            reference: alert.reference,
+            record_id: done.recordId,
+            currency: alert.currency,
+            balance_minor: alert.balanceMinor,
+          };
+        });
         if (seen !== undefined) {
           yield* sql`UPDATE kin_bank_alerts SET ${sql.update(result)}
             WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
@@ -387,12 +399,10 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
             alert_id: alertId,
             connection_id: input.connectionId,
             thread_id: input.threadId,
-            sent_at: alert.sentAt,
             seen_at: input.now,
             ...result,
           })}`;
         }
-        tally[done.outcome]++;
       }
       if (input.recheckedThread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
@@ -465,13 +475,12 @@ export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A exten
   const beside = new Map<A, AlertBalance>();
   const alone: Array<AlertBalance> = [];
   for (const balance of yield* alertBalances(orgId)) {
-    const format = FORMATS.find((one) => one.bank === balance.bank);
     const fits = accounts.filter(
       (one) =>
         one.kind === "account" &&
         one.currency === balance.currency &&
         one.digits === balance.account &&
-        (one.bank === null || format?.names(one.bank) === true),
+        (one.bank === null || one.bank.toLowerCase() === balance.bank.toLowerCase()),
     );
     if (fits.length !== 1) alone.push(balance);
     else if (dayIn(balance.sentAt, zone) > fits[0]!.on) beside.set(fits[0]!, balance);
@@ -509,36 +518,35 @@ export const alertCheck = Effect.fn("KinBankAlerts.check")(function* (
   known: ReadonlyMap<number, { readonly recordId: string }>,
 ) {
   const { bank, account } = statement;
-  const formats = FORMATS.filter((one) => bank === null || one.names(bank));
   if (
     listId === undefined ||
     statement.kind !== "account" ||
     account === null ||
     !/^\d{4}$/.test(account) ||
-    formats.length === 0 ||
     statement.rows.length === 0
   )
     return undefined;
-  const prefixes = formats.map((one) => keyPrefix(one, account));
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const entries = yield* sql<{
     recordId: string;
-    originKey: string;
+    bank: string;
     key: string;
     amountMinor: number;
     currency: string | null;
     dateAt: number;
     fieldsJson: string;
-  }>`SELECT record_id AS "recordId", origin_key AS "originKey", key,
-      amount_minor AS "amountMinor", currency, date_at AS "dateAt", fields_json AS "fieldsJson"
-    FROM kin_records WHERE org_id = ${orgId} AND register_id = ${listId}
-      AND origin_key LIKE 'alert:%' AND date_at IS NOT NULL
-    ORDER BY date_at, key`;
+  }>`SELECT r.record_id AS "recordId", a.bank, r.key,
+      r.amount_minor AS "amountMinor", r.currency, r.date_at AS "dateAt", r.fields_json AS "fieldsJson"
+    FROM kin_records r JOIN kin_bank_alerts a ON a.org_id = r.org_id
+      AND a.record_id = r.record_id AND a.outcome = 'recorded'
+    WHERE r.org_id = ${orgId} AND r.register_id = ${listId} AND a.account = ${account}
+      AND r.origin_key LIKE 'alert:%' AND r.date_at IS NOT NULL
+    ORDER BY r.date_at, r.key`;
   const mine = entries
     .filter(
       (one) =>
-        prefixes.some((prefix) => one.originKey.startsWith(prefix)) &&
+        (bank === null || one.bank.toLowerCase() === bank.toLowerCase()) &&
         (one.currency ?? statement.currency) === statement.currency,
     )
     .map((one) => ({ ...one, date: dayIn(one.dateAt, zone) }));

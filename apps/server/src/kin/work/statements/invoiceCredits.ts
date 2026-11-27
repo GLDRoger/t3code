@@ -37,6 +37,12 @@ const noAgentHand = (sql: SqlClient.SqlClient) => sql`r.created_by_kind <> 'agen
   AND NOT EXISTS (SELECT 1 FROM kin_record_changes c WHERE c.org_id = r.org_id
     AND c.record_id = r.record_id AND c.actor_kind = 'agent' AND c.kind <> 'linked')`;
 
+// Duplicates can point to statement entries; only the alert that created an entry can taint it.
+const notRemovedAlert = (sql: SqlClient.SqlClient) => sql`NOT EXISTS (
+    SELECT 1 FROM kin_bank_alerts a JOIN kin_bank_senders s
+      ON s.org_id = a.org_id AND s.address = a.sender_address AND s.state = 'removed'
+    WHERE a.org_id = r.org_id AND a.record_id = r.record_id AND a.outcome = 'recorded')`;
+
 /** Whether an agent wrote this entry or changed it since, so Kin won't take it for money in. */
 export const agentWrote = Effect.fn("KinStatements.agentWrote")(function* (
   orgId: KinOrgId,
@@ -84,7 +90,7 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
       AND (${currency} IS NULL OR COALESCE(r.currency, ${def.currency}) = ${currency})
       AND (${maxMinor} IS NULL OR r.amount_minor <= ${maxMinor})
       AND (${recordId} IS NULL OR r.record_id = ${recordId})
-      AND ${countedEntry(sql)} AND ${noAgentHand(sql)}
+      AND ${countedEntry(sql)} AND ${noAgentHand(sql)} AND ${notRemovedAlert(sql)}
       ${cursor === undefined ? sql`` : sql`AND (r.date_at, r.record_id) < (${cursor.dateAt}, ${cursor.recordId})`}
     ORDER BY r.date_at DESC, r.record_id DESC
     LIMIT ${LOOKED_AT}`;

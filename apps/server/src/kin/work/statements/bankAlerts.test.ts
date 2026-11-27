@@ -28,7 +28,13 @@ import * as KinRecords from "../KinRecords.ts";
 import { MAIL_TOOL, type MailMessage } from "../../connections/MailProvider.ts";
 import { alertsOnMail, takeAlertMail } from "./alertMail.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
-import { fixtureBankAlertReader } from "./bankAlerts.testkit.ts";
+import * as BankSenders from "./bankSenders.ts";
+import migrateBankSenders from "../../persistence/migrations/K229_BankSenders.ts";
+import {
+  approveFixtureAlertSender,
+  fixtureBankAlertReader,
+  seedFixtureAlertMailbox,
+} from "./bankAlerts.testkit.ts";
 import {
   alertBalances,
   alertCheck,
@@ -38,15 +44,15 @@ import {
   threadSeen,
 } from "./bankAlerts.ts";
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
-import { creditMatches } from "./invoiceCredits.ts";
+import { creditMatches, openEntries } from "./invoiceCredits.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 
-// Invented: Lakeview Studio's owner Rhea gets HDFC alerts in two connected mailboxes.
+// Invented: Lakeview Studio's owner Rhea gets Harbor Bank alerts in two connected mailboxes.
 const orgId = KinOrgId.make("lakeview");
 const rhea = KinPersonId.make("lakeview-rhea");
 const NOW = Date.parse("2026-11-18T12:00:00Z");
 const AUTH = [
-  "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass smtp.mailfrom=alerts@hdfcbank.net; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+  "mx.google.com; dkim=pass header.i=@harborbank.example; spf=pass smtp.mailfrom=alerts@harborbank.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
 ];
 const alert = (
   messageId: string | null,
@@ -54,7 +60,7 @@ const alert = (
   date = "Wed, 18 Nov 2026 10:00:00 +0530",
 ) => ({
   messageId,
-  fromAddress: "alerts@hdfcbank.net",
+  fromAddress: "alerts@harborbank.example",
   subject: "You have done a UPI txn. Check details!",
   date,
   authResults: AUTH,
@@ -110,11 +116,21 @@ it.layer(layer)((it) => {
       yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Lakeview Studio', '2026-11-01')`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
         VALUES (${rhea}, ${orgId}, 'rhea', 'Rhea', '2026-11-01', 'owner')`;
+      yield* approveFixtureAlertSender(orgId, rhea, [
+        "4821",
+        "5530",
+        "7001",
+        "7061",
+        "7063",
+        "7064",
+      ]);
+      for (const id of ["work-mail", "home-mail", "other-mail"])
+        yield* seedFixtureAlertMailbox(orgId, id);
       const take = (connectionId: string, threadId: string, messages: ReturnType<typeof alert>[]) =>
         takeAlerts(orgId, { connectionId, threadId, messages, now: NOW });
 
       assert.deepStrictEqual(
-        yield* take("work-mail", "t1", [alert("<m1@hdfc>", debit("632211110001"))]),
+        yield* take("work-mail", "t1", [alert("<m1@harborbank.example>", debit("632211110001"))]),
         {
           recorded: 1,
           duplicate: 0,
@@ -122,18 +138,18 @@ it.layer(layer)((it) => {
         },
       );
       const [made] = yield* entries;
-      assert.strictEqual(made!.originKey, "alert:hdfc:4821:debit:632211110001");
+      assert.match(made!.originKey, /^alert:b[0-9a-f]{8}:4821:debit:632211110001$/);
       assert.strictEqual(made!.amountMinor, 125_000);
       assert.deepStrictEqual(parseFields(made!.fieldsJson), {
         direction: "debit",
         reference: "632211110001",
-        account: "HDFC Bank ••4821",
+        account: "Harbor Bank ••4821",
         balance: { minor: 41_000_000, currency: "INR" },
       });
 
       // A re-poll reads the same mail: nothing new, nothing counted.
       assert.deepStrictEqual(
-        yield* take("work-mail", "t1", [alert("<m1@hdfc>", debit("632211110001"))]),
+        yield* take("work-mail", "t1", [alert("<m1@harborbank.example>", debit("632211110001"))]),
         {
           recorded: 0,
           duplicate: 0,
@@ -143,8 +159,8 @@ it.layer(layer)((it) => {
       // The same alert in a second mailbox, and the bank sending it again: the same entry.
       assert.deepStrictEqual(
         yield* take("home-mail", "t9", [
-          alert("<m1@hdfc>", debit("632211110001")),
-          alert("<m1-again@hdfc>", debit("0632211110001")),
+          alert("<m1@harborbank.example>", debit("632211110001")),
+          alert("<m1-again@harborbank.example>", debit("0632211110001")),
         ]),
         { recorded: 0, duplicate: 2, rejected: 0 },
       );
@@ -156,7 +172,7 @@ it.layer(layer)((it) => {
       // A failed payment's reversal quotes the debit's own reference: money back, its own entry.
       const reversal = (way: "debited from" | "credited to") =>
         alert(
-          `<m-${way.slice(0, 3)}@hdfc>`,
+          `<m-${way.slice(0, 3)}@harborbank.example>`,
           `Rs.700.00 has been ${way} account **5530 on 18-11-26. Your UPI transaction reference number is 632211110050.`,
         );
       assert.deepStrictEqual(
@@ -191,7 +207,7 @@ it.layer(layer)((it) => {
           fields: {
             direction: "debit",
             reference: "0000632211110077",
-            account: "HDFC Bank ••4821",
+            account: "Harbor Bank ••4821",
           },
         },
       );
@@ -200,7 +216,7 @@ it.layer(layer)((it) => {
         threadId: "t2",
         messages: [
           alert(
-            "<m2@hdfc>",
+            "<m2@harborbank.example>",
             "Rs.999.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110077.",
           ),
         ],
@@ -217,16 +233,19 @@ it.layer(layer)((it) => {
         connectionId: "work-mail",
         threadId: "t3",
         messages: [
-          alert("<m3@hdfc>", "Dear Customer, your statement is ready."),
-          { ...alert("<m4@hdfc>", debit("632211110004")), authResults: [] },
-          { ...alert("<m5@x>", debit("632211110005")), fromAddress: "alerts@hdfcbank.example" },
+          alert("<m3@harborbank.example>", "Dear Customer, your statement is ready."),
+          { ...alert("<m4@harborbank.example>", debit("632211110004")), authResults: [] },
+          {
+            ...alert("<m5@x>", debit("632211110005")),
+            fromAddress: "alerts@harborbank-secure.example",
+          },
           alert(
-            "<m6@hdfc>",
+            "<m6@harborbank.example>",
             debit("632211110006", "3,90,000.00"),
             "Wed, 18 Nov 2026 11:30:00 +0530",
           ),
           alert(
-            "<m7@hdfc>",
+            "<m7@harborbank.example>",
             debit("632211110007", "4,00,000.00"),
             "Wed, 18 Nov 2026 11:00:00 +0530",
           ),
@@ -238,7 +257,7 @@ it.layer(layer)((it) => {
       assert.deepStrictEqual(yield* rejectedAlerts(orgId, 0), { unverified: 1, unparsed: 1 });
       assert.deepStrictEqual(yield* alertBalances(orgId), [
         {
-          bank: "HDFC Bank",
+          bank: "Harbor Bank",
           account: "4821",
           currency: "INR",
           balanceMinor: 39_000_000,
@@ -246,14 +265,14 @@ it.layer(layer)((it) => {
         },
       ]);
       // Beside the one statement account it is, when no older than that statement's balance.
-      const account = (on: string, bank: string | null = "HDFC Bank") => ({
+      const account = (on: string, bank: string | null = "Harbor Bank") => ({
         kind: "account" as const,
         bank,
         digits: "4821",
         currency: "INR",
         on,
       });
-      const mine = account("2026-10-31");
+      const mine = account("2026-10-31", "harbor BANK");
       const beside = yield* alertsBeside(orgId, [mine, { ...mine, digits: "9999" }]);
       assert.strictEqual(beside.beside.get(mine)?.balanceMinor, 39_000_000);
       assert.lengthOf(beside.alone, 0);
@@ -268,93 +287,97 @@ it.layer(layer)((it) => {
     }),
   );
 
-  it.effect("a pass reads only HDFC's threads, and each only until Kin has its newest mail", () =>
-    Effect.gen(function* () {
-      const reads: Array<string> = [];
-      const message = (text: string): MailMessage => ({
-        threadId: "t-hdfc",
-        from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
-        fromAddress: "alerts@hdfcbank.net",
-        to: [],
-        replyTo: [],
-        toLine: null,
-        ccLine: null,
-        deliveredTo: [],
-        date: "Wed, 18 Nov 2026 10:00:00 +0530",
-        subject: "You have done a UPI txn. Check details!",
-        preview: "",
-        unread: true,
-        messageId: "<m8@hdfc>",
-        references: null,
-        authResults: AUTH,
-        body: { text, attachments: [] },
-      });
-      const connections = {
-        readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
-          Effect.sync(() => {
-            reads.push(threadId);
-            return [message(debit("632211110008").replace("**4821", "**7001"))];
+  it.effect(
+    "a pass reads only approved senders' threads, and each only until Kin has its newest mail",
+    () =>
+      Effect.gen(function* () {
+        const reads: Array<string> = [];
+        const message = (text: string): MailMessage => ({
+          threadId: "t-bank",
+          from: "Harbor Bank InstaAlerts <alerts@harborbank.example>",
+          fromAddress: "alerts@harborbank.example",
+          to: [],
+          replyTo: [],
+          toLine: null,
+          ccLine: null,
+          deliveredTo: [],
+          date: "Wed, 18 Nov 2026 10:00:00 +0530",
+          subject: "You have done a UPI txn. Check details!",
+          preview: "",
+          unread: true,
+          messageId: "<m8@harborbank.example>",
+          references: null,
+          authResults: AUTH,
+          body: { text, attachments: [] },
+        });
+        const connections = {
+          readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
+            Effect.sync(() => {
+              reads.push(threadId);
+              return [message(debit("632211110008").replace("**4821", "**7001"))];
+            }),
+        };
+        const activity = {
+          _tag: "mail" as const,
+          connectionId: KinConnectionId.make("work-mail"),
+          since: 0,
+          until: NOW,
+          account: "rhea@lakeview.example",
+          cursor: null,
+          calendar: [],
+          mail: [
+            {
+              threadId: "t-bank",
+              receivedBy: null,
+              subject: "You have done a UPI txn. Check details!",
+              from: "Harbor Bank InstaAlerts <alerts@harborbank.example>",
+              date: "Wed, 18 Nov 2026 10:00:00 +0530",
+              unread: true,
+            },
+            {
+              threadId: "t-client",
+              receivedBy: null,
+              subject: "Invoice 004",
+              from: "Raj <raj@client.example>",
+              date: "Wed, 18 Nov 2026 10:00:00 +0530",
+              unread: true,
+            },
+          ],
+        };
+        yield* TestClock.setTime(NOW);
+        const sql = yield* SqlClient.SqlClient;
+        const [before] = yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`;
+        let calls = 0;
+        const onMail = yield* alertsOnMail(connections).pipe(
+          Effect.provideService(BankAlertReader.BankAlertReader, {
+            read: Effect.fnUntraced(function* () {
+              calls++;
+              assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
+              return yield* new BankAlertReader.BankAlertReaderUnavailable();
+            }),
           }),
-      };
-      const activity = {
-        _tag: "mail" as const,
-        connectionId: KinConnectionId.make("work-mail"),
-        since: 0,
-        until: NOW,
-        account: "rhea@lakeview.example",
-        cursor: null,
-        calendar: [],
-        mail: [
-          {
-            threadId: "t-hdfc",
-            receivedBy: null,
-            subject: "You have done a UPI txn. Check details!",
-            from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
-            date: "Wed, 18 Nov 2026 10:00:00 +0530",
-            unread: true,
-          },
-          {
-            threadId: "t-client",
-            receivedBy: null,
-            subject: "Invoice 004",
-            from: "Raj <raj@client.example>",
-            date: "Wed, 18 Nov 2026 10:00:00 +0530",
-            unread: true,
-          },
-        ],
-      };
-      yield* TestClock.setTime(NOW);
-      const sql = yield* SqlClient.SqlClient;
-      const [before] = yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`;
-      let calls = 0;
-      const onMail = yield* alertsOnMail(connections).pipe(
-        Effect.provideService(BankAlertReader.BankAlertReader, {
-          read: Effect.fnUntraced(function* () {
-            calls++;
-            assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
-            return yield* new BankAlertReader.BankAlertReaderUnavailable();
-          }),
-        }),
-      );
-      assert.isFalse(yield* onMail(orgId, activity));
-      assert.strictEqual(calls, 1);
-      assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`, [before!]);
-      assert.isFalse(
-        yield* threadSeen(
-          orgId,
-          activity.connectionId,
-          "t-hdfc",
-          Date.parse(activity.mail[0]!.date),
-        ),
-      );
-      assert.deepStrictEqual(reads, ["t-hdfc"]);
-      reads.length = 0;
-      const first = yield* takeAlertMail(connections, orgId, activity);
-      assert.deepStrictEqual(first, { threads: 1, recorded: 1, duplicate: 0, rejected: 0 });
-      const again = yield* takeAlertMail(connections, orgId, activity);
-      assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
-      assert.deepStrictEqual(reads, ["t-hdfc"]);
-    }),
+        );
+        assert.isFalse(yield* onMail(orgId, activity));
+        assert.strictEqual(calls, 1);
+        assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`, [
+          before!,
+        ]);
+        assert.isFalse(
+          yield* threadSeen(
+            orgId,
+            activity.connectionId,
+            "t-bank",
+            Date.parse(activity.mail[0]!.date),
+          ),
+        );
+        assert.deepStrictEqual(reads, ["t-bank"]);
+        reads.length = 0;
+        const first = yield* takeAlertMail(connections, orgId, activity);
+        assert.deepStrictEqual(first, { threads: 1, recorded: 1, duplicate: 0, rejected: 0 });
+        const again = yield* takeAlertMail(connections, orgId, activity);
+        assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+        assert.deepStrictEqual(reads, ["t-bank"]);
+      }),
   );
 
   it.effect("revisits recent unresolved alerts once without needing new mail", () =>
@@ -410,10 +433,10 @@ it.layer(layer)((it) => {
           ${fields}, 'agent', 'finance', ${`manual:finance:${id}`}, ${NOW}, ${NOW})`;
         return id;
       });
-      yield* hand("a-wrong-reference", "OTHER99876", "HDFC Bank ••7061", "debit");
-      yield* hand("b-wrong-account", "632211119876", "HDFC Bank ••7062", "debit");
-      yield* hand("c-wrong-direction", "632211119876", "HDFC Bank ••7061", "credit");
-      const manual = yield* hand("d-matching", "632211119876", "HDFC Bank ••7061", "debit");
+      yield* hand("a-wrong-reference", "OTHER99876", "Harbor Bank ••7061", "debit");
+      yield* hand("b-wrong-account", "632211119876", "Harbor Bank ••7062", "debit");
+      yield* hand("c-wrong-direction", "632211119876", "Harbor Bank ••7061", "credit");
+      const manual = yield* hand("d-matching", "632211119876", "Harbor Bank ••7061", "debit");
 
       yield* takeAlerts(orgId, {
         connectionId,
@@ -425,7 +448,7 @@ it.layer(layer)((it) => {
       const mail = (threadId: string, stub: ReturnType<typeof legacy>): MailMessage => ({
         ...stub,
         threadId,
-        from: "HDFC Bank <alerts@hdfcbank.net>",
+        from: "Harbor Bank <alerts@harborbank.example>",
         to: [],
         replyTo: [],
         toLine: null,
@@ -484,9 +507,9 @@ it.layer(layer)((it) => {
         { thread: "unknown", outcome: "unparsed", recordId: null },
       ]);
 
-      const noReference = yield* hand("e-no-reference", null, "HDFC Bank ••7063", "debit");
-      yield* hand("f-ambiguous", null, "HDFC Bank ••7064", "debit");
-      yield* hand("g-ambiguous", null, "HDFC Bank ••7064", "debit");
+      const noReference = yield* hand("e-no-reference", null, "Harbor Bank ••7063", "debit");
+      yield* hand("f-ambiguous", null, "Harbor Bank ••7064", "debit");
+      yield* hand("g-ambiguous", null, "Harbor Bank ••7064", "debit");
       for (const [i, [digits, reference, expected]] of (
         [
           ["7063", "632211119879", { recorded: 0, duplicate: 1 }],
@@ -538,7 +561,7 @@ it.layer(layer)((it) => {
       });
       const statement = (account: string, rows: ReadonlyArray<StatementRow>): Statement => ({
         kind: "account",
-        bank: "HDFC Bank",
+        bank: "Harbor Bank",
         account,
         accountId: `id-${account}`,
         currency: "INR",
@@ -550,16 +573,16 @@ it.layer(layer)((it) => {
         check: { status: "adds_up", line: "" },
       });
       // ••4821 has three ₹1,250 debits on 18 Nov from alerts: ...0001, ...0006 and ...0007.
-      const hdfc = statement("4821", [
+      const review = statement("4821", [
         row(0, "2026-11-18", 125_000, "debit", "0000632211110001"),
         row(1, "2026-11-18", 125_000, "debit", null),
         row(2, "2026-11-17", 500_000, "credit", "N3212345"),
       ]);
-      const found = yield* knownRows(orgId, def, hdfc, "st-1");
+      const found = yield* knownRows(orgId, def, review, "st-1");
       assert.deepStrictEqual([...found.known.keys()], [0]);
       // Two alerts it could be: neither, rather than a guess.
       assert.strictEqual(found.possible.size, 0);
-      const check = yield* alertCheck(orgId, def?.id, hdfc, found.known);
+      const check = yield* alertCheck(orgId, def?.id, review, found.known);
       assert.deepStrictEqual(
         {
           merged: check?.merged,
@@ -594,9 +617,9 @@ it.layer(layer)((it) => {
         "st-3",
       );
       assert.deepStrictEqual([conflicting.known.size, conflicting.possible.size], [0, 1]);
-      // Another bank's statement isn't checked against HDFC alerts.
+      // Another bank's statement isn't checked against Harbor Bank alerts.
       assert.isUndefined(
-        yield* alertCheck(orgId, def?.id, { ...hdfc, bank: "Invented Bank" }, found.known),
+        yield* alertCheck(orgId, def?.id, { ...review, bank: "Invented Bank" }, found.known),
       );
     }),
   );
@@ -621,9 +644,12 @@ it.layer(layer)((it) => {
             'ambermill-rhea', 'r-amb-c1', ${Date.parse("2026-11-02T12:00:00Z")}, 9_500_000, 'INR', 1,
             'person', 'ambermill-rhea', 'inv-4', 0, 0, '{"number":"26-27/004"}')`;
       const credit = alert(
-        "<neft-1@hdfc>",
+        "<neft-1@harborbank.example>",
         "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50.",
       );
+      yield* approveFixtureAlertSender(org, KinPersonId.make("ambermill-rhea"));
+      yield* seedFixtureAlertMailbox(org, "work-mail");
+      yield* seedFixtureAlertMailbox(org, "home-mail");
       const take = (connectionId: string, threadId: string) =>
         takeAlerts(org, { connectionId, threadId, messages: [credit], now: NOW });
       assert.deepInclude(yield* take("work-mail", "c1"), { recorded: 1 });
@@ -640,3 +666,128 @@ it.layer(layer)((it) => {
     }),
   );
 });
+
+const senderSetup = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Tidewater Freight', '2026-11-01')`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${rhea}, ${orgId}, 'rhea', 'Rhea', '2026-11-01', 'owner')`;
+  yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, created_at, updated_at)
+    VALUES (${orgId}, 'approved-inbox', 'google', 'Accounts', 'builtin', 'example.test',
+      'oauth', 'closed', 'active', ${NOW}, ${NOW})`;
+  return sql;
+});
+const harbor = "notices@harborbank.example";
+const withSender = (fromAddress: string, text: string, id = "gate") => ({
+  ...alert(`<${id}@invented.example>`, text),
+  fromAddress,
+  authResults: [`mx.invented.example; dmarc=pass header.from=${fromAddress.split("@")[1]}`],
+});
+const takeOne = (message: ReturnType<typeof alert>) =>
+  takeAlerts(orgId, {
+    connectionId: "approved-inbox",
+    threadId: "sender-gate",
+    messages: [message],
+    now: NOW,
+  });
+
+it.effect.each([
+  ["an approved address", harbor, "4821", "recorded", 1],
+  ["an unknown address", "news@stranger.example", "4821", "sender", 0],
+  ["an authenticated look-alike", "notices@harborbank-secure.example", "4821", "sender", 0],
+  ["a different address on the approved domain", "else@harborbank.example", "4821", "sender", 0],
+  ["a different account ending", harbor, "9999", "other_account", 0],
+] as const)("gates %s before the model", ([, address, ending, expected, calls]) =>
+  Effect.gen(function* () {
+    const sql = yield* senderSetup;
+    yield* BankSenders.add(orgId, rhea, {
+      address: harbor,
+      bankName: "Harbor Bank",
+      accounts: ["4821"],
+    });
+    let modelCalls = 0;
+    yield* takeOne(
+      withSender(address, debit("632211112200").replace("**4821", `**${ending}`)),
+    ).pipe(
+      Effect.provideService(BankAlertReader.BankAlertReader, {
+        read: (input) =>
+          Effect.sync(() => {
+            modelCalls++;
+          }).pipe(Effect.andThen(fixtureBankAlertReader.read(input))),
+      }),
+    );
+    assert.lengthOf(yield* entries, calls);
+    assert.strictEqual(modelCalls, calls);
+    assert.deepStrictEqual(yield* sql`SELECT outcome, sender_address FROM kin_bank_alerts`, [
+      { outcome: expected, sender_address: address },
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a removed sender keeps old entries but cannot add or offer more money", () =>
+  Effect.gen(function* () {
+    const sql = yield* senderSetup;
+    yield* BankSenders.add(orgId, rhea, {
+      address: harbor,
+      bankName: "Harbor Bank",
+      accounts: ["4821"],
+    });
+    assert.strictEqual((yield* takeOne(withSender(harbor, debit("632211112201")))).recorded, 1);
+    const def = (yield* findBankList(orgId))!;
+    assert.lengthOf(yield* openEntries(orgId, def, "debit", undefined), 1);
+    yield* BankSenders.remove(orgId, rhea, harbor);
+    yield* takeOne(withSender(harbor, debit("632211112202"), "removed")).pipe(
+      Effect.provideService(BankAlertReader.BankAlertReader, {
+        read: () => Effect.die("The removed sender reached the reader"),
+      }),
+    );
+    assert.lengthOf(yield* entries, 1);
+    assert.lengthOf(yield* openEntries(orgId, def, "debit", undefined), 0);
+    assert.deepStrictEqual(yield* sql`SELECT outcome FROM kin_bank_alerts ORDER BY outcome`, [
+      { outcome: "recorded" },
+      { outcome: "sender" },
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("carried addresses retain the original origin key on a replay", () =>
+  Effect.gen(function* () {
+    const sql = yield* senderSetup;
+    const def = yield* ensureBankList(orgId, NOW);
+    const records = yield* KinRecords.KinRecords;
+    const originKey = "alert:hdfc:4821:debit:632211112203";
+    const { row } = yield* records.create(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      {
+        list: def.id,
+        originKey,
+        title: "Historic alert",
+        owner: { _tag: "person", personId: rhea },
+        state: "open",
+        amount: { minor: 125_000, currency: "INR" },
+        dateAt: Date.parse("2026-11-18T12:00:00Z"),
+        fields: { account: "HDFC Bank ••4821", direction: "debit", reference: "632211112203" },
+      },
+    );
+    yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, outcome,
+      bank, account, record_id, seen_at)
+      VALUES (${orgId}, 'historic', 'approved-inbox', 'before-upgrade', 'recorded',
+        'HDFC Bank', '4821', ${row.recordId}, ${NOW})`;
+    yield* sql`DROP INDEX kin_bank_alerts_sender`;
+    yield* sql`ALTER TABLE kin_bank_alerts DROP COLUMN sender_address`;
+    yield* migrateBankSenders;
+    const [address] = (yield* BankSenders.sendersOf(orgId)).keys();
+    assert.isDefined(address);
+    const result = yield* takeOne(withSender(address!, debit("632211112203")));
+    assert.deepStrictEqual(result, { recorded: 0, duplicate: 1, rejected: 0 });
+    assert.deepStrictEqual(
+      (yield* entries).map((entry) => entry.originKey),
+      [originKey],
+    );
+    const [duplicate] = yield* sql`SELECT sender_address, record_id FROM kin_bank_alerts
+      WHERE outcome = 'duplicate'`;
+    assert.deepStrictEqual(duplicate, { sender_address: address, record_id: row.recordId });
+  }).pipe(Effect.provide(layer)),
+);

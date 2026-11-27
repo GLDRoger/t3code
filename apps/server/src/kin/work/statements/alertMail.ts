@@ -16,11 +16,12 @@ import type { KinRecords } from "../KinRecords.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
 import {
   ALERT_RETRY_WINDOW,
-  isBankAlertSender,
+  bankAlertMailbox,
   retryAlertThreads,
   takeAlerts,
   threadSeen,
 } from "./bankAlerts.ts";
+import { normalizeAddress, sendersOf } from "./bankSenders.ts";
 
 /**
  * A connection's new mail, as the pulse reads it, checked for bank alerts: a thread whose sender
@@ -36,9 +37,12 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
 ) {
   const now = yield* Clock.currentTimeMillis;
   const tally = { threads: 0, recorded: 0, duplicate: 0, rejected: 0 };
+  if (!(yield* bankAlertMailbox(orgId, activity.connectionId))) return tally;
+  const senders = yield* sendersOf(orgId);
   const threads = new Set<string>();
   for (const mail of activity.mail) {
-    if (!isBankAlertSender(addressesIn(mail.from)[0])) continue;
+    const address = normalizeAddress(addressesIn(mail.from)[0]);
+    if (address === undefined || !senders.has(address)) continue;
     const newest = mail.date === null ? Number.NaN : Date.parse(mail.date);
     if (newest < now - ALERT_RETRY_WINDOW) continue;
     if (
@@ -84,6 +88,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
     const taken = yield* takeAlerts(orgId, {
       connectionId: activity.connectionId,
       threadId,
+      senders,
       retryOnly,
       recheckedThread: retries.has(threadId),
       messages: messages.flatMap((message) =>

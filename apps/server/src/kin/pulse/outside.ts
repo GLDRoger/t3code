@@ -15,7 +15,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
-import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
+import { list, normalizeAddress } from "../work/statements/bankSenders.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -132,6 +132,13 @@ export const fromConnections = (
         yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         "money",
       );
+      const hidden = new Set(
+        money
+          ? []
+          : (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+              .filter((row) => row.state === "approved" || row.state === "candidate")
+              .map((row) => row.address),
+      );
       const lines: Array<KinPulseOutsideLine> = [];
       const automatedNotices = new Set<KinPulseOutsideLine>();
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
@@ -156,7 +163,7 @@ export const fromConnections = (
               : {
                   ...activity,
                   mail: activity.mail.filter(
-                    (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
+                    (mail) => !hidden.has(normalizeAddress(addressesIn(mail.from)[0]) ?? ""),
                   ),
                 },
             automatedNotices,
