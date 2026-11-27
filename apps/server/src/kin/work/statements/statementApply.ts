@@ -47,6 +47,7 @@ import {
   statementRow,
   storeReview,
   updateCard,
+  withCompanyWithheldTax,
 } from "./statementReview.ts";
 import type { Review } from "./statementCard.ts";
 import type { StatementRow } from "./statementTable.ts";
@@ -153,7 +154,7 @@ const ownersReview = Effect.fn("KinStatements.ownersReview")(function* (
   const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
   if (stored.status !== "read" || review === undefined || stored.reviewHash !== input.hash)
     return yield* changed;
-  return { stored, review };
+  return { stored, review: yield* withCompanyWithheldTax(input.orgId, review) };
 });
 
 type Action =
@@ -246,7 +247,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           message:
             "The card changed since you looked at it, so nothing was applied. Check it and confirm again.",
         });
-      const { statement } = review;
+      const { statement, withheldTax } = review;
       if (statement.currencyChoice !== undefined)
         return yield* invalid(
           "Pick this statement's currency on its card first; nothing was applied.",
@@ -578,7 +579,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
                 records.pay(input.orgId, writer, targetRow.key, {
                   amount: { minor: candidate.tdsMinor, currency },
                   paidOn: row.date,
-                  note: `TDS deducted by the client on ${row.date}`,
+                  note:
+                    withheldTax === undefined
+                      ? `Tax withheld by the client on ${row.date}`
+                      : `${withheldTax} deducted by the client on ${row.date}`,
                   withheld: true,
                   originKey: retryKey(index, "tds"),
                 }),
@@ -983,7 +987,13 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       const card =
         review === undefined
           ? yield* cardState(input.orgId, stored.reviewWidgetId)
-          : reviewCard(input.statementId, review, categories, selectionOf(stored, review), held);
+          : reviewCard(
+              input.statementId,
+              yield* withCompanyWithheldTax(input.orgId, review),
+              categories,
+              selectionOf(stored, review),
+              held,
+            );
       if (card === undefined) return yield* invalid("This statement can no longer be read.");
       const { result: _result, unexplained: _unexplained, ...rest } = card;
       const rows = new Set(back.map((one) => one.row)).size;
