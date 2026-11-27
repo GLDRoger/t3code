@@ -59,6 +59,7 @@ import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import * as Bills from "../work/bills.ts";
+import * as KinAttachmentStore from "../chat/KinAttachmentStore.ts";
 import { handlers as billHandlers } from "../work/mcp/billHandlers.ts";
 import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
@@ -355,7 +356,9 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers, { kin: true }),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers, { kin: true }),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers, { kin: true }),
-  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }).pipe(
+    Layer.provide(KinAttachmentStore.layer),
+  ),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers, {
     kin: true,
   }),

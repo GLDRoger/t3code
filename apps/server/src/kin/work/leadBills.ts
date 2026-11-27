@@ -3,11 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { TurnEvent } from "../lead/eventIds.ts";
-import { addFromMessage, answer } from "./bills.ts";
+import { MAX_BILL_BOXES } from "./billCutterProtocol.ts";
+import { addFromMessage, answer, cut as cutPage } from "./bills.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, type Lead, leadTool, sourceOf } from "./leadWork.ts";
-
-/** The lead tools for bills in bulk: start a batch from a message, and answer one bill read. */
 
 export const AddInput = Schema.Struct({ sourceEventId: TurnEvent });
 export const AddResult = Schema.Struct({
@@ -83,3 +82,26 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
   );
 });
 export const read = leadTool("KinBillTools.read", runRead);
+
+export const CutInput = Schema.Struct({
+  bill: ReadInput.fields.bill,
+  page: Schema.optional(Schema.Int).annotate({
+    description: "The PDF page number, starting at 1. Omit for a photo.",
+  }),
+  boxes: Schema.Array(Schema.Tuple([Schema.Int, Schema.Int, Schema.Int, Schema.Int]))
+    .check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BILL_BOXES))
+    .annotate({
+      description:
+        "One box per bill: [x, y, width, height] on the upright page's 0–1000 grid, with 0,0 at the top left. Each side must be at least 50.",
+    }),
+});
+const runCut = Effect.fnUntraced(function* (lead: Lead, input: typeof CutInput.Type) {
+  yield* admitted(lead, "bill_cut", input).pipe(
+    Effect.mapError(
+      (error) =>
+        new KinChatError({ reason: error.reason, message: `${error.message} Nothing was cut.` }),
+    ),
+  );
+  return yield* cutPage(lead, input);
+});
+export const cut = leadTool("KinBillTools.cut", runCut);
