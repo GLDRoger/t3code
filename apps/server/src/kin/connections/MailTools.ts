@@ -478,6 +478,7 @@ const activity = Effect.fn("KinMail.activity")(function* (
           from,
           date,
           unread,
+          authResults: last.authResults,
           ...(automatedNotice ? { automatedNotice: true as const } : {}),
         };
       }),

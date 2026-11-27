@@ -1,11 +1,14 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   ProjectId,
   ProviderDriverKind,
+  TextGenerationError,
   type ModelSelection,
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -18,6 +21,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -669,10 +673,13 @@ const PREFLIGHT_PRIMARY_STATES = [
   "disabled",
   "disabled, thread default model cannot generate text",
   "disabled, fallback disabled for project",
+  "tool-free read falls back to Claude",
+  "tool-free read unavailable on every instance",
 ] as const;
 
 it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (primaryState) =>
   Effect.gen(function* () {
+    const defaultSelection = DEFAULT_SERVER_SETTINGS.textGenerationModelSelection;
     const primary = ProviderInstanceId.make("codex");
     const fallback = ProviderInstanceId.make("claude_work");
     const projectId = ProjectId.make("project-a");
@@ -687,6 +694,7 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
       options: [{ id: "thinking", value: false }],
     };
     const calls: ModelSelection[] = [];
+    const outputSchema = Schema.Struct({ kind: Schema.Literal("other") });
     const instances: ProviderInstance[] = [primary, fallback].map((instanceId) => {
       const driver = ProviderDriverKind.make(instanceId === primary ? "codex" : "claudeAgent");
       const snapshot: ServerProvider = {
@@ -775,6 +783,23 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
               calls.push(input.modelSelection);
               return { title: "Generated title" };
             }),
+          ...(primaryState === "tool-free read falls back to Claude" && instanceId === fallback
+            ? {
+                generateStructuredText: TextGenerationOperations.fromRunner(
+                  "TestClaude",
+                  (request) =>
+                    Effect.gen(function* () {
+                      calls.push(request.modelSelection);
+                      return yield* TextGenerationOperations.decodeJsonReply(
+                        request,
+                        "TestClaude",
+                        '{"kind":"other"}',
+                      );
+                    }),
+                  { toolFree: true },
+                ).generateStructuredText!,
+              }
+            : {}),
         }),
       };
     });
@@ -810,6 +835,30 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
         ),
       ),
     );
+    if (primaryState.startsWith("tool-free read")) {
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "text-generation-preflight-" });
+      const generated = yield* service.generateStructuredText!({
+        cwd,
+        prompt: "Synthetic input only.",
+        outputSchema,
+        modelSelection: defaultSelection,
+      }).pipe(Effect.exit);
+      if (primaryState === "tool-free read falls back to Claude") {
+        expect(generated).toEqual(Exit.succeed({ kind: "other" }));
+        expect(calls).toEqual([threadDefault]);
+      } else {
+        const failure = Option.getOrUndefined(Exit.findErrorOption(generated));
+        expect(failure).toBeInstanceOf(TextGenerationError);
+        expect(failure).toMatchObject({
+          operation: "generateStructuredText",
+          detail:
+            "The selected provider cannot generate text without tools and session persistence.",
+        });
+        expect(calls).toEqual([]);
+      }
+      return;
+    }
     const generated = yield* service
       .generateThreadTitle({
         cwd: "/tmp",
@@ -843,7 +892,7 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
             }
           : threadDefault,
     ]);
-  }),
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect(

@@ -195,7 +195,7 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
           "Subject",
           "Date",
           ...RECIPIENT_HEADERS,
-          ...(watch ? AUTOMATION_HEADERS : []),
+          ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
         ],
       }).pipe(
         Effect.map((thread) =>

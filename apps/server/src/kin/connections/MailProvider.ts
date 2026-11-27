@@ -83,6 +83,7 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
+    readonly authResults?: ReadonlyArray<string>;
     readonly automatedNotice?: true;
   }>;
   readonly calendar: ReadonlyArray<{
