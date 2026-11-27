@@ -80,7 +80,9 @@ const make = Effect.gen(function* () {
             TextGenerationError: (error) =>
               Schema.isSchemaError(error.cause)
                 ? Effect.succeed("not_one_transaction" as const)
-                : Effect.fail(unavailable()),
+                : Effect.logWarning("Kin's bank alert reader had no model", {
+                    detail: error.detail,
+                  }).pipe(Effect.andThen(Effect.fail(unavailable()))),
           }),
           Effect.map((reply) =>
             reply === "not_one_transaction" || reply.kind === "other"
