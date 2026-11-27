@@ -2108,9 +2108,16 @@ it.effect.each([true, false])(
           what,
           monthlyCap: 10,
         };
-        const cards = () => sql<{ widgetId: string; revision: number; state: string }>`
-          SELECT widget_id AS "widgetId", revision, state_json AS state FROM kin_widgets
-          WHERE org_id = ${person.orgId} AND type = 'mail_rule'`;
+        const cards = () => sql<{
+          widgetId: string;
+          revision: number;
+          state: string;
+          plan: string;
+        }>`
+          SELECT w.widget_id AS "widgetId", w.revision, w.state_json AS state, p.plan_json AS plan
+          FROM kin_widgets w JOIN kin_card_plans p ON p.org_id = w.org_id
+            AND p.widget_id = w.widget_id AND p.option_id = 'turn_on'
+          WHERE w.org_id = ${person.orgId} AND w.type = 'mail_rule'`;
         const rules = () => sql<{
           what: string;
           matchJson: string;
@@ -2160,7 +2167,9 @@ it.effect.each([true, false])(
             WHERE chat_id = ${chat.chatId}`;
           expect
             .soft(yield* propose(proposal))
-            .toContain("Choose an active lead and your direct chat with that lead.");
+            .toContain(
+              "A mail rule proposal needs a message the owner or a co-owner typed this turn in a direct chat with this lead, so ask for the rule there.",
+            );
         }
         yield* sql`UPDATE kin_chats SET kind = 'direct', team_id = NULL, direct_key = ${direct!.directKey}
           WHERE chat_id = ${chat.chatId}`;
@@ -2193,16 +2202,35 @@ it.effect.each([true, false])(
             decision: { status: "proposed" },
           });
           expect
-            .soft(
-              yield* propose({
-                ...proposal,
-                sourceEventId: undefined,
-                match: { ...match, subjectHas: ["JUNIPER ORDERS"] },
-                what: "Draft a reply.",
-              }),
-            )
+            .soft(yield* propose({ ...proposal, sourceEventId: undefined }))
             .toContain(card.widgetId);
           expect.soft(yield* cards()).toEqual(drawn);
+          // A changed proposal for the same filters is a new card showing the change.
+          const changedCard = Effect.fn(function* (change: object) {
+            const before = new Set((yield* cards()).map((row) => row.widgetId));
+            expect.soft(yield* propose({ ...proposal, ...change })).not.toContain(card.widgetId);
+            const made = (yield* cards()).filter((row) => !before.has(row.widgetId));
+            expect.soft(made).toHaveLength(1);
+            return made[0]!;
+          });
+          const reworded = yield* changedCard({
+            match: { ...match, subjectHas: ["JUNIPER ORDERS"] },
+            what: "Draft a reply.",
+          });
+          expect.soft(JSON.parse(reworded.state)).toMatchObject({ what: "Draft a reply." });
+          const capped = yield* changedCard({ monthlyCap: 12 });
+          expect.soft(JSON.parse(capped.state)).toMatchObject({ what, monthlyCap: 12 });
+          const notNow = (row: typeof card, clientActionId: string) =>
+            chatService.act(person, {
+              widgetId: KinWidgetId.make(row.widgetId),
+              revision: row.revision,
+              actionId: "not_now",
+              clientActionId,
+            });
+          const decided = Effect.fn(function* (row: typeof card) {
+            const now = (yield* cards()).find((one) => one.widgetId === row.widgetId)!;
+            return JSON.parse(now.state).decision;
+          });
           const action = {
             widgetId: KinWidgetId.make(card.widgetId),
             revision: card.revision,
@@ -2228,6 +2256,13 @@ it.effect.each([true, false])(
               ),
             )
             .toBe("Only the person this mail rule card was drawn for can answer it.");
+          expect
+            .soft(yield* refused())
+            .toBe(
+              "The lead or chat on this mail rule card is no longer available, so nothing was turned on.",
+            );
+          yield* notNow(capped, "tap-juniper-capped-not-now").pipe(Effect.ignore);
+          expect.soft(yield* decided(capped)).toEqual({ status: "dismissed" });
           yield* sql`DELETE FROM kin_chat_members WHERE member_id = 'member-meera-juniper'`;
           expect
             .soft(yield* refused({ ...action, revision: action.revision + 1 }))
@@ -2238,8 +2273,15 @@ it.effect.each([true, false])(
             .toBe("Only the owner or a co-owner can answer this mail rule card.");
           yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${person.personId}`;
           yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE connection_id = ${proposal.connectionId}`;
-          expect.soft(yield* refused()).toBe("This company mailbox is no longer connected.");
+          const noMailbox =
+            "This mailbox is no longer a connected company mailbox, so nothing was turned on.";
+          expect.soft(yield* refused()).toBe(noMailbox);
+          yield* notNow(reworded, "tap-juniper-reworded-not-now").pipe(Effect.ignore);
+          expect.soft(yield* decided(reworded)).toEqual({ status: "dismissed" });
           yield* sql`UPDATE kin_connections SET removed_at = NULL WHERE connection_id = ${proposal.connectionId}`;
+          yield* sql`UPDATE kin_connections SET person_id = ${person.personId} WHERE connection_id = ${proposal.connectionId}`;
+          expect.soft(yield* refused()).toBe(noMailbox);
+          yield* sql`UPDATE kin_connections SET person_id = NULL WHERE connection_id = ${proposal.connectionId}`;
           yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.what', 'Send the order.') WHERE widget_id = ${card.widgetId}`;
           expect
             .soft(yield* refused())
@@ -2247,6 +2289,22 @@ it.effect.each([true, false])(
               "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
             );
           yield* sql`UPDATE kin_widgets SET state_json = ${card.state} WHERE widget_id = ${card.widgetId}`;
+          // The sealed plan is what the tap compares with: an edit to it turns nothing on.
+          for (const [path, value] of [
+            ["$.shown.monthlyCap", 99],
+            ["$.shown.contentSha256", "0".repeat(64)],
+            ["$.shown.lead.agentId", "lead-juniper-other"],
+          ] as const) {
+            yield* sql`UPDATE kin_card_plans SET plan_json = json_set(plan_json, ${path}, ${value})
+              WHERE widget_id = ${card.widgetId}`;
+            expect
+              .soft(yield* refused(), path)
+              .toBe(
+                "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
+              );
+            yield* sql`UPDATE kin_card_plans SET plan_json = json_set(plan_json, ${path}, json_extract(${card.plan}, ${path}))
+              WHERE widget_id = ${card.widgetId}`;
+          }
           expect.soft(yield* rules()).toEqual([]);
           const tapped = yield* chatService.act(person, action);
           expect.soft(yield* rules()).toEqual([
@@ -2266,17 +2324,24 @@ it.effect.each([true, false])(
             WHERE json_extract(json, '$.messageId') = ${tapped.messageId}`,
             )
             .toEqual([]);
-          expect.soft(yield* refused()).toBe("This mail rule card was already answered.");
+          // The same tap sent again, as an offline retry does, gets its first answer.
+          const replayed = yield* chatService.act(person, action).pipe(Effect.result);
+          expect.soft(replayed).toMatchObject({ success: { messageId: tapped.messageId } });
+          expect
+            .soft(yield* refused({ ...action, clientActionId: "tap-juniper-turn-on-again" }))
+            .toBe("This mail rule card was already answered.");
           expect.soft(yield* rules()).toHaveLength(1);
-          expect.soft(JSON.parse((yield* cards())[0]!.state)).toMatchObject({
-            decision: { status: "on", ruleId: expect.any(String) },
-          });
+          expect
+            .soft(yield* decided(card))
+            .toMatchObject({ status: "on", ruleId: expect.any(String) });
           expect
             .soft(
               yield* propose({ ...proposal, match: { ...match, subjectHas: ["shipping orders"] } }),
             )
             .toContain('"isError":false');
-          const pending = (yield* cards()).find((row) => row.widgetId !== card.widgetId)!;
+          const pending = (yield* cards()).find(
+            (row) => ![card, reworded, capped].some((one) => one.widgetId === row.widgetId),
+          )!;
           yield* chatService.act(person, {
             ...action,
             widgetId: KinWidgetId.make(pending.widgetId),
@@ -2323,6 +2388,29 @@ it.effect.each([true, false])(
             )
             .toBe("This mail rule card has expired, so ask for a new one.");
           expect.soft(yield* rules()).toHaveLength(1);
+          // Two taps at once turn on one rule; the other hears the card was answered.
+          const racing = yield* changedCard({ match: { ...match, subjectHas: ["cold orders"] } });
+          const race = (clientActionId: string) =>
+            chatService
+              .act(person, {
+                ...action,
+                widgetId: KinWidgetId.make(racing.widgetId),
+                revision: racing.revision,
+                clientActionId,
+              })
+              .pipe(
+                Effect.match({ onSuccess: () => "turned on", onFailure: (error) => error.message }),
+              );
+          const raced = yield* Effect.all(
+            [race("tap-juniper-race-a"), race("tap-juniper-race-b")],
+            {
+              concurrency: 2,
+            },
+          );
+          expect
+            .soft(raced.toSorted())
+            .toEqual(["This mail rule card was already answered.", "turned on"]);
+          expect.soft(yield* rules()).toHaveLength(2);
         }
         yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${person.personId}`;
         yield* identity.endAgentThread({ orgId: person.orgId, threadId });

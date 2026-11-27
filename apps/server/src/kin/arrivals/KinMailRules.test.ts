@@ -431,11 +431,22 @@ it("keeps mail-rule writes out of the MCP import graph", () => {
         graph(NodePath.resolve(NodePath.dirname(file), specifier), [...via, file]);
     }
   };
+  const source = (name: string) =>
+    name.endsWith(".ts") && !/\.(?:test|testkit|integration)\./.test(name);
   for (const folder of ["../lead/mcp", "../mcp", "../../mcp"]) {
     const root = NodePath.resolve(here, folder);
     for (const name of NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" })) {
-      if (name.endsWith(".ts") && !/\.(?:test|testkit|integration)\./.test(name))
-        graph(NodePath.resolve(root, name));
+      if (source(name)) graph(NodePath.resolve(root, name));
     }
+  }
+  // Every agent tool, wherever it is declared: the coding-agent key's own tools are one.
+  const server = NodePath.resolve(here, "../..");
+  for (const name of NodeFS.readdirSync(server, { recursive: true, encoding: "utf8" })) {
+    const file = NodePath.resolve(server, name);
+    if (
+      source(name) &&
+      /McpToolAccess\.toLayer\(|Toolkit\.make\(/.test(NodeFS.readFileSync(file, "utf8"))
+    )
+      graph(file);
   }
 });

@@ -223,10 +223,6 @@ export type ChoiceAnswerHandler = (input: {
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
-/**
- * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
- * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
- */
 export type MailRuleTapHandler = (input: {
   readonly identity: PersonIdentity;
   readonly widget: KinWidget;
@@ -234,6 +230,10 @@ export type MailRuleTapHandler = (input: {
   readonly action: (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
   readonly tapId: KinMessageId;
 }) => Effect.Effect<KinMailRuleCardState, KinChatError | SqlError.SqlError>;
+/**
+ * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
+ * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
+ */
 export type ChoiceDismissHandler = (input: {
   readonly orgId: KinOrgId;
   readonly widget: KinWidget;
@@ -254,10 +254,10 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
-    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachMailRuleTap: (
       handler: MailRuleTapHandler,
     ) => Effect.Effect<void, never, Scope.Scope>;
+    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
       refused?: ChoiceRefusedHandler,
@@ -1846,13 +1846,6 @@ const make = Effect.gen(function* () {
     if (action === undefined || request.value !== undefined) return yield* invalidState;
     if (onMailRuleTap === undefined)
       return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
-    const previous = yield* repo.findClientMessage({
-      ...member,
-      kind: "act",
-      clientId: request.clientActionId,
-    });
-    if (Option.isSome(previous) && previous.value.widgetId !== widget.widgetId)
-      return yield* notAllowed;
     const body = yield* encodeAction({
       widgetId: widget.widgetId,
       revision: request.revision,
@@ -1860,6 +1853,16 @@ const make = Effect.gen(function* () {
       text: action === "turn_on" ? "Turn on" : "Not now",
       handled: true,
     }).pipe(Effect.mapError(() => invalidState));
+    const previous = yield* repo.findClientMessage({
+      ...member,
+      kind: "act",
+      clientId: request.clientActionId,
+    });
+    // The same tap sent again, as an offline retry does, gets the answer the first one got.
+    if (Option.isSome(previous))
+      return previous.value.widgetId === widget.widgetId && previous.value.body === body
+        ? previous.value
+        : yield* notAllowed;
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",

@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 
 import { companyRuleMailbox, directRuleLead, ruleSetter } from "./ruleAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import { mailRuleFilter, mailRuleMatchProblem, mailRulePhrase } from "./ruleMatch.ts";
+import { hasHiddenCharacters, mailRuleMatchProblem } from "./ruleMatch.ts";
 
 export const DEFAULT_MAIL_RULE_CAP = 30;
 export const mailRuleMatchJson = Schema.fromJsonString(KinMailRuleMatch);
@@ -40,12 +40,19 @@ const matchProblem = {
   mixed_scripts: "Use a sender domain whose labels do not mix Latin, Cyrillic or Greek letters.",
   invalid_sender: "Use a valid sender address or domain.",
   invalid_phrase: "Use subject phrases that have 2 to 60 characters after normalization.",
+  hidden_characters:
+    "Use sender filters and subject phrases without invisible or control characters.",
 } as const;
 
 export const prepareMailRule = Effect.fn("KinMailRules.prepareDraft")(function* (
   input: Pick<KinMailRuleCreateInput, "match" | "what" | "monthlyCap">,
 ) {
   if (input.what.trim() === "") return yield* badMailRule;
+  if (hasHiddenCharacters(input.what))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Write the instruction without invisible or control characters.",
+    });
   const problem = mailRuleMatchProblem(input.match);
   if (problem !== undefined)
     return yield* new KinChatError({ reason: "invalid_state", message: matchProblem[problem] });
@@ -56,19 +63,6 @@ export const prepareMailRule = Effect.fn("KinMailRules.prepareDraft")(function* 
     monthlyCap: input.monthlyCap ?? DEFAULT_MAIL_RULE_CAP,
   };
 });
-
-export const mailRuleMatchKey = (match: KinMailRuleMatch) => {
-  const sorted = (values: ReadonlyArray<string>) => [...new Set(values)].toSorted();
-  return mailRuleContentHash(
-    JSON.stringify({
-      from: sorted(match.from.flatMap((sender) => mailRuleFilter(sender).spelling ?? [])),
-      subjectHas: sorted(match.subjectHas.map(mailRulePhrase)),
-      withFile: match.withFile,
-      classes: match.classes === null ? null : sorted(match.classes),
-    }),
-    "",
-  );
-};
 
 export const checkMailRuleOwner = Effect.fn("KinMailRules.stillOwner")(function* (
   orgId: KinOrgId,

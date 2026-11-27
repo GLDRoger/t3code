@@ -82,19 +82,30 @@ export const mailRuleTap = Effect.fn("KinMailRules.answerCard")(function* ({
     !match.from.every((sender, index) => mailRuleFilter(sender).spelling === state.fromAscii[index])
   )
     return yield* changed;
+  // Not now is the safe direction, so it stays open after the mailbox or lead went away.
+  if (action === "not_now")
+    return { ...state, decision: { status: "dismissed" } } satisfies KinMailRuleCardState;
   const currentMailbox = yield* companyMailRuleMailbox(orgId, mailbox.connectionId).pipe(
     Effect.catchTags({
       KinChatError: () =>
         new KinChatError({
           reason: "invalid_state",
-          message: "This company mailbox is no longer connected.",
+          message:
+            "This mailbox is no longer a connected company mailbox, so nothing was turned on.",
         }),
     }),
   );
-  const destination = yield* mailRuleDirectLead(orgId, personId, lead.agentId, widget.chatId);
+  const destination = yield* mailRuleDirectLead(orgId, personId, lead.agentId, widget.chatId).pipe(
+    Effect.catchTags({
+      KinChatError: () =>
+        new KinChatError({
+          reason: "invalid_state",
+          message:
+            "The lead or chat on this mail rule card is no longer available, so nothing was turned on.",
+        }),
+    }),
+  );
   if (currentMailbox.label !== mailbox.label || destination.name !== lead.name) return yield* stale;
-  if (action === "not_now")
-    return { ...state, decision: { status: "dismissed" } } satisfies KinMailRuleCardState;
   const service = yield* KinMailRules;
   const rule = yield* service.createFromTap(
     [identity],
