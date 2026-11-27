@@ -398,7 +398,11 @@ export function createMobileThemeVariables(
     "--color-primary-shadow": "#000000",
     "--color-secondary": c.secondary,
     "--color-secondary-foreground": c.secondaryForeground,
-    "--color-secondary-border": c.border,
+    // An outline button's only edge: a dark palette's hairline can match the card it sits on.
+    "--color-secondary-border":
+      appearance === "dark"
+        ? themeColorWithContrast(c.border, [groupedCard, c.canvas], 1.6)
+        : c.border,
     "--color-switch-active-track": c.messageAction,
     "--color-switch-active-thumb": c.messageActionForeground,
     "--color-switch-inactive-track": c.secondary,

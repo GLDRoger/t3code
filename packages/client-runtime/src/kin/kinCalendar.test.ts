@@ -14,7 +14,7 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinCalendarHeld, kinCalendarNotice, kinCalendarState } from "./kinCalendar.ts";
-import { kinDatesAgenda, kinDatesMonth } from "./kinDates.ts";
+import { kinDatesAgenda, kinDatesMonth, kinMonthCellLabel } from "./kinDates.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
 const rhea = KinPersonId.make("person-rhea-7f3a");
@@ -212,6 +212,28 @@ describe("calendar events beside Work dates", () => {
       .weeks.flat()
       .find((one) => one.day === "2026-11-27")!;
     expect([order(cell.entries).length, cell.rows.length]).toEqual([5, 2]);
+  });
+
+  // A screen reader hears a day as words, the grid's own calendar day whatever the device's zone.
+  it.each([
+    ["2026-11-27", "Friday, November 27, 5 entries"],
+    ["2026-11-20", "Friday, November 20, Today"],
+    ["2026-11-30", "Monday, November 30"],
+    ["2026-12-01", "Tuesday, December 1"],
+  ])("names %s in words", (day, label) => {
+    const rows = [
+      dated("W-9", "2026-11-27T09:00:00.000Z", false),
+      dated("W-1", "2026-11-27T00:00:00.000Z", true),
+    ];
+    const events = calendarOf(
+      event({ id: "evt-ten", start: "2026-11-27T10:00:00.000Z", end: null, allDay: false }),
+      event({ id: "evt-eight", start: "2026-11-27T08:00:00.000Z", end: null, allDay: false }),
+      event({ id: "evt-day" }),
+    );
+    const cell = kinDatesMonth("2026-11", rows, where("Pacific/Kiritimati", "UTC"), now, events)
+      .weeks.flat()
+      .find((one) => one.day === day)!;
+    expect(kinMonthCellLabel(cell)).toBe(label);
   });
 
   const [google, outlook] = sources;

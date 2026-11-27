@@ -576,11 +576,14 @@ function beforeAfter(change: KinRecordChange, names: KinWorkNames, now: Date) {
   for (const name of SHOWN_CHANGES) {
     const field = change.fields.find((held) => held.field === name);
     if (field === undefined) continue;
-    if (name === "due")
+    if (name === "due") {
+      const allDay = change.fields.find((held) => held.field === "dueAllDay");
       return {
-        before: kinWorkDueDayText(field.from, now, names.zone) ?? "No date",
-        after: kinWorkDueDayText(field.to, now, names.zone) ?? "No date",
+        before:
+          kinWorkDueDayText(field.from, allDay && { to: allDay.from }, now, names) ?? "No date",
+        after: kinWorkDueDayText(field.to, allDay, now, names) ?? "No date",
       };
+    }
     const before = field.from?.trim() || null;
     const after = field.to?.trim() || null;
     if (before !== null || after !== null) return { before, after };

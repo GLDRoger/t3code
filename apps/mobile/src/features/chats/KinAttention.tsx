@@ -21,6 +21,7 @@ import { Platform, Pressable, View } from "react-native";
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Chip } from "../../components/ui/Chip";
 import { ListActionRow } from "../../components/ui/ListActionRow";
@@ -53,7 +54,7 @@ function KinSetAsidePicker(props: {
   readonly onCancel: () => void;
 }) {
   const now = new Date(useNowMinuteMs());
-  const days = kinSetAsideDays(now);
+  const days = kinSetAsideDays(now, props.names.zone);
   const copy = kinPickDayCopy(props.allowUntilLifted);
   const [month, setMonth] = useState(days.initial.slice(0, 7));
   const grid = kinDatesMonth(month, [], props.names, now);
@@ -94,7 +95,7 @@ export function KinAttentionItem(
   const asker = useKinAskAbout(props)(row.agentId);
   const ripple = useResolveClassNames("bg-subtle-strong");
   const busy = handler.busy === row.factKey;
-  const menu = kinAttentionMenu(row, now);
+  const menu = kinAttentionMenu(row, now, props.names.zone);
   const pickDay = menu.later.choices.find((choice) => choice.id === "pick_day")!;
   const description =
     row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
@@ -104,6 +105,7 @@ export function KinAttentionItem(
       label={row.title}
       description={description}
       disabled={busy}
+      labelWholeWords
     />
   );
   return (
@@ -194,6 +196,38 @@ export function KinAttentionItem(
   );
 }
 
+/** One handled row: what it is, and its Undo as a control of its own. */
+function KinHandledRow(props: {
+  readonly title: string;
+  readonly detail: string | null;
+  readonly busy: boolean;
+  readonly onUndo: (() => void) | null;
+}) {
+  return (
+    <View className="flex-row items-center bg-grouped-card">
+      <View className="flex-1">
+        <ListRowLayout
+          label={props.title}
+          description={props.detail ?? undefined}
+          labelWholeWords
+        />
+      </View>
+      {props.onUndo === null ? null : (
+        <View className="pe-4">
+          <Button
+            label={KIN_ATTENTION.undo}
+            accessibilityLabel={KIN_ATTENTION.undoFor(props.title)}
+            tone="outline"
+            size="compact"
+            loading={props.busy}
+            onPress={props.onUndo}
+          />
+        </View>
+      )}
+    </View>
+  );
+}
+
 /** What someone already has in hand or set aside, folded away, each with its Undo. */
 function KinAttentionHandled(props: {
   readonly rows: ReadonlyArray<KinAttentionRow>;
@@ -211,32 +245,24 @@ function KinAttentionHandled(props: {
         onPress={() => setOpen((held) => !held)}
       />
       {open
-        ? props.asides.map((row) =>
-            row.liftable ? (
-              <ListActionRow
-                key={row.id}
-                label={row.title}
-                description={row.detail}
-                detail={KIN_ATTENTION.undo}
-                loading={props.handler.busy === row.record}
-                onPress={() => void props.handler.aside(row.record, "lift")}
-              />
-            ) : (
-              <View key={row.id} className="bg-grouped-card">
-                <ListRowLayout label={row.title} description={row.detail} />
-              </View>
-            ),
-          )
+        ? props.asides.map((row) => (
+            <KinHandledRow
+              key={row.id}
+              title={row.title}
+              detail={row.detail}
+              busy={props.handler.busy === row.record}
+              onUndo={row.liftable ? () => void props.handler.aside(row.record, "lift") : null}
+            />
+          ))
         : null}
       {open
         ? props.rows.map((row) => (
-            <ListActionRow
+            <KinHandledRow
               key={row.id}
-              label={row.title}
-              description={row.handled ?? undefined}
-              detail={KIN_ATTENTION.undo}
-              loading={props.handler.busy === row.factKey}
-              onPress={() => void props.handler.send(row.factKey, "undo")}
+              title={row.title}
+              detail={row.handled}
+              busy={props.handler.busy === row.factKey}
+              onUndo={() => void props.handler.send(row.factKey, "undo")}
             />
           ))
         : null}
