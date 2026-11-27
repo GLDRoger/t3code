@@ -1590,7 +1590,7 @@ for (const adopted of [false, true]) {
               })),
             ),
           );
-        const expected = [{ key: row.key, bankTransaction: true }];
+        const expected = [{ key: row.key, bankTransaction: true as const }];
         assert.deepStrictEqual(yield* findBankTitle(), expected);
         assert.strictEqual((yield* Work.get([owner], { orgId, key: row.key })).key, row.key);
         const sql = yield* SqlClient.SqlClient;
