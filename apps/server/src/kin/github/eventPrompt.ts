@@ -140,7 +140,7 @@ const TRIAGE_END = `No one in chat needs a word from this turn: once the comment
 const SEAT_END = `Nothing you write besides the comment goes anywhere: once it is posted, or when you post none, end the turn. ${TOLD_BY_KIN}`;
 const RELATED = (trigger: KinGithubTrigger) =>
   (trigger.related ?? []).length > 0
-    ? " The repo's newest open issues and pull requests are below; one may report the same thing in other words."
+    ? " Below are the repo's newest open issues and pull requests, and ones GitHub's search found by this title's words, some of them closed; one may report the same thing in other words. When you name a closed one, say it is closed."
     : "";
 
 const TRIAGE_INSIDE = (repo: string, trigger: KinGithubTrigger) => [

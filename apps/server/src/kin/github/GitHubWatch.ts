@@ -300,6 +300,11 @@ const decodeMemberships = Schema.decodeUnknownOption(
 const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeOpenIssues = Schema.decodeUnknownOption(Schema.Array(Issue));
+const decodeIssueSearch = Schema.decodeUnknownOption(
+  Schema.Struct({
+    items: Schema.Array(Schema.Struct({ ...Issue.fields, repository_url: Schema.String })),
+  }),
+);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
 const decodePermission = Schema.decodeUnknownOption(Permission);
@@ -511,35 +516,80 @@ const triggerFacts = (
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
-/** The repo's newest open issues and PRs for a triage turn to judge a duplicate by, not a match. */
-const RELATED = 10;
+/**
+ * What a triage turn judges a duplicate by: the repo's newest open issues and PRs, plus what
+ * GitHub's search finds, open or closed, for any of the title's telling words. No matching here.
+ */
+const NEWEST = 10;
+const SEARCHED = 5;
+const RELATED = 12;
 const OPENING = 300;
+const SEARCH_WORDS = 6;
+const PLAIN_WORDS = new Set(
+  "about after again also always before being both cannot could does doesn from have here into just like more much never only other over same should some still than that their them then there these they this those very what when where which while will with without would your".split(
+    " ",
+  ),
+);
 // In an inside turn only a teammate's text is shown; a stranger's issue is shown by its title.
 const INSIDE_TEXT = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/** The title's longest words, past short and plain ones: what a reworded title most likely keeps. */
+const tellingWords = (title: string) =>
+  [
+    ...new Set(
+      (
+        title
+          .slice(0, 120)
+          .toLowerCase()
+          .match(/[\p{L}\p{N}]+/gu) ?? []
+      ).filter((word) => word.length > 3 && !PLAIN_WORDS.has(word)),
+    ),
+  ]
+    .toSorted((a, b) => b.length - a.length)
+    .slice(0, SEARCH_WORDS);
+
 const readRelatedIssues = Effect.fn("KinGitHubWatch.relatedIssues")(function* (
   get: (path: string) => Effect.Effect<ApiAnswer>,
-  { repo, number }: ThreadSnapshot,
+  { repo, number, title }: ThreadSnapshot,
   inside: boolean,
 ) {
-  const answer = yield* get(`repos/${repo}/issues?state=open&per_page=${RELATED + 1}`);
-  const found = answer.status === 200 ? decodeOpenIssues(answer.body) : Option.none();
-  return Option.map(found, (items) =>
-    items
-      .filter((item) => item.number !== number)
-      .slice(0, RELATED)
-      .map((item) => {
-        const body =
-          !inside || INSIDE_TEXT.has(item.author_association) ? (item.body ?? "").trim() : "";
-        const opening = body.slice(0, pieceEnd(body, OPENING));
-        return {
-          number: item.number,
-          title: item.title.slice(0, pieceEnd(item.title, 120)),
-          kind: item.pull_request === undefined ? ("issue" as const) : ("pull" as const),
-          state: item.state,
-          ...(opening === "" ? {} : { opening }),
-        };
-      }),
-  ).pipe(Option.getOrUndefined);
+  const listed = yield* get(`repos/${repo}/issues?state=open&per_page=${NEWEST + 1}`);
+  const newest = listed.status === 200 ? decodeOpenIssues(listed.body) : Option.none();
+  const words = tellingWords(title);
+  const repositoryUrl = `https://api.github.com/repos/${repo.toLowerCase()}`;
+  const searched =
+    words.length === 0
+      ? Option.none()
+      : yield* get(
+          `search/issues?q=${encodeURIComponent(`repo:${repo} in:title ${words.join(" OR ")}`)}&per_page=${SEARCHED}`,
+        ).pipe(
+          Effect.map((answer) =>
+            answer.status === 200
+              ? Option.map(decodeIssueSearch(answer.body), ({ items }) =>
+                  items.filter((item) => item.repository_url.toLowerCase() === repositoryUrl),
+                )
+              : Option.none(),
+          ),
+        );
+  if (Option.isNone(newest) && Option.isNone(searched)) return undefined;
+  const open = Option.getOrElse(newest, () => []).filter((item) => item.number !== number);
+  const found = Option.getOrElse(searched, () => []).filter(
+    (item) => item.number !== number && !open.some((one) => one.number === item.number),
+  );
+  const hits = found.slice(0, SEARCHED);
+  // Search hits are what the newest list can't show, so they keep their place under the cap.
+  return [...open.slice(0, Math.min(NEWEST, RELATED - hits.length)), ...hits].map((item) => {
+    const body =
+      !inside || INSIDE_TEXT.has(item.author_association) ? (item.body ?? "").trim() : "";
+    const opening = body.slice(0, pieceEnd(body, OPENING));
+    return {
+      number: item.number,
+      title: item.title.slice(0, pieceEnd(item.title, 120)),
+      kind: item.pull_request === undefined ? ("issue" as const) : ("pull" as const),
+      state: item.state,
+      ...(opening === "" ? {} : { opening }),
+    };
+  });
 });
 
 const readConversation = Effect.fn("KinGitHubWatch.conversation")(function* (

@@ -1045,14 +1045,17 @@ export class FakeGitHub {
       const scope = /^repo:(\S+) in:title (.+)$/.exec(query);
       if (scope === null) return ok({ items: [] });
       const repo = scope[1]!.toLowerCase();
-      const words = scope[2]!.toLowerCase().split(" ");
+      // Words joined by OR match any of them; otherwise every word must match, as GitHub ANDs them.
+      const anyOf = scope[2]!.includes(" OR ");
+      const words = scope[2]!.toLowerCase().split(anyOf ? " or " : " ");
       const limit = Number(url.searchParams.get("per_page") ?? 30);
+      const hit = (item: FakeItem) => (word: string) => item.title.toLowerCase().includes(word);
       return ok({
         items: this.world.items
           .filter(
             (item) =>
               item.repo.toLowerCase() === repo &&
-              words.every((word) => item.title.toLowerCase().includes(word)),
+              (anyOf ? words.some(hit(item)) : words.every(hit(item))),
           )
           .slice(0, limit)
           .map((item) => ({
