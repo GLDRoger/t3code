@@ -260,6 +260,7 @@ export const SHARED_TOOLS = {
   kin_connection_call: ownMailboxTurn,
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
+  mail_rule: "refused",
   // The company's and clients' social accounts are the owner's.
   social_read: "refused",
   social_lookup: "refused",

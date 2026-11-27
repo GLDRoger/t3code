@@ -113,6 +113,19 @@ const mail = {
   fromAddress: Schema.NullOr(Schema.String),
   receivedAt: Schema.NullOr(time),
 };
+export const KinMailRuleHoldReason = Schema.Literals([
+  "paused",
+  "removed",
+  "setter_left",
+  "mailbox_unavailable",
+  "destination_unavailable",
+  "setter_demoted",
+  "wording_changed",
+  "monthly_limit",
+  "sender_unverified",
+]);
+export type KinMailRuleHoldReason = typeof KinMailRuleHoldReason.Type;
+
 const historyRow = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("mail"),
@@ -120,6 +133,10 @@ const historyRow = Schema.Union([
     noticedAt: time,
     state: Schema.Literals(["woke", "batched", "held_cap", "held_unverified", "held_paused"]),
     outcome: Schema.NullOr(Schema.Literals(["draft", "task", "filed", "nothing"])),
+    holdReason: Schema.optional(Schema.NullOr(KinMailRuleHoldReason)),
+    runOutcome: Schema.optional(
+      Schema.NullOr(Schema.Literals(["posted_message", "raised_card", "nothing", "held"])),
+    ),
     eventId: Schema.NullOr(id),
     wakeupId: Schema.NullOr(id),
     settledAt: Schema.NullOr(time),

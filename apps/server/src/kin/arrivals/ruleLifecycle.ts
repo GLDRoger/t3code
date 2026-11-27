@@ -1,17 +1,6 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import type { KinMailRuleHoldReason, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
-
-export const heldRuleReason = {
-  left: "the rule's setter left the team",
-  mailbox: "the rule's company mailbox is disconnected",
-  agent: "the rule's lead or direct chat is unavailable",
-  person: "the rule is paused",
-  removed: "the rule was removed",
-  demoted: "the rule's setter is no longer an owner or co-owner",
-  changed: "the rule's wording changed",
-  cap: "monthly limit reached",
-};
 
 export const pendingRuleMail = (
   sql: SqlClient.SqlClient,
@@ -24,13 +13,36 @@ export const holdRuleMail = Effect.fn("KinMailRules.holdMail")(function* (
   orgId: KinOrgId,
   ruleIds: ReadonlyArray<string>,
   state: "held_cap" | "held_paused",
-  reason: string,
+  reason: KinMailRuleHoldReason,
   at: number,
 ) {
   if (ruleIds.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_arrivals SET rule_state = ${state}, reason = ${reason},
-    state = 'settled', settled_at = ${at} WHERE ${pendingRuleMail(sql, orgId, ruleIds)}`;
+  yield* sql`UPDATE kin_arrivals SET rule_state = ${state}, rule_hold_reason = ${reason},
+    rule_held_at = ${at} WHERE ${pendingRuleMail(sql, orgId, ruleIds)}`;
+});
+
+export const stopQueuedRuleMail = Effect.fn("KinMailRules.stopQueuedMail")(function* (
+  orgId: KinOrgId,
+  ruleIds: ReadonlyArray<string>,
+  reason: KinMailRuleHoldReason,
+  at: number,
+) {
+  if (ruleIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const events = yield* sql<{
+    eventId: string;
+  }>`UPDATE kin_events SET state = CASE WHEN state = 'expired' THEN state ELSE 'done' END
+    WHERE org_id = ${orgId} AND state IN ('queued', 'expired') AND event_id IN (
+      SELECT event_id FROM kin_mail_rule_runs WHERE org_id = ${orgId}
+        AND rule_id IN ${sql.in(ruleIds)} AND settled_at IS NULL
+    ) RETURNING event_id AS "eventId"`;
+  if (events.length === 0) return;
+  const ids = events.map(({ eventId }) => eventId);
+  yield* sql`UPDATE kin_mail_rule_runs SET outcome = 'held', hold_reason = ${reason},
+    settled_at = ${at} WHERE org_id = ${orgId} AND event_id IN ${sql.in(ids)} AND settled_at IS NULL`;
+  yield* sql`UPDATE kin_arrivals SET rule_state = 'held_paused', rule_hold_reason = ${reason},
+    rule_held_at = ${at} WHERE org_id = ${orgId} AND event_id IN ${sql.in(ids)}`;
 });
 
 export const pauseMailRulesFor = Effect.fn("KinMailRules.pauseFor")(function* (
@@ -45,12 +57,15 @@ export const pauseMailRulesFor = Effect.fn("KinMailRules.pauseFor")(function* (
     SET state = 'paused', paused_why = ${cause.kind}, updated_at = ${now}
     WHERE org_id = ${orgId} AND ${sql(column)} = ${cause.id} AND state = 'on'
     RETURNING connection_id AS "connectionId", rule_id AS "ruleId"`;
-  yield* holdRuleMail(
-    orgId,
-    paused.map((rule) => rule.ruleId),
-    "held_paused",
-    heldRuleReason[cause.kind],
-    now,
-  );
+  const reason = (
+    {
+      left: "setter_left",
+      mailbox: "mailbox_unavailable",
+      agent: "destination_unavailable",
+    } as const
+  )[cause.kind];
+  const ruleIds = paused.map((rule) => rule.ruleId);
+  yield* holdRuleMail(orgId, ruleIds, "held_paused", reason, now);
+  yield* stopQueuedRuleMail(orgId, ruleIds, reason, now);
   return paused;
 });

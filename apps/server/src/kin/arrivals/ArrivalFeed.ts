@@ -18,12 +18,25 @@ import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts"
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
-import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
+import { mailLine } from "../pulse/outside.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 import { companyRuleMailbox } from "./ruleAccess.ts";
 import { mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
-import { activeRuleIds, claimRuleMail, flushRuleMail, matchingRules } from "./ruleWake.ts";
+import {
+  playbookRoute,
+  routeLateRuleHolds,
+  takeHeldRulePlaybook,
+  wakePlaybookMail,
+  type PlaybookMail,
+} from "./rulePlaybook.ts";
+import {
+  activeRuleIds,
+  alreadyClaimedRuleMail,
+  claimRuleMail,
+  flushRuleMail,
+  matchingRules,
+} from "./ruleWake.ts";
 
 /** Each mailbox is read once a minute; a host with no public address can't be told sooner. */
 const FEED_EVERY_MS = MINUTE_MS;
@@ -121,7 +134,7 @@ const make = Effect.gen(function* () {
       class: classified.class,
       look: elsewhere ? undefined : classified.look,
       facts,
-      elsewhere,
+      mailKey,
     };
   });
 
@@ -149,9 +162,8 @@ const make = Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
           const connection = yield* companyRuleMailbox(orgId, connectionId);
           const recorded: Array<string> = [];
-          const matches: Array<Matched> = [];
-          let newSenders = 0;
-          let notices = 0;
+          const playbook = new Map<string, PlaybookMail>();
+          const ruleCandidates = new Set<string>();
           const rules = yield* matchingRules(orgId, connectionId);
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
@@ -200,72 +212,82 @@ const make = Effect.gen(function* () {
             if (arrived === undefined) continue;
             recorded.push(arrived.arrivalId);
             const { class: mailClass, look } = arrived;
-            if (!arrived.elsewhere) {
-              // The oldest rule that runs on the mail claims it; else the oldest that holds it.
-              let runs: (typeof rules)[number]["rule"] | undefined;
-              let holds: typeof runs;
-              for (const { rule, filter } of rules) {
-                if (rule.state !== "on" && !startedOn.has(rule.ruleId)) continue;
-                const resultOfRule = matchMailRule(filter, {
-                  ...arrived.facts,
-                  connectionId,
-                  class: mailClass,
-                  subject: result.arrival.subject,
-                });
-                if (resultOfRule === "match") {
-                  runs = rule;
-                  break;
-                }
-                if (resultOfRule === "held_unverified") holds ??= rule;
+            const arrivalId = arrived.arrivalId;
+            const ordinary =
+              connection !== undefined &&
+              look !== undefined &&
+              typeof look.by === "string" &&
+              (mailClass === "unknown_person" ||
+                mailClass === "automated_notice" ||
+                mailClass === "client" ||
+                mailClass === "names_money")
+                ? {
+                    line: {
+                      ...mailLine(connection.label, connection.account, {
+                        ...result.arrival,
+                        receivedBy: receivedAmong(
+                          { account: connection.account, addresses: found.addresses },
+                          result.arrival.deliveredTo,
+                        ),
+                      }),
+                      matched: look.matched,
+                    },
+                    domain: look.by,
+                    ...(look.clientId === undefined ? {} : { clientId: look.clientId }),
+                    arrivalId,
+                    mailClass,
+                  }
+                : undefined;
+            if (ordinary !== undefined) playbook.set(arrivalId, ordinary);
+
+            // The oldest rule that runs on the mail claims it; else the oldest that holds it.
+            let runs: (typeof rules)[number]["rule"] | undefined;
+            let holds: typeof runs;
+            for (const { rule, filter } of rules) {
+              if (rule.state !== "on" && !startedOn.has(rule.ruleId)) continue;
+              const resultOfRule = matchMailRule(filter, {
+                ...arrived.facts,
+                connectionId,
+                class: mailClass,
+                subject: result.arrival.subject,
+              });
+              if (resultOfRule === "no_match") continue;
+              if (yield* alreadyClaimedRuleMail(rule, arrived.mailKey)) continue;
+              if (resultOfRule === "match") {
+                runs = rule;
+                break;
               }
-              const claimer = runs ?? holds;
-              if (claimer !== undefined) {
-                yield* claimRuleMail(
-                  claimer,
-                  arrived.arrivalId,
-                  runs === undefined ? "held_unverified" : "match",
-                );
-                continue;
-              }
+              holds ??= rule;
             }
-            if (look === undefined || typeof look.by !== "string") continue;
-            switch (mailClass) {
-              case "unknown_person":
-                if (newSenders >= NEW_SENDERS_PER_POLL) continue;
-                newSenders += 1;
-                break;
-              case "automated_notice":
-                if (notices >= NEW_SENDERS_PER_POLL) continue;
-                notices += 1;
-                break;
-              case "client":
-              case "names_money":
-                break;
-              default:
-                continue;
+            if (runs !== undefined) {
+              yield* claimRuleMail(
+                runs,
+                arrivalId,
+                arrived.mailKey,
+                "match",
+                playbookRoute(ordinary),
+              );
+              ruleCandidates.add(arrivalId);
+            } else if (holds !== undefined) {
+              yield* claimRuleMail(holds, arrivalId, arrived.mailKey, "held_unverified", null);
             }
-            if (connection === undefined) continue;
-            const mailbox = { account: connection.account, addresses: found.addresses };
-            const line = mailLine(connection.label, mailbox.account, {
-              ...result.arrival,
-              receivedBy: receivedAmong(mailbox, result.arrival.deliveredTo),
-            });
-            matches.push({
-              line: { ...line, matched: look.matched },
-              domain: look.by,
-              ...(look.clientId === undefined ? {} : { clientId: look.clientId }),
-              arrivalId: arrived.arrivalId,
-            });
           }
           yield* flushRuleMail(rules, yield* Clock.currentTimeMillis).pipe(
             Effect.provideService(KinEventQueue, queue),
             Effect.provideService(KinChatRepository, repo),
             Effect.provideService(KinChatHub, hub),
           );
-          if (matches.length > 0)
-            yield* wakeMatches(orgId, now, matches).pipe(
-              Effect.provideService(KinEventQueue, queue),
-            );
+          const held = yield* takeHeldRulePlaybook(orgId, connectionId, playbook);
+          const heldIds = new Set(held.map(({ arrivalId }) => arrivalId));
+          const eligible = [
+            ...held.filter(({ arrivalId }) => !playbook.has(arrivalId)),
+            ...Array.from(playbook.values()).filter(
+              ({ arrivalId }) => !ruleCandidates.has(arrivalId) || heldIds.has(arrivalId),
+            ),
+          ];
+          yield* wakePlaybookMail(orgId, now, eligible).pipe(
+            Effect.provideService(KinEventQueue, queue),
+          );
           if (connection !== undefined) {
             if (found.gap !== null)
               yield* ArrivalStore.gap(
@@ -306,6 +328,7 @@ const runtimeLayer = Layer.effectDiscard(
     const feed = yield* KinArrivalFeed;
     const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
+    const queue = yield* KinEventQueue;
     const due = new Map<string, { readonly at: number; readonly failures: number }>();
     let pruned = Number.NEGATIVE_INFINITY;
     yield* ticks.register(
@@ -318,6 +341,7 @@ const runtimeLayer = Layer.effectDiscard(
             Effect.catch((cause) => Effect.logWarning("Kin couldn't prune arrivals", { cause })),
           );
         }
+        yield* routeLateRuleHolds(now).pipe(Effect.provideService(KinEventQueue, queue));
         // Scheduler maintenance: every org's live mail connections; each read is org-scoped.
         // A person's own mailbox is theirs alone (`turnMailbox.ts`): never read for the company.
         const rows = yield* sql<{ orgId: string; connectionId: string }>`SELECT org_id AS "orgId",

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { KinMailRuleCreateInput, KinMailRuleMatch, KinMailRuleRunNow } from "./kinMailRules.ts";
+import {
+  KinMailRuleCreateInput,
+  KinMailRuleHistory,
+  KinMailRuleMatch,
+  KinMailRuleRunNow,
+} from "./kinMailRules.ts";
 
 const valid = Schema.is(KinMailRuleCreateInput);
 const isMatch = Schema.is(KinMailRuleMatch);
@@ -49,4 +54,26 @@ it("accepts queued mail rule runs with an event and keeps the earlier results re
       message: "Kin can't run mail rules yet. Nothing ran.",
     }),
   ).toBe(true);
+});
+
+it("decodes bounded run outcomes and hold reasons while keeping earlier history readable", () => {
+  const decode = Schema.decodeUnknownSync(KinMailRuleHistory);
+  const row = {
+    kind: "mail",
+    arrivalId: "arr_acf1102",
+    fromAddress: null,
+    receivedAt: null,
+    noticedAt: 1000,
+    state: "woke",
+    outcome: null,
+    eventId: "pulse-cb9831",
+    wakeupId: null,
+    settledAt: null,
+    refs: null,
+  };
+  expect(decode({ entries: [row] }).entries).toEqual([row]);
+  const ended = { ...row, runOutcome: "raised_card", holdReason: null };
+  const held = { ...row, state: "held_paused", runOutcome: "held", holdReason: "setter_demoted" };
+  expect(decode({ entries: [ended, held] }).entries).toEqual([ended, held]);
+  expect(() => decode({ entries: [{ ...held, holdReason: "raw message" }] })).toThrow();
 });

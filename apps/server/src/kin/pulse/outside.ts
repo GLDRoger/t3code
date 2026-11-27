@@ -244,6 +244,7 @@ interface RuleMatch {
   readonly rule: {
     readonly ruleId: string;
     readonly manual?: true;
+    readonly activation: number;
     readonly key: string;
     readonly agentId: KinAgentId;
     readonly chatId: KinChatId;
@@ -450,6 +451,7 @@ export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
                 chatId: match.rule.chatId,
                 rule: {
                   ruleId: match.rule.ruleId,
+                  activation: match.rule.activation,
                   ...(match.rule.manual === true ? { manual: true } : {}),
                 },
                 ...(match.notListed > 0 ? { outsideNotListed: match.notListed } : {}),

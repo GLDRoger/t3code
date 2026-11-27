@@ -28,6 +28,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { linkRuleWake, settleRuleWakes } from "../arrivals/ruleRunStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
@@ -461,6 +462,7 @@ const make = Effect.gen(function* () {
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
       Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
+      Effect.andThen(settleRuleWakes(orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const laneOf = sql.literal(LANE_OF);
@@ -865,6 +867,13 @@ const make = Effect.gen(function* () {
                       const enqueuedAt = Math.min(...rows.map((row) => row.queued_at));
                       yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}, enqueued_at = ${enqueuedAt}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
+                      yield* linkRuleWake(
+                        input.orgId,
+                        events.flatMap((event) =>
+                          event._tag === "pulse" && event.rule !== undefined ? [event.eventId] : [],
+                        ),
+                        input.wakeupId,
+                      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
                       return events;
                     }),
                   )

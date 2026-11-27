@@ -28,7 +28,7 @@ import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
 import { pauseMailRulesFor } from "./ruleLifecycle.ts";
-import { ruleWakeStillAllowed } from "./ruleWake.ts";
+import { checkRuleWake } from "./ruleWake.ts";
 
 const orgId = KinOrgId.make("org");
 const agentId = KinAgentId.make("finance");
@@ -319,6 +319,8 @@ it.effect(
             wakeupId: null,
             settledAt: null,
             refs: null,
+            holdReason: null,
+            runOutcome: null,
           },
           { kind: "gap", arrivalId: "gap", from: 20, to: 40 },
         ],
@@ -352,10 +354,10 @@ it.effect("pausing or disconnecting a rule settles its waiting mail before a fee
     yield* rules.pause(owners, { orgId, ruleId: first.ruleId });
     yield* sql.withTransaction(pauseMailRulesFor(orgId, { kind: "mailbox", id: connectionId }, 2));
     assert.deepStrictEqual(
-      yield* sql`SELECT rule_state, reason FROM kin_arrivals ORDER BY arrival_id`,
+      yield* sql`SELECT rule_state, rule_hold_reason AS reason FROM kin_arrivals ORDER BY arrival_id`,
       [
-        { rule_state: "held_paused", reason: "the rule is paused" },
-        { rule_state: "held_paused", reason: "the rule's company mailbox is disconnected" },
+        { rule_state: "held_paused", reason: "paused" },
+        { rule_state: "held_paused", reason: "mailbox_unavailable" },
       ],
     );
   }).pipe(Effect.provide(fixture)),
@@ -398,13 +400,13 @@ it.effect("a rule pulse claims alone and keeps the setter's private destination"
     if (event?._tag !== "pulse") return assert.fail("Expected a rule pulse.");
     assert.deepStrictEqual(yield* turnChat({ orgId, agentId, wakeupId }), { chatId, asked: true });
     assert.strictEqual(yield* turnAudience({ orgId, agentId, wakeupId }), "owner_only");
-    assert.isTrue(yield* ruleWakeStillAllowed(event));
-    yield* TestClock.adjust("1 minute");
+    assert.deepStrictEqual(yield* checkRuleWake(event), { setterName: "Meera", what: tap.what });
+    yield* TestClock.setTime(9 * 60 * 60_000);
     yield* rules.pause(owners, ref);
-    assert.isFalse(yield* ruleWakeStillAllowed(event));
+    assert.deepStrictEqual(yield* checkRuleWake(event), { held: "paused" });
     // A wake queued before a pause stays stopped after a resume, even by the same setter.
     yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
-    assert.isFalse(yield* ruleWakeStillAllowed(event));
+    assert.deepStrictEqual(yield* checkRuleWake(event), { held: "paused" });
   }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

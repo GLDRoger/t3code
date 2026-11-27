@@ -982,6 +982,7 @@ export const KinEvent = Schema.Union([
       Schema.Struct({
         ruleId: Schema.String.check(Schema.isMaxLength(128)),
         manual: Schema.optional(Schema.Literal(true)),
+        activation: Schema.optional(PositiveInt),
       }),
     ),
     // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct

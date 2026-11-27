@@ -162,6 +162,7 @@ export const OUTSIDE_TOOLS = {
   kin_connection_offer: "allowed",
   // Outside text could relabel which account is for what.
   kin_connection_note: "refused",
+  mail_rule: "refused",
   // Drafts stay in Kin; only the owner's Confirm on a card Kin draws from them posts anything.
   social_read: "allowed",
   social_lookup: "allowed",

@@ -64,7 +64,8 @@ import { feedTurn } from "../numbers/feeds.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
-import { ruleWakeStillAllowed } from "../arrivals/ruleWake.ts";
+import { reportRuleWordingChanged } from "../arrivals/ruleWake.ts";
+import { holdRuleWake } from "../arrivals/ruleRunStore.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -652,8 +653,6 @@ const make = Effect.gen(function* () {
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
     function* (orgId: KinOrgId, wakeupId: KinWakeupId, event: KinEvent) {
-      if (event._tag === "pulse" && event.rule !== undefined)
-        return !(yield* ruleWakeStillAllowed(event).pipe(provideSql));
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       // A number's crossing whose episode ended, was handled or went quiet since it was queued.
@@ -2046,13 +2045,52 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             };
-            const built = candidate
-              ? yield* prompt.buildSession({
-                  ...promptInput,
-                  ...(previous === undefined ? {} : { previous }),
-                })
-              : undefined;
-            const full = built?.full ?? (yield* prompt.build(promptInput));
+            const rendered = yield* Effect.gen(function* () {
+              const built = candidate
+                ? yield* prompt.buildSession({
+                    ...promptInput,
+                    ...(previous === undefined ? {} : { previous }),
+                  })
+                : undefined;
+              return { built, full: built?.full ?? (yield* prompt.build(promptInput)) };
+            }).pipe(
+              Effect.catchTags({
+                KinLeadPromptError: (error) =>
+                  error.mailRuleHold === undefined
+                    ? Effect.fail(error)
+                    : Effect.succeed(error.mailRuleHold),
+              }),
+            );
+            if ("reason" in rendered) {
+              yield* sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    yield* holdRuleWake(orgId, rendered.eventId, wakeupId, rendered.reason);
+                    const [event] = events;
+                    if (
+                      rendered.reason === "wording_changed" &&
+                      event?._tag === "pulse" &&
+                      Option.isSome(chatRepository) &&
+                      Option.isSome(chatHub)
+                    )
+                      yield* sql
+                        .withTransaction(
+                          reportRuleWordingChanged(event, yield* Clock.currentTimeMillis),
+                        )
+                        .pipe(
+                          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+                          Effect.provideService(KinChatHub, chatHub.value),
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning("Kin couldn't post a mail rule notice", { cause }),
+                          ),
+                        );
+                    yield* queue.finish({ orgId, wakeupId, status: "completed" });
+                  }),
+                )
+                .pipe(provideSql);
+              return;
+            }
+            const { built, full } = rendered;
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";

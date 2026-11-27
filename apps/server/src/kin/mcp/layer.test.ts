@@ -1305,15 +1305,11 @@ it.effect.each([true, false])(
           Effect.provide(services),
         );
         const served = [...new Set([...servedNames, ...kinGitHub, ...LEAD_T3_TOOLS])];
-        assert.sameMembers(
-          served.filter((name) => name !== "mail_rule"),
-          Object.keys(SHARED_TOOLS),
-        );
+        assert.strictEqual(Reflect.get(SHARED_TOOLS, "mail_rule"), "refused");
+        assert.sameMembers(served, Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
-        assert.sameMembers(
-          served.filter((name) => name !== "mail_rule"),
-          Object.keys(OUTSIDE_TOOLS),
-        );
+        assert.strictEqual(Reflect.get(OUTSIDE_TOOLS, "mail_rule"), "refused");
+        assert.sameMembers(served, Object.keys(OUTSIDE_TOOLS));
         // A shared thread lists only what a shared turn may run.
         const sharedThread = ThreadId.make("kin-shared:lead-group");
         for (const name of ["kin_chat_post", "records_query", "kin_relay", "kin_defer"])
@@ -1598,7 +1594,7 @@ it.effect.each([true, false])(
         expect.soft(connected.names).toContain("mail_rule");
         assert.sameMembers(
           [...new Set([...connected.names, ...kinGitHub, ...LEAD_T3_TOOLS])],
-          [...Object.keys(SHARED_TOOLS).filter((name) => !isSocialTool(name)), "mail_rule"],
+          Object.keys(SHARED_TOOLS).filter((name) => !isSocialTool(name)),
         );
         // This turn read outside text: a delegated task is work that text could steer.
         const steered = yield* request(

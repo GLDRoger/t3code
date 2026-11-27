@@ -5,6 +5,7 @@ import {
   type KinAgentId,
   type KinChatId,
   type KinEvent,
+  type KinMailRuleHoldReason,
   type KinOrgId,
   type KinPersonId,
 } from "@t3tools/contracts";
@@ -21,9 +22,9 @@ import { MINUTE_MS } from "../durations.ts";
 import { mailLine, wakeMatches } from "../pulse/outside.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
-import { companyRuleMailbox, isDirectRuleLead, ruleSetter } from "./ruleAccess.ts";
+import { companyRuleMailbox, directRuleLead, ruleSetter } from "./ruleAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import { heldRuleReason, holdRuleMail, pendingRuleMail } from "./ruleLifecycle.ts";
+import { holdRuleMail, pendingRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
 
 const WINDOW_MS = 10 * MINUTE_MS;
@@ -46,7 +47,8 @@ type WakeRule = {
   readonly fired: number;
   readonly monthlyCap: number;
   readonly lastWakeAt: number | null;
-  readonly updatedAt: number;
+  readonly activation: number;
+  readonly pausedWhy: string | null;
 };
 
 export type WakeMail = {
@@ -61,10 +63,10 @@ const ruleColumns = `org_id AS "orgId", rule_id AS "ruleId",
   connection_id AS "connectionId", agent_id AS "agentId", chat_id AS "chatId",
   said_by AS "saidBy", state, content_sha256 AS "contentHash",
   match_json AS "matchJson", what, month, fired, monthly_cap AS "monthlyCap",
-  last_wake_at AS "lastWakeAt", updated_at AS "updatedAt"`;
+  last_wake_at AS "lastWakeAt", activation, paused_why AS "pausedWhy"`;
 
 const mailColumns = `arrival_id AS "arrivalId", from_address AS "fromAddress",
-  thread_id AS "threadId", received_at AS "receivedAt", mail_key AS "mailKey"`;
+  thread_id AS "threadId", received_at AS "receivedAt", COALESCE(rule_mail_key, mail_key) AS "mailKey"`;
 
 export const activeRuleIds = Effect.fn("KinMailRules.activeIds")(function* (
   orgId: KinOrgId,
@@ -90,38 +92,67 @@ export const matchingRules = Effect.fn("KinMailRules.forMailbox")(function* (
   });
 });
 
+const held = (reason: KinMailRuleHoldReason) => ({ held: reason });
+
 const checked = Effect.fn("KinMailRules.checkWake")(function* (rule: WakeRule) {
+  if (rule.state === "removed") return held("removed");
+  if (rule.state !== "on") {
+    switch (rule.pausedWhy) {
+      case "left":
+        return held("setter_left");
+      case "mailbox":
+        return held("mailbox_unavailable");
+      case "agent":
+        return held("destination_unavailable");
+      default:
+        return held("paused");
+    }
+  }
+  const setter = yield* ruleSetter(rule.orgId, rule.saidBy);
+  if (setter === undefined) return held("setter_left");
+  if (!setter.owner) return held("setter_demoted");
+  const mailbox = yield* companyRuleMailbox(rule.orgId, rule.connectionId);
+  if (mailbox === undefined) return held("mailbox_unavailable");
+  if ((yield* directRuleLead(rule.orgId, rule.saidBy, rule.agentId, rule.chatId)) === undefined)
+    return held("destination_unavailable");
   if (
     mailRuleContentHash(rule.matchJson, rule.what) !== rule.contentHash ||
     Option.isNone(decodeMatch(rule.matchJson))
   )
-    return { held: heldRuleReason.changed } as const;
-  const setter = yield* ruleSetter(rule.orgId, rule.saidBy);
-  if (setter === "left") return { held: heldRuleReason.left } as const;
-  if (setter === "demoted") return { held: heldRuleReason.demoted } as const;
-  const mailbox = yield* companyRuleMailbox(rule.orgId, rule.connectionId);
-  if (mailbox === undefined) return { held: heldRuleReason.mailbox } as const;
-  if (!(yield* isDirectRuleLead(rule.orgId, rule.saidBy, rule.agentId, rule.chatId)))
-    return { held: heldRuleReason.agent } as const;
-  return rule.state === "on" ? { mailbox } : ({ held: heldRuleReason.person } as const);
+    return held("wording_changed");
+  return { mailbox, setterName: setter.name };
+});
+
+export const alreadyClaimedRuleMail = Effect.fn("KinMailRules.alreadyClaimedMail")(function* (
+  rule: WakeRule,
+  mailKey: string | null,
+) {
+  if (mailKey === null) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql`SELECT 1 FROM kin_arrivals WHERE org_id = ${rule.orgId}
+    AND rule_id = ${rule.ruleId} AND (rule_mail_key = ${mailKey} OR (rule_mail_key IS NULL AND mail_key = ${mailKey}))
+    AND (event_id IS NOT NULL OR rule_state IN ('woke', 'batched')) LIMIT 1`;
+  return row !== undefined;
 });
 
 export const claimRuleMail = Effect.fn("KinMailRules.claimMail")(function* (
   rule: WakeRule,
   arrivalId: string,
+  mailKey: string | null,
   result: "match" | "held_unverified",
+  playbookRoute: string | null,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_arrivals SET rule_id = ${rule.ruleId},
     rule_state = ${result === "match" ? "batched" : "held_unverified"},
-    reason = ${result === "match" ? null : "sender not verified"},
-    state = ${result === "match" ? "new" : "settled"}, outcome = NULL,
-    settled_at = CASE WHEN ${result === "match"} THEN NULL ELSE noticed_at END
+    rule_hold_reason = ${result === "match" ? null : "sender_unverified"},
+    rule_playbook_route = ${playbookRoute}, rule_mail_key = ${mailKey},
+    rule_held_at = CASE WHEN ${result === "match"} THEN NULL ELSE noticed_at END
     WHERE org_id = ${rule.orgId} AND arrival_id = ${arrivalId}`;
 });
 
 const notice = Effect.fn("KinMailRules.notice")(function* (
-  rule: WakeRule,
+  rule: Pick<WakeRule, "orgId" | "ruleId" | "chatId">,
   key: string,
   body: string,
   at: number,
@@ -156,7 +187,7 @@ const notice = Effect.fn("KinMailRules.notice")(function* (
 });
 
 export const wakeRuleMail = Effect.fn("KinMailRules.wakeMail")(function* (
-  rule: Pick<WakeRule, "orgId" | "ruleId" | "agentId" | "chatId" | "saidBy">,
+  rule: Pick<WakeRule, "orgId" | "ruleId" | "agentId" | "chatId" | "saidBy" | "activation">,
   mailbox: { readonly label: string; readonly account: string | null },
   first: WakeMail,
   rest: ReadonlyArray<WakeMail>,
@@ -187,6 +218,7 @@ export const wakeRuleMail = Effect.fn("KinMailRules.wakeMail")(function* (
         agentId: rule.agentId,
         chatId: rule.chatId,
         saidBy: rule.saidBy,
+        activation: rule.activation,
         key: manual ? `${key}:manual:${SecureRandom.uuidV4Unsafe()}` : key,
         ...(manual ? { manual: true } : {}),
       },
@@ -196,19 +228,16 @@ export const wakeRuleMail = Effect.fn("KinMailRules.wakeMail")(function* (
 });
 
 const pointAtWake = (sql: SqlClient.SqlClient, agentId: KinAgentId, eventId: string) =>
-  sql`agent_id = ${agentId}, event_id = ${eventId}, wakeup_id = NULL, refs_json = NULL,
-    reason = NULL, state = 'new', settled_at = NULL, outcome = NULL`;
+  sql`agent_id = ${agentId}, event_id = ${eventId}, rule_hold_reason = NULL`;
 
 export const recordManualRuleMail = Effect.fn("KinMailRules.recordManualMail")(function* (
-  rule: Pick<WakeRule, "orgId" | "ruleId" | "agentId">,
+  rule: Pick<WakeRule, "orgId" | "ruleId">,
   arrivalId: string,
   eventId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_arrivals SET rule_id = ${rule.ruleId}, rule_state = 'woke',
-    ${pointAtWake(sql, rule.agentId, eventId)}
-    WHERE org_id = ${rule.orgId} AND arrival_id = ${arrivalId}
-      AND (rule_id IS NULL OR rule_id = ${rule.ruleId})`;
+  yield* sql`INSERT INTO kin_mail_rule_runs (org_id, event_id, arrival_id, rule_id, state, manual)
+    VALUES (${rule.orgId}, ${eventId}, ${arrivalId}, ${rule.ruleId}, 'woke', 1)`;
 });
 
 const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: number) {
@@ -227,7 +256,7 @@ const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: num
   const zone = yield* readOwnerZone(rule.orgId);
   const limit = monthlyMailRuleLimit(rule, at, zone);
   if (limit.atLimit) {
-    yield* holdRuleMail(rule.orgId, [rule.ruleId], "held_cap", heldRuleReason.cap, at);
+    yield* holdRuleMail(rule.orgId, [rule.ruleId], "held_cap", "monthly_limit", at);
     const told = yield* sql`UPDATE kin_mail_rules SET cap_told = ${limit.month}
       WHERE org_id = ${rule.orgId} AND rule_id = ${rule.ruleId} AND cap_told IS NOT ${limit.month}
       RETURNING rule_id`;
@@ -272,6 +301,10 @@ const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: num
   if (counted.status !== "counted")
     return yield* Effect.die(new Error("The mail rule changed during its wake."));
 
+  yield* sql`INSERT INTO kin_mail_rule_runs (org_id, event_id, arrival_id, rule_id, state, manual)
+    SELECT org_id, ${eventId}, arrival_id, ${rule.ruleId},
+      CASE WHEN arrival_id = ${first.arrivalId} THEN 'woke' ELSE 'batched' END, 0
+    FROM kin_arrivals WHERE ${pending}`;
   yield* sql`UPDATE kin_arrivals SET rule_state = CASE WHEN arrival_id = ${first.arrivalId}
       THEN 'woke' ELSE 'batched' END, ${pointAtWake(sql, rule.agentId, eventId)}
     WHERE ${pending}`;
@@ -293,19 +326,38 @@ export const flushRuleMail = Effect.fn("KinMailRules.flushMailbox")(function* (
   for (const { rule } of rules) yield* flush(rule, at);
 });
 
-export const ruleWakeStillAllowed = Effect.fn("KinMailRules.wakeStillAllowed")(function* (
+export const checkRuleWake = Effect.fn("KinMailRules.checkQueuedWake")(function* (
   pulse: Extract<KinEvent, { readonly _tag: "pulse" }>,
 ) {
-  if (pulse.rule === undefined || pulse.chatId === undefined) return false;
+  if (pulse.rule === undefined || pulse.chatId === undefined)
+    return held("destination_unavailable");
+  const { rule: queued, chatId } = pulse;
   const sql = yield* SqlClient.SqlClient;
-  const [rule] = yield* sql<WakeRule>`SELECT ${sql.literal(ruleColumns)} FROM kin_mail_rules
-    WHERE org_id = ${pulse.orgId} AND rule_id = ${pulse.rule.ruleId}`;
-  return (
-    rule !== undefined &&
-    // Pause, resume and remove move updated_at, so a wake queued before any of them never runs.
-    rule.updatedAt <= DateTime.toEpochMillis(pulse.receivedAt) &&
-    rule.agentId === pulse.agentId &&
-    rule.chatId === pulse.chatId &&
-    "mailbox" in (yield* checked(rule))
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const [rule] = yield* sql<WakeRule>`SELECT ${sql.literal(ruleColumns)} FROM kin_mail_rules
+      WHERE org_id = ${pulse.orgId} AND rule_id = ${queued.ruleId}`;
+      if (rule === undefined) return held("removed");
+      if (rule.activation !== queued.activation) return held("paused");
+      if (rule.agentId !== pulse.agentId || rule.chatId !== chatId)
+        return held("destination_unavailable");
+      const access = yield* checked(rule);
+      return "held" in access ? access : { setterName: access.setterName, what: rule.what };
+    }),
+  );
+});
+
+export const reportRuleWordingChanged = Effect.fn("KinMailRules.reportChanged")(function* (
+  pulse: Extract<KinEvent, { readonly _tag: "pulse" }>,
+  at: number,
+) {
+  if (pulse.rule === undefined || pulse.chatId === undefined) return;
+  const checked = yield* checkRuleWake(pulse);
+  if (!("held" in checked) || checked.held !== "wording_changed") return;
+  yield* notice(
+    { orgId: pulse.orgId, ruleId: pulse.rule.ruleId, chatId: pulse.chatId },
+    `changed:${pulse.eventId}`,
+    "This mail rule was changed outside Kin, so it won't run. Do you want to set it up again?",
+    at,
   );
 });

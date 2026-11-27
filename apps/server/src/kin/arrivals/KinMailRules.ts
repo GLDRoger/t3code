@@ -27,7 +27,7 @@ import { DAY_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import { heldRuleReason, holdRuleMail } from "./ruleLifecycle.ts";
+import { holdRuleMail, stopQueuedRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
 import { recordManualRuleMail, wakeRuleMail, type WakeMail } from "./ruleWake.ts";
 import { mailRuleMatchProblem, matchMailRule } from "./ruleMatch.ts";
@@ -95,6 +95,7 @@ type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month"> & {
   readonly contentHash: string;
   readonly month: string | null;
   readonly sourceEvent: string;
+  readonly activation: number;
 };
 type Candidate = WakeMail & {
   readonly connectionId: string;
@@ -131,7 +132,7 @@ const make = Effect.gen(function* () {
   const rules = sql`SELECT r.org_id AS "orgId", r.rule_id AS "ruleId",
     r.connection_id AS "connectionId", r.match_json AS "matchJson", r.what,
     r.agent_id AS "agentId", r.chat_id AS "chatId", r.said_by AS "saidBy",
-    COALESCE(p.display_name, '') AS "setterName", r.source_event AS "sourceEvent",
+    COALESCE(p.display_name, '') AS "setterName", r.source_event AS "sourceEvent", r.activation,
     r.content_sha256 AS "contentHash", r.state, r.paused_why AS "pausedWhy",
     r.monthly_cap AS "monthlyCap", r.month, r.fired, r.last_wake_at AS "lastWakeAt",
     r.created_at AS "createdAt", r.updated_at AS "updatedAt"
@@ -151,6 +152,7 @@ const make = Effect.gen(function* () {
       matchJson: _matchJson,
       contentHash: _contentHash,
       sourceEvent: _sourceEvent,
+      activation: _activation,
       ...view
     } = row;
     return {
@@ -215,13 +217,9 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE kin_mail_rules SET state = ${state},
         paused_why = ${state === "paused" ? "person" : null}, updated_at = ${now}
         WHERE org_id = ${input.orgId} AND rule_id = ${input.ruleId}`;
-      yield* holdRuleMail(
-        input.orgId,
-        [input.ruleId],
-        "held_paused",
-        state === "paused" ? heldRuleReason.person : heldRuleReason.removed,
-        now,
-      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const reason = state === "paused" ? "paused" : "removed";
+      yield* holdRuleMail(input.orgId, [input.ruleId], "held_paused", reason, now);
+      yield* stopQueuedRuleMail(input.orgId, [input.ruleId], reason, now);
     }
     return yield* view(input);
   }, transaction);
@@ -247,7 +245,8 @@ const make = Effect.gen(function* () {
     yield* directLead(orgId, personId, agentId, chatId);
     const now = yield* Clock.currentTimeMillis;
     yield* sql`UPDATE kin_mail_rules SET state = 'on', paused_why = NULL, said_by = ${personId},
-      agent_id = ${agentId}, chat_id = ${chatId}, source_event = ${tapId}, updated_at = ${now}
+      agent_id = ${agentId}, chat_id = ${chatId}, source_event = ${tapId}, updated_at = ${now},
+      activation = activation + 1
       WHERE org_id = ${orgId} AND rule_id = ${ruleId}`;
     return yield* view(input);
   }, transaction);
@@ -269,19 +268,40 @@ const make = Effect.gen(function* () {
   ) {
     yield* owner(people, input.orgId);
     const row = yield* one(input);
-    if (checkedMatch(row) === undefined) return yield* changed;
     const since = (yield* Clock.currentTimeMillis) - KEEP_MS;
     type Entry = KinMailRuleHistory["entries"][number];
     type MailEntry = Extract<Entry, { kind: "mail" }>;
     const rows = yield* sql<
       Omit<MailEntry, "kind" | "refs"> & { class: string; refsJson: string | null }
     >`
-      SELECT arrival_id AS "arrivalId", from_address AS "fromAddress", received_at AS "receivedAt",
-        noticed_at AS "noticedAt", class, rule_state AS state, outcome, event_id AS "eventId",
-        wakeup_id AS "wakeupId", settled_at AS "settledAt", refs_json AS "refsJson"
-      FROM kin_arrivals WHERE org_id = ${input.orgId} AND connection_id = ${row.connectionId}
-        AND noticed_at >= ${since} AND ((rule_id = ${row.ruleId} AND rule_state IS NOT NULL) OR class = 'gap')
-      ORDER BY noticed_at DESC, arrival_id DESC`;
+      WITH recent AS (
+        SELECT * FROM kin_arrivals WHERE org_id = ${input.orgId}
+          AND connection_id = ${row.connectionId} AND noticed_at >= ${since}
+      ), attempts AS (
+        SELECT a.arrival_id, r.event_id, r.wakeup_id, r.settled_at,
+          CASE WHEN r.outcome = 'held' THEN 'held_paused' ELSE r.state END AS state,
+          CASE r.outcome WHEN 'nothing' THEN 'nothing' WHEN 'raised_card' THEN 'draft' END AS outcome,
+          NULL AS refs_json, r.hold_reason, r.outcome AS run_outcome
+        FROM recent a JOIN kin_mail_rule_runs r ON r.org_id = a.org_id
+          AND r.arrival_id = a.arrival_id AND r.rule_id = ${row.ruleId}
+        UNION ALL
+        SELECT a.arrival_id, a.event_id, a.wakeup_id,
+          COALESCE(a.rule_held_at, CASE WHEN a.event_id IS NOT NULL THEN a.settled_at END),
+          a.rule_state, CASE WHEN a.rule_hold_reason IS NULL AND a.event_id IS NOT NULL THEN a.outcome END,
+          CASE WHEN a.rule_hold_reason IS NULL AND a.event_id IS NOT NULL THEN a.refs_json END,
+          a.rule_hold_reason, CASE WHEN a.rule_hold_reason IS NOT NULL THEN 'held' END
+        FROM recent a WHERE a.class = 'gap' OR (a.rule_id = ${row.ruleId}
+          AND a.rule_state IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM kin_mail_rule_runs r WHERE r.org_id = a.org_id
+              AND r.event_id = a.event_id AND r.arrival_id = a.arrival_id AND r.manual = 0
+          ))
+      )
+      SELECT a.arrival_id AS "arrivalId", a.from_address AS "fromAddress",
+        a.received_at AS "receivedAt", a.noticed_at AS "noticedAt", a.class, r.state, r.outcome,
+        r.event_id AS "eventId", r.wakeup_id AS "wakeupId", r.settled_at AS "settledAt",
+        r.refs_json AS "refsJson", r.hold_reason AS "holdReason", r.run_outcome AS "runOutcome"
+      FROM attempts r JOIN recent a ON a.arrival_id = r.arrival_id
+      ORDER BY a.noticed_at DESC, a.arrival_id DESC, r.settled_at DESC, r.event_id DESC`;
     const entries = rows.map(({ class: kind, refsJson, ...entry }): Entry =>
       kind === "gap"
         ? {
@@ -302,7 +322,7 @@ const make = Effect.gen(function* () {
     const since = (yield* Clock.currentTimeMillis) - KEEP_MS;
     return yield* sql<Candidate>`SELECT arrival_id AS "arrivalId", connection_id AS "connectionId",
       message_id AS "messageId", from_address AS "fromAddress", received_at AS "receivedAt",
-      thread_id AS "threadId", mail_key AS "mailKey",
+      thread_id AS "threadId", COALESCE(rule_mail_key, mail_key) AS "mailKey",
       noticed_at AS "noticedAt", class, has_file AS "hasFile", sender_check AS "senderCheck"
       FROM kin_arrivals WHERE org_id = ${orgId} AND connection_id = ${connectionId}
         AND class NOT IN ('gap', 'own', 'sign_in', 'failed_checks') AND noticed_at >= ${since}
@@ -419,10 +439,7 @@ const make = Effect.gen(function* () {
       const match = checkedMatch(row);
       if (match === undefined) return yield* changed;
       yield* stillOwner(orgId, row.saidBy);
-      const mailbox = yield* companyRuleMailbox(orgId, row.connectionId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      if (mailbox === undefined) return yield* noMailbox;
+      const mailbox = yield* companyMailbox(orgId, row.connectionId);
       yield* directLead(orgId, row.saidBy, row.agentId, row.chatId);
       return { row, mailbox, filter: { connectionId: row.connectionId, ...match } };
     });
@@ -456,7 +473,7 @@ const make = Effect.gen(function* () {
         const { row: current, mailbox } = yield* runnable();
         if (
           current.contentHash !== row.contentHash ||
-          current.updatedAt !== row.updatedAt ||
+          current.activation !== row.activation ||
           current.agentId !== row.agentId ||
           current.chatId !== row.chatId ||
           current.saidBy !== row.saidBy ||
@@ -472,7 +489,7 @@ const make = Effect.gen(function* () {
         const arrivalId = chosen.arrivalId;
         const [stored] = yield* sql<Candidate>`SELECT arrival_id AS "arrivalId",
         connection_id AS "connectionId", message_id AS "messageId", thread_id AS "threadId",
-        mail_key AS "mailKey", from_address AS "fromAddress", received_at AS "receivedAt",
+        COALESCE(rule_mail_key, mail_key) AS "mailKey", from_address AS "fromAddress", received_at AS "receivedAt",
         noticed_at AS "noticedAt", class, has_file AS "hasFile", sender_check AS "senderCheck"
         FROM kin_arrivals WHERE org_id = ${orgId} AND arrival_id = ${arrivalId}
           AND connection_id = ${current.connectionId}`;

@@ -28,6 +28,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
+import { mailRuleContentHash } from "../arrivals/ruleContent.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -449,6 +450,125 @@ const carriedSend = (projection: Effect.Success<typeof carryProjection>) => {
 };
 
 describe("WakeupRunner", () => {
+  it.effect.each([
+    { state: "paused", access: "owner", activation: 1, changed: false, reason: "paused" },
+    { state: "removed", access: "owner", activation: 1, changed: false, reason: "removed" },
+    { state: "on", access: "owner", activation: 2, changed: false, reason: "paused" },
+    { state: "on", access: "member", activation: 1, changed: false, reason: "setter_demoted" },
+    { state: "on", access: "owner", activation: 1, changed: true, reason: "wording_changed" },
+  ] as const)(
+    "records a held mail rule wake ($state, $access, $activation, changed=$changed)",
+    (scenario) => {
+      const chatId = KinChatId.make("owner-chat");
+      const eventId = "pulse-a8c7d840";
+      const ruleId = "mr_451dc7e9";
+      const arrivals = ["arr_a2c71e69", "arr_a2c71e70"];
+      let providerRuns = 0;
+      return Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = 'owner:lead' WHERE chat_id = ${chatId}`;
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea', access = ${scenario.access}
+        WHERE org_id = ${orgId} AND person_id = 'owner'`;
+        yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id, member_id,
+        role, joined_at) VALUES (${orgId}, ${chatId}, 'person', 'owner', 'rhea_member',
+          'member', '2026-11-08T00:00:00Z')`;
+        yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, agent_id, member_id,
+        role, joined_at) VALUES (${orgId}, ${chatId}, 'agent', ${agentId}, 'finance_member',
+          'member', '2026-11-08T00:00:00Z')`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+        auth, reach, state, created_at, updated_at) VALUES (${orgId}, 'con_a710a70', 'google',
+          'Accounts', 'builtin', 'gmail.googleapis.com', 'oauth', 'closed', 'active', 1, 1)`;
+        const match = '{"from":[],"subjectHas":[],"withFile":null,"classes":null}';
+        const tapped = "File the Juniper Cold Chain invoice.";
+        yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what,
+        agent_id, chat_id, said_by, source_event, content_sha256, state, monthly_cap,
+        created_at, updated_at, activation) VALUES (${orgId}, ${ruleId}, 'con_a710a70',
+          ${match}, ${scenario.changed ? "Send the invoice." : tapped}, ${agentId}, ${chatId},
+          'owner', 'tap_a830a4', ${mailRuleContentHash(match, tapped)}, ${scenario.state}, 30,
+          1, 1, ${scenario.activation})`;
+        for (const [index, arrivalId] of arrivals.entries()) {
+          yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, noticed_at,
+          class, state, rule_id, rule_state, event_id) VALUES (${orgId}, ${arrivalId},
+            'con_a710a70', ${`mail_${index}`}, 1, 'unknown_person', 'new', ${ruleId},
+            ${index === 0 ? "woke" : "batched"}, ${eventId})`;
+          yield* sql`INSERT INTO kin_mail_rule_runs (org_id, event_id, arrival_id, rule_id, state, manual)
+          VALUES (${orgId}, ${eventId}, ${arrivalId}, ${ruleId}, ${index === 0 ? "woke" : "batched"}, 0)`;
+        }
+        yield* queue.enqueue(
+          decodeEvent({
+            _tag: "pulse",
+            orgId,
+            agentId,
+            eventId,
+            receivedAt: "2026-11-08T00:00:00.000Z",
+            dedupeKey: `rule:${ruleId}:mail_0`,
+            provenance: { _tag: "system" },
+            factKeys: [],
+            chatId,
+            rule: { ruleId, activation: 1 },
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        assert.strictEqual(providerRuns, 0);
+        const [event] = yield* sql<{ state: string; wakeup_id: string }>`
+        SELECT state, wakeup_id FROM kin_events WHERE event_id = ${eventId}`;
+        assert.strictEqual(event?.state, "done");
+        assert.isString(event?.wakeup_id);
+        assert.deepStrictEqual(
+          yield* sql`SELECT arrival_id, wakeup_id, outcome, hold_reason FROM kin_mail_rule_runs
+          WHERE event_id = ${eventId} ORDER BY arrival_id`,
+          arrivals.map((arrival_id) => ({
+            arrival_id,
+            wakeup_id: event!.wakeup_id,
+            outcome: "held",
+            hold_reason: scenario.reason,
+          })),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, body FROM kin_messages WHERE author_kind = 'system'`,
+          scenario.changed
+            ? [
+                {
+                  chat_id: chatId,
+                  body: "This mail rule was changed outside Kin, so it won't run. Do you want to set it up again?",
+                },
+              ]
+            : [],
+        );
+      }).pipe(
+        Effect.provide(
+          harnessWith(
+            {
+              onTurn: () =>
+                Effect.sync(() => {
+                  providerRuns++;
+                }),
+            },
+            Layer.mergeAll(
+              ChatHub.layer,
+              KinLeadPrompt.layer,
+              Layer.mock(KinReplyBridge)({
+                lane: () =>
+                  Effect.succeedSome({
+                    chatId,
+                    mode: "notice",
+                    voice: "send",
+                    owed: false,
+                    leadName: "Finance",
+                  }),
+                preparing: () => Effect.void,
+                end: () => Effect.void,
+              }),
+            ),
+          ),
+        ),
+        provideDeterministicTestRuntime,
+      );
+    },
+  );
+
   it.effect("does not spin the org loop while a lead with queued events is still finishing", () =>
     Effect.gen(function* () {
       const commitEntered = Deferred.makeUnsafe<void>();

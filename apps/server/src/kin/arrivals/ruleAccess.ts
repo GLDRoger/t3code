@@ -12,11 +12,11 @@ export const ruleSetter = Effect.fn("KinMailRules.setter")(function* (
   personId: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ owner: number }>`SELECT
-      ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS owner
+  const [row] = yield* sql<{ owner: number; name: string }>`SELECT
+      ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS owner, p.display_name AS name
     FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${personId}
       AND p.removed_at IS NULL`;
-  return row === undefined ? "left" : row.owner === 1 ? "owner" : "demoted";
+  return row === undefined ? undefined : { name: row.name, owner: row.owner === 1 };
 });
 
 export const companyRuleMailbox = Effect.fn("KinMailRules.companyMailbox")(function* (
@@ -32,14 +32,16 @@ export const companyRuleMailbox = Effect.fn("KinMailRules.companyMailbox")(funct
   return row;
 });
 
-export const isDirectRuleLead = Effect.fn("KinMailRules.directLead")(function* (
+export const directRuleLead = Effect.fn("KinMailRules.directLead")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   agentId: KinAgentId,
   chatId: KinChatId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql`SELECT 1 FROM kin_agents a
+  const [lead] = yield* sql<{ name: string; ownerPersonId: KinPersonId; threadId: string | null }>`
+    SELECT l.name, a.owner_person_id AS "ownerPersonId", l.thread_id AS "threadId"
+    FROM kin_agents a
     JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     JOIN kin_chats c ON c.org_id = a.org_id AND c.chat_id = ${chatId}
     JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
@@ -54,5 +56,5 @@ export const isDirectRuleLead = Effect.fn("KinMailRules.directLead")(function* (
         WHERE other.org_id = c.org_id AND other.chat_id = c.chat_id AND other.left_at IS NULL
         AND ((other.person_id IS NOT NULL AND other.person_id != ${personId})
           OR (other.agent_id IS NOT NULL AND other.agent_id != ${agentId})))`;
-  return rows.length > 0 && !(yield* chatShared(sql, { orgId, chatId }));
+  return lead === undefined || (yield* chatShared(sql, { orgId, chatId })) ? undefined : lead;
 });

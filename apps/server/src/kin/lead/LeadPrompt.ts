@@ -3,6 +3,8 @@ import * as NodeCrypto from "node:crypto";
 import {
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
+  KinEventId,
+  KinMailRuleHoldReason,
   KinOrgId,
   type KinAttachment,
   type KinMemoryItemId,
@@ -35,6 +37,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
+import { checkRuleWake } from "../arrivals/ruleWake.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
 import { teamTurnFacts } from "../team/prompt.ts";
@@ -300,6 +303,12 @@ export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()
   {
     orgId: KinOrgId,
     reason: Schema.String,
+    mailRuleHold: Schema.optional(
+      Schema.Struct({
+        eventId: KinEventId,
+        reason: KinMailRuleHoldReason,
+      }),
+    ),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -551,6 +560,33 @@ export class KinLeadPrompt extends Context.Service<
           (left, right) =>
             DateTime.toEpochMillis(left.receivedAt) - DateTime.toEpochMillis(right.receivedAt),
         )) {
+          if (event._tag === "pulse" && event.rule !== undefined) {
+            const checked =
+              ownerOnly && input.laneChatId === event.chatId && input.events.length === 1
+                ? yield* checkRuleWake(event).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.mapError(
+                      (cause) =>
+                        new KinLeadPromptError({
+                          orgId,
+                          reason: "Could not read the turn",
+                          cause,
+                        }),
+                    ),
+                  )
+                : { held: "destination_unavailable" as const };
+            if ("held" in checked)
+              return yield* new KinLeadPromptError({
+                orgId,
+                reason: checked.held,
+                mailRuleHold: { eventId: event.eventId, reason: checked.held },
+              });
+            const label = `${checked.setterName.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")}'s mail rule, as they turned it on`;
+            events.push(
+              `${quote(label, checked.what)}\n\n${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}${outsideText(event)}`,
+            );
+            continue;
+          }
           if (event._tag === "chat.reaction") {
             const eventQuote = quote(QUOTE_LABELS.eventData, {
               event: event.eventId,
@@ -1366,7 +1402,9 @@ export class KinLeadPrompt extends Context.Service<
           // One rule with the check-in's: text from someone who can't write to the repo is outside.
           // A review someone asked for in Kin runs as one too: their ask never gets a shell.
           shows: input.events.some(
-            (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
+            (event) =>
+              event._tag === "pulse" &&
+              (event.rule !== undefined || (event.outside?.length ?? 0) > 0),
           )
             ? "check-in"
             : input.events.some(

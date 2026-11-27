@@ -111,6 +111,7 @@ const tableNames = [
   "kin_leads",
   "kin_list_proposals",
   "kin_mail_rules",
+  "kin_mail_rule_runs",
   "kin_memory_heads",
   "kin_memory_labels",
   "kin_memory_reads",
@@ -2359,8 +2360,20 @@ describe("Kin migrations", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
       yield* sql`DROP TABLE IF EXISTS kin_mail_rules`;
+      yield* sql`DROP TABLE IF EXISTS kin_mail_rule_runs`;
       yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_history`;
-      const columns = ["rule_id", "rule_state", "has_file", "sender_check"];
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_mail`;
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_playbook`;
+      const columns = [
+        "rule_id",
+        "rule_state",
+        "has_file",
+        "sender_check",
+        "rule_held_at",
+        "rule_hold_reason",
+        "rule_mail_key",
+        "rule_playbook_route",
+      ];
       for (const name of columns) {
         if (
           (yield* sql`SELECT name FROM pragma_table_info('kin_arrivals') WHERE name = ${name}`)
