@@ -2467,7 +2467,7 @@ describe("KinConnections sign-in", () => {
         assert.isTrue(done.tools.every((tool) => tool.mode === "off"));
         assert.deepStrictEqual(
           done.tools.filter((tool) => tool.suggestedMode === "ask").map((tool) => tool.name),
-          ["calendar_save_event", "mail_reply", "mail_send"],
+          ["calendar_delete_event", "calendar_save_event", "mail_reply", "mail_send"],
         );
         assert.isTrue(done.connection.needsSignInToSend);
         assert.isTrue(done.tools.every((tool) => !tool.openWorld));

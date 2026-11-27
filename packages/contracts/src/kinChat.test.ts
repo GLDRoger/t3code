@@ -245,6 +245,7 @@ const samples = {
     sendCard,
     { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
     { ...sendCard, mayHaveGone: { tryId: "ask-1", at } },
+    { ...sendCard, action: "call", calendarDelete: true },
   ],
   KinChoiceCardState: [
     choice,
