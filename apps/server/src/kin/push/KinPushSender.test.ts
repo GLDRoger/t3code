@@ -149,7 +149,12 @@ const buildOn = <A, E, R>(
         getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
       }),
     ),
-    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
+    Layer.provideMerge(
+      Layer.unwrap(
+        // Start retention at the fixture date so TestClock does not replay it from 1970.
+        TestClock.setTime(NOW).pipe(Effect.as(Layer.provideMerge(KinPersistence.layer, database))),
+      ),
+    ),
   );
 const build = (apns: ReturnType<typeof makeApns>, fcm?: ReturnType<typeof makeFcm>) =>
   buildOn(apns, Sqlite.layerMemory, fcm);
@@ -158,7 +163,6 @@ const buildRelay = (apns: ReturnType<typeof makeApns>) =>
   buildOn(apns, layerKinAuthTest("kin-push-"));
 
 const seed = Effect.gen(function* () {
-  yield* TestClock.setTime(NOW);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org_01', 'Kin', ${T})`;
   for (const [person, handle] of [
@@ -707,6 +711,40 @@ describe("KinPushSender", () => {
       yield* notify({ _tag: "message", orgId, messageId });
       assert.isAbove(apns.sent.length, 0);
       for (const alert of alerts(apns.sent)) assert.strictEqual(alert?.body, "Two tasks are late.");
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("one reply's three bubbles ring and count only once on each device", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const ids = [];
+      for (const [index, body] of [
+        "CI is green.",
+        "The build passed.",
+        "It's ready to ship.",
+      ].entries())
+        ids.push(
+          yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+            chatId: "chat_dm",
+            body,
+            silent: index > 0,
+          }),
+        );
+      for (const messageId of ids) yield* notify({ _tag: "message", orgId, messageId });
+      assert.deepStrictEqual(
+        apns.sent
+          .map((push) => [push.token, (push.payload as { aps: { badge: number } }).aps.badge])
+          .toSorted(),
+        [
+          [ownerPhone, 1],
+          [ownerTablet, 1],
+        ].toSorted(),
+      );
+      assert.deepStrictEqual(
+        alerts(apns.sent).map((alert) => alert?.body),
+        ["CI is green.", "CI is green."],
+      );
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -1379,6 +1417,12 @@ describe("KinPushSender", () => {
         messageId: yield* postMessage(sql, "system", "posted", silent),
       });
       assert.deepStrictEqual(apns.sent, []);
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, dm, "posted", silent),
+      });
+      assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
       // One unread in the group and one in the DM; Waiting on you isn't unread, so it isn't counted.
@@ -2025,7 +2069,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a task move is no chat line") },
+        {
+          notice: () => Effect.die("a task move is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const banners = () =>
@@ -2362,7 +2409,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a held ring is no chat line") },
+        {
+          notice: () => Effect.die("a held ring is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const rung = () =>

@@ -2,7 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it, vi } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   CommandId,
@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinMemoryItemId,
+  KinPersonId,
   KinChatId,
   KinWakeupId,
   KinOrgId,
@@ -32,6 +33,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -39,6 +41,7 @@ import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.
 import { environment } from "../chat/TaskCard.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
+import { parseFrontMatter } from "../memory/frontMatter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -46,9 +49,12 @@ import * as Scan from "../memory/secretScan.ts";
 import { authorise, fingerprint, storedLabels, visibility } from "../memory/sensitivity.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { fakeRepository } from "../memory/__fixtures__/repository.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { ownerOnlyWakeup } from "./Audience.testkit.ts";
 import { markOutside, stampReads, storedStamp } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -103,6 +109,123 @@ const whole = (read: typeof Lead.ReadResult.Type) => {
   return read;
 };
 const decodeDefer = Schema.decodeUnknownEffect(Lead.DeferInput);
+const decodeSearch = Schema.decodeEffect(Lead.SearchInput);
+const decodeRead = Schema.decodeEffect(Lead.ReadInput);
+
+it.effect("searches memory by words and opens index paths within the turn's audience", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const orgId = KinOrgId.make("tidewater");
+    const ownerPersonId = KinPersonId.make(`${orgId}:owner`);
+    const wakeupId = "memory-words";
+    const repository = fakeRepository(fs);
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/refs`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory-read`);
+    for (const [id, body, sensitive] of [
+      ["private", "The East Dock is reserved.", true],
+      ["spare", "Dispatch closes at six.", false],
+      ["team", "The East Dock opens at six.", false],
+    ] as const) {
+      repository.files.set(
+        `claims/${id}-note.md`,
+        fixtureItem({ id, kind: "claim", due: null, sensitive }).replace(
+          "Invented fixture body.",
+          body,
+        ),
+      );
+    }
+    const memoryLayer = Memory.layer.pipe(
+      Layer.provide(repository.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(MemoryConfig, {
+          baseDirectory: root,
+          repositories: [{ orgId, path: "memory", repoUrl: "unused" }],
+        }),
+      ),
+    );
+    const leadLayer = Lead.layer.pipe(
+      Layer.provideMerge(memoryLayer),
+      Layer.provide(
+        Layer.mock(KinIdentity)({
+          owner: { _tag: "person", orgId, personId: ownerPersonId },
+          isAgentThread: (id) => id === threadId,
+          isLeadThread: (id) => id === threadId,
+          resolveAgent: () =>
+            Effect.succeed({
+              _tag: "agent",
+              orgId,
+              agentId,
+              ownerPersonId,
+              threadId,
+            }),
+        }),
+      ),
+      Layer.provide(Layer.mock(Writer.MemoryWriter)({})),
+      Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
+      Layer.provide(Layer.mock(KinSchedules.KinSchedules)({})),
+      Layer.provide(Layer.mock(KinChatRepository.KinChatRepository)({})),
+      Layer.provide(NodeCrypto.layer),
+    );
+    yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, status = 'running', audience = 'owner_only'
+      WHERE wakeup_id = ${wakeupId}`;
+    yield* sql`INSERT INTO kin_team_memory (org_id, is_on, set_by, set_at)
+      VALUES (${orgId}, 1, ${ownerPersonId}, 0)`;
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const lead = yield* Lead.LeadMemory;
+      yield* memory.anchor(orgId, "main", repository.head());
+      for (const id of ["spare", "team"]) {
+        const item = yield* memory.readItemQuietly(orgId, KinMemoryItemId.make(id));
+        yield* authorise(orgId, id, fingerprint(item), "owner_setting");
+      }
+      const searchByWords = yield* decodeSearch({
+        text: "eAst DoCK",
+      });
+      const ownerMatches = yield* lead.search(scope, searchByWords);
+      expect.soft(ownerMatches.map(({ id }) => id).toSorted()).toEqual(["private", "team"]);
+      const byPath = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/team-note.md" }))
+        .pipe(Effect.result);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+      const byId = yield* lead.read(scope, yield* decodeRead({ id: "team" })).pipe(Effect.result);
+      expect.soft(byPath).toEqual(byId);
+
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${wakeupId}`;
+      const sharedMatches = yield* lead.search(scope, { ...searchByWords, limit: 1 });
+      expect.soft(sharedMatches).toEqual([expect.objectContaining({ id: "team" })]);
+      expect.soft(sharedMatches[0]).not.toHaveProperty("body");
+      const alsoShared = yield* lead.search(scope, searchByWords);
+      expect.soft(alsoShared.map(({ id }) => id)).toEqual(["team"]);
+      const hidden = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/private-note.md" }))
+        .pipe(Effect.flip);
+      const absent = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/missing.md" }))
+        .pipe(Effect.flip);
+      expect.soft(hidden.reason).toBe("not_found");
+      expect.soft(hidden.message).toBe(absent.message);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+    }).pipe(Effect.provide(leadLayer));
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        NodeServices.layer,
+        KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
 
 it.live(
   "lead tools isolate organizations, record reads, enforce retries and journal through the git writer",
@@ -384,6 +507,7 @@ it.live(
           "kin_ask_person",
           "kin_chart",
           "kin_visual",
+          "kin_skip",
           "kin_react",
           "message_withdraw",
           "message_replace",
@@ -395,6 +519,7 @@ it.live(
           "kin_schedule",
           "kin_cancel",
           "kin_journal",
+          "kin_github_comment",
           "kin_github_diff",
           "kin_github_read",
           "kin_github_review",
@@ -595,6 +720,24 @@ it.live(
         ] as const)
           assert.include(yield* refusedQuote({ ...input, quote, sourceEventId }), refusal);
         const quoted = { ...input, quote: "The demo client wants every report as a PDF" };
+        const before = yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`;
+        const misspelt = yield* decodeWrite({
+          ...quoted,
+          item: { ...quoted.item, titel: "Invented claim" },
+        }).pipe(
+          Effect.flatMap((write) => service.write(scope, write)),
+          Effect.result,
+        );
+        assert.strictEqual(misspelt._tag, "Failure");
+        if (misspelt._tag === "Failure")
+          assert.include(
+            misspelt.failure.message,
+            'Memory item takes no "titel"; pass one of: id, kind, title, status, due, what, on_due, on, every, owner, tz, quiet_hours, recorded_at, valid_from, invalid_at, superseded_by, review_by, source, said_by, trust, links, chat, body, sensitive.',
+          );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`,
+          before,
+        );
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.strictEqual(
@@ -634,8 +777,18 @@ it.live(
           { itemId: "new-claim" },
         );
         // K055: a create needs no id; it is the title's slug, numbered past what is taken.
-        const { id: _id, ...unnamed } = quoted.item;
-        const fresh = { ...quoted, item: unnamed };
+        const {
+          id: _id,
+          recorded_at: _recorded,
+          valid_from: _valid,
+          invalid_at: _invalid,
+          superseded_by: _superseded,
+          source: _source,
+          said_by: _speaker,
+          links: _links,
+          ...unnamed
+        } = quoted.item;
+        const fresh = yield* decodeWrite({ ...quoted, item: unnamed });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         for (const [changed, itemId] of [
@@ -1129,6 +1282,26 @@ it.live(
         assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);
         assert.include(files, `deferrals/${fromSchedule.itemId}.md`);
         const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
+        const metadata = (id: string) =>
+          saved(id).pipe(
+            Effect.flatMap((content) => parseFrontMatter(orgId, `claims/${id}.md`, content)),
+            Effect.map(({ frontMatter }) => frontMatter),
+          );
+        const explicit = yield* metadata("new-claim");
+        assert.match(explicit.source, /^kin:chat:/);
+        assert.notStrictEqual(explicit.said_by, "forged");
+        for (const head of [yield* metadata("invented-claim"), explicit]) {
+          assert.include(head, {
+            recorded_at: "2026-11-08T00:00:00.000Z",
+            valid_from: "2026-11-08T00:00:00.000Z",
+            invalid_at: null,
+            superseded_by: null,
+            source: explicit.source,
+            said_by: explicit.said_by,
+          });
+          assert.strictEqual(head.source_event, "fixture-event");
+          assert.deepStrictEqual(head.links, []);
+        }
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
         assert.include(yield* saved("status-claim"), "sensitive: false");

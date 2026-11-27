@@ -16,10 +16,12 @@ import { ghApiLayer } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
+import { postIssueComment } from "../../github/boundIssue.ts";
 import { readRepo } from "../../github/repoRead.ts";
 import { askReview, postReview, readReviewDiff } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
+import { KinReplyBridge, KinReplySkipError } from "../../reply/KinReplyBridge.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
@@ -331,7 +333,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           Context.get(services, KinEventQueue),
         ),
       );
-      return { question: closed.questionId, state: closed.state };
+      return {
+        question: closed.questionId,
+        state: closed.state,
+        ...(!closed.changed || closed.note === undefined ? {} : { note: closed.note }),
+      };
     }, Effect.mapError(failure)),
   ),
   kin_chart: McpToolAccess.actsAsCaller(
@@ -387,6 +393,22 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
             next: shownLine("page", false),
           };
     }, Effect.mapError(failure)),
+  ),
+  kin_skip: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.skip")(
+      function* (input) {
+        const notRunning = new KinReplySkipError({ reason: "not running" });
+        const bridge = yield* Effect.serviceOption(KinReplyBridge);
+        if (Option.isNone(bridge)) return yield* notRunning;
+        const { orgId, wakeupId } = yield* resolveLead(yield* McpInvocationContext).pipe(
+          Effect.mapError(() => notRunning),
+        );
+        return yield* bridge.value.skip({ ...input, orgId, wakeupId: KinWakeupId.make(wakeupId) });
+      },
+      Effect.mapError(
+        (error) => new KinChatError({ reason: "invalid_state", message: error.message }),
+      ),
+    ),
   ),
   kin_react: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.react")(function* (input) {
@@ -505,6 +527,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);
     }),
   ),
+  kin_github_comment: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubComment")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* postIssueComment(lead, input).pipe(Effect.provide(ghApiLayer));
+    }, Effect.mapError(failure)),
+  ),
   kin_github_review: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
@@ -550,7 +578,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         if (input.repo === undefined) {
           const accounts = (yield* agentsView(app, lead.orgId)).accounts;
           return {
-            repos: repos.slice(0, 100),
+            repos: repos.slice(0, 100).map(({ triage: _triage, ...repo }) => repo),
             ...(accounts === undefined ? {} : { appAccounts: accounts }),
           };
         }
@@ -579,7 +607,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
                 },
                 yield* Clock.currentTimeMillis,
               );
-        return { repos: changed.filter((repo) => repo.repo.toLowerCase() === named) };
+        return {
+          repos: changed
+            .filter((repo) => repo.repo.toLowerCase() === named)
+            .map(({ triage: _triage, ...repo }) => repo),
+        };
       },
       Effect.catchTags({ SqlError: () => Effect.fail(failure(undefined)) }),
       Effect.mapError(failure),

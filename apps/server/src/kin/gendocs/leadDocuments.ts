@@ -49,28 +49,25 @@ export const DocumentInput = Schema.Struct({
     description: "The recipe to run, from kin_recipes; with writeRecipe, the recipe to write.",
   }),
   entry: Schema.optional(KinRecordKey).annotate({
-    description:
-      "The entry it is for, such as INV-12, when the recipe reads one or the file is about one.",
+    description: "The entry it is for, such as INV-12.",
   }),
   from: Schema.optional(KinRecordKey).annotate({
     description:
-      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for the same client or bill-to name with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
+      "A quote (QT-3) to invoice, with the invoice recipe and no entry: a draft invoice with exactly its lines. Give no lines or billing details beside it.",
   }),
   doc: Schema.optional(KinRecordKey).annotate({
     description:
-      "A doc, such as D-4, to make a PDF of with the report recipe: Kin lays out its own text, so never copy it into inputs.",
+      "A doc (D-4) to make a PDF of with the report recipe; never copy its text into inputs.",
   }),
   inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
-    description:
-      "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure and works out every sum itself.",
+    description: "Only the recipe's inputs that come from you, by name, as the owner said them.",
   }),
   file: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))).annotate({
     description:
-      "Without a recipe: the full path of a file you made with your own tools (PDF, PNG, JPEG, WebP, SVG, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON), to file as it is.",
+      "Without a recipe: the full path of a file you made (PDF, PNG, JPEG, WebP, SVG, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON).",
   }),
   writeRecipe: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "Write a new recipe, or change the one named in recipe: the first call gives you a folder to edit, the next keeps it once its sample renders.",
+    description: "Write a new recipe, or change the one named in recipe.",
   }),
   references: Schema.optional(
     Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(
@@ -78,7 +75,7 @@ export const DocumentInput = Schema.Struct({
     ),
   ).annotate({
     description:
-      "With the first writeRecipe call: files the owner sent in this chat that show the look to copy (each the file's name as its message shows it, with or without its extension), such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). Their data never goes in the recipe.",
+      "With the first writeRecipe call: names of files the owner sent here whose look to copy (PDF, PNG, JPEG, WebP or SVG); never their data.",
   }),
   sourceEventId: TurnEvent,
 });
@@ -502,14 +499,13 @@ export const undoRecipe = leadTool(
 
 export const ReceiptInput = Schema.Struct({
   proposal: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(40))).annotate({
-    description:
-      "A receipt proposal this tool returned in an earlier turn: returns the receipt the owner's Confirm on its card made, with its PDF.",
+    description: "A proposal this tool returned earlier: returns the receipt its Confirm made.",
   }),
   payment: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))).annotate({
     description: "The paymentId of a payment recorded on an invoice, as record_get lists them.",
   }),
   entry: Schema.optional(KinRecordKey).annotate({
-    description: "A receipt entry already made, such as an advance, to number and make again.",
+    description: "A receipt entry already made, such as an advance.",
   }),
   advance: Schema.optional(
     Schema.Struct({
@@ -522,8 +518,7 @@ export const ReceiptInput = Schema.Struct({
       "Money received before any invoice: the client's key, the amount as the owner said it, and the day.",
   }),
   against: Schema.optional(KinRecordKey).annotate({
-    description:
-      "An invoice to set an advance against: Kin records it as a payment on that invoice, once.",
+    description: "An invoice to set the advance against, once.",
   }),
   towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
   mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),

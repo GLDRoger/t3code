@@ -51,7 +51,7 @@ export const offTurnText = (number: {
   readonly side: "above" | "below";
   readonly limit: string;
 }) =>
-  `${named(number)} is ${figure(number.value, number.unit)} as of ${number.asOf}, ${number.side} its limit of ${figure(number.limit, number.unit)}. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`;
+  `${named(number)} is ${figure(number.value, number.unit)} as of ${number.asOf}, ${number.side} its limit of ${figure(number.limit, number.unit)}. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`;
 
 /** What a feed's scheduled run tells its keeper. */
 export const feedTurnText = (
@@ -59,7 +59,7 @@ export const feedTurnText = (
   source: string,
   period: string,
 ) =>
-  `Record ${namedList(numbers)} from ${encoded(source)} as of ${period}. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, reply NO_REPLY: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`;
+  `Record ${namedList(numbers)} from ${encoded(source)} as of ${period}. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, end with kin_skip: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`;
 
 /** How often a feed runs, as the keeper's prompt line says it. */
 export const cadenceText = (every: "day" | "week" | "month") =>

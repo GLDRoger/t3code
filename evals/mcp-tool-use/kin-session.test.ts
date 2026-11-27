@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -8,6 +10,7 @@ import * as Schema from "effect/Schema";
 import {
   CARRIED_TURN_NOTE,
   PROMPT_HEADINGS,
+  renderSessionChanges,
   TURN_DIVIDER,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { fillKinRules, kinLegacyHeaderPlace, kinSessionSplit } from "./kin.ts";
@@ -53,9 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-// Captured with every Kin tool deferred; the legacy pin predates the layout flag.
-const legacyRequestPin = "fc76062bc50e49d3298892d365f30a0c3c751b5a9d0ac4f337ec6e540b5b878b";
-const sessionRequestPin = "0688bb54601dfe6aefecfae056b5a9b01c0a987ec00720e1af2188cd585c31d6";
+const legacyRequestPin = "3b224a6a25da0090c8065827a6b7320fbab6840faa49e9bf49b1b1da9d9739b6";
+const sessionRequestPin = "cca21371c383f34f4301136ce932fb3cbadd9ba1a0586092954e306da22b557a";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -88,16 +90,20 @@ const dryRequests = (layout: "legacy" | "session", file: string, ids?: ReadonlyA
 const digest = (requests: Uint8Array) =>
   NodeCrypto.createHash("sha256").update(requests).digest("hex");
 
-it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
-  const legacy = dryRequests("legacy", "kin.ndjson", pinnedIds);
-  const session = dryRequests("session", "kin.ndjson", pinnedIds);
-  assert.lengthOf(legacy.toString().trimEnd().split("\n"), 10);
-  assert.equal(digest(legacy), legacyRequestPin);
-  assert.isTrue(session.equals(legacy), "Session layout changed an uncarried request.");
-});
+it.each(["legacy", "session"] as const)(
+  "pins the same ten uncarried requests in %s layout",
+  (layout) => {
+    const requests = dryRequests(layout, "kin.ndjson", pinnedIds);
+    assert.lengthOf(requests.toString().trimEnd().split("\n"), 10);
+    assert.equal(digest(requests), legacyRequestPin);
+  },
+);
 
 it("pins the session requests of both carry seeds", () => {
-  const requests = dryRequests("session", "kin-carry.ndjson");
+  const requests = dryRequests("session", "kin-carry.ndjson", [
+    "kin-carry-follow-up-question",
+    "kin-carry-nothing-changed-no-reread",
+  ]);
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 2);
   assert.equal(digest(requests), sessionRequestPin);
 });
@@ -109,7 +115,9 @@ const wake = (event: string) =>
 const earlier = [
   {
     prompt: wake("Which invoices are open?"),
-    toolCalls: [{ tool: "records_query", input: { list: "invoices" }, result: { total: 2 } }],
+    toolCalls: [
+      { tool: "record_comment", input: { key: "INV-7", text: "Checked" }, result: { ok: true } },
+    ],
     reply: "Two are open.",
   },
   { prompt: wake("Does that include INV-7?"), reply: "Yes, it includes INV-7." },
@@ -123,10 +131,9 @@ const carryCase: McpToolUseCase = {
   setup: { role: "top", world: { kinLead: true }, carry: { earlier } },
   prompt: wake("And INV-9?"),
   expect: {},
-  sessionCallsMustNot: [{ tool: "records_query" }],
+  sessionCallsMustNot: [{ tool: "record_comment" }],
 };
 const txt = (text: string) => ({ type: "text", text });
-const deferred = txt("The deferred tools list.");
 const date = txt("Today's date is 2026-11-26.");
 const caseBase = () => ({
   ...buildBase(
@@ -148,7 +155,22 @@ const caseBase = () => ({
       keepUserInstructions: false,
     },
   ),
-  reminders: [deferred, date],
+  deferredAnnouncement: "The deferred tools list.",
+  environment: { cwd: "/home/user/app", platform: "linux", date: "2026-11-26" },
+  reminders: [],
+});
+const harness = (withDate: boolean) => ({
+  role: "system" as const,
+  content: [
+    txt(
+      [
+        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/user/app\n - Platform: linux",
+        "The deferred tools list.",
+        "<total_tokens>15000000 tokens left</total_tokens>",
+        ...(withDate ? [date.text] : []),
+      ].join("\n\n"),
+    ),
+  ],
 });
 const context = (value: string) => txt(`UserPromptSubmit hook additional context: ${value}`);
 const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
@@ -156,12 +178,13 @@ const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
 
 it("replays only the last wake in legacy and the real earlier tool blocks in session", () => {
   assert.deepEqual(rendered("legacy"), [
-    { role: "user", content: [deferred, date, txt(carryCase.prompt)] },
+    { role: "user", content: [txt(carryCase.prompt)] },
+    harness(true),
   ]);
   const unchanged = context(`${CARRIED_TURN_NOTE}\n\n${header}`);
   assert.deepEqual(rendered("session"), [
-    { role: "user", content: [deferred, txt(earlier[0]!.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(earlier[0]!.prompt)] },
+    harness(true),
     {
       role: "assistant",
       content: [
@@ -169,7 +192,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
           type: "tool_use",
           id: "toolu_prior_1",
           name: "ToolSearch",
-          input: { query: "select:mcp__t3-code__records_query", max_results: 1 },
+          input: { query: "select:mcp__t3-code__record_comment", max_results: 1 },
         },
       ],
     },
@@ -179,7 +202,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
         {
           type: "tool_result",
           tool_use_id: "toolu_prior_1",
-          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__records_query" }],
+          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__record_comment" }],
         },
         txt("Tool loaded."),
       ],
@@ -190,14 +213,14 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
         {
           type: "tool_use",
           id: "toolu_prior_0",
-          name: "mcp__t3-code__records_query",
-          input: { list: "invoices" },
+          name: "mcp__t3-code__record_comment",
+          input: { key: "INV-7", text: "Checked" },
         },
       ],
     },
     {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"total":2}' }],
+      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"ok":true}' }],
     },
     { role: "assistant", content: [txt("Two are open.")] },
     { role: "user", content: [txt("# Events\n\nDoes that include INV-7?")] },
@@ -208,7 +231,81 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
   ]);
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "legacy"), {});
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "session"), {
-    callsMustNot: [{ tool: "records_query" }],
+    callsMustNot: [{ tool: "record_comment" }],
+  });
+});
+
+it("puts each carried change list after its header and never sends it in legacy", () => {
+  const earlierChanges = renderSessionChanges(
+    ['W-14 "Pickup" (Work): due → "Friday" by Arjun, 11:00'],
+    [],
+  );
+  const changes = renderSessionChanges(
+    ["INV-9 (Invoices): changed by Meera (co-owner), 12:30; a sensitive entry, not shown here"],
+    [],
+  );
+  const testCase = {
+    ...carryCase,
+    setup: {
+      ...carryCase.setup,
+      carry: {
+        earlier: [earlier[0]!, { ...earlier[1]!, changes: earlierChanges! }],
+        changes: changes!,
+      },
+    },
+  };
+  const legacy = rendered("legacy", testCase);
+  assert.deepEqual(legacy, rendered("legacy"));
+  const session = rendered("session", testCase);
+  assert.deepEqual(
+    session.filter(({ role }) => role === "system"),
+    [
+      harness(true),
+      {
+        role: "system" as const,
+        content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${earlierChanges}`)],
+      },
+      { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${changes}`)] },
+    ],
+  );
+});
+
+it("resends only genuinely new recent chat, not earlier events, replies or restamped lines", () => {
+  const previous = '> agent "Dispatch" (untrusted) 09:55: "The yard opens at six."';
+  const next = '> owner "Rhea" Thu 26 Nov 10:20: "The gate code changed."';
+  const chat = (lines: string[]) =>
+    [PROMPT_HEADINGS.recentChat, "", "> BEGIN QUOTE: recent chat", ...lines, "> END QUOTE"].join(
+      "\n",
+    );
+  const withChat = (prompt: string, lines: string[]) =>
+    prompt.replace("# Events", `${chat(lines)}\n\n# Events`);
+  const testCase = {
+    ...carryCase,
+    setup: {
+      ...carryCase.setup,
+      carry: {
+        earlier: [
+          {
+            ...earlier[0]!,
+            prompt: wake(
+              '> BEGIN QUOTE: owner message\n> {"body":"Which invoices are open?"}\n> END QUOTE',
+            ),
+          },
+          { ...earlier[1]!, prompt: withChat(earlier[1]!.prompt, [previous]) },
+        ],
+      },
+    },
+    prompt: withChat(carryCase.prompt, [
+      previous.replace("09:55", "Thu 26 Nov 09:55"),
+      '> owner "Rhea" Thu 26 Nov 10:00: "Which invoices are open?"',
+      '> you Thu 26 Nov 10:01: "Two are open."',
+      '> you Thu 26 Nov 10:16: "Yes, it includes INV-7."',
+      next,
+    ]),
+  };
+  assert.deepEqual(rendered("session", testCase).at(-1), {
+    role: "system" as const,
+    content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${chat([next])}`)],
   });
 });
 
@@ -227,16 +324,16 @@ const compactAt = (compactedBefore: number) => ({
 it("starts again with a full wake after compaction and carries from that wake", () => {
   assert.deepEqual(rendered("session", compactAt(1)), [
     { role: "user", content: [summaryBlock] },
-    { role: "user", content: [deferred, txt(earlier[1]!.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(earlier[1]!.prompt)] },
+    harness(true),
     { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
     { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
     { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}`)] },
   ]);
   assert.deepEqual(rendered("session", compactAt(2)), [
     { role: "user", content: [summaryBlock] },
-    { role: "user", content: [deferred, txt(carryCase.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(carryCase.prompt)] },
+    harness(true),
   ]);
   assert.throws(
     () =>
@@ -246,6 +343,26 @@ it("starts again with a full wake after compaction and carries from that wake", 
       }),
     "setup.carry and setup.priorTurns are mutually exclusive",
   );
+});
+
+it("puts the changes on the full wake when compaction cuts at the final turn", () => {
+  const fresh = compactAt(2);
+  const changes = renderSessionChanges(
+    ['INV-12 "Transfers" (Invoices): payment $1,000.00 by Meera, 14:05'],
+    [],
+  );
+  const testCase = {
+    ...fresh,
+    setup: { ...fresh.setup, carry: { ...fresh.setup.carry, changes: changes! } },
+  };
+  assert.deepEqual(rendered("session", testCase), [
+    { role: "user", content: [summaryBlock] },
+    {
+      role: "user",
+      content: [txt(carryCase.prompt.replace("# Events", `${changes}\n\n# Events`))],
+    },
+    harness(true),
+  ]);
 });
 
 it("keeps a 9,000-character change list in the hook and appends a longer list after events", () => {
@@ -282,4 +399,111 @@ it("keeps a 9,000-character change list in the hook and appends a longer list af
       content: [{ ...appended, cache_control: { type: "ephemeral", ttl: "1h" } }],
     },
   ]);
+});
+
+const ownerFirstRequest = (effort?: string) =>
+  JSON.parse(
+    NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        "mcp-tool-use/run.ts",
+        "--dry-run",
+        "--no-step-limit",
+        "--model",
+        "claude-haiku-5-5",
+        "--cases",
+        "mcp-tool-use/cases/kin.ndjson",
+        "--case",
+        "kin-lead-hi-gets-one-line",
+        ...(effort === undefined ? [] : ["--effort", effort]),
+      ],
+      { cwd: new URL("..", import.meta.url) },
+    ).toString(),
+  );
+
+it("puts the Kin deferred names in the Environment system message after the wake", () => {
+  const { messages } = ownerFirstRequest();
+  assert.equal(messages.at(-2).role, "user");
+  assert.notInclude(JSON.stringify(messages.at(-2)), "The following deferred tools");
+  assert.equal(messages.at(-1).role, "system");
+  const content = JSON.stringify(messages.at(-1).content);
+  assert.match(
+    content,
+    /# Environment.*The following deferred tools.*<total_tokens>.*Today's date/s,
+  );
+});
+
+it("advertises ToolSearch and owner native tools by their real names", () => {
+  const { tools } = ownerFirstRequest();
+  assert.includeMembers(
+    tools.map(({ name }: { name: string }) => name),
+    ["Bash", "Edit", "Read", "Write", "ToolSearch"],
+  );
+  assert.notMatch(
+    JSON.stringify(tools.map(({ name }: { name: string }) => name)),
+    /mcp__select_sight__/,
+  );
+});
+
+it("describes ToolSearch as finding names in a system message", () => {
+  const { tools } = ownerFirstRequest();
+  const tool = tools.find(({ name }: { name: string }) => name.endsWith("ToolSearch"));
+  assert.include(tool.description, "Deferred tools appear by name in a message from the system.");
+});
+
+it("sorts the actual owner inventory and omits tools of unconnected or engineering seats", () => {
+  const { messages } = ownerFirstRequest();
+  const deferred = messages
+    .flatMap(({ content }: { content: Array<{ text: string }> }) =>
+      content.flatMap(
+        ({ text }) => text.match(/(?:^|\n)(?:Web\w+|mcp__t3-code__\w+)(?=\n)/g) ?? [],
+      ),
+    )
+    .map((line: string) => line.trim());
+  assert.includeMembers(deferred, ["WebSearch", "mcp__t3-code__delegate_task"]);
+  assert.deepEqual(deferred, [...deferred].sort());
+  assert.notMatch(
+    deferred.join("\n"),
+    /mcp__t3-code__(?:kin_github_|device_|preview_|watch_pull_request|t3_worktree_|t3_project_create)/,
+  );
+});
+
+it("uses the product's default effort for Kin", () => {
+  const { output_config, model } = ownerFirstRequest();
+  assert.equal(
+    output_config.effort,
+    compileClaudeModelSelection({ model, instanceId: ProviderInstanceId.make("claudeAgent") })
+      .effort,
+  );
+});
+
+it("lets the run override Kin's default effort", () => {
+  assert.equal(ownerFirstRequest("low").output_config.effort, "low");
+});
+
+it("uses the thirteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
+  const { tools, messages } = ownerFirstRequest();
+  assert.sameMembers(
+    tools
+      .map(({ name }: { name: string }) => name)
+      .filter((name: string) => name.startsWith("mcp__t3-code__")),
+    [
+      "record_update",
+      "record_assign",
+      "kin_ask_person",
+      "kin_relay",
+      "kin_defer",
+      "records_query",
+      "record_get",
+      "docs_search",
+      "client_read",
+      "doc_create",
+      "record_create",
+      "kin_ask",
+      "kin_skip",
+    ].map((name) => `mcp__t3-code__${name}`),
+  );
+  const announcement = String(messages.at(-1).content[0]?.text).split("\n");
+  assert.include(announcement, "WebSearch");
+  assert.notInclude(announcement, "WebFetch");
 });

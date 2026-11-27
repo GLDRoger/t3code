@@ -25,7 +25,8 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
-import { memberReads } from "./sharing.ts";
+import { isDismissedArrival } from "./arrivalNotes.ts";
+import { isAgentHandoff, memberReads } from "./sharing.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
@@ -261,6 +262,12 @@ const make = Effect.gen(function* () {
               if (stopped) return false;
             }
           }
+          if (
+            identity._tag === "person" &&
+            (event.type === "message.posted" || event.type === "message.changed") &&
+            isAgentHandoff(event.message)
+          )
+            return false;
           const memberOption = yield* memberIn(chatId);
           if (Option.isNone(memberOption)) return false;
           const member = memberOption.value;
@@ -304,6 +311,9 @@ const make = Effect.gen(function* () {
           if (messageId !== null && Option.isNone(message)) return false;
           return (
             Option.isNone(message) ||
+            (identity._tag === "person" &&
+              event.type === "message.changed" &&
+              isDismissedArrival(message.value)) ||
             !["suggested", "dismissed"].includes(message.value.status) ||
             member.role === "owner" ||
             (message.value.author._tag !== "system" &&

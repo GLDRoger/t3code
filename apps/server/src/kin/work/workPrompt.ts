@@ -5,9 +5,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
-import { SILENT_REPLY } from "../reply/classify.ts";
 import { dayIn, dayWords, timeIn } from "./money.ts";
-import { ownerZone } from "./recordRows.ts";
+import { readOwnerZone } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, seenBy, type KinViewer } from "./teamView.ts";
 import { WEEK_MS } from "../durations.ts";
 
@@ -191,6 +190,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, chatId, now } = input;
+  const zone = yield* readOwnerZone(orgId);
   const since = yield* settledCursor(input);
   const [counts] = yield* sql<{
     open: number;
@@ -272,7 +272,6 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
     shown.map(({ row }) => row.recordId),
     KIN_OWNER_LEVEL,
   );
-  const zone = yield* ownerZone(orgId);
   const helping = yield* sql<{
     key: string;
     title: string;
@@ -332,4 +331,5 @@ export const MONEY_RULE =
   "Kin calculated these figures from the records, exactly and per currency. Quote what needs the owner, such as what is overdue and dates coming up.";
 
 /** The event line for an open entry the owner closed or took back while this lead held it. */
-export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Reply only if the owner needs to know something about it, in one line; otherwise write exactly ${SILENT_REPLY}.`;
+export const WITHDRAWN_WORK =
+  "The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Tell the owner in one line only if something about it needs knowing; otherwise end with kin_skip.";

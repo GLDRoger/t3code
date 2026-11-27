@@ -52,7 +52,9 @@ export const captureClaudeOptions = (
         })
         .pipe(Effect.exit);
     }).pipe(Effect.provide(claude.install(base)), Effect.orDie);
-    return { original, options: opened[0] ?? original };
+    const [options] = opened;
+    if (options === undefined) return yield* Effect.die("Claude did not open");
+    return { original, options };
   });
 
 /** Claude's session is one options object; the fake records what Kin hands the SDK. */

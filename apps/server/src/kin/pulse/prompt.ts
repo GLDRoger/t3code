@@ -3,17 +3,24 @@ import {
   type KinEvent,
   type KinOrgId,
   KinPersonId,
+  MemoryItemEvery,
+  ScheduledTaskSchedule,
   type KinPulseActor,
   type KinPulseFact,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
+import { cappedText, encoded } from "../lead/quote.ts";
+import { tracked } from "../lead/tracked.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
+import { declineLine, givenDeclines } from "./declines.ts";
 import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
@@ -29,7 +36,7 @@ import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (a mail_send to its writeTo by kin_connection_call, its document attached, from an account in mailFrom) so its card waits on the owner; or put one kin_ask with the real options and a default. When the head start can't be made, ask whoever has what is missing yourself with kin_ask_person, such as the teammate who looks after the client; only when no one does, say once what is missing. Never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  "Tell the owner each fact below once. When a fact's setAsideEnded says it had been set aside, first say so in a few words, with whose word it was, then what is open about it. What they were told and hasn't changed is left out: don't recall it.";
+  "Tell the owner each fact below once. When a fact's setAsideEnded says it had been set aside, say so in a few words right after the sentence that names it, with whose word it was (\"you had it set aside until today\"), as that is why it went quiet; then what is open about it. What they were told and hasn't changed is left out: don't recall it.";
 /** After a pulse event's quote whose outside lines hold mail (`outsideText`). */
 export const OUTSIDE_THREAD_LINE =
   "A mail line's thread opens it whole: kin_connection_call mail_read_thread, threadId set to it, on the line's account; read it before you answer or draft from it.";
@@ -96,7 +103,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const woke = new Set(wokeFor);
   const open = new Set(all.facts.map((fact) => fact.key));
   const gone = wokeFor.filter((key) => !open.has(key));
-  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0) return undefined;
+  const setAside =
+    tell === undefined ? [] : (yield* givenDeclines(input.orgId, input.now, tell)).map(declineLine);
+  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0)
+    return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
@@ -195,6 +205,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(!checkIn && all.total > shown.length
       ? { shown: shown.length, more: "pulse_read has the rest" }
       : {}),
+    ...(setAside.length === 0 ? {} : { setAside }),
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };
@@ -255,50 +266,103 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
 });
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const decodeSchedule = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskSchedule));
+const decodeEvery = Schema.decodeUnknownOption(Schema.fromJsonString(MemoryItemEvery));
 
-/**
- * This agent's check-ins, one line each in the owner's own time, so the owner can move or drop
- * one in plain words. A row whose native task was moved since Kin wrote it reads from its host time.
- */
+const everyTime = (every: MemoryItemEvery, loose = false) => {
+  const days =
+    every.days.length > 0 && every.days.length < 7
+      ? ` ${every.days.map((day) => DAY_NAMES[day] ?? "?").join(", ")}`
+      : " every day";
+  return `${loose ? "around" : "at"} ${every.at}${days}`;
+};
+
 export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
   orgId: KinOrgId,
   agentId: KinAgentId,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const [lead] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
+  if (lead === undefined) return [];
+
   const zone = yield* ownerZone(orgId);
   const host = KinSchedules.hostTimeZone();
   const now = yield* Clock.currentTimeMillis;
+  const named = (id: string, title: string) =>
+    `${cappedText(id)}${title.trim() === "" ? "" : ` ${encoded(title, true)}`}`;
+
   const rows = yield* sql<{
     scheduleId: string;
     title: string;
+    schedule: string;
+    checkIn: number;
     looseAt: string | null;
-    timeOfDay: string | null;
-    weekdays: string | null;
     enabled: number;
     ownerTime: string | null;
-  }>`SELECT s.schedule_id AS "scheduleId", t.title, s.loose_at AS "looseAt",
-      json_extract(t.schedule_json, '$.timeOfDay') AS "timeOfDay",
-      json_extract(t.schedule_json, '$.weekdays') AS weekdays, t.enabled,
+  }>`SELECT s.schedule_id AS "scheduleId", t.title, t.schedule_json AS schedule, s.check_in AS "checkIn",
+      s.loose_at AS "looseAt", COALESCE(s.pending_enabled, t.enabled) AS enabled,
       s.owner_time_json AS "ownerTime"
     FROM kin_schedules s JOIN scheduled_tasks t ON t.task_id = s.task_id
-    WHERE s.org_id = ${orgId} AND s.agent_id = ${agentId} AND s.check_in = 1
-      AND s.deleted_at IS NULL
-    ORDER BY json_extract(t.schedule_json, '$.timeOfDay'), s.schedule_id`;
-  return rows.map((row) => {
-    const listed: unknown = row.weekdays === null ? null : JSON.parse(row.weekdays);
-    const hostDays =
-      Array.isArray(listed) && listed.length > 0 ? listed.map(Number) : [0, 1, 2, 3, 4, 5, 6];
-    const hostAt = row.looseAt ?? row.timeOfDay;
-    const own =
-      hostAt === null
-        ? undefined
-        : inOwnerTime({ at: hostAt, days: hostDays }, row.ownerTime, zone, now, host);
-    const days = own?.days ?? hostDays;
-    const named =
-      days.length > 0 && days.length < 7
-        ? ` ${days.map((day) => DAY_NAMES[day] ?? "?").join(", ")}`
-        : " every day";
-    const time = `${row.looseAt === null ? "at" : "around"} ${own?.at ?? "?"}`;
-    return `${row.scheduleId} ${row.title}: ${time}${named}${row.enabled === 1 ? "" : " (paused)"}`;
-  });
+    WHERE s.org_id = ${orgId} AND s.agent_id = ${agentId} AND s.chat_id = ${lead.chatId}
+      AND s.audience = 'owner_only' AND s.deleted_at IS NULL
+    ORDER BY s.check_in DESC, json_extract(t.schedule_json, '$.timeOfDay'), s.schedule_id`;
+
+  const lines = [];
+  for (const row of rows) {
+    const schedule = Option.getOrUndefined(decodeSchedule(row.schedule));
+    if (schedule === undefined || schedule.type === "webhook") continue;
+    const paused = row.enabled === 1 ? "" : " (paused)";
+    const label =
+      row.checkIn === 1
+        ? `${cappedText(row.scheduleId)} ${cappedText(row.title)}`
+        : named(row.scheduleId, row.title);
+    switch (schedule.type) {
+      case "fixed_time": {
+        const hostDays = schedule.weekdays?.length ? schedule.weekdays : [0, 1, 2, 3, 4, 5, 6];
+        const every = inOwnerTime(
+          { at: row.looseAt ?? schedule.timeOfDay, days: hostDays },
+          row.ownerTime,
+          zone,
+          now,
+          host,
+        );
+        lines.push(`${label}: ${everyTime(every, row.looseAt !== null)}${paused}`);
+        break;
+      }
+      case "interval": {
+        const interval =
+          schedule.everyMs % 60_000 === 0
+            ? `${schedule.everyMs / 60_000} minutes`
+            : `${schedule.everyMs / 1000} seconds`;
+        lines.push(`${label}: every ${interval}${paused}`);
+        break;
+      }
+      case "once": {
+        const at = Date.parse(schedule.runAt);
+        if (at >= now) lines.push(`${label}: at ${timeIn(at, zone)}${paused}`);
+        break;
+      }
+    }
+  }
+
+  for (const item of yield* tracked(orgId, lead.chatId)) {
+    if (item.agentId !== agentId || item.itemId === null) continue;
+    const label = named(item.itemId, item.title);
+    if (item.kind === "scheduled" && item.every !== null) {
+      const every = Option.getOrUndefined(decodeEvery(item.every));
+      if (every !== undefined) lines.push(`${label}: ${everyTime(every)}`);
+    } else if ((item.kind === "reminder" || item.kind === "follow_up") && item.dueAt !== null) {
+      const kind = item.kind === "reminder" ? "reminder" : "follow-up";
+      lines.push(`${label}: ${kind} due ${timeIn(item.dueAt, zone)}`);
+    }
+  }
+
+  const posts = yield* sql<{ postId: string; at: number }>`SELECT post_id AS "postId", at_ms AS at
+    FROM kin_social_posts WHERE org_id = ${orgId} AND agent_id = ${agentId}
+      AND kind = 'post' AND state IN ('scheduling', 'scheduled') AND at_ms >= ${now}
+    ORDER BY at_ms, post_id`;
+  for (const post of posts)
+    lines.push(`${cappedText(post.postId)}: social post at ${timeIn(post.at, zone)}`);
+  return lines;
 });

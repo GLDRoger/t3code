@@ -570,14 +570,16 @@ it.effect("suggestion participants hear only when kept, and departed people neve
     const made = yield* records.create(orgId, OwnerWork.ownerWriter(rhea), {
       list: "work",
       originKey: "fixture:printer-suggestion",
-      confirmed: false,
       title: "Invented: call the printer",
       owner: onTask(rheaId),
       fields: { alsoOn: [`person:${zoyaId}`, `person:${arjunId}`] },
     });
-    yield* OwnerWork.tellMoved(rhea, undefined, made.row);
-    assert.deepStrictEqual(yield* taskNews(made.row.key), []);
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${orgId}
+      AND record_id = ${made.row.recordId}`;
+    const suggestion = (yield* records.get(orgId, made.row.key))!;
+    yield* OwnerWork.tellMoved(rhea, undefined, suggestion);
+    assert.deepStrictEqual(yield* taskNews(made.row.key), []);
     yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE org_id = ${orgId} AND person_id = ${arjunId}`;
     yield* OwnerWork.confirm([rhea], { orgId, key: made.row.key, rev: made.row.rev });
     assert.deepStrictEqual(yield* taskNews(made.row.key), [

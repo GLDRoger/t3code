@@ -59,6 +59,7 @@ import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../question
 import {
   changeStampKey,
   codingAgentSource,
+  firstOutsideChange,
   followsOutsideRead,
   outsideRead,
   outsideStamp,
@@ -576,6 +577,8 @@ export const CREDIT_NOTE_VOID =
 const CLOSED = ["done", "dropped"] as const;
 /** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
 const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "credit_notes"]);
+
+const alwaysKept = (list: string) => list === "work" || list === "milestones";
 /** Lists whose entries are issued, sent or paid: a suggestion there is none of those. */
 const MONEY_LISTS: ReadonlySet<string> = new Set([
   "quotes",
@@ -1258,6 +1261,24 @@ const make = Effect.gen(function* () {
     return { chatId: KinChatId.make(chat.chatId), memberId: chat.memberId };
   });
 
+  const wakeOutsideStamp = Effect.fn("KinRecords.wakeOutsideStamp")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    recordId: string,
+    codingAgentKey: string | undefined,
+  ) {
+    if (codingAgentKey !== undefined) {
+      const [key] = yield* sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+        WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`;
+      return codingAgentSource(key?.label ?? "Coding agent");
+    }
+    const turnStamp =
+      writer.wakeupId === undefined
+        ? undefined
+        : yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(provideSql);
+    return turnStamp ?? (yield* firstOutsideChange(orgId, recordId).pipe(provideSql))?.source;
+  });
+
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`), closed or taken back while it held it or was on it (`withdrawn`; only
@@ -1329,22 +1350,11 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          codingAgentKey !== undefined
-            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
-                WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`.pipe(
-                Effect.flatMap(([key]) =>
-                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
-                ),
-                Effect.provideService(SqlClient.SqlClient, sql),
-              )
-            : writer.wakeupId === undefined
-              ? Effect.void
-              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                ),
+          wakeOutsideStamp(orgId, writer, row.recordId, codingAgentKey).pipe(
+            Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+            provideSql,
+          ),
         ),
         Effect.as(true),
         Effect.catchTags({
@@ -1804,7 +1814,7 @@ const make = Effect.gen(function* () {
 
   /**
    * An agent's turn that follows an outside read it did not make, and that no owner-level person
-   * asked in person: anything new it makes, on any list, waits to be kept.
+   * asked in person: what it makes outside Work and milestones waits to be kept.
    */
   const followsUnasked = Effect.fn("KinRecords.followsUnasked")(function* (
     orgId: KinOrgId,
@@ -1816,10 +1826,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
-   * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
-   * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
-   * `approvalKeeps`'). Anything else starts kept, unless its caller asks for less.
+   * Work and milestones are saved on creation, including repeats of legacy suggestions.
+   * Elsewhere a suggestion stays so when copied, and quotes and invoices need owner-level authority.
    */
   const startsKept = Effect.fn("KinRecords.startsKept")(function* (
     orgId: KinOrgId,
@@ -1827,6 +1835,7 @@ const make = Effect.gen(function* () {
     list: string,
     input: Pick<CreateInput, "confirmed" | "from">,
   ) {
+    if (alwaysKept(list)) return true;
     if (input.confirmed === false) return false;
     if (input.from !== undefined) {
       const [source] = yield* sql<{ confirmed: number }>`SELECT confirmed FROM kin_records
@@ -1982,13 +1991,16 @@ const make = Effect.gen(function* () {
     }
     const next = batch ?? (yield* reserveKeys(orgId, def, now, 1));
     const key = `${next.prefix}-${next.next}`;
+    const saveOnCreate = alwaysKept(list);
     const approved =
-      options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
+      options.kept === undefined && !saveOnCreate
+        ? yield* approvalKeeps(orgId, writer, list, partyId)
+        : undefined;
     const startsConfirmed =
       options.kept ??
       (!unaskedFunding &&
         (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
-        !(yield* followsUnasked(orgId, writer)));
+        (saveOnCreate || !(yield* followsUnasked(orgId, writer))));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.
@@ -2264,7 +2276,7 @@ const make = Effect.gen(function* () {
       Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !dropped.has(key)),
     );
     const amount = amountOf(row);
-    // The next one is whoever closed this one's to keep, and a suggestion if this one is.
+    // On gated lists, the closer and the source still decide whether the next one is kept.
     const keptNext = yield* startsKept(orgId, writer, row.registerId, { from: row.recordId });
     yield* insert(
       orgId,

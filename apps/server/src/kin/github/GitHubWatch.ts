@@ -27,7 +27,6 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { SILENT_REPLY } from "../reply/classify.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
 import { agentPostKeys, agentPostLines, signed } from "./agentMark.ts";
@@ -205,7 +204,7 @@ const problemOf = (answer: ApiAnswer) => {
   return `GitHub answered ${answer.status}. Kin tries again in a few minutes.`;
 };
 
-const Login = Schema.Struct({ login: Schema.String });
+const Login = Schema.Struct({ login: Schema.String, type: Schema.optional(Schema.String) });
 const Notification = Schema.Struct({
   reason: Schema.String,
   updated_at: Schema.optional(Schema.String),
@@ -385,6 +384,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
         kind,
         body: comment.body ?? "",
         author: comment.user?.login ?? "ghost",
+        bot: comment.user?.type === "Bot",
         association: comment.author_association,
         createdAt: parsed(comment.created_at),
         ...(comment.path === undefined ? {} : { path: comment.path }),
@@ -403,6 +403,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
       title: issue.value.title,
       body: issue.value.body ?? "",
       author: issue.value.user?.login ?? "ghost",
+      authorBot: issue.value.user?.type === "Bot",
       association: issue.value.author_association,
       open: issue.value.state === "open",
       draft: facts?.draft === true,
@@ -1247,6 +1248,7 @@ export const make = Effect.gen(function* () {
       botLogin: bot,
       agentPosts: posts,
       kinsPull,
+      triageFrom: undefined,
     };
     // Someone who can't write is re-reviewed only from a head whose review GitHub took.
     const last =
@@ -1303,7 +1305,7 @@ export const make = Effect.gen(function* () {
           ? (current.comments.find(
               (comment) => comment.id === (trigger.reactTo as { id: number }).id,
             )?.createdAt ?? now)
-          : trigger.kind === "review"
+          : trigger.kind === "review" || trigger.kind === "triage"
             ? current.createdAt
             : now;
       const moved =
@@ -1752,6 +1754,104 @@ export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
   });
 });
 
+const decodePostedComment = Schema.decodeUnknownOption(
+  Schema.Struct({
+    html_url: Schema.String,
+    created_at: Schema.String,
+  }),
+);
+
+// Words under eval: change them only with the triage cases.
+const COMMENT_SEND = {
+  notCompany: "That repo isn't the company's. Nothing was posted.",
+  app: (repo: string) => `Kin's GitHub App isn't installed on ${repo}. Nothing was posted.`,
+  disconnected: "GitHub isn't connected. The owner connects it in Settings, Connections.",
+  rejected: (status: number) => `GitHub didn't post the comment (HTTP ${status}).`,
+  unavailable: "Kin couldn't read its repo list. Nothing was posted.",
+};
+
+type SentIssueComment =
+  | { readonly _tag: "posted"; readonly url: string; readonly createdAt: number }
+  | {
+      readonly _tag: "refused";
+      readonly reason: "not_allowed" | "unavailable";
+      readonly message: string;
+    }
+  | { readonly _tag: "unknown" };
+
+export const sendIssueComment = Effect.fn("KinGitHubWatch.sendIssueComment")(
+  function* (
+    orgId: KinOrgId,
+    input: {
+      readonly repo: string;
+      readonly number: number;
+      readonly body: string;
+      readonly outside: boolean;
+    },
+  ) {
+    const api = yield* KinGitHubApi;
+    const ours = yield* companyRepo(orgId, input.repo);
+    if (ours === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.notCompany,
+      } satisfies SentIssueComment as SentIssueComment;
+    const app = yield* gitHubApp;
+    const asApp = Option.isSome(app) ? yield* app.value.on(ours.repo) : undefined;
+    if (input.outside && asApp === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.app(input.repo),
+      } satisfies SentIssueComment as SentIssueComment;
+    const request = {
+      path: `repos/${ours.repo}/issues/${input.number}/comments`,
+      method: "POST",
+      body: { body: input.body },
+    } as const;
+    const owner = Effect.fn("KinGitHubWatch.sendIssueCommentAsOwner")(function* () {
+      if ((yield* api.connected()) === null) return undefined;
+      return yield* api.call(request);
+    });
+    let answer = asApp === undefined ? yield* owner() : yield* asApp.call(request);
+    if (!input.outside && asApp !== undefined && (answer?.status === 403 || answer?.status === 404))
+      answer = (yield* owner()) ?? answer;
+    if (answer === undefined)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.disconnected,
+      } satisfies SentIssueComment as SentIssueComment;
+    if (answer.status >= 400 && answer.status < 500)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.rejected(answer.status),
+      } satisfies SentIssueComment as SentIssueComment;
+    const posted =
+      answer.status >= 200 && answer.status < 300
+        ? decodePostedComment(answer.body)
+        : Option.none();
+    const createdAt = Option.isSome(posted) ? Date.parse(posted.value.created_at) : NaN;
+    return Option.isSome(posted) && Number.isFinite(createdAt)
+      ? ({
+          _tag: "posted",
+          url: posted.value.html_url,
+          createdAt,
+        } satisfies SentIssueComment as SentIssueComment)
+      : ({ _tag: "unknown" } satisfies SentIssueComment as SentIssueComment);
+  },
+  Effect.catchTags({
+    SqlError: () =>
+      Effect.succeed<SentIssueComment>({
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.unavailable,
+      }),
+  }),
+);
+
 /**
  * What `kin_github_review` answers for a review GitHub took. A review someone asked for is told to
  * them in their chat (`askedFor.ts`); Kin's own review of one pull request (`boundReview`) tells the
@@ -1769,7 +1869,7 @@ export const postedResult = (
       review === "asked"
         ? `Posted on the PR${asOwner}. Tell the person who asked, in one or two sentences, what it found, with the link.`
         : review === "kins"
-          ? `Posted on the PR${asOwner}. If nothing in it blocks, write exactly ${SILENT_REPLY}; if it blocks, tell the owner in the one sentence your instructions shape, with the link.`
+          ? `Posted on the PR${asOwner}. If nothing in it blocks, end with kin_skip; if it blocks, tell the owner in the one sentence your instructions shape, with the link.`
           : review === "outside"
             ? "Posted on the PR as a comment. Kin tells the owner itself if it blocks; write nothing more."
             : sent.asOwner

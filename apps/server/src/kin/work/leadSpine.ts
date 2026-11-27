@@ -30,10 +30,10 @@ import { ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows
  */
 
 const Who = KinToolText(120);
-const Size = Schema.Literals(["S", "M", "L"]).annotate({ description: "S, M or L." });
+const Size = Schema.Literals(["S", "M", "L"]);
 const Reason = KinToolText(
   200,
-  'One line on why its owner was picked, such as "Kabir: tech, 3 open, free Thursday". Shown beside the task.',
+  'One line on why its owner, read by them beside the task: "Knows the billing code; free from Thursday", never their name and a colon or about them in the third person.',
 );
 const From = Schema.NullOr(
   Schema.Struct({
@@ -42,14 +42,14 @@ const From = Schema.NullOr(
   }),
 ).annotate({
   description:
-    "The doc and section id (from doc_read's outline) it was written from. Kin flags the task when that section changes; giving it again re-anchors it. null clears.",
+    "The doc and section id (doc_read's outline) it came from; Kin flags the task when that section changes, and giving it again re-anchors it. null clears.",
 });
 /** A new row's `from`: a plan's doc section, or where a promise was made. */
 export const CreateFrom = Schema.Union([
   From,
   KinToolText(
     280,
-    'Where a promise (an obligation) was made: chat:<message id> for a message in this turn, else a few words ("At the site visit").',
+    'Where a promise was made: chat:<message id> for a message this turn, else a few words ("At the site visit").',
   ),
 ]);
 
@@ -57,44 +57,32 @@ export const CreateFrom = Schema.Union([
 export const SpineInputs = {
   milestone: Schema.optional(Schema.NullOr(KinToolText(200))).annotate({
     description:
-      "A task's milestone: its key (M-2) or exact name in the task's project. Sets the project too when it has none. null clears.",
+      "Its key (M-2) or exact name in the task's project; sets the project too. null clears.",
   }),
   size: Schema.optional(Schema.NullOr(Size)),
   reason: Schema.optional(Schema.NullOr(Reason)),
   from: Schema.optional(From),
   at: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(40)))).annotate({
-    description:
-      "A meeting's start: a time with its offset (2026-11-20T15:00+05:30). On any other task it is its due.",
+    description: "A meeting's start, a time with offset; on any other task, its due.",
   }),
-  attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
-    description: "A meeting's people: each as owner is named.",
-  }),
+  attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))),
   where: Schema.optional(Schema.NullOr(KinToolText(200))),
-  billing: Schema.optional(Schema.NullOr(KinProjectBilling)).annotate({
-    description: "A project's billing: fixed, hourly or retainer.",
-  }),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
   value: Schema.optional(Schema.NullOr(KinToolText(60))).annotate({
-    description: 'A project\'s value as said ("6 lakh", "$12,000"); for a retainer, per period.',
+    description: "As said; a retainer's, per period.",
   }),
-  startsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
-    description: "When a project or a goal's period starts.",
-  }),
-  renewsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
-    description: "A retainer's next renewal day.",
-  }),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   members: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(50))).annotate({
-    description:
-      "A project's people and agents besides its owner (its lead), each as owner is named; replaces the list.",
+    description: "Besides its lead; the whole list.",
   }),
   alsoOn: Schema.optional(
     Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX)),
   ).annotate({
-    description:
-      "A task's people and agents besides its owner, each as owner is named; replaces the list. They help; its owner answers for it.",
+    description: "Who helps besides its owner, who answers for it; the whole list.",
   }),
   promisedTo: Schema.optional(Schema.NullOr(Who)).annotate({
-    description:
-      "The one person here a task was promised to, named as owner is; never its owner. null clears.",
+    description: "The one person here it was promised to, never its owner. null clears.",
   }),
 };
 type SpineRow = {

@@ -32,6 +32,7 @@ import {
 import { kinShapeFailure } from "./lint.ts";
 import { MemoryPullRequests, type MemoryPullRequestRefused } from "./MemoryPullRequests.ts";
 import { readTree, verifyTree } from "./objects.ts";
+import type { MemoryWriteFailure } from "./writeFailure.ts";
 
 /** The commit of the open guard-rails PR, kept so its head never changes under the owner. */
 const GUARD_RAILS_REF = "refs/kin/guard-rails";
@@ -180,7 +181,7 @@ const make = Effect.gen(function* () {
       readonly told?: boolean;
       /** GitHub's guard-rail files the refusal is held against, when only the owner can clear it. */
       readonly owner?: string;
-      readonly ownerNotice?: string;
+      readonly failure?: MemoryWriteFailure;
     } = {},
   ) {
     const held = stuck.get(orgId);
@@ -195,8 +196,11 @@ const make = Effect.gen(function* () {
         orgId,
         branch: main,
         reason: `Memory write not merged: ${reason}${options.url ? ` (${options.url})` : ""}. Memory is still saved on this server; the GitHub copy is behind until Kin lands it, which it tries again with the next memory change or restart`,
-        ...(options.ownerNotice === undefined ? {} : { owner: options.ownerNotice }),
       });
+    const reported =
+      options.failure ??
+      (options.told === true || options.owner !== undefined ? undefined : "remote");
+    yield* recovery.writeEpisode?.(orgId, "online-copy", reported, options.url) ?? Effect.void;
     return { _tag: "stuck", reason } as const;
   });
 
@@ -585,6 +589,7 @@ const make = Effect.gen(function* () {
     }
     if (remote !== undefined && !remote.pending) {
       stuck.delete(orgId);
+      yield* recovery.writeEpisode?.(orgId, "online-copy", undefined) ?? Effect.void;
       return { _tag: "idle" } as const;
     }
     const held = stuck.get(orgId);
@@ -593,10 +598,11 @@ const make = Effect.gen(function* () {
         return { _tag: "waiting" } as const;
     } else if (held?.local === local) return { _tag: "waiting" } as const;
     if (remote === undefined) return yield* refuse(orgId, local, "Kin could not reach GitHub");
-    // Sync told the owner when it could not combine the two.
+    // Sync already logged why the two copies could not be combined.
     if (!remote.descends)
       return yield* refuse(orgId, local, "GitHub's copy changed in a way Kin could not combine", {
         told: true,
+        failure: "online-conflict",
       });
     // One commit on GitHub's head with this server's tree, so the PR holds just what GitHub lacks.
     const tree = yield* git(orgId, writer, ["rev-parse", `${local}^{tree}`]);
@@ -632,22 +638,21 @@ const make = Effect.gen(function* () {
     if (landed._tag === "Failure") {
       const { reason, url, waitsOnOwner } = landed.failure;
       if (waitsOnOwner !== true)
-        return yield* refuse(orgId, local, reason, url === undefined ? {} : { url });
+        return yield* refuse(orgId, local, reason, {
+          ...(url === undefined ? {} : { url }),
+          failure: "review",
+        });
       // Only the owner can clear this, so no later commit tries it again: a change to GitHub's
       // guard-rail files (such as the guard-rails PR merging) or a restart does.
       return yield* refuse(orgId, local, reason, {
         ...(url === undefined ? {} : { url }),
         owner: yield* guardRailsKey(orgId, writer, remote.head),
         // The guard-rails PR's own notice already asks the owner for what clears this.
-        ...(upgrading.has(orgId)
-          ? {}
-          : {
-              ownerNotice: `Memory is saved here, but GitHub's copy is behind: GitHub wants a review before Kin's memory PRs merge${url ? ` (${url})` : ""}, and Kin's own memory needs none. Check the memory repo's rules and ${CODEOWNERS_PATH} on GitHub; Kin tries again once those files change or the server restarts.`,
-            }),
+        ...(upgrading.has(orgId) ? {} : { failure: "review-needed" as const }),
       });
     }
     if (landed.success._tag !== "merged")
-      return yield* refuse(orgId, local, "GitHub kept the memory PR open");
+      return yield* refuse(orgId, local, "GitHub kept the memory PR open", { failure: "review" });
     const { url, commit } = landed.success;
     // With GitHub's head unmoved, the squash must hold exactly the tree Kin pushed.
     yield* git(orgId, writer, ["fetch", "--", target.repoUrl, commit]);
@@ -656,7 +661,10 @@ const make = Effect.gen(function* () {
       yield* git(orgId, writer, ["rev-parse", `${commit}^{tree}`]),
     ];
     if (parent === remote.head && merged !== tree)
-      return yield* refuse(orgId, local, "GitHub merged a different tree than Kin pushed", { url });
+      return yield* refuse(orgId, local, "GitHub merged a different tree than Kin pushed", {
+        url,
+        failure: "review",
+      });
     // One ref to one commit, so both halves move together: GitHub's squash, then the local
     // commit whose tree it carries. The next sync merges the squash in from that tree.
     const landedAs = yield* git(
@@ -671,6 +679,7 @@ const make = Effect.gen(function* () {
     );
     yield* git(orgId, writer, ["update-ref", LANDED_REF, landedAs]);
     stuck.delete(orgId);
+    yield* recovery.writeEpisode?.(orgId, "online-copy", undefined) ?? Effect.void;
     yield* git(orgId, writer, ["push", "--", target.repoUrl, `:refs/heads/${branch}`]).pipe(
       Effect.catch(() =>
         Effect.logWarning("Could not delete a merged memory PR branch", { orgId }),

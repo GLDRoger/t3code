@@ -1511,15 +1511,15 @@ describe("KinPulse", () => {
         // Once a stretch with no step: the next passes and days add nothing.
         assert.deepStrictEqual(yield* drafted(NOON_LA + HOUR), []);
         assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
-        // Its suggested step is a step; Not this drops it, and a new stretch starts at once.
+        // The agent's step is a step; dropping it starts a new stretch at once.
         yield* insert({
           id: "W-50",
           ownerKind: "person",
           ownerId: mate,
           partyId: "r-C-1",
-          confirmed: 0,
           createdAt: NOON_LA + DAY,
         });
+        yield* sql`UPDATE kin_records SET created_by_kind = 'agent' WHERE record_id = 'r-W-50'`;
         yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
             created_at)
           VALUES (${orgId}, 'r-W-50', 'record', 'r-DL-1', 'relates', ${NOON_LA + DAY})`;
@@ -1601,16 +1601,28 @@ describe("KinPulse", () => {
         yield* sql`UPDATE kin_events SET wakeup_id = 'w-plan' WHERE event_id = ${made!.eventId}`;
         assert.isUndefined(yield* docHeadStart(orgId, finance, "w-plan"));
         assert.deepStrictEqual(yield* drafted(at + DAY), []);
-        // Its suggested tasks are a plan; dropping the last brings the fact back, and 14 days
+        // The agent's tasks are a plan; dropping the last brings the fact back, and 14 days
         // pass before another breakdown.
-        yield* insert({ id: "W-60", projectId: "P-2", confirmed: 0, createdAt: at + DAY });
+        yield* insert({ id: "W-60", projectId: "P-2", createdAt: at + DAY });
+        yield* sql`UPDATE kin_records SET created_by_kind = 'agent' WHERE record_id = 'r-W-60'`;
         yield* drafted(at + DAY + HOUR);
         const dropped = at + 2 * DAY;
         yield* sql`UPDATE kin_records SET state = 'dropped', closed_at = ${dropped}
           WHERE record_id = 'r-W-60'`;
         assert.deepStrictEqual(yield* drafted(dropped + MINUTE), []);
         assert.deepStrictEqual(yield* drafted(dropped + 13 * DAY), []);
-        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), [
+        // The agent task's rest expires first; only the legacy decline can extend it.
+        const declined = dropped + DAY;
+        yield* insert({
+          id: "W-61",
+          projectId: "P-2",
+          state: "dropped",
+          confirmed: 0,
+          createdAt: at,
+          closedAt: declined,
+        });
+        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), []);
+        assert.deepStrictEqual(yield* drafted(declined + 14 * DAY + HOUR), [
           { personId: owner, key },
         ]);
       }).pipe(Effect.provide(chatLayer)),
@@ -3368,15 +3380,16 @@ describe("KinPulse", () => {
           handled: null,
         });
         // One that doesn't add up is told once, as a line: Kin marks nothing and offers no card.
-        assert.deepInclude(
-          facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!,
-          {
-            consequence:
-              "BNK-11, ₹9,000 paid 25 Nov, names Meera but doesn't add up to their oldest owed expenses (₹12,400 over 3 expenses), so Kin marks nothing. Mark what it repaid on the expenses in Money.",
-            actor: { _tag: "agent", agentId: finance },
-            wake: "brief",
-          },
-        );
+        const short = facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!;
+        // Kin hasn't looked at what it repaid, so the line says so instead of reading as a finding.
+        assert.include(short.consequence, "not checked");
+        assert.notInclude(short.consequence, "doesn't add up");
+        assert.deepInclude(short, {
+          consequence:
+            "BNK-11, ₹9,000 paid 25 Nov, names Meera and may not match their oldest owed expenses (₹12,400 over 3 expenses): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.",
+          actor: { _tag: "agent", agentId: finance },
+          wake: "brief",
+        });
         assert.lengthOf(facts, 2);
         // Only owner-level people hear of it, and only a build that knows the sense shows it.
         assert.isEmpty(yield* seen({ _tag: "people", people: [mate] }));
@@ -3748,7 +3761,7 @@ describe("watched numbers", () => {
           [first, second].map((key) => ({ agent: finance, factKeys: [key], origin: undefined })),
         );
         assert.deepStrictEqual(yield* offTurnTexts(orgId, [second], noon(34)), [
-          '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
+          '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
         ]);
       }).pipe(Effect.provide(layer)),
   );

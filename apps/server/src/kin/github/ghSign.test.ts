@@ -324,6 +324,7 @@ const withComment = (body: string, author: string, association: string): ThreadS
   title: "Add hello",
   body: "Adds hello.",
   author: "teammate",
+  authorBot: false,
   association: "MEMBER",
   open: true,
   draft: false,
@@ -339,7 +340,17 @@ const withComment = (body: string, author: string, association: string): ThreadS
     fork: false,
   },
   comments: [
-    { id: 7, kind: "review", body, author, association, createdAt: 10, path: "a.ts", line: 3 },
+    {
+      id: 7,
+      kind: "review",
+      body,
+      author,
+      bot: false,
+      association,
+      createdAt: 10,
+      path: "a.ts",
+      line: 3,
+    },
   ],
   reviewRequested: false,
 });

@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isContinuation } from "../chat/KinChatRepository.ts";
 import { amendable, someoneThere } from "../chat/ownMessages.ts";
 import { keysIn, numbersIn } from "../chat/messageLinks.ts";
 import { historyFloor } from "../chat/sharing.ts";
@@ -47,10 +48,15 @@ const joined = (parts: ReadonlyArray<string>) =>
     : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
+const decodeContinuations = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String, body: Schema.String }))),
+);
+
 type Pending = {
   readonly messageId: string;
   readonly createdAt: number;
   readonly body: string;
+  readonly continuationIds: ReadonlyArray<string>;
 };
 
 /** What changed about these messages since each was posted, as of `at`, newest change last. */
@@ -101,14 +107,19 @@ const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, messages, viewer } = input;
   const ids = messages.map((one) => one.messageId);
-  const posted = new Map(messages.map((one) => [one.messageId, one.createdAt] as const));
+  const posted = new Map(
+    messages.flatMap((one) =>
+      [one.messageId, ...one.continuationIds].map((id) => [id, one.createdAt] as const),
+    ),
+  );
+  const namedIds = [...posted.keys()];
   const since = new Map<string, number>();
   const note = (key: string, at: number) => since.set(key, Math.min(since.get(key) ?? at, at));
   for (const one of messages) for (const key of keysIn(one.body)) note(key, one.createdAt);
   const named = yield* sql<{ messageId: string; key: string }>`SELECT n.message_id AS "messageId",
       json_extract(k.value, '$.key') AS key
     FROM kin_message_names n, json_each(n.names_json) k
-    WHERE n.org_id = ${orgId} AND n.message_id IN ${sql.in(ids)}
+    WHERE n.org_id = ${orgId} AND n.message_id IN ${sql.in(namedIds)}
     ORDER BY 1, 2`;
   for (const row of named) note(row.key, posted.get(row.messageId) ?? input.at);
   // Agents name an entry by its number ("INV/26-27/004") or its title more often than its key.
@@ -130,7 +141,7 @@ const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
     FROM kin_records r WHERE r.org_id = ${orgId} AND length(r.title) >= ${TITLE_MIN}
       AND ${seenBy(sql, viewer)}
       AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = r.org_id
-        AND m.message_id IN ${sql.in(ids)} AND instr(lower(m.body), lower(r.title)) > 0)
+        AND m.message_id IN ${sql.in(namedIds)} AND instr(lower(m.body), lower(r.title)) > 0)
       -- A title two entries share names neither, whoever may read the other.
       AND NOT EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
         AND t.record_id <> r.record_id AND lower(t.title) = lower(r.title))
@@ -258,8 +269,10 @@ const unreadByChat = Effect.fnUntraced(function* (
     createdAt: string;
     body: string;
     inView: number | null;
-  }>`SELECT m.author_agent_id AS "agentId", m.chat_id AS "chatId", m.message_id AS "messageId",
-      m.created_at AS "createdAt", m.body,
+    continuations: string;
+  }>`WITH leads AS (SELECT m.author_agent_id AS "agentId", m.chat_id AS "chatId", m.message_id AS "messageId",
+      m.created_at AS "createdAt", m.body, m.org_id, m.source_wakeup_id,
+      m.author_thread_id, m.client_message_id, m.seq,
       (m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}) AS "inView"
     FROM kin_messages m
     JOIN kin_chat_members a ON a.org_id = m.org_id AND a.chat_id = m.chat_id
@@ -269,7 +282,19 @@ const unreadByChat = Effect.fnUntraced(function* (
     WHERE m.org_id = ${orgId} AND ${amendable(sql)} AND ${someoneThere(sql)}
       ${agentId === undefined ? sql`` : sql`AND m.author_agent_id = ${agentId}`}
       ${chatId === undefined ? sql`` : sql`AND m.chat_id = ${chatId}`}
-    ORDER BY m.author_agent_id, m.chat_id, m.seq`;
+    )
+    SELECT lead."agentId", lead."chatId", lead."messageId", lead."createdAt", lead."inView", lead.body,
+      (
+        SELECT json_group_array(json_object('id', m.message_id, 'body', m.body) ORDER BY m.seq)
+        FROM kin_messages m
+        WHERE m.org_id = lead.org_id AND m.chat_id = lead."chatId"
+          AND m.source_wakeup_id = lead.source_wakeup_id AND m.author_kind = 'agent'
+          AND m.author_agent_id = lead."agentId" AND m.author_thread_id IS lead.author_thread_id
+          AND m.status = 'posted' AND m.seq > lead.seq AND ${isContinuation(sql, "m")}
+          AND substr(m.client_message_id, 1, length(lead.client_message_id) + 2) =
+            lead.client_message_id || '~b'
+      ) AS continuations
+    FROM leads lead ORDER BY lead."agentId", lead."chatId", lead.seq`;
   const groups = new Map<
     string,
     {
@@ -287,10 +312,12 @@ const unreadByChat = Effect.fnUntraced(function* (
       viewer: KIN_OWNER_LEVEL,
       messages: [],
     };
+    const parts = yield* decodeContinuations(row.continuations).pipe(Effect.orDie);
     group.messages.push({
       messageId: row.messageId,
       createdAt: Date.parse(row.createdAt),
-      body: row.body,
+      body: [row.body, ...parts.map((part) => part.body)].join("\n\n"),
+      continuationIds: parts.map((part) => part.id),
       inView: row.inView === 1,
     });
     groups.set(key, group);
@@ -393,7 +420,7 @@ export const REVIEW_WAKE_TEXT = (input: {
   readonly who: ReadonlyArray<string>;
   readonly count: number;
 }) =>
-  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} answered or reacted to ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has answered or reacted to yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them. Then write exactly NO_REPLY.`;
+  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} answered or reacted to ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has answered or reacted to yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them; otherwise end with kin_skip.`;
 /** The review wake found, as it started, nothing of the agent's here unread any more. */
 export const REVIEW_NOTHING_NOW =
   "Kin woke you to look again at your unanswered messages here, but as this turn started everything you said here had been answered, reacted to or taken back.";

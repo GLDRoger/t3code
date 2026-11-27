@@ -5,6 +5,8 @@
  * harness capture supplies the prompt and native tools; a cheap model plays the shell. See
  * README.md for how to run it and add cases.
  */
+import { KIN_SEARCH_HINTS } from "../../apps/server/src/kin/lead/searchHints.ts";
+import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
@@ -39,7 +41,6 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
-import { classifySegment } from "../../apps/server/src/kin/reply/classify.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -72,15 +73,19 @@ import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
+  defaultReplyMock,
   fillKinRules,
   filledEvent,
   isKinCase,
+  isReplyEnding,
   kinAnswer,
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
+  kinDelivery,
   kinJudgedCall,
   kinLeadBase,
+  kinGitHubOf,
   kinLeadInstructions,
   kinLoadedBefore,
   type KinSeatOptions,
@@ -95,7 +100,7 @@ import {
   kinUnmocked,
   longTurnNote,
   modelCallLines,
-  rescuePrompt,
+  replyFollowUp,
   shownText,
   unmockedLines,
   unredact,
@@ -245,8 +250,9 @@ type Call = {
 export type SampleRun = {
   readonly calls: ReadonlyArray<Call>;
   text: string;
-  /** Kin's posted segments, without the journal notes used in other text checks. */
-  readonly postedText?: string;
+  readonly deliveredText?: string;
+  readonly deliveredBubbles?: ReadonlyArray<string>;
+  readonly nudged?: boolean;
   stopReason: string;
   /** The agent's final answer: its last response's text, if it ended its turn. */
   readonly finalText?: string;
@@ -337,6 +343,7 @@ const McpToolUseExpect = Schema.Struct({
   textMustNot: Schema.optional(Schema.Array(Schema.String)),
   /** Counts on the agent's visible text, graded pass, within margin or fail. See margin.ts. */
   limits: Schema.optional(Limits),
+  delivered: Schema.optional(Schema.Boolean),
   /** Case-sensitive regexes on the final answer: the last response's text, once the turn ended. */
   finalTextMust: Schema.optional(Schema.Array(Schema.String)),
   /** Each entry matches a PR URL linked at the end, as `args` values match. */
@@ -593,6 +600,9 @@ export const normalizeToolInput = (name: string, input: unknown) => {
 
 // McpHttpServer advertises each tool's JSON schema, and Claude Code passes the MCP name,
 // description, and schema through unchanged.
+const kinSourceTools = new Set<Tool.Any>(
+  KIN_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools)),
+);
 const t3SourceTools: ReadonlyArray<Tool.Any> = [
   OrchestratorToolkit,
   ThreadToolkit,
@@ -623,7 +633,7 @@ const t3InputDecoders = new Map(
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
   description: Tool.getDescription(tool) ?? "",
-  input_schema: advertisedJsonSchema(tool),
+  input_schema: advertisedJsonSchema(tool, { kin: kinSourceTools.has(tool) }),
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(
@@ -691,10 +701,11 @@ const visibleT3Tools = (
     readonly agentFeedback?: Contracts.AgentFeedbackMode;
     readonly arm?: Arm;
   } & KinSeatOptions,
+  claude = false,
 ) =>
   t3Tools.filter(
     (tool) =>
-      kinToolVisible(tool.name.slice(T3_PREFIX.length), options) &&
+      kinToolVisible(tool.name.slice(T3_PREFIX.length), options, claude) &&
       !(options.arm === "raw" && forgeToolNames.has(tool.name)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       ((options.agentFeedback ?? "off") !== "off" || !hiddenWhileFeedbackOff.has(tool.name)) &&
@@ -832,7 +843,7 @@ export const buildBase = (
     readonly arm?: Arm;
   } & KinSeatOptions,
 ) => {
-  const t3 = visibleT3Tools(options);
+  const t3 = visibleT3Tools(options, true);
   const firstAssistant = template.messages.findIndex((message) => message.role === "assistant");
   const head = template.messages.slice(0, firstAssistant === -1 ? undefined : firstAssistant);
   const systemTexts = [
@@ -897,12 +908,13 @@ export const buildBase = (
       model,
       options,
       environment,
-      templateTools: template.tools,
+      templateTools: template.tools
+        .filter((tool) => !isT3Name(tool.name))
+        .map((tool) => ({ ...tool, name: normalizeToolName(tool.name) })),
       t3,
       deferredHeader: DEFERRED_LIST.exec(joined)?.[1],
       nativeDeferred,
       nativeSchema,
-      normalizeToolName,
     });
   return {
     model,
@@ -925,6 +937,8 @@ type Base = ReturnType<typeof buildBase> & {
   readonly codex?: typeof ResponsesRequest.Type;
   /** What T3's SubagentStart hooks give a native subagent. */
   readonly subagentContext?: string;
+  readonly kinClaude?: true;
+  readonly deferredAnnouncement?: string;
 };
 
 /** Keep the captured harness prompt and tools; replace app-owned context and the real user. */
@@ -1140,6 +1154,7 @@ type Sample = {
   readonly priorResults: Map<unknown, string>;
   /** The model's responses so far, as `shownText` reads them. */
   readonly responses: Array<ReadonlyArray<unknown>>;
+  readonly calls: Array<Call>;
   /** Prior calls whose T3 result is an error, so the agent sees it as one. */
   readonly priorErrors: Set<unknown>;
   /** T3's t3_background_wait, once `withBackgroundWait` builds it for `world.backgroundTasks`. */
@@ -1206,6 +1221,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     secretRequests: 0,
     priorResults: new Map(),
     responses: [],
+    calls: [],
     priorErrors: new Set(),
     ...carryMockState(testCase, normalizeToolName),
   };
@@ -1338,7 +1354,8 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
+/** `appServer`: Codex sends its own environment, so the request leaves out Claude Code's. */
+export const buildMessages = (sample: Sample, layout: KinLayout = "legacy", appServer = false) => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
@@ -1420,11 +1437,25 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     replayCalls(turn.toolCalls);
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const pushPrompt = (prompt: string, files?: KinTurnFiles) =>
+  let firstWake = true;
+  const pushPrompt = (prompt: string, files?: KinTurnFiles, context?: string) => {
     push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
+    if (firstWake && base.kinClaude && !appServer) {
+      const { cwd, platform, date } = base.environment;
+      const environment = [
+        `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: ${cwd}\n - Platform: ${platform}`,
+        base.deferredAnnouncement,
+        "<total_tokens>15000000 tokens left</total_tokens>",
+        context ?? (date === undefined ? undefined : `Today's date is ${date}.`),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      push("system", text(environment));
+    } else if (context) push("system", text(context));
+    firstWake = false;
+  };
   for (const turn of session?.earlier ?? []) {
-    pushPrompt(turn.message);
-    if (turn.context) push("system", text(turn.context));
+    pushPrompt(turn.message, undefined, turn.context);
     replayCalls(turn.toolCalls);
     if (turn.reply) push("assistant", text(turn.reply));
   }
@@ -1442,8 +1473,12 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    pushPrompt(role === "delegated-child" ? childPrompt() : prompt, sample.kinFiles);
-  if (session?.last.context) push("system", text(session.last.context));
+    pushPrompt(
+      role === "delegated-child" ? childPrompt() : prompt,
+      sample.kinFiles,
+      session?.last.context,
+    );
+  else if (session?.last.context) push("system", text(session.last.context));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2070,13 +2105,51 @@ const capabilities = ({ base }: Sample, value: unknown) =>
       }
     : value;
 
-/** ToolSearch: `select:a,b` loads those tools. Other queries load tools whose name has a word. */
+const keywordScore = (tool: ApiTool, words: ReadonlyArray<string>) => {
+  const fullName = tool.name.toLowerCase();
+  const bare = normalizeToolName(tool.name).toLowerCase();
+  const parts = bare.split("_");
+  const description = typeof tool.description === "string" ? tool.description.toLowerCase() : "";
+  const hint =
+    isT3Name(tool.name) && Object.hasOwn(KIN_SEARCH_HINTS, normalizeToolName(tool.name))
+      ? KIN_SEARCH_HINTS[normalizeToolName(tool.name)]
+      : isRecord(tool._meta)
+        ? tool._meta["anthropic/searchHint"]
+        : undefined;
+  let score = 0;
+  for (const word of words) {
+    if (parts.includes(word)) score += isT3Name(tool.name) ? 12 : 10;
+    else if (parts.some((part) => part.includes(word))) score += isT3Name(tool.name) ? 6 : 5;
+    if (score === 0 && fullName.includes(word)) score += 3;
+    if (typeof hint === "string" && hint.toLowerCase().includes(word)) score += 4;
+    const pattern = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (pattern.test(description)) score += 2;
+  }
+  return score;
+};
+
+/** ToolSearch: `select:a,b` loads exact names; Kin's SDK also ranks keyword matches. */
 const searchTools = (base: Base, query: string, max: number) => {
   if (query.startsWith("select:")) {
     const wanted = query.slice("select:".length).split(",");
     return base.deferred.filter((tool) =>
       wanted.some((name) => [tool.name, normalizeToolName(tool.name)].includes(name.trim())),
     );
+  }
+  if (base.kinClaude) {
+    const normalized = query.trim().toLowerCase();
+    const exact = base.deferred.find((tool) => tool.name.toLowerCase() === normalized);
+    if (exact) return [exact];
+    const terms = normalized.split(/\s+/).filter(Boolean);
+    const required = terms.filter((word) => word.startsWith("+")).map((word) => word.slice(1));
+    const words = terms.filter((word) => !word.startsWith("+"));
+    return base.deferred
+      .filter((tool) => required.every((word) => tool.name.toLowerCase().includes(word)))
+      .map((tool) => ({ tool, score: keywordScore(tool, words) }))
+      .filter(({ score }) => score > 0 || required.length > 0)
+      .toSorted((a, b) => b.score - a.score)
+      .slice(0, max)
+      .map(({ tool }) => tool);
   }
   const words = query
     .toLowerCase()
@@ -2413,6 +2486,74 @@ const productRefusal = (sample: Sample, name: string, input: Readonly<Record<str
   return undefined;
 };
 
+const printfEscapes: Readonly<Record<string, string>> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+};
+
+const literalPrintf = ([format, ...args]: ReadonlyArray<string>): string | undefined => {
+  if (
+    format === undefined ||
+    format.startsWith("-") ||
+    /[%\\]/u.test(format.replaceAll(/%[%s]|\\[abefnrtv\\]/g, ""))
+  )
+    return undefined;
+  let arg = 0;
+  let output = "";
+  do {
+    const before = arg;
+    output += format.replaceAll(/%[%s]|\\[abefnrtv\\]/g, (token) =>
+      token === "%s" ? (args[arg++] ?? "") : token === "%%" ? "%" : printfEscapes[token[1]!]!,
+    );
+    if (arg === before) break;
+  } while (arg < args.length);
+  return output;
+};
+
+/** A complete literal command, simulated without a shell or the shell-model call. */
+const nativeNoop = (tool: string, input: unknown): string | undefined => {
+  if (!isRecord(input)) return undefined;
+  if (tool === "Read") return input.file_path === "/dev/null" ? "" : undefined;
+  if (tool !== "Bash" || typeof input.command !== "string" || /[\r\n\0]/u.test(input.command))
+    return undefined;
+  const command = input.command.replace(/^[ \t]+|[ \t]+$/g, "");
+  if (command === "true" || command === ":") return "";
+  const head = /^(echo|printf)(?=[ \t]|$)/u.exec(command);
+  if (head === null) return undefined;
+  const word =
+    /[ \t]+((?:[^ \t'"\\$\x60|<>&;(){}*?[\]#!~]|\\.|'[^']*'|"(?:[^"\\$\x60]|\\.)*")+)(?=[ \t]|$)/guy;
+  const part = /([^ \t'"\\$\x60|<>&;(){}*?[\]#!~]+)|\\(.)|'([^']*)'|"((?:[^"\\$\x60]|\\.)*)"/gu;
+  const args: Array<string> = [];
+  word.lastIndex = head[0].length;
+  while (word.lastIndex < command.length) {
+    const match = word.exec(command);
+    if (match === null) return undefined;
+    args.push(
+      [...match[1]!.matchAll(part)]
+        .map(
+          ([, bare, escaped, single, double]) =>
+            bare ?? escaped ?? single ?? double!.replaceAll(/\\(["\\$\x60])/g, "$1"),
+        )
+        .join(""),
+    );
+  }
+  if (head[1] === "printf") return literalPrintf(args);
+  let newline = true;
+  while (/^-[neE]+$/u.test(args[0] ?? "")) {
+    const option = args.shift()!;
+    if (option.includes("e")) return undefined;
+    if (option.includes("n")) newline = false;
+  }
+  return args.join(" ") + (newline ? "\n" : "");
+};
+
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
   sample: Sample,
   config: Config,
@@ -2433,9 +2574,15 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   }
   const failed = (error: string): Block => ({ ...toolResult(call.id, error), is_error: true });
   if (!base.codex && !hasTool(tools, call.name)) {
-    const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
+    const error = base.kinClaude
+      ? hasTool(base.deferred, call.name)
+        ? `This tool's schema was not sent to the API. To use it, call ToolSearch with query "select:${call.name}", then retry.`
+        : `No such tool available: ${call.name}`
+      : `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
   }
+  const noop = nativeNoop(name, input);
+  if (noop !== undefined) return toolResult(call.id, noop);
   const kin = kinCallRead(name, input);
   if (kin.refused !== undefined) return failed(kin.refused);
   input = kin.input;
@@ -2467,7 +2614,9 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   const selected = nextMock(sample, name, testCase.setup.mocks?.[name], input);
   const mock = kinAnswer(
     name,
-    selected.mock,
+    selected.mock === undefined || selected.mock === "default"
+      ? (defaultReplyMock(sample, name, input) ?? selected.mock)
+      : selected.mock,
     selected.prior === undefined ? input : { ...input, prior: selected.prior },
     testCase.setup.world,
   );
@@ -2735,6 +2884,9 @@ const withPage = (tool: string, input: unknown, files: ReadonlyMap<string, strin
   return { ...input, page };
 };
 
+const DELIVERED_SILENCE =
+  /\bNO_REPLY\b|\(\s*(?:no\s+reply\s+needed|no\s+response\s+needed|nothing\s+to\s+add|staying\s+quiet|silent)\s*\)/i;
+
 /** `pasted` is the thread's user text (`pastedText`), for request_secret's `value`. */
 export const gradeSample = (
   expect: McpToolUseCase["expect"],
@@ -2756,9 +2908,14 @@ export const gradeSample = (
     ),
   }));
   const calls = attempted.filter((call) => !(call.failed && isPageTool(call.tool)));
+  const nonNoopAttempts = attempted.filter(
+    (call) => nativeNoop(call.tool, call.input) === undefined,
+  );
+  const nonNoopSet = new Set(nonNoopAttempts);
+  const nonNoopCalls = calls.filter((call) => nonNoopSet.has(call));
   // `tool` may list alternatives, as in "link_pull_request|watch_pull_request"; counts add up.
-  const count = (tool: string) =>
-    calls.filter((call) => tool.split("|").includes(call.tool)).length;
+  const count = (tool: string, among = calls) =>
+    among.filter((call) => tool.split("|").includes(call.tool)).length;
   const found = ({ tool, args = {}, argsAnyOf, success }: McpToolUseCall, among = calls) =>
     among.some(
       (call) =>
@@ -2787,7 +2944,7 @@ export const gradeSample = (
     add("anyOf", expect.anyOf.some(passes));
   }
   for (const call of expect.callsMustNot ?? [])
-    add(`callsMustNot ${label(call)}`, !found(call, attempted));
+    add(`callsMustNot ${label(call)}`, !found(call, nonNoopAttempts));
   // A page check must not pass because the grader never saw the file a path call shows.
   const pageTools = [...(expect.calls ?? []), ...(expect.callsMustNot ?? [])].flatMap((call) =>
     call.args?.page === undefined ? [] : call.tool.split("|"),
@@ -2801,7 +2958,7 @@ export const gradeSample = (
     )
       add(`page known ${call.tool} ${valueText(call.input.path)}`, false);
   for (const tool of expect.notCalls ?? [])
-    add(`notCalls ${tool}`, !attempted.some((call) => call.tool === tool));
+    add(`notCalls ${tool}`, !nonNoopAttempts.some((call) => call.tool === tool));
   if (expect.order !== undefined) {
     const firsts = expect.order.map((tool) => calls.findIndex((call) => call.tool === tool));
     const inOrder = firsts.every((at, i) => at > (firsts[i - 1] ?? -1));
@@ -2810,9 +2967,12 @@ export const gradeSample = (
   for (const [t, n] of Object.entries(expect.minCalls ?? {}))
     add(`minCalls ${t} >= ${n}`, count(t) >= n);
   for (const [t, n] of Object.entries(expect.maxCalls ?? {}))
-    add(`maxCalls ${t} <= ${n}`, count(t) <= n);
+    add(`maxCalls ${t} <= ${n}`, count(t, nonNoopCalls) <= n);
   for (const call of expect.callsAtMostOnce ?? [])
-    add(`callsAtMostOnce ${label(call)}`, calls.filter((one) => found(call, [one])).length <= 1);
+    add(
+      `callsAtMostOnce ${label(call)}`,
+      nonNoopCalls.filter((one) => found(call, [one])).length <= 1,
+    );
   if (expect.newThreads !== undefined) {
     const requests = newThreadRequests(calls);
     add(
@@ -2823,7 +2983,11 @@ export const gradeSample = (
   if (expect.endsTurnAfter !== undefined) {
     const lastStep = Math.max(-1, ...calls.map((call) => call.step));
     const last = calls.filter((call) => call.step === lastStep).map((call) => call.tool);
-    const ended = run.stopReason === "end_turn" && last.includes(expect.endsTurnAfter);
+    const ended =
+      run.stopReason === "end_turn" &&
+      (isReplyEnding(expect.endsTurnAfter)
+        ? last.at(-1) === expect.endsTurnAfter
+        : last.includes(expect.endsTurnAfter));
     add(`endsTurnAfter ${expect.endsTurnAfter}`, ended);
   }
   // Bash and Monitor both take a shell `command`. Shell checks also read, one by one, the scripts
@@ -2831,32 +2995,54 @@ export const gradeSample = (
   const sources = scriptSources(calls);
   const shell = calls.flatMap((call, i) =>
     isRecord(call.input) && typeof call.input.command === "string"
-      ? [call.input.command, ...(sources[i] ?? [])]
+      ? [call.input.command, ...(sources[i] ?? [])].map((source) => ({ source, call }))
       : [],
   );
   const test = matchesPattern;
   for (const p of expect.shellMustNot ?? [])
-    add(`shellMustNot /${p}/`, !shell.some((c) => test(p, c)));
+    add(
+      `shellMustNot /${p}/`,
+      !shell.some(({ source, call }) => nonNoopSet.has(call) && test(p, source)),
+    );
   // A positive check also reads argv lists as command lines: spawnSync('pnpm', ['exec', …]).
   for (const p of expect.shellMust ?? [])
     add(
       `shellMust /${p}/`,
-      shell.some((c) => test(p, c) || test(p, argvForm(c))),
+      shell.some(({ source }) => test(p, source) || test(p, argvForm(source))),
     );
   // A Kin card's question is posted to the chat and stands for the turn's message, so it counts.
+  const delivered = run.deliveredText;
+  const visible = delivered ?? run.text;
   const shown = [
-    run.text,
+    visible,
     ...calls.flatMap((call) =>
-      call.tool === "kin_ask" && isRecord(call.input) && typeof call.input.question === "string"
+      call.tool === "kin_ask" &&
+      call.failed !== true &&
+      isRecord(call.input) &&
+      typeof call.input.question === "string"
         ? [call.input.question]
         : [],
     ),
   ].join("\n\n");
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
-  for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
-  checks.push(...limitChecks(expect.limits, run.postedText ?? run.text));
+  for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, visible));
+  checks.push(...limitChecks(expect.limits, visible, run.deliveredBubbles?.length));
+  if (delivered !== undefined && DELIVERED_SILENCE.test(delivered))
+    add("marker text delivered", false);
+  if (expect.delivered !== undefined) {
+    const reached = delivered !== undefined && delivered.trim() !== "";
+    add(
+      `delivered ${expect.delivered}`,
+      expect.delivered
+        ? reached
+        : delivered !== undefined && !reached && !run.nudged && run.stopReason === "end_turn",
+    );
+  }
   for (const p of expect.finalTextMust ?? [])
-    add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
+    add(
+      `finalTextMust /${p}/`,
+      run.stopReason === "end_turn" && test(p, delivered ?? run.finalText ?? ""),
+    );
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
   for (const url of expect.linked ?? []) add(`linked ${url}`, isLinked(url));
   if (expect.linkedNumbers !== undefined) {
@@ -2892,7 +3078,29 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
     pasted,
   ).some((check) => !check.pass && SETTLED.test(check.check));
 
-const requestBody = (
+export const requestEffort = (base: Base, explicit?: string) =>
+  explicit ??
+  base.codex?.reasoning.effort ??
+  (base.kinClaude
+    ? compileClaudeModelSelection({
+        instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER),
+        model: base.model,
+      }).effort
+    : undefined) ??
+  "high";
+
+// Claude Code clips MCP descriptions for the API, not for its local search index.
+const claudeToolDefinitions = (tools: ReadonlyArray<ApiTool>) =>
+  tools.map((tool) => {
+    const { name, description } = tool;
+    return (isT3Name(name) || name.startsWith(KIN_KEY_PREFIX)) &&
+      typeof description === "string" &&
+      description.length > 4096
+      ? { ...tool, description: `${description.slice(0, 4096)}… [truncated]` }
+      : tool;
+  });
+
+export const requestBody = (
   { base, tools }: Sample,
   effort: string,
   messages: ReadonlyArray<ApiMessage>,
@@ -2911,7 +3119,7 @@ const requestBody = (
       ? { ...block, cache_control: session ? KIN_SESSION_CACHE : { type: "ephemeral" } }
       : block,
   ),
-  tools,
+  tools: claudeToolDefinitions(tools),
   messages: session ? kinSessionWireMessages(messages) : messages,
 });
 
@@ -3103,7 +3311,7 @@ export const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
   if (!isPricedModel(config.shellModel))
     return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
   const turn = {
-    text: sample.text,
+    text: sample.deliveredText ?? sample.text,
     calls: sample.calls.map((call) =>
       isKinCase(testCase)
         ? kinJudgedCall(call)
@@ -3155,18 +3363,6 @@ export const ranCalls = (
     .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
     .map((use) => recordedCall(step, filledEvent(testCase, use, normalizeToolName)));
 
-export const kinPostedText = (responses: ReadonlyArray<ReadonlyArray<unknown>>, done = true) => {
-  const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
-  return blocks
-    .flatMap((block, index) => {
-      if (!isText(block)) return [];
-      const next = blocks[index + 1];
-      const follows = next === undefined ? (done ? "end" : null) : isText(next) ? "text" : "tool";
-      return classifySegment(block.text, follows) === "post" ? [block.text] : [];
-    })
-    .join("\n\n");
-};
-
 /**
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
  * later step can undo. Tokens add up in `spent`, so a sample that errors still reports them.
@@ -3175,10 +3371,14 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   testCase: McpToolUseCase,
   config: Config,
   base: Base,
-  spent: { readonly usage: Usage; readonly shellUsage: Usage },
+  spent: { readonly usage: Usage; readonly shellUsage: Usage; noopCalls?: number },
 ) {
+  spent.noopCalls = 0;
   if (config.appServer !== undefined)
-    return yield* runAppServerSample(testCase, config, config.appServer, base, spent);
+    return {
+      ...(yield* runAppServerSample(testCase, config, config.appServer, base, spent)),
+      noopCalls: 0,
+    };
   const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
   yield* withDevices(sample);
   yield* withBackgroundWait(sample);
@@ -3189,32 +3389,30 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const input = base.codex ? codexMessages(messages) : undefined;
   const transcript: Array<unknown> = [];
   const start = messages.length;
-  const calls: Array<Call> = [];
-  const responses = sample.responses;
-  let shown = "";
+  const { calls, responses } = sample;
+  const recordCalls = (next: ReadonlyArray<Call>) => {
+    calls.push(...next);
+    spent.noopCalls =
+      (spent.noopCalls ?? 0) +
+      next.filter((call) => nativeNoop(call.tool, call.input) !== undefined).length;
+  };
   const { usage } = spent;
   let stopReason = "max_steps";
   let finalText = "";
-  const kin = isKinCase(testCase);
+  const kinLead = testCase.setup.world?.kinLead === true;
+  const { textMustNot: _textMustNot, limits: _limits, ...callChecks } = testCase.expect;
   const stopsEarly = () =>
     failedEarly(
-      testCase.expect,
-      {
-        calls,
-        text: shown,
-        stopReason,
-        ...(kin && testCase.expect.limits !== undefined
-          ? { postedText: kinPostedText(responses, false) }
-          : {}),
-      },
+      // A later send can replace any text so far.
+      kinLead ? callChecks : testCase.expect,
+      { calls, text: kinLead ? "" : shownText(responses), stopReason },
       pastedText(testCase),
     );
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
   if (config.maxSteps === 0) maxSteps = Infinity;
-  // Kin's rescue: a finished lead turn that owed words and said none is asked once, as a new turn.
-  let rescue: string | undefined;
+  let followUp: ReturnType<typeof replyFollowUp>;
   let modelCalls = 0;
   for (let step = 0; step < maxSteps; step++) {
     modelCalls++;
@@ -3224,7 +3422,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
           config.apiKey,
           requestBody(sample, config.effort, messages, config.anthropic !== undefined, session),
           config.anthropic,
-          session ? KIN_SESSION_BETAS : undefined,
+          session || base.kinClaude ? KIN_SESSION_BETAS : undefined,
         );
     addUsage(usage, response.usage);
     if ("raw" in response) {
@@ -3235,18 +3433,23 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     responses.push(response.content);
     const long = config.maxSteps === 0 ? longTurnNote(testCase.id, responses.length) : undefined;
     if (long !== undefined) yield* Effect.log(long);
-    shown = shownText(responses);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
-    calls.push(...ranCalls(sample, step, uses));
+    recordCalls(ranCalls(sample, step, uses));
     if (response.stop_reason !== "tool_use") {
       stopReason = response.stop_reason ?? "unknown";
       finalText = texts.join("\n\n");
-      const asked =
-        input || rescue !== undefined ? undefined : rescuePrompt(sample, normalizeToolName);
-      if (asked === undefined) break;
-      rescue = asked;
-      messages.push({ role: "user", content: [text(asked)] });
+      if (stopReason !== "end_turn" || followUp !== undefined) break;
+      followUp = replyFollowUp(sample, finalText);
+      if (followUp === undefined) break;
+      const prompt = { role: "user" as const, content: [text(followUp.prompt)] };
+      messages.push(prompt);
+      if (input) {
+        const items = codexMessages([prompt]);
+        input.push(...items);
+        transcript.push(...items);
+      }
+      stopReason = "max_steps";
       maxSteps = Math.max(maxSteps, step + 3);
       continue;
     }
@@ -3267,7 +3470,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
           let recorded = own;
           if (record) {
             recorded = { step, tool, input: normalized };
-            calls.push(recorded);
+            recordCalls([recorded]);
           }
           const call = { ...use, name, input: normalized };
           return answerToolCall(sample, config, call).pipe(
@@ -3319,6 +3522,16 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     // Claude Code adds this text after a ToolSearch that loaded tools.
     const loaded = results.some((result) => Array.isArray(result.content));
     messages.push({ role: "user", content: [...results, ...(loaded ? [text(TOOL_LOADED)] : [])] });
+    if (
+      !input &&
+      uses.some((use) => {
+        const call = calls.find((call) => call.id === use.id);
+        return call !== undefined && isReplyEnding(call.tool) && call.failed === false;
+      })
+    ) {
+      stopReason = "end_turn";
+      break;
+    }
     if (stopsEarly()) {
       stopReason = "failed_early";
       break;
@@ -3327,13 +3540,15 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // The transcript (model turns and tool results) shows what the agent saw when a case fails.
   return {
     calls,
-    text: shown,
-    ...(kin ? { postedText: kinPostedText(responses) } : {}),
+    text: shownText(responses),
+    ...kinDelivery(sample),
     stopReason,
     finalText,
     modelCalls,
-    ...(rescue === undefined ? {} : { rescue }),
-    silent: rescuePrompt(sample, normalizeToolName) !== undefined,
+    noopCalls: spent.noopCalls,
+    ...(followUp?.kind === "rescue" ? { rescue: followUp.prompt } : {}),
+    ...(followUp?.kind === "nudge" ? { nudge: followUp.prompt, nudged: true } : {}),
+    silent: replyFollowUp(sample, finalText)?.kind === "rescue",
     cwd: base.environment.cwd,
     linked: [...sample.linked],
     ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
@@ -3366,6 +3581,7 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   /** `max_steps` when the step limit ended the turn. */
   readonly stopReason?: string;
   readonly modelCalls?: number;
+  readonly noopCalls?: number;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
@@ -3495,6 +3711,7 @@ export const summarize = (
         ]
       : []),
     ...(options.noStepLimit === true ? modelCallLines(rows) : []),
+    `- Native no-op calls: ${rows.filter((row) => (row.noopCalls ?? 0) > 0).length} samples, ${rows.reduce((total, row) => total + (row.noopCalls ?? 0), 0)} calls.`,
     `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
@@ -3743,6 +3960,8 @@ const main = Effect.gen(function* () {
     kinShared = false,
     kinSocial = false,
     kinBills = false,
+    kinGitHub = false,
+    kinEngineering = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -3760,6 +3979,8 @@ const main = Effect.gen(function* () {
               kinShared,
               kinSocial,
               kinBills,
+              kinGitHub,
+              kinEngineering,
               deviceAccess,
               browserAccess,
               agentFeedback,
@@ -3782,6 +4003,8 @@ const main = Effect.gen(function* () {
               kinShared,
               kinSocial,
               kinBills,
+              kinGitHub,
+              kinEngineering,
               deviceAccess,
               browserAccess,
               agentFeedback,
@@ -3798,11 +4021,11 @@ const main = Effect.gen(function* () {
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
-    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}`;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}:${kinGitHubOf(testCase)}:${setup.world?.kinEngineering === true}`;
   };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
-    ["top:true:true:false:true:off:false:false:false:false:false:false", base],
+    ["top:true:true:false:true:off:false:false:false:false:false:false:false:false", base],
   ]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
@@ -3820,8 +4043,12 @@ const main = Effect.gen(function* () {
       kinShared,
       kinSocial,
       kinBills,
+      kinGitHub,
+      kinEngineering,
     ] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
+      string,
+      string,
       string,
       string,
       string,
@@ -3849,12 +4076,16 @@ const main = Effect.gen(function* () {
         kinShared === "true",
         kinSocial === "true",
         kinBills === "true",
+        kinGitHub === "true",
+        kinEngineering === "true",
       ),
     );
   }
   const baseFor = (testCase: McpToolUseCase) =>
     kinDated(testCase, bases.get(baseKey(testCase)) ?? base);
-  const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
+  const effortFor = (testCase: McpToolUseCase) => requestEffort(baseFor(testCase), flags.effort);
+  const efforts = new Set(selected.map(effortFor));
+  const effort = efforts.size === 1 ? [...efforts][0]! : "mixed";
   // The first request of a sample, as the dry run prints it.
   const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const sample = makeSample(testCase, baseFor(testCase));
@@ -3863,8 +4094,15 @@ const main = Effect.gen(function* () {
     const messages = buildMessages(sample, flags["kin-layout"]);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
-      : requestBody(sample, effort, messages, false, activeLayout(testCase) === "session");
-    return { sample, messages, encoded: yield* encodeJson(body) };
+      : requestBody(
+          sample,
+          effortFor(testCase),
+          messages,
+          false,
+          activeLayout(testCase) === "session",
+        );
+    const prefixTools = "tools" in body ? body.tools : sample.tools;
+    return { sample, messages, prefixTools, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
     // One JSON line per case. Without --case this also checks that every case builds, and fails on
@@ -3873,7 +4111,7 @@ const main = Effect.gen(function* () {
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
     const dryCases = flags.estimate && flags["kin-layout"] === "session" ? carryCases : selected;
     for (const testCase of dryCases) {
-      const { sample, messages, encoded } = yield* firstRequest(testCase);
+      const { sample, messages, prefixTools, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
       );
@@ -3881,14 +4119,16 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
+      // The explicit send mock precedes its server tool.
+      const gradingTools = testCase.setup.world?.kinLead ? new Set([...tools, "kin_send"]) : tools;
       const found = [
-        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), tools)),
+        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), gradingTools)),
         ...unfilled,
         ...kinCaseProblems(testCase, tools),
       ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
-        prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
+        prefixChars: (yield* encodeJson([sample.base.system, prefixTools])).length,
         messageChars: (yield* encodeJson(messages)).length,
       });
       if (!flags.estimate) process.stdout.write(`${encoded}\n`);
@@ -4030,7 +4270,7 @@ const main = Effect.gen(function* () {
       ...(activeLayout(testCase) === "session" ? { kinLayout: "session" as const } : {}),
       shellModel: config.shellModel,
     };
-    const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
+    const usage = { usage: emptyUsage(), shellUsage: emptyUsage(), noopCalls: 0 };
     const privateValues = [
       config.apiKey,
       config.anthropic?.url.replace(/\/v1$/, "") ?? "",
@@ -4039,7 +4279,12 @@ const main = Effect.gen(function* () {
     ]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
-    return runSample(testCase, config, baseFor(testCase), usage).pipe(
+    return runSample(
+      testCase,
+      { ...config, effort: effortFor(testCase) },
+      baseFor(testCase),
+      usage,
+    ).pipe(
       Effect.timed,
       // Every harness times its turn, model and tool answers together, for latency side by side.
       Effect.map(([elapsed, sample]) => ({

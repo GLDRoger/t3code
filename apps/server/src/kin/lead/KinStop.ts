@@ -726,8 +726,9 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
               (candidate) => ThreadManagement.isActiveRun(candidate) && belongsToWakeup(candidate),
             );
       if (run === undefined) return false;
-      // Mark only this wake-up's events done before the interrupt can settle or requeue them.
-      const released = yield* sql`UPDATE kin_events SET state = 'done'
+      // This mark closes steering and reply delivery before the provider sees the interrupt.
+      const released = yield* sql`UPDATE kin_events
+        SET state = 'done', json = json_set(json, '$._personStopped', 1)
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
           AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = ${orgId}
             AND w.wakeup_id = ${wakeupId} AND w.status = 'running'

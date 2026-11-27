@@ -201,7 +201,7 @@ import { NOTES_MAX } from "../textLimits.ts";
 
 export const Who = KinToolText(
   120,
-  '"you" for yourself; "me" for the person who asked in this turn; "owner" for the owner (in someone else\'s turn, only with reason saying why only the owner can do it); an agent\'s agentId from kin_leads or people_read; or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
+  '"you"; "me" for whoever asked; "owner" (in another\'s turn, with a reason only the owner can); an agentId from kin_leads; or a name as people_read lists it (its personId when two share one).',
 );
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -211,9 +211,9 @@ const Due = Schema.NullOr(
   ),
 ).annotate({
   description:
-    "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
+    "A day in the owner's time zone (2026-11-20) or a time with offset (2026-11-20T18:00+05:30). null clears it.",
 });
-const WaitingOn = KinToolText(120, "Who it waits on, written as owner is.");
+const WaitingOn = KinToolText(120, "Who it waits on, named as owner is.");
 /** A task's checklist, in order: each step is a line under the task, never a task. */
 const Steps = Schema.Array(
   Schema.Struct({ title: KinToolText(200), done: Schema.optional(Schema.Boolean) }),
@@ -222,51 +222,41 @@ const Title = KinToolText(280);
 const Notes = Schema.String.check(Schema.isMaxLength(NOTES_MAX));
 const List = KinListId.annotate({
   description:
-    "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
+    "work (default), clients, contacts, projects, milestones, goals, deals, or a defined list such as expenses or invoices.",
 });
 const Category = KinToolText(
   60,
-  "Work: task, issue or obligation. A project: campaign. A defined list: one of its categories.",
+  "work: task, issue, obligation or meeting; a project: campaign; a defined list: one of its own.",
 );
 const Amount = KinToolText(
   60,
   'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way. For an expense refund or credit, give a negative amount.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
-  description:
-    "ISO code, when the amount doesn't name one; default this entry's, else the list's, else the company's.",
+  description: "ISO code, when the amount names none.",
 });
 const Day = Schema.NullOr(KinDay).annotate({
-  description: "When it happened, was issued or starts: a day in the owner's time zone.",
+  description: "When it happened, was issued or starts.",
 });
 const Repeat = Schema.NullOr(KinRepeatRule).annotate({
-  description:
-    'Kin makes the next one when this one closes: {"every":"month"}, "quarter", "year", or {"every":"days","days":14}. null stops it.',
+  description: "Kin makes the next one when this one closes. null stops it.",
 });
 const TaxId = KinToolText(60);
-const Address = KinToolText(500, "A client's billing address, as its invoices show it.");
+const Address = KinToolText(500);
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
 const Details = Schema.Array(Detail).check(Schema.isMaxLength(50));
 /** A client's kind on create; a prospect is a client we haven't sold to yet. */
 const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
-const CameFrom = KinToolText(
-  120,
-  "A client's: where it came from, such as a referral or an event.",
-);
+const CameFrom = KinToolText(120);
 // Past twenty, Kin's own rule (`cleanTags`) refuses in words an agent can pass on.
-const PartyTags = Schema.Array(KinToolText(60))
-  .check(Schema.isMaxLength(50))
-  .annotate({ description: "A client's or contact's: the company's own words for them." });
-const Audience = KinToolText(
-  60,
-  "A campaign's (a project with category campaign): the tag whose contacts are its list.",
-);
+const PartyTags = Schema.Array(KinToolText(60)).check(Schema.isMaxLength(50));
+const Audience = KinToolText(60);
 const Terms = KinToolText(4_000);
 const HeardFrom = KinToolText(
   200,
-  'Where a client\'s name, address, tax number, place of supply or terms came from when no person typed it here ("their mail of 3 Nov"); whoever confirms it sees this.',
+  'Where printed details came from when no person typed them here ("their mail of 3 Nov"); whoever confirms them sees it.',
 );
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -289,11 +279,13 @@ export const QueryInput = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (the company's own year) go by each entry's date.",
+      "Counts per group, with exact totals per currency; month and financialYear go by each entry's date.",
   }),
   dateFrom: Schema.optional(KinDay).annotate({ description: "Its own date on or after this day." }),
   dateTo: Schema.optional(KinDay).annotate({ description: "Its own date on or before this day." }),
-  owner: Schema.optional(Who),
+  owner: Schema.optional(
+    KinToolText(120, 'Whose, named as an owner is: "you", "me", a name or an agentId.'),
+  ),
   states: Schema.optional(Schema.Array(KinRecordState)),
   open: Schema.optional(Schema.Boolean).annotate({ description: "Neither done nor dropped." }),
   late: Schema.optional(Schema.Boolean),
@@ -305,10 +297,9 @@ export const QueryInput = Schema.Struct({
   ),
   offset: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100_000)),
-  ).annotate({ description: "Skip this many matches: the next a result gave, for its next page." }),
+  ).annotate({ description: "The next a result gave, for its next page." }),
   summary: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "Only total, totals and groups, with keys for the page's matches instead of rows: for how many or how much.",
+    description: "Only total, totals and groups, with keys instead of rows.",
   }),
 });
 /** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
@@ -582,10 +573,9 @@ export const GetResult = Schema.Struct({
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
 const DealNext = Schema.Struct({
   title: Title,
-  due: Schema.optional(Due.annotate({ description: "Written as due is." })),
+  due: Schema.optional(Due),
 }).annotate({
-  description:
-    "A deal's next step, with due as its day: a task of ours on its client, linked to the deal. Only on a deal.",
+  description: "A deal's next step: a task of ours on its client.",
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
@@ -620,8 +610,7 @@ const CreateRow = Schema.Struct({
   date: Schema.optional(Day),
   finishedOn: Schema.optional(
     KinDay.annotate({
-      description:
-        "For one recorded already done, such as a project that ended in September: the day it ended.",
+      description: "The day one recorded as already done ended.",
     }),
   ),
   repeat: Schema.optional(Repeat),
@@ -632,25 +621,22 @@ const CreateRow = Schema.Struct({
   suggested: Schema.optional(Schema.Boolean),
   confirmed: Schema.optional(Schema.Boolean).annotate({
     description:
-      "true when an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+      "true: an amount far above the rest of its list, or an invoice issued after its due day, is right.",
   }),
   besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
-    description: "Keys of open entries this row repeats on purpose, as a refusal named them.",
+    description: "Keys a refusal named, to add this anyway.",
   }),
   next: Schema.optional(DealNext),
   ...SpineInputs,
   from: Schema.optional(CreateFrom),
-  deal: Schema.optional(
-    KinToolText(
-      40,
-      "A promise's (an obligation's) deal, by key (DL-3): it sits on that deal and its client.",
-    ),
-  ),
+  deal: Schema.optional(KinToolText(40, "A promise's deal.")),
   ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TurnEvent,
-  records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  records: Schema.Array(
+    Schema.StructWithRest(CreateRow, [Schema.Record(Schema.String, Schema.Unknown)]),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 const Named = Schema.Struct({
   key: Schema.String,
@@ -702,8 +688,7 @@ export const UpdateInput = Schema.Struct({
   keys: Schema.optional(
     Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   ).annotate({
-    description:
-      "Instead of key: up to 100 entries to change the same way in one call, all or none.",
+    description: "Instead of key: up to 100 entries changed the same way, all or none.",
   }),
   sourceEventId: TurnEvent,
   title: Schema.optional(Title),
@@ -741,23 +726,109 @@ export const UpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean).annotate({
     description:
-      "true keeps an entry that reads suggested when the owner or a co-owner asked you to in person; it also says an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+      "true keeps a suggested entry the owner or a co-owner asked you to in person; also says an amount far above its list, or an invoice issued after its due day, is right.",
   }),
   expectedRev: Schema.optional(Schema.Int),
   tell: Tell.annotate({
-    description:
-      "false holds the notice a new owner gets. Only a new owner is told: a new due or any other change reaches nobody.",
+    description: "false holds a new owner's notice; no other change tells anyone.",
   }),
   leftover: Schema.optional(
     KinToolText(
       2_000,
-      "Only with state done and work still undone: that work, which Kin files as a new follow-up task linked to this one. When nothing is left, omit this field; any text here, even what you did or that nothing is left, becomes a task. Never leave what is left only in a comment.",
+      'Only with state done and work still undone: that work, filed as a linked follow-up task. Omit it when nothing is left: any text here, even "nothing left", becomes a task. Never leave what is left only in a comment.',
     ),
   ),
   next: Schema.optional(DealNext),
   ...SpineInputs,
   ...GoalInputs,
 });
+const createKeys = Object.keys(CreateRow.fields);
+const updateKeys = Object.keys(UpdateInput.fields);
+const dealKeys = new Set([
+  "title",
+  "client",
+  "owner",
+  "due",
+  "notes",
+  "amount",
+  "currency",
+  "sensitive",
+  "fields",
+  "next",
+]);
+const dealCreateKeys = new Set([...dealKeys, "list", "besides"]);
+const dealUpdateKeys = new Set([
+  ...dealKeys,
+  "project",
+  "key",
+  "keys",
+  "sourceEventId",
+  "expectedRev",
+  "state",
+]);
+const creditNoteKeys = new Set(["list", "title", "amount", "currency", "fields"]);
+
+const routedFields = new Map<string, ReadonlyArray<string>>([
+  ["kind", ["clients"]],
+  ["cameFrom", ["clients"]],
+  ["heardFrom", ["clients"]],
+  ["deal", ["work"]],
+  ["from", ["work"]],
+  ["tell", ["work"]],
+  ["leftover", ["work"]],
+  ["next", ["deals"]],
+]);
+const storedFieldLists = new Map<string, Array<string>>();
+for (const [list, def] of Object.entries(LISTS)) {
+  if (list === "deals" || list === "docs") continue;
+  for (const key of def.fields) {
+    if (!storedFieldLists.has(key)) storedFieldLists.set(key, []);
+    storedFieldLists.get(key)!.push(list);
+  }
+}
+
+const recordArgumentError = (
+  list: string,
+  name: string,
+  input: object,
+  op: "create" | "update",
+  def?: ListDef,
+) => {
+  const keys = op === "create" ? createKeys : updateKeys;
+  const takes = (key: string) => {
+    if (list === "deals") return (op === "create" ? dealCreateKeys : dealUpdateKeys).has(key);
+    if (list === "credit_notes" && op === "create") return creditNoteKeys.has(key);
+    if (key === "fields") return def?.builtIn === null;
+    const routed = routedFields.get(key);
+    if (routed !== undefined) return routed.includes(list);
+    const stored = storedFieldLists.get(key);
+    return (
+      stored === undefined ||
+      stored.includes(list) ||
+      def?.fields.some((field) => field.key === key)
+    );
+  };
+  const unexpected = Object.entries(input).find(
+    ([key, value]) =>
+      value !== undefined &&
+      (!keys.includes(key) ||
+        // The existing refusal for fields/next names the correct shape.
+        (((key !== "fields" && key !== "next") || list === "credit_notes") && !takes(key))),
+  );
+  if (unexpected === undefined) return undefined;
+  const [key] = unexpected;
+  const quoted = JSON.stringify(key.slice(0, 64));
+  const belongs = keys.includes(key)
+    ? (routedFields.get(key) ?? storedFieldLists.get(key))?.filter((other) => other !== list)
+    : undefined;
+  const valid = keys.filter(takes).join(", ");
+  return invalid(
+    belongs !== undefined && belongs.length > 0
+      ? `${name} takes no ${quoted}, which goes on ${belongs.join(" or ")}; pass one of: ${valid}.`
+      : `${name} takes no ${quoted}; pass one of: ${valid}.`,
+  );
+};
+
 const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
@@ -819,7 +890,7 @@ export const UpdateResult = Schema.Struct({
 
 const Why = KinToolText(
   200,
-  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them, so it reads right to them and anyone opening the task: never their name and a colon, never about them in the third person.',
+  'One line on why them, from people_read, read by them and anyone opening the task: "iOS, 2 open, free Thursday"; never their name and a colon, never about them in the third person.',
 );
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
@@ -2831,6 +2902,8 @@ const createRow = Effect.fnUntraced(function* (
   // Before the list is read, so an expense for a list not made yet says what comes first.
   if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
   if (asked.list === "credit_notes") {
+    const refusal = recordArgumentError("credit_notes", "Credit notes", asked, "create");
+    if (refusal !== undefined) return yield* refusal;
     const invoice = asked.fields?.invoice;
     const reason = asked.fields?.reason;
     if (
@@ -2873,6 +2946,8 @@ const createRow = Effect.fnUntraced(function* (
     !(yield* allSeeMoney(lead.orgId, team.people))
   )
     return yield* TEAM_REFUSED;
+  const refusal = recordArgumentError(list, def.name, asked, "create", def);
+  if (refusal !== undefined) return yield* refusal;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals")
     return yield* dealRow(lead, sourceEventId, writer, def, lists, asked, notices);
@@ -4001,6 +4076,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
     );
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals") {
+    const refusal = recordArgumentError("deals", LISTS.deals.name, asked, "update");
+    if (refusal !== undefined) return yield* refusal;
     const { out, notices } = yield* dealUpdate(lead, writer, before, input);
     return { result: out, notices, held: [] };
   }
@@ -4020,6 +4097,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
     });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
+  const refusal = recordArgumentError(def.id, def.name, asked, "update", def);
+  if (refusal !== undefined) return yield* refusal;
   if (
     team !== undefined &&
     def.team === true &&

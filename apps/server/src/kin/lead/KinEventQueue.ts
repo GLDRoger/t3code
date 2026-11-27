@@ -31,7 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { fillAskedChats, settleReviews } from "../github/askedFor.ts";
+import { fillAskedChats, settleReviews, settleTriage } from "../github/askedFor.ts";
 import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
 import * as Reach from "./Reach.ts";
 
@@ -65,6 +65,7 @@ const ReleaseInput = Schema.Union([
   Schema.Struct({
     ...ReleaseFields,
     countAttempt: Schema.Literal(true),
+    attemptLimit: Schema.optional(Schema.Literal("run")),
     notBefore: Schema.optional(NonNegativeInt),
   }),
 ]);
@@ -355,6 +356,22 @@ export const requeueForAudience = Effect.fn("KinEventQueue.requeueForAudience")(
   );
 });
 
+const personStopExists = (
+  sql: SqlClient.SqlClient,
+  wake: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId },
+) => sql`EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
+  AND e.wakeup_id = ${wake.wakeupId} AND e.state = 'done'
+  AND json_extract(e.json, '$._personStopped') = 1)`;
+
+export const wasPersonStopped = Effect.fn("KinEventQueue.wasPersonStopped")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ stopped: number }>`SELECT ${personStopExists(sql, wake)} AS stopped`;
+  return row?.stopped === 1;
+});
+
 /**
  * In the step that tells the chat a join lost this wake-up's reply: its unreplied asks there are
  * over, so neither a failed run, its retry nor a restart answers or tells them again.
@@ -441,6 +458,7 @@ const make = Effect.gen(function* () {
   const hub = yield* Effect.serviceOption(KinChatHub);
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
+      Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const laneOf = sql.literal(LANE_OF);
@@ -888,7 +906,7 @@ const make = Effect.gen(function* () {
             SELECT w.org_id, w.agent_id, w.wakeup_id FROM kin_wakeups w
             WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
               AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND w.run_id IS NOT NULL
-              AND w.aborted_at IS NULL
+              AND w.aborted_at IS NULL AND NOT ${personStopExists(sql, input)}
               AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
                 AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
               AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
@@ -952,12 +970,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const notBefore = input.notBefore ?? now + 300_000;
+          const attemptLimit =
+            input.countAttempt && input.attemptLimit === "run" ? RUN_ATTEMPTS : 3;
           const ids =
             input.eventIds === undefined ? undefined : yield* encodeEventIds(input.eventIds);
           const rows = yield* sql<{ event_id: string; state: string }>`
           UPDATE kin_events SET attempts = attempts + ${input.countAttempt ? 1 : 0},
             state = CASE WHEN replied_at IS NOT NULL THEN 'done'
-              WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
+              WHEN attempts + ${input.countAttempt ? 1 : 0} >= ${attemptLimit} THEN 'failed' ELSE 'queued' END,
             wakeup_id = CASE WHEN replied_at IS NULL THEN NULL ELSE wakeup_id END,
             not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
@@ -996,13 +1016,19 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0, retryInMs: 0 };
-          // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
-          // wake-up answers its events, without spending an attempt or telling anyone.
+          // Aborted for its audience (`abortChatTurns`): a replied message is done.
+          // A fresh wake-up answers the rest without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
               AND aborted_at IS NOT NULL
             RETURNING wakeup_id`;
           if (requeued.length > 0) {
+            yield* settled(
+              input.orgId,
+              (yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
+                WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
+                  AND replied_at IS NOT NULL RETURNING event_id`).map((row) => row.event_id),
+            );
             yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL, not_before = ${now}
               WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
             return none;

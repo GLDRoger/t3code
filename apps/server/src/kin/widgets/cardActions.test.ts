@@ -92,6 +92,7 @@ import { ensureBankList } from "../work/statements/bankList.ts";
 import { drawBill, recordBill } from "../work/statements/billCard.ts";
 import { parseFields } from "../work/lists.ts";
 import { buildReview } from "../work/statements/statementReview.ts";
+import { creditMatch } from "../work/statements/invoiceCredits.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -2296,7 +2297,7 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
       ]);
       assert.strictEqual(
         (note.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${row.key} done” for ${row.key} Review the Apex deck.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${row.key} done” for ${row.key} Review the Apex deck.`,
       );
 
       // Undo, once: the task is open again as Rhea's change, and no turn is woken by the tap.
@@ -2579,7 +2580,7 @@ it.effect("a taken default's note names a task only to someone who sees it now",
       const hiddenCard = yield* kin.widget(hiddenNote!.widgetId);
       assert.strictEqual(
         (hiddenCard.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${retouch.key} done” on “${retouch.key} looks finished. Close it?”.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${retouch.key} done” on “${retouch.key} looks finished. Close it?”.`,
       );
       assert.deepStrictEqual(card(hiddenCard).options, [
         {
@@ -2597,7 +2598,7 @@ it.effect("a taken default's note names a task only to someone who sees it now",
       const shownCard = yield* kin.widget(shownNote!.widgetId);
       assert.strictEqual(
         (shownCard.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${shortlist.key} done” for ${shortlist.key} Shortlist clinic photos.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${shortlist.key} done” for ${shortlist.key} Shortlist clinic photos.`,
       );
       assert.deepStrictEqual(card(shownCard).options[0], {
         optionId: "option-1",
@@ -3142,6 +3143,8 @@ it.effect("a default undone before its person is told reaches them once, as put 
             label: stale.defaultLabel!,
             question: stale.question,
             about: stale.about,
+            dueAt: stale.dueAt,
+            zone: (yield* Questions.personClock(orgId, stale.personId)).zone,
             now: due + 60_000,
           },
           kin.chats,
@@ -3161,11 +3164,11 @@ it.effect("a default undone before its person is told reaches them once, as put 
       yield* settleAt(kin, home + 60_000);
       assert.deepStrictEqual((yield* said).slice(before), [
         {
-          body: "Nobody answered, so I went with “Mark Print the Apex brief done” for Print the Apex brief. Rhea Rao has since put it back.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark Print the Apex brief done” for Print the Apex brief. Rhea Rao has since put it back.",
           widgetId: null,
         },
         {
-          body: "Nobody answered, so I went with “Mark Review the Apex brief done” for Review the Apex brief. Rhea Rao has since put it back.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark Review the Apex brief done” for Review the Apex brief. Rhea Rao has since put it back.",
           widgetId: null,
         },
       ]);
@@ -3337,6 +3340,498 @@ it.effect("a payment card records only an owner-level tap, once, on the figures 
       yield* kin.tap(owner, second, "option-1", "stale-tap").pipe(Effect.exit);
       assert.strictEqual(yield* paid(), 500_00);
     }).pipe(Effect.provide(layer)),
+  ),
+);
+
+const foreignCreditTest = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.andThen(TestClock.setTime(MON), effect.pipe(Effect.provide(layer)));
+
+const foreignCredit = Effect.fn("test.foreignCredit")(function* (
+  input: {
+    narration?: string;
+    currency?: string;
+    rate?: string;
+    financeOwner?: "meera" | "zoya";
+  } = {},
+) {
+  const kin = yield* ambermill;
+  const { orgId, owner, records, sql } = kin;
+  const withKin = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.provide(kin.services));
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${at}, ${input.financeOwner === "zoya" ? "co_owner" : "member"})`;
+  if (input.financeOwner !== undefined)
+    yield* sql`UPDATE kin_agents SET owner_person_id = ${input.financeOwner}
+      WHERE org_id = ${orgId} AND agent_id = 'finance'`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+    created_at, definition_json) VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0,
+    ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+  const ownerWrites = { actor: owner, via: "owner" as const, askedBy: owner.personId };
+  const { row: client } = yield* records.create(orgId, ownerWrites, {
+    list: "clients",
+    title: "Tidewater Freight",
+    owner,
+    originKey: "tidewater",
+  });
+  const invoiceOf = Effect.fn("test.foreignInvoice")(function* (
+    number: string,
+    issueDaysAgo: number,
+    currency = input.currency ?? "USD",
+  ) {
+    const { row } = yield* records.create(orgId, ownerWrites, {
+      list: "invoices",
+      title: number,
+      owner,
+      partyId: client.recordId,
+      amount: { minor: 100_000, currency },
+      originKey: number,
+    });
+    yield* sql`UPDATE kin_records SET state = 'waiting', date_at = ${MON - issueDaysAgo * DAY_MS},
+      fields_json = json_set(fields_json, '$.number', ${number})
+      WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+    return row;
+  });
+  const invoice = yield* invoiceOf("TW/001", 3);
+  const bankList = yield* ensureBankList(orgId, MON);
+  const { row: bank } = yield* records.create(
+    orgId,
+    { actor: { _tag: "system" }, via: "import" },
+    {
+      list: bankList.id,
+      title: input.narration ?? "Wire TIDEWATER FREIGHT",
+      owner,
+      amount: { minor: 8_350_000, currency: "INR" },
+      dateAt: MON - DAY_MS,
+      fields: { direction: "credit", reference: "TW202611150001" },
+      originKey: "TW202611150001",
+    },
+  );
+  if (input.rate !== undefined) {
+    const earlier = yield* invoiceOf("TW/PREV", 14);
+    yield* records.pay(orgId, ownerWrites, earlier.key, {
+      amount: { minor: 100_000, currency: "USD" },
+      received: { minor: Math.round(Number(input.rate) * 100_000), currency: "INR" },
+      rate: input.rate,
+      paidOn: "2026-11-09",
+      originKey: "earlier-transfer",
+    });
+  }
+  const factKey = `payment_seen:${bank.key}`;
+  const fact = (viewer: Parameters<typeof KinPulse.read>[0]["viewer"] = { _tag: "owner" }) =>
+    KinPulse.read({ orgId, at: MON, viewer, includeHandled: true }).pipe(
+      Effect.map((pulse) => pulse.facts.find((one) => one.key === factKey)),
+    );
+  const tick = Effect.fn("test.foreignCreditTick")(function* () {
+    return yield* withKin(KinPulse.tick(orgId, yield* Clock.currentTimeMillis));
+  });
+  const cards = () => sql<{ widgetId: string }>`SELECT w.widget_id AS "widgetId" FROM kin_widgets w
+    WHERE w.org_id = ${orgId} AND json_extract(w.state_json, '$.question') = ${`Which invoice does ${bank.key} pay?`}
+    ORDER BY w.widget_id`;
+  const ask = Effect.fn("test.foreignCreditAsk")(function* () {
+    yield* tick();
+    const asked = yield* cards();
+    assert.lengthOf(asked, 1);
+    return yield* kin.widget(asked[0]!.widgetId);
+  });
+  const payments = () => sql`SELECT amount_minor, currency, received_minor, received_currency, rate
+    FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${invoice.recordId}
+    ORDER BY payment_id`;
+  return {
+    ...kin,
+    withKin,
+    ownerWrites,
+    invoice,
+    invoiceOf,
+    bank,
+    fact,
+    factKey,
+    tick,
+    cards,
+    ask,
+    payments,
+  };
+});
+
+it.effect(
+  "a credit in another currency that only names the client asks which invoice it pays",
+  () =>
+    foreignCreditTest(
+      Effect.gen(function* () {
+        const kin = yield* foreignCredit({ rate: "60.000000" });
+        const second = yield* kin.invoiceOf("TW/002", 2);
+        const third = yield* kin.invoiceOf("TW/003", 2);
+        const newest = yield* kin.invoiceOf("TW/004", 1);
+        yield* kin.invoiceOf("TW/005", 4);
+        const fact = yield* kin.fact();
+        assert.strictEqual(fact?.key, kin.factKey);
+        assert.include(fact, { sense: "payment_seen", family: "money", sensitive: true });
+        assert.deepStrictEqual(fact?.actor, { _tag: "agent", agentId: KinAgentId.make("finance") });
+        assert.strictEqual(
+          fact?.consequence,
+          `${kin.bank.key}, ₹83,500 received 15 Nov, names Tidewater Freight but none of Tidewater Freight's open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: TW/004 (${newest.key}) ($1,000 owed); TW/002 (${second.key}) ($1,000 owed); TW/003 (${third.key}) ($1,000 owed); TW/001 (${kin.invoice.key}) ($1,000 owed); and 1 more. Nothing is recorded until an owner or co-owner picks one.`,
+        );
+        assert.isUndefined(
+          yield* kin.fact({ _tag: "people", people: [kin.person("zoya").personId] }),
+        );
+        const widget = yield* kin.ask();
+        const state = card(widget);
+        assert.strictEqual(
+          state.detail?.split("\n\n")[0],
+          `${kin.bank.key}: INR 83,500.00 received 15 Nov from Tidewater Freight. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`,
+        );
+        assert.deepStrictEqual(
+          state.options.map(({ label, action }) => [label, action?.line]),
+          [
+            ...[newest, second, third, kin.invoice].map((row) => [
+              `${row.title} (${row.key})`,
+              "USD 1,000.00 owed. Records INR 83,500.00 received for it, at 83.50.",
+            ]),
+            ["None of these", undefined],
+          ],
+        );
+        yield* TestClock.adjust(60_000);
+        yield* kin.tick();
+        assert.lengthOf(yield* kin.cards(), 1);
+      }),
+    ),
+);
+
+it.effect("the fact counts every eligible invoice and names one with no number", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const second = yield* kin.invoiceOf("TW/002", 2);
+      const third = yield* kin.invoiceOf("TW/003", 2);
+      const newest = yield* kin.invoiceOf("Freight without a printed number", 1);
+      yield* kin.invoiceOf("TW/005", 4);
+      yield* kin.invoiceOf("TW/006", 5);
+      yield* kin.sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.number')
+        WHERE org_id = ${kin.orgId} AND record_id = ${newest.recordId}`;
+
+      assert.strictEqual(
+        (yield* kin.fact())?.consequence,
+        `${kin.bank.key}, ₹83,500 received 15 Nov, names Tidewater Freight but none of Tidewater Freight's open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${newest.key} ($1,000 owed); TW/002 (${second.key}) ($1,000 owed); TW/003 (${third.key}) ($1,000 owed); TW/001 (${kin.invoice.key}) ($1,000 owed); and 2 more. Nothing is recorded until an owner or co-owner picks one.`,
+      );
+      const state = card(yield* kin.ask());
+      assert.deepStrictEqual(
+        state.options.map(({ label }) => label),
+        [
+          newest.key,
+          `TW/002 (${second.key})`,
+          `TW/003 (${third.key})`,
+          `TW/001 (${kin.invoice.key})`,
+          "None of these",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a foreign credit question records nothing until an owner-level tap", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ financeOwner: "meera" });
+      const widget = yield* kin.ask();
+      assert.deepStrictEqual(yield* kin.payments(), []);
+      assert.strictEqual((yield* kin.records.get(kin.orgId, kin.bank.key))?.state, "open");
+      yield* kin.tap(kin.person("meera"), widget.widgetId, "option-1", "record");
+      assert.deepStrictEqual(yield* kin.payments(), [
+        {
+          amount_minor: 100_000,
+          currency: "USD",
+          received_minor: 8_350_000,
+          received_currency: "INR",
+          rate: "83.500000",
+        },
+      ]);
+      assert.strictEqual((yield* kin.records.get(kin.orgId, kin.bank.key))?.state, "done");
+      assert.isUndefined(yield* kin.fact());
+    }),
+  ),
+);
+
+it.effect("an undone pick asks again with the invoices left", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const second = yield* kin.invoiceOf("TW/002", 4);
+      const first = yield* kin.ask();
+      yield* kin.tap(kin.owner, first.widgetId, "option-1", "record");
+      const outcome = card(yield* kin.widget(first.widgetId)).outcome;
+      assert.strictEqual(outcome?.title, "Payment recorded");
+      const [payment] = yield* kin.sql<{ paymentId: string }>`SELECT payment_id AS "paymentId"
+        FROM kin_record_payments WHERE org_id = ${kin.orgId} AND record_id = ${kin.invoice.recordId}`;
+      yield* kin.records.voidPayment(
+        kin.orgId,
+        kin.ownerWrites,
+        kin.invoice.key,
+        payment!.paymentId,
+      );
+      assert.strictEqual((yield* kin.records.get(kin.orgId, kin.bank.key))?.state, "open");
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const cards = yield* kin.cards();
+      assert.lengthOf(cards, 2);
+      const next = yield* kin.widget(
+        cards.find(({ widgetId }) => widgetId !== first.widgetId)!.widgetId,
+      );
+      assert.isNull(next.closedAt);
+      assert.deepStrictEqual(
+        card(next).options.map(({ label }) => label),
+        [`TW/002 (${second.key})`, "None of these"],
+      );
+      assert.deepStrictEqual(card(yield* kin.widget(first.widgetId)).outcome, outcome);
+    }),
+  ),
+);
+
+it.effect("a card whose recipient is no longer owner-level moves to the owner", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ financeOwner: "meera" });
+      const first = yield* kin.ask();
+      const recipient = Effect.fn("test.invoiceChoiceRecipient")(function* (widgetId: KinWidgetId) {
+        const [row] = yield* kin.sql<{
+          personId: string;
+        }>`SELECT json_extract(plan_json, '$.personId') AS "personId"
+          FROM kin_card_plans WHERE org_id = ${kin.orgId} AND widget_id = ${widgetId} AND option_id = 'option-1'`;
+        return row?.personId;
+      });
+      assert.strictEqual(yield* recipient(first.widgetId), kin.person("meera").personId);
+      yield* kin.sql`UPDATE kin_people SET access = 'member'
+        WHERE org_id = ${kin.orgId} AND person_id = 'meera'`;
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const closed = yield* kin.widget(first.widgetId);
+      assert.isNotNull(closed.closedAt);
+      assert.strictEqual(card(closed).outcome?.title, "Nothing was done");
+
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const cards = yield* kin.cards();
+      assert.lengthOf(cards, 2);
+      const next = yield* kin.widget(
+        cards.find(({ widgetId }) => widgetId !== first.widgetId)!.widgetId,
+      );
+      assert.isNull(next.closedAt);
+      assert.strictEqual(yield* recipient(next.widgetId), kin.owner.personId);
+    }),
+  ),
+);
+
+it.effect("a foreign credit question refuses a teammate's tap", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ financeOwner: "zoya" });
+      const widget = yield* kin.ask();
+      yield* kin.sql`UPDATE kin_people SET access = 'member'
+      WHERE org_id = ${kin.orgId} AND person_id = 'zoya'`;
+      assert.include(
+        yield* kin.tap(kin.person("zoya"), widget.widgetId, "option-1", "record").pipe(Effect.flip),
+        { reason: "not_allowed", message: "Only the owner or a co-owner confirms money received." },
+      );
+      assert.deepStrictEqual(yield* kin.payments(), []);
+    }),
+  ),
+);
+
+it.effect("a foreign credit question records once when two phones tap", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const widget = yield* kin.ask();
+      yield* Effect.forEach(
+        ["phone-1", "phone-2"],
+        (clientActionId) =>
+          kin.chats
+            .act(kin.owner, {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId: "choose",
+              value: "option-1",
+              clientActionId,
+            })
+            .pipe(Effect.result),
+        { concurrency: "unbounded" },
+      );
+      const actions = yield* kin.sql`SELECT message_id FROM kin_messages WHERE org_id = ${kin.orgId}
+      AND widget_id = ${widget.widgetId} AND kind = 'widget_action' ORDER BY message_id`;
+      assert.lengthOf(actions, 1);
+      assert.lengthOf(yield* kin.payments(), 1);
+    }),
+  ),
+);
+
+it.effect.each(["paid", "voided", "edited", "part paid"] as const)(
+  "a foreign credit question does nothing when the selected invoice was %s",
+  (change) =>
+    foreignCreditTest(
+      Effect.gen(function* () {
+        const kin = yield* foreignCredit();
+        const widget = yield* kin.ask();
+        const { orgId, ownerWrites, records, invoice } = kin;
+        switch (change) {
+          case "paid":
+          case "part paid":
+            yield* records.pay(orgId, ownerWrites, invoice.key, {
+              amount: { currency: "USD", minor: change === "paid" ? 100_000 : 10_000 },
+              paidOn: "2026-11-16",
+              originKey: "paid-outside-card",
+            });
+            break;
+          case "voided":
+            yield* records.update(orgId, ownerWrites, invoice.key, { state: "dropped" });
+            break;
+          case "edited":
+            yield* records.update(orgId, ownerWrites, invoice.key, {
+              notes: "New freight details.",
+            });
+            break;
+        }
+        const before = yield* kin.payments();
+        yield* kin.tap(kin.owner, widget.widgetId, "option-1", "stale");
+        assert.deepStrictEqual(yield* kin.payments(), before);
+        assert.deepStrictEqual(card(yield* kin.widget(widget.widgetId)).outcome, {
+          title: "Nothing was done",
+          text: `${kin.bank.key} or ${invoice.key} changed since this was offered, so nothing was done.`,
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "a foreign credit question closes for None of these and never raises the credit again",
+  () =>
+    foreignCreditTest(
+      Effect.gen(function* () {
+        const kin = yield* foreignCredit();
+        const widget = yield* kin.ask();
+        yield* kin.tap(kin.owner, widget.widgetId, "option-2", "none");
+        assert.deepStrictEqual(yield* kin.payments(), []);
+        assert.isNotNull((yield* kin.widget(widget.widgetId)).closedAt);
+        assert.strictEqual((yield* kin.records.get(kin.orgId, kin.bank.key))?.state, "open");
+        yield* kin.invoiceOf("TW/NEW", 2);
+        yield* kin.records.update(kin.orgId, kin.ownerWrites, kin.bank.key, {
+          title: "Wire TIDEWATER FREIGHT TW/NEW",
+        });
+        yield* TestClock.adjust(60_000);
+        assert.notInclude((yield* kin.tick()).woken, kin.factKey);
+        assert.isUndefined(yield* kin.fact());
+        assert.lengthOf(yield* kin.cards(), 1);
+      }),
+    ),
+);
+
+it.effect("a foreign credit question settles when its credit is explained elsewhere", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const widget = yield* kin.ask();
+      yield* kin.records.update(kin.orgId, kin.ownerWrites, kin.bank.key, { state: "done" });
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      assert.isUndefined(yield* kin.fact());
+      assert.isNotNull((yield* kin.widget(widget.widgetId)).closedAt);
+      assert.deepStrictEqual(yield* kin.payments(), []);
+    }),
+  ),
+);
+
+it.effect("a foreign credit question settles when the received amount is already recorded", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const other = yield* kin.invoiceOf("TW/002", 4);
+      const widget = yield* kin.ask();
+      yield* kin.records.pay(kin.orgId, kin.ownerWrites, other.key, {
+        amount: { currency: "USD", minor: 100_000 },
+        received: { currency: "INR", minor: 8_350_000 },
+        rate: "83.500000",
+        paidOn: "2026-11-15",
+        originKey: "recorded-elsewhere",
+      });
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      assert.isUndefined(yield* kin.fact());
+      assert.isNotNull((yield* kin.widget(widget.widgetId)).closedAt);
+      assert.isEmpty(yield* kin.payments());
+    }),
+  ),
+);
+
+it.effect("a rate offer for money recorded by hand with its received amount is not raised", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ rate: "82.000000" });
+      assert.strictEqual(
+        (yield* creditMatch(kin.orgId, kin.bank.recordId))?.first[0]?.candidate.fit,
+        "rate",
+      );
+      assert.exists(yield* kin.fact());
+
+      const other = yield* kin.invoiceOf("TW/002", 4);
+      yield* kin.records.pay(kin.orgId, kin.ownerWrites, other.key, {
+        amount: { currency: "USD", minor: 100_000 },
+        received: { currency: "INR", minor: 8_350_000 },
+        rate: "83.500000",
+        paidOn: "2026-11-15",
+        originKey: "recorded-by-hand",
+      });
+      assert.isUndefined(yield* kin.fact());
+      assert.notInclude((yield* kin.tick()).woken, kin.factKey);
+    }),
+  ),
+);
+
+it.effect("a foreign credit question needs a named client", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ narration: "Wire incoming" });
+      yield* kin.tick();
+      assert.isUndefined(yield* kin.fact());
+      assert.isEmpty(yield* kin.cards());
+    }),
+  ),
+);
+
+it.effect("a foreign credit question is silent with Money off", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      assert.exists(yield* kin.fact());
+      yield* kin.withKin(
+        KinShell.set(kin.orgId, kin.owner.personId, 0, [{ id: "money", on: false }]),
+      );
+      assert.notInclude((yield* kin.tick()).woken, kin.factKey);
+      assert.isUndefined(yield* kin.fact());
+      assert.isEmpty(yield* kin.cards());
+    }),
+  ),
+);
+
+it.effect.each([
+  { name: "still offers a rate within the band", input: { rate: "82.000000" }, fit: "rate" },
+  {
+    name: "still offers a rate when the credit cites the invoice",
+    input: { narration: "Wire TW/001" },
+    fit: "rate",
+  },
+  {
+    name: "gets no question without an open invoice in another currency",
+    input: { currency: "INR" },
+    fit: "over",
+  },
+])("a foreign credit $name", ({ input, fit }) =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit(input);
+      const match = yield* creditMatch(kin.orgId, kin.bank.recordId);
+      assert.strictEqual(match?.first[0]?.candidate.fit, fit);
+      yield* kin.tick();
+      assert.isEmpty(yield* kin.cards());
+      const fact = yield* kin.fact();
+      assert.exists(fact);
+    }),
   ),
 );
 

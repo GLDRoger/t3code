@@ -151,4 +151,6 @@ const handlers = McpToolAccess.toLayer(KinSocialToolkit, {
   ),
 });
 
-export const registration = McpHttpServer.toolkitRegistration(KinSocialToolkit, handlers);
+export const registration = McpHttpServer.toolkitRegistration(KinSocialToolkit, handlers, {
+  kin: true,
+});

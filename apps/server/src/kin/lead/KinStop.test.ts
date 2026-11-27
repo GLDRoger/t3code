@@ -217,6 +217,7 @@ describe("KinStop", () => {
             chatId: KinChatId.make("owner-chat"),
             mode: "reply" as const,
             owed: true,
+            voice: "text",
             leadName: "Lead",
           }),
         preparing: () => Effect.void,
@@ -329,10 +330,24 @@ describe("KinStop", () => {
         // Its batch is over: not split to run alone, no try spent, nothing held for a trouble.
         assert.deepStrictEqual(
           yield* sql`SELECT event_id, state, attempts, json_extract(json, '$._retryAlone') AS alone,
-            held_by FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+            held_by, json_extract(json, '$._personStopped') AS stopped FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
           [
-            { event_id: "more-work", state: "done", attempts: 0, alone: null, held_by: null },
-            { event_id: "work", state: "done", attempts: 0, alone: null, held_by: null },
+            {
+              event_id: "more-work",
+              state: "done",
+              attempts: 0,
+              alone: null,
+              held_by: null,
+              stopped: 1,
+            },
+            {
+              event_id: "work",
+              state: "done",
+              attempts: 0,
+              alone: null,
+              held_by: null,
+              stopped: 1,
+            },
           ],
         );
         assert.deepStrictEqual(failures, []);

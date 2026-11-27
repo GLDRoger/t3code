@@ -64,7 +64,7 @@ const FOLLOW_UPS = new Set<string>([
   ...DEAL_FOLLOW_UPS,
   ...PROPOSALS,
 ]);
-/** After Not this on a suggestion for it, a deal or project gets no new proposal this long. */
+/** After an agent's task for it is dropped, a deal or project gets no new proposal this long. */
 const DECLINED_REST_MS = 14 * DAY_MS;
 /** A prep note this close to its meeting comes too late to read: none is made. */
 const PREP_BEFORE_MS = 2 * HOUR_MS;
@@ -378,7 +378,7 @@ const stillPassed = Effect.fnUntraced(function* (
 /**
  * Once a stretch: an open deal or prospect they look after (`deals.ts` `hearer`; the owner's when
  * nobody does) and see, with no quiet or late mail of its own standing; or an open project, for
- * the owner. Never within `DECLINED_REST_MS` of a suggestion for it being dropped.
+ * the owner. Never within `DECLINED_REST_MS` of an agent's task for it being dropped.
  */
 const stillUnplanned = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -410,7 +410,8 @@ const stillUnplanned = Effect.fnUntraced(function* (
         AND f.subject_record_id = r.record_id AND f.cleared_at IS NULL
         AND f.sense IN ${sql.in([...DEAL_FOLLOW_UPS])}) AS mailed,
       EXISTS (SELECT 1 FROM kin_records w WHERE w.org_id = r.org_id
-        AND w.register_id IN ('work', 'milestones') AND w.confirmed = 0 AND w.state = 'dropped'
+        AND w.register_id IN ('work', 'milestones') AND w.state = 'dropped'
+        AND (w.confirmed = 0 OR w.created_by_kind = 'agent')
         AND w.closed_at > ${at - DECLINED_REST_MS}
         AND (w.project_id = r.record_id OR (r.register_id = 'clients' AND w.party_id = r.record_id)
           OR w.record_id IN (SELECT l.record_id FROM kin_record_links l WHERE l.org_id = r.org_id
@@ -844,20 +845,20 @@ export const DRAFT_CHASE = (name: string, addresses: ReadonlyArray<string>) =>
 /**
  * The wake's own line for a client meeting that passed with no outcome: one question, then its
  * answer noted, the follow-up drafted (`mail` when they have a mailbox and a contact) and its
- * action items suggested.
+ * action items added to Tasks.
  */
 export const DRAFT_MEETING_OUTCOME = (
   name: string,
   meeting: { readonly key: string; readonly title: string },
   mail: { readonly to: string; readonly from: ReadonlyArray<string> } | undefined,
 ) =>
-  `Kin woke you for ${name}: their meeting below with a client has passed and no outcome is noted. Ask them once with kin_ask in this chat: question "How did ${meeting.title} go?", options "It didn't happen" (action drop on ${meeting.key}) and "Nothing to follow up" (action done on ${meeting.key}), default "none", about ${meeting.key}, and detail "Or reply here in a line or two: I'll note it on ${meeting.key}, ${mail === undefined ? "write you call notes for the follow-up" : `draft the follow-up to ${mail.to} for your Confirm`} and suggest the action items." Say nothing else now. When they reply with how it went: close that question as answered with kin_ask_close, then put what they said in ${meeting.key}'s notes and mark it done with record_update, ${mail === undefined ? "give them call notes for the follow-up here (there is no mailbox of theirs or no contact to write to)" : `draft the follow-up to the contact below with kin_connection_call mail_send from ${ownMailbox(mail.from)}, promising nothing for us that their reply and the records don't hold`}, and record each action item, even one the client asked for, as a Work row with suggested true, owner whoever their reply names for it, else them. Nothing goes until they tap Confirm: never say it was sent. ${mail === undefined ? `After the call notes, say in one short line that ${meeting.key} is noted and done and how many action items you suggested; their tasks show them, so don't list them.` : `Then tell them in one short line that ${meeting.key} is noted and done, the follow-up waits on its card for their Confirm, and how many action items you suggested. The cards show the mail and the tasks, so say nothing more about them.`}`;
+  `Kin woke you for ${name}: their meeting below with a client has passed and no outcome is noted. Ask them once with kin_ask in this chat: question "How did ${meeting.title} go?", options "It didn't happen" (action drop on ${meeting.key}) and "Nothing to follow up" (action done on ${meeting.key}), default "none", about ${meeting.key}, and detail "Or reply here in a line or two: I'll note it on ${meeting.key}, ${mail === undefined ? "write you call notes for the follow-up" : `draft the follow-up to ${mail.to} for your Confirm`} and add the action items to Tasks." Say nothing else now. When they reply with how it went: close that question as answered with kin_ask_close, then put what they said in ${meeting.key}'s notes and mark it done with record_update, ${mail === undefined ? "give them call notes for the follow-up here (there is no mailbox of theirs or no contact to write to)" : `draft the follow-up to the contact below with kin_connection_call mail_send from ${ownMailbox(mail.from)}, promising nothing for us that their reply and the records don't hold`}, and record each action item, even one the client asked for, as a Work row, owner the person their reply names for it, else them: never an agent, as no agent starts a task Kin's wake gave it. Nothing goes until they tap Confirm: never say it was sent. ${mail === undefined ? `After the call notes, say in one short line that ${meeting.key} is noted and done and how many action items are on Tasks; their tasks show them, so don't list them.` : `Then tell them in one short line that ${meeting.key} is noted and done, the follow-up waits on its card for their Confirm, and how many action items are on Tasks. The cards show the mail and the tasks, so say nothing more about them.`}`;
 /** The wake's own line for a deal, or a prospect with no deal, that has no next step. */
 export const PROPOSE_STEP = (name: string, deal: boolean) =>
-  `Kin woke you for ${name}: ${deal ? "the deal below" : "the prospect below, which has no deal,"} has no next step. Propose one: a single Work row with record_create, suggested true, for this client${deal ? " and deal" : ""}, owner them, due a day this week, titled as the step itself (a call, a mail, a demo, a quote), from the last contact and comment below. Never offer a price, date or term the records don't hold. Make nothing else. Then tell them in one short line what you suggested, with its key, and that it waits on its task to be kept or not. The task shows why you suggested it, so say nothing more about it.`;
-/** The wake's own line for a project with no plan: its breakdown as suggested tasks. */
+  `Kin woke you for ${name}: ${deal ? "the deal below" : "the prospect below, which has no deal,"} has no next step. Add one: a single Work row with record_create for this client${deal ? " and deal" : ""}, owner them (no agent starts a task Kin's wake gave it), due a day this week, titled as the step itself (a call, a mail, a demo, a quote), from the last contact and comment below. Never offer a price, date or term the records don't hold. Make nothing else. Then tell them in one short line what you added, with its key, and that it is on Tasks. The task shows why you added it, so say nothing more about it.`;
+/** The wake's own line for a project with no plan: its breakdown as tasks on Tasks. */
 export const PROPOSE_PLAN = (name: string) =>
-  `Kin woke you for ${name}: the project below has no milestones and no open tasks. Propose its plan in one record_create call: at most 8 tasks, each with the project, a size (S, M or L), an owner from its members and a one-line reason, and milestones only where its own words name stages. A reason rests on the project's own words or on what people_read gives for that owner, such as their role, since that is all Kin knows of them. Every row, milestones too, is suggested true, so none stands until they keep it. Use only the project's own words, its docs and the records below; never add a figure or date that isn't there. Then tell them in one short line how many tasks you suggested and that they keep each or not on Tasks. The rows show what each is and why, so say nothing more about them.`;
+  `Kin woke you for ${name}: the project below has no milestones and no open tasks. Propose its plan in one record_create call: at most 8 tasks, each with the project, a size (S, M or L), an owner from the people among its members, or none where no one's role fits (the task still goes in) and a one-line reason, and milestones only where its own words name stages. A reason rests on the project's own words or on what people_read gives for that owner, such as their role, since that is all Kin knows of them. No task goes to an agent, as no agent starts a task Kin's wake gave it. Use only the project's own words, its docs and the records below; never add a figure or date that isn't there. Then tell them in one short line how many tasks you added and that they are on Tasks. The rows show what each is, who holds it and why, so say nothing more about them.`;
 /** The wake's own line when there is no mailbox of theirs, or no contact they may see. */
 export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;

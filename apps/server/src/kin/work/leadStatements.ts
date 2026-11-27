@@ -74,23 +74,22 @@ export const ReadInput = Schema.Struct({
   }),
   account: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}$/))).annotate({
     description:
-      "Its account's or card's last four digits, only when the owner wrote them in this chat and the statement doesn't show them.",
+      "Its last four digits, only when the owner wrote them here and the statement doesn't show them.",
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).annotate({
-    description:
-      "With pages: the code of the currency the statement's amounts are in, such as USD, as its pages print it. Kin takes it only when the statement's own text names it.",
+    description: "With pages: the currency code the statement's own text names.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Match the rows Kin already read against the current invoices and expenses again, as after they changed. It never reads the pages again and never replaces a card the owner confirmed.",
+      "Rematch rows already read against current invoices and expenses; never rereads pages or replaces a confirmed card.",
   }),
   again: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Read the file from the start again, only when the owner asked for that in this turn's own message. Rows already recorded stay recorded.",
+      "Read the file again from the start, only when the owner's own message this turn asks; recorded rows stay.",
   }),
   password: Schema.optional(KinStatementPassword).annotate({
     description:
-      "The statement's password, exactly as the owner wrote it in a message in this chat. Kin uses it once to open this file and doesn't store it in its own records; once it opens the file, Kin hides it in the owner's message.",
+      "Exactly as the owner wrote it in this chat; Kin uses it once, doesn't store it, and hides it in their message.",
   }),
   pages: Schema.optional(
     Schema.Array(
@@ -109,13 +108,13 @@ export const ReadInput = Schema.Struct({
           ).check(Schema.isMaxLength(500)),
         ).annotate({
           description:
-            "Lines on this page that start with a date but aren't transactions, such as an opening-balance line: each one's date and the words after it.",
+            "Lines starting with a date that aren't transactions (an opening balance): each one's date and words.",
         }),
       }),
     ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   ).annotate({
     description:
-      "Only after Kin says the statement waits for you to read it: each page (or part) you read, with every transaction row on it as printed, rows [] for a page with none. Every line that starts with a date is a row or is listed in notTransactions. A page sent again replaces it.",
+      "Only after Kin says it waits for you: each page (or part) with every transaction row as printed, rows [] for none; every line starting with a date is a row or in notTransactions. A page sent again replaces it.",
   }),
   opening: Schema.optional(Amount),
   closing: Schema.optional(Amount),
