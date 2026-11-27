@@ -254,7 +254,9 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
   const sql = yield* SqlClient.SqlClient;
   const ids = [
     ...new Set(
-      matches.flatMap((one) => (one.first.length === 1 ? [one.first[0]!.invoice.recordId] : [])),
+      matches.flatMap((one) =>
+        one.choice === undefined && one.first.length === 1 ? [one.first[0]!.invoice.recordId] : [],
+      ),
     ),
   ];
   const rows = new Map(
@@ -264,7 +266,9 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
           ORDER BY r.key`).map((row) => [row.recordId, row]),
   );
-  const invoices = matches.some((one) => one.first.some((pair) => pair.candidate.fit === "over"))
+  const invoices = matches.some(
+    (one) => one.choice === undefined && one.first.some((pair) => pair.candidate.fit === "over"),
+  )
     ? yield* invoiceCandidates(ctx.orgId, undefined)
     : [];
   // A declined choice belongs to the bank row even if a later match is an ordinary offer.
@@ -292,13 +296,17 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
     };
     if (choice !== undefined) {
       const { client, options, total } = choice;
-      const items = options.map(
-        ({ invoice, owed }) =>
-          `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
-      );
+      const items = options
+        .slice(0, 4)
+        .map(
+          ({ invoice, owed }) =>
+            `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
+        );
       const consequence = fitted(
         (shown) =>
-          `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`,
+          choice.kind === "rate"
+            ? `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`
+            : `${creditText(credit)}, names ${client}, and Kin can't tell which of ${client}'s open invoices it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner chooses.`,
         items.length,
       );
       if (consequence.length > CONSEQUENCE_MAX) return [];
