@@ -738,6 +738,37 @@ it.effect("an agent-started discussion is capped, held, and told at the owner's 
       yield* team.sweep();
       assert.strictEqual((yield* cards)[0]!.n, 1);
 
+      // The agent whose call it is may bring one too: its card, in its own chat, is told once.
+      yield* wake("growth");
+      const terms = yield* callAs("growth", "team_open", {
+        topic: "Tidewater Freight terms",
+        question: "Net 30 or net 60 for Tidewater Freight?",
+        decider: "Finance",
+        text: "Tidewater asks for net 60; I'd give it to win the lane.",
+      });
+      assert.isTrue(terms.ok, JSON.stringify(terms.value));
+      yield* wake("finance");
+      const byDecider = yield* callAs("finance", "team_say", {
+        discussion: terms.value.discussion,
+        text: "Payment terms are Rhea's to set.",
+        intent: "decision",
+        end: "bring",
+        outcome: "Growth and Finance split on Tidewater Freight's payment terms.",
+        positions: [
+          { agent: "Growth", position: "Net 60 wins the lane." },
+          { agent: "Finance", position: "Net 30 keeps cash in hand." },
+        ],
+        lean: "Net 30; the lane is new.",
+        options: ["Net 30", "Net 60"],
+      });
+      assert.isTrue(byDecider.ok, JSON.stringify(byDecider.value));
+      yield* team.sweep();
+      yield* team.sweep();
+      assert.strictEqual((yield* cards)[0]!.n, 1);
+      const financeCards = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("finance")} AND type = 'choice'`;
+      assert.strictEqual(financeCards[0]!.n, 1);
+
       // Past 80% of the Team room's share of today's budget, an agent opens nothing; a person's ask
       // naming two agents still opens.
       const spent = yield* wake("growth");

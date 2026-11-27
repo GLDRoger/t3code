@@ -7,7 +7,7 @@
    apps/server/src/kin). One action is one transaction. *)
 EXTENDS Integers, Sequences, FiniteSets
 
-CONSTANTS Broken, MaxMsgs, ChairAt, AfterObj, PerDay, AtOnce
+CONSTANTS Broken, MaxMsgs, AfterObj, PerDay, AtOnce
 
 Agents == {"O", "D", "C", "X"}
 Touchable == {"O", "X"}
@@ -21,19 +21,19 @@ VARIABLES
   hs, reports,                 \* a hand-off: none, passed, claimed, replied, done; replies carried back
   wants,                       \* kin_handoffs.wants_answer: the asker asked for the answer back
   asks, opened, plain,         \* the owner's naming message handled; discussions it opened; plain replies
-  phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers, chaired,
+  phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers,
   turnMsgs, pitches, objections, origin, told, checkIns,
   beside                       \* discussions opened for the same ask beside the one Kin opened
 
 side == <<openNow, started, access, room, leak, changes, hs, wants, reports, asks, opened, plain>>
 talk == <<phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers,
-          chaired, turnMsgs, pitches, objections, origin, told, checkIns, beside>>
+          turnMsgs, pitches, objections, origin, told, checkIns, beside>>
 vars == <<stage, side, talk>>
 
 TalkInit ==
   /\ phase = "open" /\ final = FALSE /\ turn = Turn("O", "named")
   /\ msgs = 0 /\ widened = FALSE /\ objUsed = FALSE /\ afterObj = -1 /\ last = "none"
-  /\ offers = [a \in Touchable |-> 0] /\ chaired = FALSE /\ turnMsgs = 0
+  /\ offers = [a \in Touchable |-> 0] /\ turnMsgs = 0
   /\ pitches = 0 /\ objections = 0 /\ origin \in {"owner", "agent", "person"} /\ told = 0 /\ checkIns = 0
   /\ beside = 0
   \* team/turns.ts askedByPerson: O, named first, holds the first turn; the other named is asked next.
@@ -174,7 +174,7 @@ Allowed(who, intent, widen, end) ==
   /\ widen => (~widened /\ who \in {"D", "C"})
   /\ end = "decide" => who \in {"D", "C"}
   /\ end = "park" => (who = "C" \/ turn.kind = "closing")
-  /\ end = "bring" => who = "C"
+  /\ end = "bring" => who \in {"C", "D"}
 
 Closing == [phase |-> "closing", turn |-> Turn("C", "closing"), pending |-> <<>>]
 
@@ -193,9 +193,9 @@ Carried == SelectSeq(pending, LAMBDA t : t.kind \in {"named", "decider"})
 Answerer(who) == IF who # "D" THEN "D" ELSE IF last # "none" /\ last # who THEN last
                  ELSE IF "C" # who THEN "C" ELSE "none"
 
-(* turns.ts nextTurns, after msgs counts this message: a chair check once at ChairAt; at most one
-   uninvited agent the message touches, right after it; then who it asks; then turns still owed. *)
-Next1(who, to, touches, n) ==
+(* turns.ts nextTurns, after msgs counts this message: at most one uninvited agent the message
+   touches, right after it; then who it asks; then turns still owed. *)
+Next1(who, to, touches) ==
   LET asked == IF to # "none" /\ to # who THEN <<Turn(to, "named")>>
                ELSE LET a == Answerer(who) IN
                     IF a = "none" THEN <<>>
@@ -209,9 +209,8 @@ Next1(who, to, touches, n) ==
                ELSE IF Broken = "all-pitch" THEN [i \in 1..Cardinality(pitchers) |->
                       Turn(IF i = 1 THEN first ELSE CHOOSE a \in pitchers : a # first, "pitch_in")]
                ELSE <<Turn(first, "pitch_in")>>
-      chair == IF ~chaired /\ n >= ChairAt /\ who # "C" THEN <<Turn("C", "chair")>> ELSE <<>>
-      all == Dedupe(chair \o pitch \o asked \o Carried, who)
-  IN [turns |-> all, chair |-> chair # <<>>,
+      all == Dedupe(pitch \o asked \o Carried, who)
+  IN [turns |-> all,
       offers |-> [a \in Touchable |-> offers[a] + (IF \E i \in 1..Len(pitch) : pitch[i].who = a
                                                      THEN 1 ELSE 0)],
       pitches |-> Len(SelectSeq(all, LAMBDA t : t.kind = "pitch_in"))]
@@ -240,25 +239,25 @@ Say(who, intent, to, widen, end, touches) ==
      IN
      CASE end = "park" ->
             /\ Settle("parked", TRUE, NoTurn, <<>>, 0)
-            /\ UNCHANGED <<objUsed, afterObj, offers, chaired, pitches>>
+            /\ UNCHANGED <<objUsed, afterObj, offers, pitches>>
        [] end = "bring" ->
             /\ Settle("escalated", TRUE, NoTurn, <<>>, 0)
-            /\ UNCHANGED <<objUsed, afterObj, offers, chaired, pitches>>
+            /\ UNCHANGED <<objUsed, afterObj, offers, pitches>>
        [] end = "decide" /\ (wasClosing \/ objUsed \/ objector = "none"
                              \/ (n >= MaxMsgs /\ Broken # "objection-past-cap")) ->
             /\ Settle("decided", TRUE, NoTurn, <<>>, 0)
-            /\ UNCHANGED <<objUsed, afterObj, offers, chaired, pitches>>
+            /\ UNCHANGED <<objUsed, afterObj, offers, pitches>>
        [] end = "decide" ->
             /\ Settle("decided", FALSE, Turn(objector, "object"), <<>>, 0)
             /\ pitches' = 0
-            /\ UNCHANGED <<objUsed, afterObj, offers, chaired>>
+            /\ UNCHANGED <<objUsed, afterObj, offers>>
        [] turn.kind = "object" ->
             /\ objUsed' = TRUE /\ afterObj' = AfterObj
             /\ IF n >= MaxMsgs /\ Broken # "no-message-cap"
                  THEN /\ Settle("closing", FALSE, Closing.turn, <<>>, 0)
-                      /\ UNCHANGED <<offers, chaired>> /\ pitches' = 0
-                 ELSE LET r == Next1(who, IF to = "none" THEN "D" ELSE to, touches, n) IN
-                      /\ offers' = r.offers /\ chaired' = (chaired \/ r.chair) /\ pitches' = r.pitches
+                      /\ UNCHANGED offers /\ pitches' = 0
+                 ELSE LET r == Next1(who, IF to = "none" THEN "D" ELSE to, touches) IN
+                      /\ offers' = r.offers /\ pitches' = r.pitches
                       /\ IF r.turns = <<>>
                            THEN Settle("closing", FALSE, Closing.turn, <<>>, 0)
                            ELSE Settle("open", FALSE, Head(r.turns), Tail(r.turns), 0)
@@ -267,9 +266,9 @@ Say(who, intent, to, widen, end, touches) ==
             /\ afterObj' = left /\ UNCHANGED objUsed
             /\ IF (left # -1 /\ left <= 0) \/ (n >= MaxMsgs /\ Broken # "no-message-cap")
                  THEN /\ Settle("closing", FALSE, Closing.turn, <<>>, 0)
-                      /\ UNCHANGED <<offers, chaired>> /\ pitches' = 0
-                 ELSE LET r == Next1(who, to, touches, n) IN
-                      /\ offers' = r.offers /\ chaired' = (chaired \/ r.chair) /\ pitches' = r.pitches
+                      /\ UNCHANGED offers /\ pitches' = 0
+                 ELSE LET r == Next1(who, to, touches) IN
+                      /\ offers' = r.offers /\ pitches' = r.pitches
                       /\ IF r.turns = <<>>
                            THEN Settle("closing", FALSE, Closing.turn, <<>>, 0)
                            ELSE IF kept
@@ -287,7 +286,7 @@ Pass ==
        [] pending = <<>> -> Settle("closing", FALSE, Closing.turn, <<>>, 0)
        [] OTHER -> Settle(phase, FALSE, Head(pending), Tail(pending), 0)
   /\ pitches' = 0
-  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
+  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers,
                  objections, origin, checkIns, beside>>
 
 (* KinTeam.wakeupEnded charges a wake-up's units (turns.ts afterUnits), and KinTeam.sweep closes
@@ -296,14 +295,14 @@ Cut ==
   /\ stage = "talk" /\ ~final /\ phase # "closing"
   /\ Settle("closing", FALSE, Closing.turn, <<>>, 0)
   /\ pitches' = 0
-  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
+  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers,
                  objections, origin, checkIns, beside>>
 
 IdleClose ==
   /\ stage = "talk" /\ ~final /\ phase = "closing"
   /\ Settle("parked", TRUE, NoTurn, <<>>, 0)
   /\ pitches' = 0
-  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
+  /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers,
                  objections, origin, checkIns, beside>>
 
 (* WakeupRunner.finishWakeup after a check-in: KinTeam.deliverHeld tells what agents settled
@@ -315,7 +314,7 @@ CheckInRuns ==
   /\ stage = "talk" /\ checkIns < 2 /\ Delivers
   /\ checkIns' = checkIns + 1 /\ told' = told + 1
   /\ UNCHANGED <<stage, side, phase, final, turn, pending, msgs, widened, objUsed, afterObj, last,
-                 offers, chaired, turnMsgs, pitches, objections, origin, beside>>
+                 offers, turnMsgs, pitches, objections, origin, beside>>
 
 (* KinTeam.open from the agent whose turn it is in a discussion a person's message opened
    (open_key message:…), its rules saying such an ask starts with team_open: refused, naming that
@@ -325,7 +324,7 @@ OpensBeside ==
   /\ Broken = "open-beside" /\ beside = 0
   /\ beside' = 1
   /\ UNCHANGED <<stage, side, phase, final, turn, pending, msgs, widened, objUsed, afterObj, last,
-                 offers, chaired, turnMsgs, pitches, objections, origin, told, checkIns>>
+                 offers, turnMsgs, pitches, objections, origin, told, checkIns>>
 
 Move ==
   \/ \E who \in Agents, intent \in {"plain", "objection"}, to \in Agents \cup {"none"},

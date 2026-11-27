@@ -163,7 +163,7 @@ export const KinLeadToolkit = turnEventToolkit(
   Tool.make("team_say", {
     ...team,
     description:
-      "Your one message when Kin wakes you in a Team-room discussion; nothing else you write there is posted. To pass, end without it. to asks up to two agents next. The decider or Chief of staff may widen the question once and decide (end decide: outcome is the one line the owner reads, did what you already changed). After a decision one agent may object once (intent objection). The Chief of staff may also park it (end park) or bring the owner a disagreement that is the owner's (end bring, with positions, lean and options).",
+      "Your one message when Kin wakes you in a Team-room discussion; nothing else you write there is posted. To pass, end without it. to asks up to two agents next. The decider or Chief of staff may widen the question once, decide (end decide: outcome is the one line the owner reads, did what you already changed) or bring the owner a disagreement that is the owner's (end bring, with positions, lean and options). After a decision one agent may object once (intent objection). Only the Chief of staff may park it (end park).",
     parameters: Team.TeamSayInput,
     success: Team.TeamResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

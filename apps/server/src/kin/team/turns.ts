@@ -8,8 +8,6 @@ export const TEAM_MAX_MESSAGES = 16;
 /** About 33,000 units per warm owner-seat turn, so the cap lets the designed messages run. */
 export const TEAM_UNITS_CAP = TEAM_MAX_MESSAGES * 33_000;
 export const TEAM_IDLE_MS = 24 * 60 * 60 * 1000;
-/** The Chief of staff's chair check comes once, at this many messages. */
-const TEAM_CHAIR_AT = 10;
 export const TEAM_MAX_NAMED = 2;
 /** How often one agent may be offered a pitch-in in one discussion, unless it is named. */
 const TEAM_PITCH_OFFERS = 2;
@@ -20,6 +18,7 @@ export const TEAM_OPEN_AT_ONCE = 2;
 /** The share of the agents' daily budget Team-room turns may spend. */
 export const TEAM_DAILY_SHARE = 0.3;
 
+/** Kin no longer schedules a `chair` turn; a stored discussion may still hold one, and it runs once. */
 export type TurnKind = "named" | "decider" | "pitch_in" | "chair" | "object" | "closing";
 export interface Turn {
   readonly agentId: string;
@@ -135,8 +134,8 @@ export const sayRefusal = (d: Discussion, said: Said): string | null => {
     return "Only the agent whose call it is, or the Chief of staff, decides. Say what you'd decide instead.";
   if (said.end === "park" && said.agentId !== d.chair && kind !== "closing")
     return "Only the Chief of staff parks a discussion.";
-  if (said.end === "bring" && said.agentId !== d.chair)
-    return "Only the Chief of staff brings a disagreement to the owner.";
+  if (said.end === "bring" && said.agentId !== d.decider && said.agentId !== d.chair)
+    return "Only the agent whose call it is, or the Chief of staff, brings a disagreement to the owner. Say what you'd bring instead.";
   return null;
 };
 
@@ -183,15 +182,10 @@ const nextTurns = (d: Discussion, said: Said): Discussion => {
       (offers[agentId] ?? 0) < TEAM_PITCH_OFFERS,
   );
   if (pitch !== undefined) offers[pitch] = (offers[pitch] ?? 0) + 1;
-  const chair: Array<Turn> =
-    !d.chaired && d.messages >= TEAM_CHAIR_AT && said.agentId !== d.chair
-      ? [{ agentId: d.chair, kind: "chair" }]
-      : [];
   // The uninvited agent speaks right after the message it reacts to; turns still owed from
   // earlier messages follow. A stale pitch-in or chair check is not carried.
   const turns: Array<Turn> = [];
   for (const turn of [
-    ...chair,
     ...(pitch === undefined ? [] : [{ agentId: pitch, kind: "pitch_in" as const }]),
     ...base,
     ...d.pending.filter((turn) => turn.kind === "named" || turn.kind === "decider"),
@@ -199,7 +193,7 @@ const nextTurns = (d: Discussion, said: Said): Discussion => {
     if (turn.agentId !== said.agentId && !turns.some((held) => held.agentId === turn.agentId))
       turns.push(turn);
   const [turn, ...pending] = turns;
-  const next = { ...d, offers, chaired: d.chaired || chair.length > 0, pending };
+  const next = { ...d, offers, pending };
   return turn === undefined ? closing(next) : { ...next, turn };
 };
 
