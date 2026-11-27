@@ -3687,13 +3687,19 @@ it.effect.each(["reply", "same reply", "rescue"] as const)(
 it.effect.each([
   [
     "trigger",
-    "Not shown: a trigger started this turn, so nobody is waiting on progress. Send what came of it with kin_send, or end with kin_skip.",
+    "Not shown: a trigger started this turn, so no one is waiting on progress. Finish the work, then send what came of it with kin_send, or end with kin_skip.",
   ],
-  ["group", "Not shown: updates go only to a direct chat. Here your reply is the one message."],
-  ["Team room", "Not shown: updates go only to a direct chat. Here your reply is the one message."],
-  ["quiet", "Nothing was sent: this turn does not post to a chat."],
-  ["already sent", "Not shown: this turn's message is already sent; end the turn."],
-  ["same", "Not shown: that update is already in the chat. Post another when something changes."],
+  [
+    "group",
+    "Not shown: updates go only to a direct chat. Carry on; here your reply is the one message.",
+  ],
+  [
+    "Team room",
+    "Not shown: updates go only to a direct chat. Carry on; here your reply is the one message.",
+  ],
+  ["quiet", "Not shown: this turn posts to no chat."],
+  ["already sent", "Not shown: this turn's reply is already sent. End the turn."],
+  ["same", "Not shown: that update is already in the chat. Carry on with the work."],
   [
     "too long",
     "Not shown: an update is a line or two. The whole answer goes in your reply at the end.",
@@ -3704,7 +3710,7 @@ it.effect.each([
   ],
   [
     "limit",
-    "Not shown: this turn has shown all the updates it may. Your reply still goes at the end.",
+    "Not shown: this turn has no updates left. Carry on; your reply still goes at the end.",
   ],
   ["not running", "Not shown: this turn is no longer running."],
 ] as const)("refuses a progress update in %j", ([scenario, words]) =>
@@ -4185,6 +4191,7 @@ it.effect.each([
   { kind: "person", level: "quiet", silent: 0 },
   { kind: "person", level: "check_in", silent: 0 },
   { kind: "mixed person and pulse", level: "quiet", silent: 0 },
+  { kind: "person after an update", level: "quiet", silent: 0 },
 ] as const)(
   "a send posts once at the turn's effective level ($kind, $level)",
   ({ kind, level, silent }) =>
@@ -4233,12 +4240,21 @@ it.effect.each([
       });
       if (level === "check_in") yield* seedSendCheckIn(orgId, owner.personId, direct.chatId);
       const request = { orgId, wakeupId, text: `The log contains NO_REPLY. ${body}`, level };
+      const update =
+        kind === "person after an update"
+          ? yield* bridge.send({ orgId, wakeupId, text: "Checking the slot.", level: "update" })
+          : undefined;
+      const updated = update !== undefined && "shown" in update ? [update.messageId] : [];
+      assert.lengthOf(updated, kind === "person after an update" ? 1 : 0);
       const first = yield* bridge.send(request);
       assert.isTrue("sent" in first);
       assert.deepStrictEqual(
         yield* sql`SELECT silent, message_id AS id FROM kin_messages
         WHERE source_wakeup_id = ${wakeupId} AND author_kind = 'agent' ORDER BY seq`,
-        [{ silent, id: "sent" in first ? first.messageId : null }],
+        [
+          ...updated.map((id) => ({ silent: 1, id })),
+          { silent, id: "sent" in first ? first.messageId : null },
+        ],
       );
       assert.deepStrictEqual(
         yield* sql`SELECT hold_id FROM kin_held_posts WHERE org_id = ${orgId}`,
@@ -4248,7 +4264,7 @@ it.effect.each([
         assert.deepStrictEqual(
           yield* sql`SELECT tag, replied_at IS NOT NULL AS answered FROM kin_events
             WHERE wakeup_id = ${wakeupId} ORDER BY tag`,
-          kind === "person"
+          kind !== "mixed person and pulse"
             ? [{ tag: "chat.message", answered: 1 }]
             : [
                 { tag: "chat.message", answered: 1 },
@@ -4265,7 +4281,7 @@ it.effect.each([
       yield* complete;
       assert.deepStrictEqual(
         (yield* posted).map((post) => post.body),
-        [request.text],
+        [...(updated.length > 0 ? ["Checking the slot."] : []), request.text],
       );
       assert.strictEqual(yield* endingOf(sql, wakeupId), "sent");
       assert.strictEqual(

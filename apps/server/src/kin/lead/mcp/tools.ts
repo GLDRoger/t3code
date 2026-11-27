@@ -216,7 +216,7 @@ export const KinLeadToolkit = Toolkit.make(
       }),
       level: Schema.Literals(["now", "quiet", "check_in", "update"]).annotate({
         description:
-          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings. update, in a direct chat in a turn a person started, for a line or two of progress shown at once without a notification while the turn goes on: before work that will take minutes, or when what the person is waiting for changes. A turn that answers in seconds needs no update, and an update is not the reply.",
+          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings. update shows a line of progress at once, without a notification, and the turn goes on; only in a direct chat, in a turn a person started. One before a big job (many lines, records or files, or several tasks), another only when something changes; none for a quick answer. An update is never the reply.",
       }),
     }),
     success: Schema.Union([

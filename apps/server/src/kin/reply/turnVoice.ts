@@ -153,19 +153,20 @@ export const updateClientMessageId = Effect.fn("KinReplyBridge.updateClientMessa
 });
 
 export const UPDATE_SHOWN =
-  "Shown in the chat, without a notification. The turn goes on: your reply is posted when it ends.";
+  "Shown in the chat without a notification. Carry on; write your reply when the work is done.";
 
 export const UPDATE_REFUSALS = {
   "not running": "Not shown: this turn is no longer running.",
-  quiet: "Nothing was sent: this turn does not post to a chat.",
+  quiet: "Not shown: this turn posts to no chat.",
   trigger:
-    "Not shown: a trigger started this turn, so nobody is waiting on progress. Send what came of it with kin_send, or end with kin_skip.",
-  "not direct": "Not shown: updates go only to a direct chat. Here your reply is the one message.",
-  "already sent": "Not shown: this turn's message is already sent; end the turn.",
+    "Not shown: a trigger started this turn, so no one is waiting on progress. Finish the work, then send what came of it with kin_send, or end with kin_skip.",
+  "not direct":
+    "Not shown: updates go only to a direct chat. Carry on; here your reply is the one message.",
+  "already sent": "Not shown: this turn's reply is already sent. End the turn.",
   "too long":
     "Not shown: an update is a line or two. The whole answer goes in your reply at the end.",
-  same: "Not shown: that update is already in the chat. Post another when something changes.",
-  limit: "Not shown: this turn has shown all the updates it may. Your reply still goes at the end.",
+  same: "Not shown: that update is already in the chat. Carry on with the work.",
+  limit: "Not shown: this turn has no updates left. Carry on; your reply still goes at the end.",
 } as const;
 
 // Words under eval: change them only with the send cases.

@@ -248,7 +248,7 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
         assert.deepStrictEqual(progress.content, [
           {
             type: "text",
-            text: "Shown in the chat, without a notification. The turn goes on: your reply is posted when it ends.",
+            text: "Shown in the chat without a notification. Carry on; write your reply when the work is done.",
           },
         ]);
         assert.deepInclude(progress.structuredContent, { shown: true });
@@ -264,7 +264,8 @@ it.effect.each(["kin_skip", "kin_send"] as const)(
         const [message] =
           yield* sql`SELECT message_id AS "messageId", body, silent FROM kin_messages
         WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND source_wakeup_id = ${wakeupId} ORDER BY seq DESC`;
-        assert.deepStrictEqual(message, { messageId: message?.messageId, body: words, silent: 1 });
+        // A person started this turn, so its send rings whatever level it asked for.
+        assert.deepStrictEqual(message, { messageId: message?.messageId, body: words, silent: 0 });
         assert.deepStrictEqual(
           JSON.parse(ended.content.find((part) => part.type === "text")!.text),
           {
