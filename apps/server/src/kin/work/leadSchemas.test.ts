@@ -98,14 +98,18 @@ it("advertises every list definition key except the filled-in source event, with
   });
 });
 
-it("advertises every record write key except the filled-in source event", () => {
+it("advertises record write keys except the filled-in source event and the tax aliases", () => {
   const { record_create, record_update } = KinWorkToolkit.tools;
   for (const tool of [record_create, record_update]) {
     const raw = Tool.getJsonSchema(tool);
     const advertised = advertisedJsonSchema(tool, { kin: true });
+    const row = tool.name === "record_create" ? "records[]." : "";
+    const hidden = new Set(["sourceEventId", `${row}taxNumber`, `${row}taxPlace`]);
+    const accepted = inputPropertyPaths(raw);
+    assert.isTrue(hidden.isSubsetOf(accepted), tool.name);
     assert.deepStrictEqual(
       inputPropertyPaths(advertised),
-      inputPropertyPaths(raw).difference(new Set(["sourceEventId"])),
+      accepted.difference(hidden),
       tool.name,
     );
     const prefix = tool.name === "record_create" ? "records.items.properties." : "";

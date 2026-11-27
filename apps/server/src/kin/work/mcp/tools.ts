@@ -8,7 +8,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool } from "effect/ai";
 import { turnEventToolkit } from "../../lead/eventIds.ts";
 
-import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
+import {
+  AcceptedUnadvertisedArguments,
+  AdvertisedDescriptions,
+} from "../../../mcp/advertisedJsonSchema.ts";
 import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -127,6 +130,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: CreateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AcceptedUnadvertisedArguments, ["records[].taxNumber", "records[].taxPlace"])
     .annotate(AdvertisedDescriptions, [
       {
         path: ["properties", "records", "items"],
@@ -157,6 +161,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: Work.UpdateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AcceptedUnadvertisedArguments, ["taxNumber", "taxPlace"])
     .annotate(AdvertisedDescriptions, [
       {
         path: [],

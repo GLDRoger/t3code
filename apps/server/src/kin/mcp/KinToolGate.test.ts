@@ -56,8 +56,7 @@ it("fills and hides the event of every Kin tool that takes one, and of no other"
     KinPulseToolkit,
   ].flatMap((toolkit) => Object.values(toolkit.tools) as Array<Tool.Any>);
   const takes = tools.flatMap((tool) =>
-    Predicate.hasProperty(tool.parametersSchema, "fields") &&
-    Predicate.hasProperty(tool.parametersSchema.fields, "sourceEventId")
+    Predicate.hasProperty(Tool.getJsonSchema(tool).properties ?? {}, "sourceEventId")
       ? [tool.name]
       : [],
   );

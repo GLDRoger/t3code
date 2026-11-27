@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import { KinEventId, TrimmedNonEmptyString } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -70,7 +71,10 @@ export const turnEventToolkit = <Tools extends ReadonlyArray<Tool.Any>>(...tools
   Toolkit.make(
     ...tools.map((tool): Tools[number] =>
       TURN_EVENT_TOOLS.has(tool.name)
-        ? (tool.annotate(AcceptedUnadvertisedArguments, ["sourceEventId"]) as Tools[number])
+        ? (tool.annotate(AcceptedUnadvertisedArguments, [
+            ...(Context.getOrUndefined(tool.annotations, AcceptedUnadvertisedArguments) ?? []),
+            "sourceEventId",
+          ]) as Tools[number])
         : tool,
     ),
   );
