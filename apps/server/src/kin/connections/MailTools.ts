@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Mime from "effect/http/Mime";
-import * as Option from "effect/Option";
 import {
   classifyComposerAttachmentFile,
   unsupportedImageAttachmentMessage,
