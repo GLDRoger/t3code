@@ -116,6 +116,8 @@ import {
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { TRIAGE_SEAT_INSTRUCTIONS } from "../../apps/server/src/kin/lead/outsideTriage.ts";
+import { type KinSeat, kinSeatOf } from "./kin-seat.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
@@ -286,6 +288,7 @@ export const KIN_TOOLKITS = [
 
 /** The world flags that shape a Kin turn's tool list and system text. */
 export type KinSeatOptions = {
+  readonly kinSeat?: KinSeat;
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
@@ -357,6 +360,7 @@ export const kinBillsOf = ({ prompt }: McpToolUseCase) => KIN_BILLS_PROMPT.test(
  * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
  */
 export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
+  if (kinSeatOf({ setup }) !== undefined) return false;
   const stated = setup.world?.kinSession;
   return typeof stated === "boolean"
     ? stated
@@ -396,11 +400,15 @@ export const kinLeadBase = <M, E>(input: {
   readonly nativeSchema: (name: string) => object;
 }) => {
   const { options, t3 } = input;
+  const outsideTriage = options.kinSeat === "outside-triage";
   const ownerSeat =
-    options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
-  const deferredKin = t3.filter(
-    (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
-  );
+    !outsideTriage &&
+    options.kinSession === true &&
+    options.kinShared !== true &&
+    options.kinBills !== true;
+  const deferredKin = outsideTriage
+    ? []
+    : t3.filter((tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)));
   const toolSearch = input.templateTools
     .filter((tool) => tool.name === "ToolSearch")
     .map((tool) => ({ ...tool, description: TOOL_SEARCH_DESCRIPTION }));
@@ -417,9 +425,11 @@ export const kinLeadBase = <M, E>(input: {
     model: input.model,
     system: [
       text(
-        options.kinBills === true
-          ? kinInstructions("confined", "claudeAgent", false)
-          : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
+        outsideTriage
+          ? TRIAGE_SEAT_INSTRUCTIONS
+          : options.kinBills === true
+            ? kinInstructions("confined", "claudeAgent", false)
+            : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
       ),
     ],
     kinClaude: true as const,
@@ -434,8 +444,8 @@ export const kinLeadBase = <M, E>(input: {
       ...(ownerSeat
         ? input.templateTools.filter((tool) => ownerNative.has(tool.name))
         : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
-          // for bills.
-          options.kinBills === true
+          // for bills and outside triage.
+          options.kinBills === true || outsideTriage
           ? []
           : [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
       ...(deferred.length > 0 ? toolSearch : []),
@@ -2077,7 +2087,11 @@ export const replyFollowUp = (
   sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
 ): { kind: "rescue" | "nudge"; prompt: string } | undefined => {
   const { testCase, calls } = sample;
-  if (testCase.setup.world?.kinLead !== true || testCase.prompt.includes("{{REPLY_NUDGE}}"))
+  if (
+    kinSeatOf(testCase) !== undefined ||
+    testCase.setup.world?.kinLead !== true ||
+    testCase.prompt.includes("{{REPLY_NUDGE}}")
+  )
     return undefined;
   const used = calls.filter((call) => call.failed === false);
   const tags = caseTags(testCase);
@@ -2379,4 +2393,7 @@ export const kinJudgedCall = (call: { readonly tool: string; readonly input: unk
   return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
 };
 export const isKinCase = ({ setup }: McpToolUseCase) =>
-  setup.world?.kinAgent === true || setup.world?.kinLead === true || setup.world?.kinKey === true;
+  kinSeatOf({ setup }) !== undefined ||
+  setup.world?.kinAgent === true ||
+  setup.world?.kinLead === true ||
+  setup.world?.kinKey === true;
