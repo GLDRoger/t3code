@@ -3458,6 +3458,18 @@ it.effect.each([
     quiet: true,
     said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. Nothing was lost: the next check-in covers it.",
   },
+  {
+    name: "a run that took too long",
+    outcome: "stopped" as const,
+    timedOut: true,
+    said: "Afternoon check-in from 3:12 pm (Wed 25 Nov) took too long and was stopped. Nothing was lost: the next check-in covers it.",
+  },
+  {
+    name: "a run that showed something first",
+    outcome: "partway" as const,
+    cause: "signin" as const,
+    said: "Afternoon check-in from 3:12 pm (Wed 25 Nov) stopped partway because Ada's AI account is signed out. Nothing was lost: the next check-in covers it.",
+  },
 ])("a check-in that fails for good says once which one didn't run ($name)", (row) =>
   Effect.gen(function* () {
     const { bridge, owner, wakeupId, sql, services, direct, chats, projectId, runId } =
@@ -3527,8 +3539,8 @@ it.effect.each([
         orgId: owner.orgId,
         wakeupId: id,
         lane,
-        outcome: "gave_up",
-        cause: "unreachable",
+        outcome: row.outcome ?? "gave_up",
+        ...(row.timedOut === true ? {} : { cause: row.cause ?? "unreachable" }),
       });
     if (row.skip === true) {
       yield* bridge.skip({ orgId: owner.orgId, wakeupId });
@@ -3548,6 +3560,8 @@ it.effect.each([
     }
     yield* sql`UPDATE kin_events SET state = 'failed', attempts = 4, wakeup_id = NULL
       WHERE org_id = ${owner.orgId} AND event_id = ${event!.eventId}`;
+    if (row.timedOut === true)
+      yield* sql`UPDATE kin_wakeups SET status = 'timed_out' WHERE wakeup_id = ${wakeupId}`;
     yield* fail(wakeupId);
     const second = KinWakeupId.make(`${wakeupId}-second`);
     yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)

@@ -2177,7 +2177,7 @@ const make = Effect.gen(function* () {
         input.outcome === "replied" ||
         input.outcome === "stopped"
       ) {
-        const checkIn = yield* tellMissedCheckIns(input.orgId, input.wakeupId, input.cause);
+        const checkIn = yield* tellMissedCheckIns(input);
         if (checkIn && !input.lane.owed && input.outcome !== "replied") return;
       }
       if (input.outcome === "replied") return yield* failedAfterReply(input);
@@ -2206,11 +2206,14 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 
-  const tellMissedCheckIns = Effect.fn("KinReplyBridge.tellMissedCheckIns")(function* (
-    orgId: KinOrgId,
-    wakeupId: KinWakeupId,
-    cause: KinTroubleCause | undefined,
-  ) {
+  const tellMissedCheckIns = Effect.fn("KinReplyBridge.tellMissedCheckIns")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly wakeupId: KinWakeupId;
+    readonly lane: Lane;
+    readonly outcome: FailedOutcome;
+    readonly cause?: KinTroubleCause;
+  }) {
+    const { orgId, wakeupId, cause } = input;
     const rows = yield* sql<{
       eventId: string;
       title: string;
@@ -2264,11 +2267,18 @@ const make = Effect.gen(function* () {
                 ]
               : []),
           ];
-          const why =
+          // The table's "its" is the lead's; here the sentence is about the check-in.
+          const why = KIN_TROUBLE_WHY[cause ?? "unknown"].replace(
+            /^its /,
+            `${input.lane.leadName}'s `,
+          );
+          const what =
             row.status === "timed_out"
-              ? "the agent ran out of time"
-              : KIN_TROUBLE_WHY[cause ?? "unknown"];
-          const body = `${row.title} didn't run at ${at} because ${why}. ${
+              ? `${row.title} from ${at} took too long and was stopped`
+              : input.outcome === "gave_up"
+                ? `${row.title} didn't run at ${at} because ${why}`
+                : `${row.title} from ${at} stopped partway because ${why}`;
+          const body = `${what}. ${
             left.length === 0
               ? "Nothing was lost: the next check-in covers it."
               : `The next check-in covers it, except ${left.join(" and ")}.`
