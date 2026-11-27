@@ -349,6 +349,102 @@ describe("kinEntrySinceLooked", () => {
     );
   });
 
+  it("collapses equal neighbouring fragments with a count, keeps the leading total, and counts unshown changes in 'and N more'", () => {
+    const briefEdit = (seq: number, at: string) =>
+      change({
+        seq,
+        by: meera,
+        at,
+        fields: [{ field: "notes", from: "a", to: "b" }],
+      });
+    // 5 changes: 2 neighbouring brief edits by Meera, 1 comment by Zoya, 2 older changes.
+    const five = entry({
+      changes: [
+        briefEdit(5, "2026-11-26T14:00:00.000Z"),
+        briefEdit(4, "2026-11-26T13:00:00.000Z"),
+        change({
+          seq: 2,
+          by: chief,
+          at: "2026-11-26T10:00:00.000Z",
+          kind: "linked",
+          fields: [{ field: "url", from: null, to: "https://example.com" }],
+        }),
+        change({
+          seq: 1,
+          by: meera,
+          at: "2026-11-25T09:00:00.000Z",
+          fields: [{ field: "title", from: "Old", to: "New" }],
+        }),
+      ],
+      comments: [comment({ commentId: "c1", seq: 3, by: zoya, at: "2026-11-26T11:00:00.000Z" })],
+    });
+    const view5 = kinEntrySinceLooked(five, "2026-11-24T12:00:00.000Z", names, now);
+    expect(view5?.lead).toBe("5 changes since Tuesday");
+    expect(view5?.lines).toEqual(["Meera changed the brief (2)", "Zoya commented"]);
+    expect(view5?.more).toBe("and 2 more");
+    expect(view5?.text).toBe(
+      "5 changes since Tuesday: Meera changed the brief (2) · Zoya commented · and 2 more",
+    );
+
+    // 4 changes that collapse into 3 fragments show all 3 with no tail.
+    const fourFit = entry({
+      changes: [
+        briefEdit(4, "2026-11-26T14:00:00.000Z"),
+        briefEdit(3, "2026-11-26T13:00:00.000Z"),
+        change({
+          seq: 1,
+          by: meera,
+          at: "2026-11-25T09:00:00.000Z",
+          fields: [{ field: "title", from: "Old", to: "New" }],
+        }),
+      ],
+      comments: [comment({ commentId: "c1", seq: 2, by: zoya, at: "2026-11-26T11:00:00.000Z" })],
+    });
+    const view4 = kinEntrySinceLooked(fourFit, "2026-11-24T12:00:00.000Z", names, now);
+    expect(view4?.lead).toBe("4 changes since Tuesday");
+    expect(view4?.lines).toEqual([
+      "Meera changed the brief (2)",
+      "Zoya commented",
+      "Meera renamed it",
+    ]);
+    expect(view4?.more).toBeNull();
+
+    // Non-neighbouring equal fragments stay separate.
+    const split = entry({
+      changes: [briefEdit(3, "2026-11-26T14:00:00.000Z"), briefEdit(1, "2026-11-26T10:00:00.000Z")],
+      comments: [comment({ commentId: "c1", seq: 2, by: zoya, at: "2026-11-26T12:00:00.000Z" })],
+    });
+    const viewSplit = kinEntrySinceLooked(split, "2026-11-24T12:00:00.000Z", names, now);
+    expect(viewSplit?.lines).toEqual([
+      "Meera changed the brief",
+      "Zoya commented",
+      "Meera changed the brief",
+    ]);
+
+    // Capped history collapses neighbouring duplicates too while keeping "and many more".
+    const cappedChanges = Array.from({ length: KIN_RECORD_CHANGES_CAP }, (_, i) =>
+      i < 2
+        ? briefEdit(
+            KIN_RECORD_CHANGES_CAP - i,
+            new Date(Date.parse("2026-11-26T12:00:00.000Z") - i * 60_000).toISOString(),
+          )
+        : change({
+            seq: KIN_RECORD_CHANGES_CAP - i,
+            by: i % 2 === 0 ? meera : zoya,
+            at: new Date(Date.parse("2026-11-26T12:00:00.000Z") - i * 60_000).toISOString(),
+          }),
+    );
+    const viewCapped = kinEntrySinceLooked(
+      entry({ changes: cappedChanges }),
+      "2026-11-24T12:00:00.000Z",
+      names,
+      now,
+    );
+    expect(viewCapped?.lead).toBe("50+ changes since Tuesday");
+    expect(viewCapped?.lines).toEqual(["Meera changed the brief (2)", "Meera started on it"]);
+    expect(viewCapped?.more).toBe("and many more");
+  });
+
   it("says 'and many more' when changes hit the 50-change cap newer than the mark", () => {
     const changes = Array.from({ length: KIN_RECORD_CHANGES_CAP }, (_, i) =>
       change({

@@ -181,6 +181,24 @@ const OPENS_LABEL: Record<KinSinceLookedOpens["kind"], string> = {
   projectHistory: "Open project history.",
 };
 
+interface CollapsedLine {
+  readonly text: string;
+  readonly count: number;
+}
+
+function collapseNeighbouringLines(lines: ReadonlyArray<string>): ReadonlyArray<CollapsedLine> {
+  const runs: Array<{ readonly raw: string; count: number }> = [];
+  for (const line of lines) {
+    const prev = runs.at(-1);
+    if (prev !== undefined && prev.raw === line) prev.count += 1;
+    else runs.push({ raw: line, count: 1 });
+  }
+  return runs.map((run) => ({
+    text: run.count > 1 ? `${run.raw} (${run.count})` : run.raw,
+    count: run.count,
+  }));
+}
+
 function buildView(input: {
   readonly lookedAt: string;
   readonly total: number;
@@ -196,13 +214,14 @@ function buildView(input: {
     ? `${input.total >= KIN_RECORD_CHANGES_CAP ? KIN_RECORD_CHANGES_CAP : input.total}+ changes`
     : `${input.total} ${input.total === 1 ? "change" : "changes"}`;
   const lead = `${countLabel} ${since}`;
-  const overflow = input.capped || input.total > 3;
-  const shown = overflow ? input.lines.slice(0, 2) : input.lines.slice(0, 3);
-  const more = input.capped
-    ? "and many more"
-    : input.total > 3
-      ? `and ${input.total - shown.length} more`
-      : null;
+  const runs = collapseNeighbouringLines(input.lines);
+  const coveredByThree = runs.slice(0, 3).reduce((sum, run) => sum + run.count, 0);
+  const overflow = input.capped || input.total > coveredByThree;
+  const shownRuns = overflow ? runs.slice(0, 2) : runs.slice(0, 3);
+  const shown = shownRuns.map((run) => run.text);
+  const shownCount = shownRuns.reduce((sum, run) => sum + run.count, 0);
+  const remaining = Math.max(0, input.total - shownCount);
+  const more = input.capped ? "and many more" : remaining > 0 ? `and ${remaining} more` : null;
   const parts = more === null ? shown : [...shown, more];
   const text = `${lead}: ${parts.join(" · ")}`;
   return {
@@ -292,7 +311,7 @@ export function kinEntrySinceLooked(
     lookedAt: pinnedLookedAt,
     total: events.length,
     capped: changesCapped || commentsCapped || events.length >= KIN_RECORD_CHANGES_CAP,
-    lines: events.slice(0, 3).map((event) => event.text),
+    lines: events.map((event) => event.text),
     opens: { kind: "history" },
     names,
     now,
