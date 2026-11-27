@@ -1,4 +1,5 @@
 import {
+  KinChatError,
   KinListId,
   KinOrgId,
   KinRecordId,
@@ -6,6 +7,8 @@ import {
   type KinListDefinition,
   type KinMoneySummary,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -24,7 +27,7 @@ import {
   kinCountryCardRegion,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
-import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
+import { kinDatesMonth, kinMonthWindow, kinReadDates, kinZonedDayStart } from "./kinDates.ts";
 import { kinListFilterParam, kinListQuery } from "./kinLists.ts";
 import {
   KIN_MONEY_BLOCKS,
@@ -344,6 +347,17 @@ describe("the Money summary", () => {
 });
 
 describe("dates", () => {
+  it.each([
+    [new KinChatError({ reason: "not_allowed", message: "Money is off." }), "refused"],
+    [new Error("socket closed"), "failed"],
+  ])("distinguishes a Dates read failure: %s", async (error, tag) => {
+    const result = await kinReadDates(async () => AsyncResult.failure(Cause.fail(error)), {
+      orgId: KinOrgId.make("org-tidewater"),
+      ...kinMonthWindow("2026-12", "UTC"),
+    });
+    expect(result).toEqual({ _tag: tag });
+  });
+
   it("starts a month where the owner is, whatever zone the device is in", () => {
     expect(kinZonedDayStart("2026-11-01", "Asia/Kolkata").toISOString()).toBe(
       "2026-10-31T18:30:00.000Z",

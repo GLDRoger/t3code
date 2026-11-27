@@ -64,11 +64,11 @@ export function KinMonthGrid(props: {
                 accessibilityLabel={[
                   cell.day,
                   cell.today ? "Today" : null,
-                  cell.rows.length === 0
+                  cell.entries.length === 0
                     ? null
-                    : cell.rows.length === 1
+                    : cell.entries.length === 1
                       ? "1 entry"
-                      : `${cell.rows.length} entries`,
+                      : `${cell.entries.length} entries`,
                 ]
                   .filter((part) => part !== null)
                   .join(", ")}
@@ -100,7 +100,7 @@ export function KinMonthGrid(props: {
                 <View
                   className={cn(
                     "h-1 w-1 rounded-full",
-                    cell.rows.length === 0
+                    cell.entries.length === 0
                       ? "bg-transparent"
                       : late
                         ? "bg-danger-foreground"

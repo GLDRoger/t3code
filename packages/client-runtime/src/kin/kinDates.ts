@@ -1,9 +1,21 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { kinDateRowLate, kinWhenParts } from "@t3tools/contracts";
-import type { KinDateRow, KinDatesInput, KinDatesResult, KinRecordKey } from "@t3tools/contracts";
+import type {
+  KinCalendarEvent,
+  KinCalendarSource,
+  KinDateRow,
+  KinDatesInput,
+  KinDatesResult,
+  KinRecordKey,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
+import {
+  kinCalendarPlace,
+  type KinCalendarPlaced,
+  type KinCalendarRowView,
+} from "./kinCalendar.ts";
 import { kinMoneyText, kinMonthLabel, kinSuggestionText } from "./kinLists.ts";
 import {
   kinWorkAllDay,
@@ -14,6 +26,7 @@ import {
   kinWorkDueZone,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkReadState } from "./kinWorkForms.ts";
 
 /** Everything with a date, whatever list it is in: an agenda by day, and a month to look across. */
 
@@ -96,22 +109,26 @@ export const kinMonthWindow = (month: string, zone: string | null): KinDatesWind
   to: kinZonedDayStart(`${kinShiftMonth(month, 1)}-01`, zone).toISOString(),
 });
 
+export type KinDatesRead =
+  | { readonly _tag: "failed" }
+  | { readonly _tag: "refused" }
+  | { readonly _tag: "ready"; readonly rows: ReadonlyArray<KinDateRow>; readonly more: boolean };
+
 /** Reads a window a page at a time, up to a cap that says so when it is reached. */
 export async function kinReadDates(
   read: (input: KinDatesInput) => Promise<AtomCommandResult<KinDatesResult, unknown>>,
   input: KinDatesInput,
-): Promise<
-  AtomCommandResult<{ readonly rows: ReadonlyArray<KinDateRow>; readonly more: boolean }, unknown>
-> {
+): Promise<KinDatesRead> {
   const rows: Array<KinDateRow> = [];
   let cursor: string | null = null;
   do {
     const result = await read({ ...input, limit: 200, ...(cursor === null ? {} : { cursor }) });
-    if (!AsyncResult.isSuccess(result)) return AsyncResult.failure(result.cause);
+    if (!AsyncResult.isSuccess(result))
+      return { _tag: kinWorkReadState(result)._tag === "refused" ? "refused" : "failed" };
     rows.push(...result.value.rows);
     cursor = result.value.nextCursor;
   } while (cursor !== null && rows.length < READ_CAP);
-  return AsyncResult.success({ rows, more: cursor !== null });
+  return { _tag: "ready", rows, more: cursor !== null };
 }
 
 export interface KinDateRowView {
@@ -166,34 +183,126 @@ function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDat
   };
 }
 
+/** A day's Work row or calendar event, in the order the day shows them. */
+export type KinDatesEntry =
+  | { readonly kind: "work"; readonly id: string; readonly row: KinDateRowView }
+  | { readonly kind: "event"; readonly id: string; readonly event: KinCalendarRowView };
+
+/** Calendar events to show among Work's rows; the date pickers pass none. */
+export interface KinDatesCalendar {
+  readonly sources: ReadonlyArray<KinCalendarSource>;
+  readonly events: ReadonlyArray<KinCalendarEvent>;
+}
+
+interface WorkHeld {
+  readonly view: KinDateRowView;
+  readonly allDay: boolean;
+  readonly at: number;
+}
+
+const placeEvents = (
+  calendar: KinDatesCalendar | undefined,
+  names: KinWorkNames,
+  today: string,
+): ReadonlyArray<KinCalendarPlaced> => {
+  if (calendar === undefined) return [];
+  const sources = new Map(calendar.sources.map((source) => [source.connectionId, source]));
+  return calendar.events.flatMap((event) => {
+    const placed = kinCalendarPlace(event, sources.get(event.connectionId), names, today);
+    return placed === null ? [] : [placed];
+  });
+};
+
+/** All-day first (Work, then events), then timed ones by time; Work keeps the host's order. */
+function dayEntries(
+  work: ReadonlyArray<WorkHeld>,
+  events: ReadonlyArray<KinCalendarRowView>,
+): ReadonlyArray<KinDatesEntry> {
+  const workEntry = (held: WorkHeld): KinDatesEntry => ({
+    kind: "work",
+    id: held.view.id,
+    row: held.view,
+  });
+  const eventEntry = (event: KinCalendarRowView): KinDatesEntry => ({
+    kind: "event",
+    id: event.id,
+    event,
+  });
+  const timedWork = work.filter((held) => !held.allDay);
+  const timedEvents = events.filter((event) => !event.allDay).sort((a, b) => a.at - b.at);
+  const entries: Array<KinDatesEntry> = [
+    ...work.filter((held) => held.allDay).map(workEntry),
+    ...events.filter((event) => event.allDay).map(eventEntry),
+  ];
+  let w = 0;
+  let e = 0;
+  while (w < timedWork.length || e < timedEvents.length) {
+    const nextWork = timedWork[w];
+    const nextEvent = timedEvents[e];
+    if (nextWork !== undefined && (nextEvent === undefined || nextWork.at <= nextEvent.at)) {
+      entries.push(workEntry(nextWork));
+      w += 1;
+    } else if (nextEvent !== undefined) {
+      entries.push(eventEntry(nextEvent));
+      e += 1;
+    }
+  }
+  return entries;
+}
+
+const workByDay = (rows: ReadonlyArray<KinDateRow>, names: KinWorkNames, now: Date) => {
+  const days = new Map<string, Array<WorkHeld>>();
+  for (const row of rows) {
+    const view = kinDateRowView(row, names, now);
+    days.set(view.day, [
+      ...(days.get(view.day) ?? []),
+      { view, allDay: row.allDay, at: Date.parse(row.at) },
+    ]);
+  }
+  return days;
+};
+
 export interface KinAgendaDay {
   readonly day: string;
   /** "Today", "Tomorrow", "Fri 14 Nov". */
   readonly label: string;
   readonly past: boolean;
+  /** Work's rows alone, as the host sent them. */
   readonly rows: ReadonlyArray<KinDateRowView>;
+  readonly entries: ReadonlyArray<KinDatesEntry>;
 }
 
-/** Rows under the day they fall on, soonest day first, each day's rows as the host sent them. */
+/**
+ * Rows under the day they fall on, soonest day first, each day's rows as the host sent them. An
+ * event spanning days shows once, on its first day in view.
+ */
 export function kinDatesAgenda(
   rows: ReadonlyArray<KinDateRow>,
   names: KinWorkNames,
   now: Date,
+  calendar?: KinDatesCalendar,
 ): ReadonlyArray<KinAgendaDay> {
   const today = kinReaderToday(now, names);
-  const days = new Map<string, Array<KinDateRowView>>();
-  for (const row of rows) {
-    const view = kinDateRowView(row, names, now);
-    days.set(view.day, [...(days.get(view.day) ?? []), view]);
+  const work = workByDay(rows, names, now);
+  const agendaFirst = shiftDay(kinOwnerToday(now, names), -KIN_DATES_BEHIND_DAYS);
+  const events = new Map<string, Array<KinCalendarRowView>>();
+  for (const placed of placeEvents(calendar, names, today)) {
+    const day =
+      placed.first < agendaFirst && placed.last >= agendaFirst ? agendaFirst : placed.first;
+    events.set(day, [...(events.get(day) ?? []), placed.on(day)]);
   }
-  return [...days]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([day, held]) => ({
-      day,
-      label: kinWorkDueLabel(day, new Date(`${today}T12:00:00`)),
-      past: day < today,
-      rows: held,
-    }));
+  return [...new Set([...work.keys(), ...events.keys()])]
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((day) => {
+      const held = work.get(day) ?? [];
+      return {
+        day,
+        label: kinWorkDueLabel(day, new Date(`${today}T12:00:00`)),
+        past: day < today,
+        rows: held.map((one) => one.view),
+        entries: dayEntries(held, events.get(day) ?? []),
+      };
+    });
 }
 
 export interface KinMonthCell {
@@ -201,7 +310,9 @@ export interface KinMonthCell {
   readonly number: number;
   readonly inMonth: boolean;
   readonly today: boolean;
+  /** Work's rows alone. */
   readonly rows: ReadonlyArray<KinDateRowView>;
+  readonly entries: ReadonlyArray<KinDatesEntry>;
 }
 
 export const KIN_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -212,13 +323,11 @@ export function kinDatesMonth(
   rows: ReadonlyArray<KinDateRow>,
   names: KinWorkNames,
   now: Date,
+  calendar?: KinDatesCalendar,
 ): { readonly label: string; readonly weeks: ReadonlyArray<ReadonlyArray<KinMonthCell>> } {
   const today = kinReaderToday(now, names);
-  const byDay = new Map<string, Array<KinDateRowView>>();
-  for (const row of rows) {
-    const view = kinDateRowView(row, names, now);
-    byDay.set(view.day, [...(byDay.get(view.day) ?? []), view]);
-  }
+  const work = workByDay(rows, names, now);
+  const events = placeEvents(calendar, names, today);
   const first = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1);
   const lead = (first.getDay() + 6) % 7;
   const weeks: Array<Array<KinMonthCell>> = [];
@@ -229,12 +338,19 @@ export function kinDatesMonth(
     // A sixth week that is all next month isn't drawn.
     if (index % 7 === 0 && index >= 28 && !inMonth) break;
     if (index % 7 === 0) weeks.push([]);
+    const held = work.get(day) ?? [];
     weeks.at(-1)!.push({
       day,
       number: date.getDate(),
       inMonth,
       today: day === today,
-      rows: byDay.get(day) ?? [],
+      rows: held.map((one) => one.view),
+      entries: dayEntries(
+        held,
+        events
+          .filter((placed) => placed.first <= day && day <= placed.last)
+          .map((placed) => placed.on(day)),
+      ),
     });
   }
   return { label: kinMonthLabel(month), weeks };

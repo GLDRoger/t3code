@@ -66,6 +66,11 @@ export type FakeMailEvent = {
   readonly end: number;
   readonly updated: number;
   readonly state: "confirmed" | "cancelled" | "deleted";
+  readonly allDay?: boolean;
+  readonly zone?: string;
+  readonly link?: string;
+  readonly notes?: string;
+  readonly location?: string;
   readonly repeats?: number;
   readonly guests?: ReadonlyArray<string>;
   readonly deletedOccurrences?: ReadonlyArray<string>;
@@ -87,6 +92,7 @@ export type FakeMailState = {
     string,
     { readonly account: string; readonly raw: string; readonly threadId: string }
   >;
+  readonly failing: Record<string, number>;
   seq: number;
 };
 
@@ -103,6 +109,7 @@ const emptyFakeMail = (): FakeMailState => ({
   codes: {},
   granted: {},
   drafts: {},
+  failing: {},
   seq: 0,
 });
 
@@ -265,13 +272,14 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const setDown = (address: string, isDown: boolean) =>
     isDown ? void down.add(lower(address)) : void down.delete(lower(address));
   /** Every call for the account answers this HTTP status, as a refusal or a throttle does. */
-  const failing = new Map<string, number>();
   const failWith = (address: string, status: number | null) =>
-    status === null
-      ? void failing.delete(lower(address))
-      : void failing.set(lower(address), status);
-  const outage = (account: FakeMailAccount, request: Request) => {
-    const status = failing.get(lower(account.address));
+    edit((state) => {
+      const key = lower(address);
+      if (status === null) delete state.failing[key];
+      else state.failing[key] = status;
+    });
+  const outage = (state: FakeMailState, account: FakeMailAccount, request: Request) => {
+    const status = state.failing[lower(account.address)];
     if (status === 429)
       return new Response(JSON.stringify({ error: { code: status } }), {
         status,
@@ -531,14 +539,21 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         : { ...item.event, state: "deleted", rev: ++state.seq };
     return new Response(null, { status: 204 });
   };
+  const googleTime = (item: Occurrence, at: number) => ({
+    ...(item.event.allDay ? { date: iso(at).split("T")[0] } : { dateTime: iso(at) }),
+    timeZone: item.event.zone,
+  });
   const googleEvent = (item: Occurrence) => ({
     kind: "calendar#event",
     etag: eventRevision(item),
     id: item.id,
     status: item.event.state === "confirmed" ? "confirmed" : "cancelled",
     summary: item.event.title,
-    start: { dateTime: iso(item.start) },
-    end: { dateTime: iso(item.end) },
+    start: googleTime(item, item.start),
+    end: googleTime(item, item.end),
+    htmlLink: item.event.link,
+    description: item.event.notes,
+    location: item.event.location,
     updated: iso(item.event.updated),
     organizer: { email: item.event.account, self: true },
     attendees: (item.event.guests ?? []).map((email) => ({ email })),
@@ -558,18 +573,26 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     id: item.id,
     subject: item.event.title,
     isCancelled: item.event.state === "cancelled",
-    isAllDay: false,
-    start: graphTime(item.start),
-    end: graphTime(item.end),
+    isAllDay: item.event.allDay ?? false,
+    start: {
+      ...graphTime(item.start),
+      timeZone: (item.event.allDay ? item.event.zone : undefined) ?? "UTC",
+    },
+    end: {
+      ...graphTime(item.end),
+      timeZone: (item.event.allDay ? item.event.zone : undefined) ?? "UTC",
+    },
+    originalStartTimeZone: item.event.zone,
+    webLink: item.event.link,
     lastModifiedDateTime: iso(item.event.updated),
     type: { single: "singleInstance", master: "seriesMaster", instance: "occurrence" }[item.kind],
     seriesMasterId: item.kind === "instance" ? item.event.id : null,
     organizer: { emailAddress: { address: item.event.account } },
     isOrganizer: true,
     attendees: (item.event.guests ?? []).map((address) => ({ emailAddress: { address } })),
-    location: { displayName: "" },
-    bodyPreview: "",
-    body: { contentType: "html", content: "" },
+    location: { displayName: item.event.location ?? "" },
+    bodyPreview: item.event.notes ?? "",
+    body: { contentType: "html", content: item.event.notes ?? "" },
   });
 
   const gmail = async (request: Request, url: URL) => {
@@ -578,7 +601,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     return edit((state) => {
       const account = bearer(state, request);
       if (account === undefined) return json({ error: { code: 401 } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
@@ -726,7 +749,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           const page = pageOf(
             params.get("orderBy") === "updated"
               ? items.toSorted((a, b) => a.event.updated - b.event.updated)
-              : items,
+              : params.get("orderBy") === "startTime"
+                ? items.toSorted((a, b) => a.start - b.start)
+                : items,
             params.get("maxResults"),
             params.get("pageToken"),
           );
@@ -788,7 +813,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       const account = bearer(state, request);
       if (account === undefined)
         return json({ error: { code: "InvalidAuthenticationToken" } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account).toSorted((a, b) => b.at - a.at);
@@ -945,12 +970,16 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (/\/calendarView$/.test(path)) {
         const from = Date.parse(url.searchParams.get("startDateTime") ?? "1970-01-01T00:00:00Z");
         const until = Date.parse(url.searchParams.get("endDateTime") ?? "9999-01-01T00:00:00Z");
+        const items = occurrences(state, account, true).filter(
+          ({ event, start, end }) => event.state !== "deleted" && end > from && start < until,
+        );
+        if (!url.searchParams.has("$top")) return json({ value: items.map(graphEvent) });
+        const page = pageOf(items, url.searchParams.get("$top"), url.searchParams.get("$skip"));
+        const next = new URL(url);
+        next.searchParams.set("$skip", page.next ?? "");
         return json({
-          value: occurrences(state, account, true)
-            .filter(
-              ({ event, start, end }) => event.state !== "deleted" && end > from && start < until,
-            )
-            .map(graphEvent),
+          value: page.items.map(graphEvent),
+          ...(page.next === undefined ? {} : { "@odata.nextLink": next.href }),
         });
       }
       const graphEventId = /\/events\/([^/]+)$/.exec(path)?.[1];
