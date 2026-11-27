@@ -755,23 +755,35 @@ const skipBase = () => {
   return { ...base, nativeTools: [...base.nativeTools, tool], t3: [...base.t3, tool] };
 };
 
-it.effect.each(["skip", "send"] as const)(
-  "ends a Claude Kin sample immediately after a successful %s",
-  (kind) =>
+it.effect.each([
+  { kind: "skip", prompt: pulseQuote },
+  { kind: "send", prompt: pulseQuote, level: "quiet", deliveredLevel: "quiet", held: false },
+  { kind: "send", prompt: pulseQuote, level: "check_in", deliveredLevel: "check_in", held: true },
+  {
+    kind: "send",
+    prompt: `${pulseQuote}\n${personQuote}`,
+    level: "quiet",
+    deliveredLevel: "now",
+    held: false,
+  },
+  { kind: "send", prompt: personQuote, level: "check_in", deliveredLevel: "now", held: false },
+] as const)(
+  "ends a Claude Kin sample immediately after a successful $kind ($level, $deliveredLevel)",
+  (row) =>
     Effect.gen(function* () {
       let requests = 0;
       const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
       const words = "Tidewater Freight booked the loading slot.";
       const use =
-        kind === "skip"
+        row.kind === "skip"
           ? skipUse
           : {
               type: "tool_use",
               id: "send",
               name: "mcp__t3-code__kin_send",
-              input: { text: words, level: "quiet" },
+              input: { text: words, level: row.level },
             };
-      const result = yield* runSample(replyCase(pulseQuote), skipConfig, kinBase(), {
+      const result = yield* runSample(replyCase(row.prompt), skipConfig, kinBase(), {
         usage: { ...usage },
         shellUsage: { ...usage },
       }).pipe(
@@ -801,13 +813,17 @@ it.effect.each(["skip", "send"] as const)(
         ),
       );
       assert.equal(requests, 1);
-      if (kind === "skip") {
+      if (row.kind === "skip") {
         assert.equal(result.calls[0]?.output, "Nothing sent; this turn is over.");
         assert.equal(result.deliveredText, "");
       } else {
         assert.isFalse(result.calls[0]?.failed);
         assert.equal(result.deliveredText, words);
-        assert.equal(result.deliveredLevel, "quiet");
+        assert.equal(result.deliveredLevel, row.deliveredLevel);
+        assert.include(
+          JSON.parse(result.calls[0]!.output!),
+          row.held ? { held: true } : { sent: true },
+        );
       }
     }),
 );

@@ -1361,7 +1361,7 @@ const make = Effect.gen(function* () {
             const [reminder] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${wake.orgId}
               AND agent_id = ${wake.agentId} AND wakeup_id = ${wake.wakeupId} AND tag = 'deferral.due'
               AND json_extract(json, '$.subject.type') = 'reminder' ORDER BY event_id LIMIT 1`;
-            const level = reminder === undefined ? input.level : "now";
+            const level = wake.startedByPerson || reminder !== undefined ? "now" : input.level;
             if (stored !== undefined) {
               if (!stored.held || level !== "check_in") return yield* alreadySent;
               return {

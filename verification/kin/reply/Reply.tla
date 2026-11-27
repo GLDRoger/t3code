@@ -164,9 +164,10 @@ LeadWrites ==
                  worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience, ended,
                  stopping, sent, voice, nudges, marks>>
 
-(* lead/mcp/handlers.ts kin_send → KinReplyBridge.send: the agent's own message (now, quiet or
-   held for the owner's check-in) is the turn's one message for every slot it covers: text held
-   for them is journalled "Not sent" at the flush. In a send-voice wake-up it is the only way the
+(* lead/mcp/handlers.ts kin_send → KinReplyBridge.send: the agent's own message is the turn's one
+   message for every slot it covers: text held for them is journalled "Not sent" at the flush.
+   A person's turn sends now; a trigger may send now, quietly or at the owner's next check-in.
+   The model does not distinguish levels. In a send-voice wake-up it is the only way the
    trigger's words reach anyone. One transaction checks the person's Stop (`wasStopped`), posts or
    holds the message and writes the receipt (`kin_lead_tool_calls`, its request hash and steer
    cutoff), so a Stop committed first refuses it and a retry or a resumed bridge returns the same

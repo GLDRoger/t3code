@@ -3910,7 +3910,17 @@ it.effect.each([
         : reason === "quiet"
           ? { event: WAKE_KINDS["bills.read"].event! }
           : reason === "non-owner check-in"
-            ? { lane: "own-group", ask: "How is the loading slot?" }
+            ? {
+                lane: "own-group",
+                event: () =>
+                  Effect.succeed((base) => ({
+                    ...base,
+                    _tag: "pulse",
+                    provenance: { _tag: "system" },
+                    chatId: KinChatId.make("group"),
+                    factKeys: ["task_late:W-1:due=0"],
+                  })),
+              }
             : {},
     );
     const send = bridge.send({
@@ -3927,30 +3937,116 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect(
-  "a quiet send stores one silent message, replays the same request, and refuses another",
-  () =>
+const seedSendCheckIn = Effect.fn("test.seedSendCheckIn")(function* (
+  orgId: PersonIdentity["orgId"],
+  personId: PersonIdentity["personId"],
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+    project_id, workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+    created_by, creation_source, created_at, updated_at, last_run_status, run_count, next_run_at)
+    VALUES ('task-morning', 'Morning check-in', 'Check in', 1,
+      '{"type":"fixed_time","timeOfDay":"09:00","weekdays":[1,2,3,4,5]}', 'project', '{}', '{}',
+      'approval-required', 'plan', 'system', 'server', ${DateTime.formatIso(at)}, ${DateTime.formatIso(at)}, 'never', 0,
+      '1970-01-02T09:00:00.000Z')`;
+  yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+    source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at, check_in)
+    VALUES ('task-morning', ${orgId}, 'checkin-morning', ${agentId}, ${chatId},
+      'kin-seed', ${personId}, 'owner_only', 'hash', 'inbox', 0, 0, 1)`;
+});
+
+it.effect.each([
+  { kind: "trigger", level: "quiet", silent: 1 },
+  { kind: "person", level: "quiet", silent: 0 },
+  { kind: "person", level: "check_in", silent: 0 },
+  { kind: "mixed person and pulse", level: "quiet", silent: 0 },
+] as const)(
+  "a send posts once at the turn's effective level ($kind, $level)",
+  ({ kind, level, silent }) =>
     Effect.gen(function* () {
-      const { bridge, orgId, wakeupId, sql, text, complete } = yield* setupSend({});
-      const request = {
+      const {
+        bridge,
         orgId,
         wakeupId,
-        text: `The log contains NO_REPLY. ${text}`,
-        level: "quiet",
-      } as const;
+        sql,
+        text: body,
+        complete,
+        owner,
+        direct,
+        fake,
+        runId,
+        posted,
+      } = yield* setupSend({
+        sendOnly: "default",
+        ...(kind === "trigger" ? {} : { ask: "Is the loading slot booked?" }),
+        ...(kind === "mixed person and pulse"
+          ? {
+              event: ({ owner, message }) =>
+                Effect.gen(function* () {
+                  const kin = yield* Kin.KinServer;
+                  const services = Option.getOrThrow(kin.services);
+                  yield* Context.get(services, KinEventQueue.KinEventQueue).enqueue({
+                    _tag: "pulse",
+                    eventId: KinEventId.make("loading-slot-pulse"),
+                    orgId: owner.orgId,
+                    agentId,
+                    receivedAt: yield* DateTime.now,
+                    dedupeKey: null,
+                    provenance: { _tag: "system" },
+                    factKeys: ["task_late:W-1:due=0"],
+                  });
+                  return (base: WakeupEventBase): KinEvent => ({
+                    ...base,
+                    _tag: "chat.message",
+                    provenance: message!.author,
+                    chatId: message!.chatId,
+                    messageId: message!.messageId,
+                  });
+                }).pipe(Effect.orDie),
+            }
+          : {}),
+      });
+      if (level === "check_in") yield* seedSendCheckIn(orgId, owner.personId, direct.chatId);
+      const request = { orgId, wakeupId, text: `The log contains NO_REPLY. ${body}`, level };
       const first = yield* bridge.send(request);
+      assert.isTrue("sent" in first);
+      assert.deepStrictEqual(
+        yield* sql`SELECT silent, message_id AS id FROM kin_messages
+        WHERE source_wakeup_id = ${wakeupId} AND author_kind = 'agent' ORDER BY seq`,
+        [{ silent, id: "sent" in first ? first.messageId : null }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT hold_id FROM kin_held_posts WHERE org_id = ${orgId}`,
+        [],
+      );
+      if (kind !== "trigger") {
+        assert.deepStrictEqual(
+          yield* sql`SELECT tag, replied_at IS NOT NULL AS answered FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY tag`,
+          kind === "person"
+            ? [{ tag: "chat.message", answered: 1 }]
+            : [
+                { tag: "chat.message", answered: 1 },
+                { tag: "pulse", answered: 1 },
+              ],
+        );
+      }
       assert.deepStrictEqual(yield* bridge.send(request), first);
       yield* bridge.skip({ orgId, wakeupId });
+      fake.items = [
+        tool("send", 1, "mcp__kin__kin_send", runId),
+        text("final", 2, "The gate opens at 11:00.", runId),
+      ];
       yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((post) => post.body),
+        [request.text],
+      );
       assert.strictEqual(yield* endingOf(sql, wakeupId), "sent");
       assert.strictEqual(
         (yield* Effect.flip(bridge.send({ ...request, text: "Changed." }))).reason,
         "already sent",
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT silent, message_id AS id, source_wakeup_id AS wakeup FROM kin_messages
-        WHERE client_message_id = ${`send:kin-send:${wakeupId}`} ORDER BY seq`,
-        [{ silent: 1, id: "sent" in first ? first.messageId : null, wakeup: wakeupId }],
       );
     }).pipe(Effect.provide(layer)),
 );
@@ -3996,17 +4092,7 @@ it.effect.each([false, true])(
 it.effect("an explicit check-in send waits in the same queue as a relay", () =>
   Effect.gen(function* () {
     const { bridge, owner, orgId, wakeupId, direct, sql, text, posted } = yield* setupSend({});
-    yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
-      project_id, workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
-      created_by, creation_source, created_at, updated_at, last_run_status, run_count, next_run_at)
-      VALUES ('task-morning', 'Morning check-in', 'Check in', 1,
-        '{"type":"fixed_time","timeOfDay":"09:00","weekdays":[1,2,3,4,5]}', 'project', '{}', '{}',
-        'approval-required', 'plan', 'system', 'server', ${DateTime.formatIso(at)}, ${DateTime.formatIso(at)}, 'never', 0,
-        '1970-01-02T09:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
-      source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at, check_in)
-      VALUES ('task-morning', ${orgId}, 'checkin-morning', ${agentId}, ${direct.chatId},
-        'kin-seed', ${owner.personId}, 'owner_only', 'hash', 'inbox', 0, 0, 1)`;
+    yield* seedSendCheckIn(orgId, owner.personId, direct.chatId);
     const first = yield* bridge.send({ orgId, wakeupId, text, level: "check_in" });
     assert.isTrue("held" in first);
     if ("held" in first) assert.include(first.when, "Rhea's next check-in");

@@ -748,13 +748,15 @@ export const deliveredText = (
   return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
 };
 
-const sendLevel = (input: unknown) => {
+const sendLevel = (testCase: McpToolUseCase, input: unknown) => {
   if (!isRecord(input)) return undefined;
   const { level } = input;
-  return level === "now" || level === "quiet" || level === "check_in" ? level : undefined;
+  if (level !== "now" && level !== "quiet" && level !== "check_in") return undefined;
+  return startedBy(caseTags(testCase)) === "person" ||
+    quoteLabels(testCase.prompt).includes(QUOTE_LABELS.reminder)
+    ? "now"
+    : level;
 };
-
-const isDueReminder = (prompt: string) => quoteLabels(prompt).includes(QUOTE_LABELS.reminder);
 
 export const kinDelivery = (
   sample: ReplySample,
@@ -764,7 +766,7 @@ export const kinDelivery = (
   const text = deliveredText(sample, sendOnly);
   const labels = quoteLabels(sample.testCase.prompt);
   const ending = replyEnding(sample.calls);
-  const level = ending?.tool === "kin_send" ? sendLevel(ending.input) : undefined;
+  const level = ending?.tool === "kin_send" ? sendLevel(sample.testCase, ending.input) : undefined;
   const page =
     labels.some((label) =>
       /^(?:morning|weekly|evening|left for this check-in|routine facts|Team room turn)\b/.test(
@@ -773,9 +775,7 @@ export const kinDelivery = (
     ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
   return {
     deliveredText: text,
-    ...(level === undefined
-      ? {}
-      : { deliveredLevel: isDueReminder(sample.testCase.prompt) ? "now" : level }),
+    ...(level === undefined ? {} : { deliveredLevel: level }),
     deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
   };
 };
@@ -2195,9 +2195,9 @@ export const defaultReplyMock = (
     return { $error: "Nothing was sent: pass the text to send." };
   const { prompt } = sample.testCase;
   if (/^This turn is in the Team room, chat /m.test(prompt)) return { $error: SEND_REFUSALS.team };
-  const level = sendLevel(input);
+  const level = sendLevel(sample.testCase, input);
   if (level === undefined) return { $error: "Nothing was sent: pass a valid level." };
-  if (level === "check_in" && !isDueReminder(prompt)) {
+  if (level === "check_in") {
     if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
       return { $error: SEND_REFUSALS["non-owner check-in"] };
     return { held: true, when: "At the next check-in." };
