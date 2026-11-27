@@ -958,10 +958,10 @@ const make = Effect.gen(function* () {
       else items[index] = head;
       bodies.set(file, staged.body);
     }
-    const labelled = items.find((item) => item.id === fm.id);
+    const existing = items.find((item) => item.id === fm.id);
     if (
-      labelled !== undefined &&
-      labelled.sensitive !== false &&
+      existing !== undefined &&
+      existing.sensitive !== false &&
       fm.sensitive === false &&
       change.label !== "share"
     )
@@ -1054,6 +1054,8 @@ const make = Effect.gen(function* () {
             "sensitive",
             "shared_by",
           ]);
+          if (fm.sender_mail_voice !== true || source.saidBy === item.said_by)
+            mutable.add("sender_mail_voice");
           // What is no longer true stays so: no write, nor its replay at commit, brings it back.
           if (item.invalid_at === null) mutable.add("invalid_at");
           if (
@@ -1074,8 +1076,14 @@ const make = Effect.gen(function* () {
           reason: "Cannot replace a different item",
         });
     }
+    // An absent mark is reserved for older items that still use the mail keyword fallback.
+    const senderMailVoice =
+      fm.sender_mail_voice ??
+      existing?.sender_mail_voice ??
+      (existing === undefined && (fm.kind === "claim" || fm.kind === "person") ? false : undefined);
     const fields = {
       ...fm,
+      ...(senderMailVoice === undefined ? {} : { sender_mail_voice: senderMailVoice }),
       said_by: source.saidBy,
       source: source.source,
       source_event: change.sourceEventId,
@@ -1087,7 +1095,6 @@ const make = Effect.gen(function* () {
           : source.trust,
       review_by: fm.review_by,
     };
-    const existing = items.find((item) => item.id === fm.id);
     // A new item that says what someone said holds their words from the cited message; an
     // existing item keeps the quote, like the rest of its provenance, from when it was saved.
     if (!existing && fm.kind !== "deferral") {

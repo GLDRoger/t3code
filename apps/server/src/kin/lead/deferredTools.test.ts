@@ -106,6 +106,7 @@ it("advertises every accepted memory write key and a single operation enum", () 
     inputPropertyPaths(advertised),
     inputPropertyPaths(Tool.getJsonSchema(tool)),
   );
+  expect(advertised.properties).toHaveProperty("item.properties.sender_mail_voice.description");
   expect(advertised.properties).toHaveProperty("op", {
     type: "string",
     enum: ["create", "update", "supersede", "invalidate"],

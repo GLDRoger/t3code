@@ -512,6 +512,7 @@ export const MemoryItemFrontMatter = Schema.Struct({
   // that they bear the item out. Server-written; absent before quotes and on unworded events.
   quote: Schema.optional(Schema.String),
   links: Schema.Array(Schema.String),
+  sender_mail_voice: Schema.optional(Schema.Boolean),
   // Whether only the owner's own turns may see the item. Absent on an item nobody has labelled
   // yet, which reads as sensitive.
   sensitive: Schema.optional(Schema.Boolean),

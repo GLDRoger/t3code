@@ -82,6 +82,8 @@ export const mailSenderVoices = Effect.fn("KinConnections.mailSenderVoices")(
           !reaches(audience, item, labels)
         )
           return [];
+        if (head.sender_mail_voice !== undefined)
+          return head.sender_mail_voice ? [mailWords(item)] : [];
         const search = [head.title, head.what, body].join("\n");
         return mail.test(search) && style.test(search) ? [mailWords(item)] : [];
       });

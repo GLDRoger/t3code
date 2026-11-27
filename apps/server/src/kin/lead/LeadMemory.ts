@@ -149,6 +149,10 @@ const WriteItem = Schema.Struct({
   source: Schema.optional(writableFields.source),
   said_by: Schema.optional(writableFields.said_by),
   links: Schema.optional(writableFields.links),
+  sender_mail_voice: writableFields.sender_mail_voice.annotate({
+    description:
+      "Set true only for a claim or person note that records the speaker's own mail style, including greetings and sign-offs.",
+  }),
   id: Schema.optional(itemId),
   chat: Schema.optional(KinChatId),
   review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),

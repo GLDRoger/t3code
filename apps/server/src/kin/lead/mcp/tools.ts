@@ -280,6 +280,7 @@ export const KinLeadToolkit = Toolkit.make(
           "links",
           "body",
           "sensitive",
+          "sender_mail_voice",
         ],
       },
     ]),
