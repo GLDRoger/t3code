@@ -104,6 +104,8 @@ const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
   WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'pulse' AND json_extract(e.json, '$.rule') IS NOT NULL
+  THEN 'mail-rule:' || e.event_id
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.review') IS NOT NULL
   THEN 'review:' || json_extract(e.json, '$.chatId')
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL

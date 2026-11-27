@@ -26,13 +26,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { looksLikeSignInMail } from "../connections/MailText.ts";
-import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS } from "../durations.ts";
-import { directKey } from "../lead/LeadAccess.ts";
-import { ownerLevelSql } from "../people/KinAccess.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
+import { companyRuleMailbox, isDirectRuleLead, ruleSetter } from "./ruleAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
+import { heldRuleReason, holdRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
+import { recordManualRuleMail, wakeRuleMail, type WakeMail } from "./ruleWake.ts";
 import { mailRuleAddress, mailRuleDomain, mailRulePhrase, matchMailRule } from "./ruleMatch.ts";
 
 const DEFAULT_CAP = 30;
@@ -98,12 +99,9 @@ type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month"> & {
   readonly month: string | null;
   readonly sourceEvent: string;
 };
-type Candidate = {
-  readonly arrivalId: string;
+type Candidate = WakeMail & {
   readonly connectionId: string;
   readonly messageId: string;
-  readonly fromAddress: string | null;
-  readonly receivedAt: number | null;
   readonly noticedAt: number;
   readonly class: string | null;
   readonly hasFile: 0 | 1 | null;
@@ -130,6 +128,7 @@ const toPreviewMail = ({ arrivalId, fromAddress, receivedAt }: Candidate) => ({
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const connections = yield* KinConnections;
+  const queue = yield* KinEventQueue;
   const zoneFor = (orgId: KinOrgId) =>
     readOwnerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const settle = <A, E>(effect: Effect.Effect<A, E>) =>
@@ -140,48 +139,23 @@ const make = Effect.gen(function* () {
     yield* stillOwner(orgId, person.personId);
     return person.personId;
   });
-  const stillOwner = Effect.fn("KinMailRules.stillOwner")(function* (
-    orgId: KinOrgId,
-    personId: KinPersonId,
-  ) {
-    const rows = yield* sql`SELECT 1 FROM kin_people p WHERE p.org_id = ${orgId}
-      AND p.person_id = ${personId} AND p.removed_at IS NULL
-      AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}`;
-    if (rows.length === 0) return yield* notAllowed;
-  });
-  const companyMailbox = Effect.fn("KinMailRules.companyMailbox")(function* (
-    orgId: KinOrgId,
-    connectionId: string,
-  ) {
-    const rows = yield* sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
-      AND connection_id = ${connectionId} AND person_id IS NULL AND kind = 'builtin'
-      AND preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL AND paused_at IS NULL
-      AND state = 'active'`;
-    if (rows.length === 0) return yield* noMailbox;
-  });
-  const directLead = Effect.fn("KinMailRules.directLead")(function* (
+  const stillOwner = (orgId: KinOrgId, personId: KinPersonId) =>
+    Effect.flatMap(ruleSetter(orgId, personId), (setter) =>
+      setter === "owner" ? Effect.void : notAllowed,
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const companyMailbox = (orgId: KinOrgId, connectionId: string) =>
+    Effect.flatMap(companyRuleMailbox(orgId, connectionId), (mailbox) =>
+      mailbox === undefined ? noMailbox : Effect.void,
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const directLead = (
     orgId: KinOrgId,
     personId: KinPersonId,
     agentId: KinAgentId,
     chatId: KinChatId,
-  ) {
-    const rows = yield* sql`SELECT 1 FROM kin_agents a
-      JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
-      JOIN kin_chats c ON c.org_id = a.org_id AND c.chat_id = ${chatId}
-      JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
-      WHERE a.org_id = ${orgId} AND a.agent_id = ${agentId}
-        AND a.role = 'lead' AND a.retired_at IS NULL
-        AND c.kind = 'direct' AND c.direct_key = ${directKey(personId, agentId)}
-        AND c.archived_at IS NULL AND m.person_id = ${personId} AND m.left_at IS NULL
-        AND EXISTS (SELECT 1 FROM kin_chat_members recipient
-          WHERE recipient.org_id = c.org_id AND recipient.chat_id = c.chat_id
-            AND recipient.agent_id = ${agentId} AND recipient.left_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM kin_chat_members other
-          WHERE other.org_id = c.org_id AND other.chat_id = c.chat_id AND other.left_at IS NULL
-          AND ((other.person_id IS NOT NULL AND other.person_id != ${personId})
-            OR (other.agent_id IS NOT NULL AND other.agent_id != ${agentId})))`;
-    if (rows.length === 0) return yield* noLead;
-  });
+  ) =>
+    Effect.flatMap(isDirectRuleLead(orgId, personId, agentId, chatId), (available) =>
+      available ? Effect.void : noLead,
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
   const rules = sql`SELECT r.org_id AS "orgId", r.rule_id AS "ruleId",
     r.connection_id AS "connectionId", r.match_json AS "matchJson", r.what,
@@ -269,6 +243,13 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE kin_mail_rules SET state = ${state},
         paused_why = ${state === "paused" ? "person" : null}, updated_at = ${now}
         WHERE org_id = ${input.orgId} AND rule_id = ${input.ruleId}`;
+      yield* holdRuleMail(
+        input.orgId,
+        [input.ruleId],
+        "held_paused",
+        state === "paused" ? heldRuleReason.person : heldRuleReason.removed,
+        now,
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     }
     return yield* view(input);
   }, transaction);
@@ -349,6 +330,7 @@ const make = Effect.gen(function* () {
     const since = (yield* Clock.currentTimeMillis) - KEEP_MS;
     return yield* sql<Candidate>`SELECT arrival_id AS "arrivalId", connection_id AS "connectionId",
       message_id AS "messageId", from_address AS "fromAddress", received_at AS "receivedAt",
+      thread_id AS "threadId", mail_key AS "mailKey",
       noticed_at AS "noticedAt", class, has_file AS "hasFile", sender_check AS "senderCheck"
       FROM kin_arrivals WHERE org_id = ${orgId} AND connection_id = ${connectionId}
         AND class NOT IN ('gap', 'own', 'sign_in', 'failed_checks') AND noticed_at >= ${since}
@@ -461,13 +443,16 @@ const make = Effect.gen(function* () {
     const runnable = Effect.fn("KinMailRules.manualRule")(function* () {
       yield* owner(people, orgId);
       const row = yield* one(input);
-      if (row.state !== "on" && row.state !== "paused") return yield* notReady;
+      if (row.state !== "on") return yield* notReady;
       const match = checkedMatch(row);
       if (match === undefined) return yield* changed;
       yield* stillOwner(orgId, row.saidBy);
-      yield* companyMailbox(orgId, row.connectionId);
+      const mailbox = yield* companyRuleMailbox(orgId, row.connectionId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (mailbox === undefined) return yield* noMailbox;
       yield* directLead(orgId, row.saidBy, row.agentId, row.chatId);
-      return { row, filter: { connectionId: row.connectionId, ...match } };
+      return { row, mailbox, filter: { connectionId: row.connectionId, ...match } };
     });
     const { row, filter, eligible } = yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -496,26 +481,49 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    const { row: current } = yield* sql.withTransaction(runnable());
-    if (
-      current.contentHash !== row.contentHash ||
-      current.updatedAt !== row.updatedAt ||
-      current.agentId !== row.agentId ||
-      current.chatId !== row.chatId ||
-      current.saidBy !== row.saidBy ||
-      current.sourceEvent !== row.sourceEvent ||
-      current.state !== row.state
-    )
-      return yield* changed;
-    const result: KinMailRuleRunNow =
-      chosen === undefined
-        ? { status: "no_match", message: "No mail in the last 30 days matches this rule." }
-        : {
-            status: "not_yet",
-            arrivalId: chosen.arrivalId,
-            message: "Kin can't run mail rules yet. Nothing ran.",
-          };
-    return result;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const { row: current, mailbox } = yield* runnable();
+        if (
+          current.contentHash !== row.contentHash ||
+          current.updatedAt !== row.updatedAt ||
+          current.agentId !== row.agentId ||
+          current.chatId !== row.chatId ||
+          current.saidBy !== row.saidBy ||
+          current.sourceEvent !== row.sourceEvent ||
+          current.state !== row.state
+        )
+          return yield* changed;
+        if (chosen === undefined)
+          return {
+            status: "no_match",
+            message: "No mail in the last 30 days matches this rule.",
+          } satisfies KinMailRuleRunNow;
+        const arrivalId = chosen.arrivalId;
+        const [stored] = yield* sql<Candidate>`SELECT arrival_id AS "arrivalId",
+        connection_id AS "connectionId", message_id AS "messageId", thread_id AS "threadId",
+        mail_key AS "mailKey", from_address AS "fromAddress", received_at AS "receivedAt",
+        noticed_at AS "noticedAt", class, has_file AS "hasFile", sender_check AS "senderCheck"
+        FROM kin_arrivals WHERE org_id = ${orgId} AND arrival_id = ${arrivalId}
+          AND connection_id = ${current.connectionId}`;
+        if (
+          stored === undefined ||
+          select(filter, stored, undefined, { subject: "defer", senderCheck: "manual" }) !== "match"
+        )
+          return {
+            status: "no_match",
+            message: "No mail in the last 30 days matches this rule.",
+          } satisfies KinMailRuleRunNow;
+        const now = yield* Clock.currentTimeMillis;
+        const eventId = yield* wakeRuleMail(current, mailbox, stored, [], 0, now, true);
+        if (eventId === undefined) return yield* unavailable;
+        yield* recordManualRuleMail(current, arrivalId, eventId);
+        return { status: "queued", arrivalId, eventId } satisfies KinMailRuleRunNow;
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinEventQueue, queue),
+      ),
+    );
   }, settle);
 
   return KinMailRules.of({

@@ -64,6 +64,7 @@ import { feedTurn } from "../numbers/feeds.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
+import { ruleWakeStillAllowed } from "../arrivals/ruleWake.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -651,6 +652,8 @@ const make = Effect.gen(function* () {
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
     function* (orgId: KinOrgId, wakeupId: KinWakeupId, event: KinEvent) {
+      if (event._tag === "pulse" && event.rule !== undefined)
+        return !(yield* ruleWakeStillAllowed(event).pipe(provideSql));
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       // A number's crossing whose episode ended, was handled or went quiet since it was queued.

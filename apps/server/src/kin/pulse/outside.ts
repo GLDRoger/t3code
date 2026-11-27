@@ -2,6 +2,8 @@ import {
   KinEvent,
   KinEventId,
   type KinAgentId,
+  type KinChatId,
+  type KinPersonId,
   type KinOrgId,
   type KinPulseOutsideLine,
 } from "@t3tools/contracts";
@@ -17,7 +19,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
 import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
-import { agentQuietUntil } from "../triggers/quietHold.ts";
+import { agentQuietUntil, personQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
 import { byNumber, recordName } from "../work/recordRows.ts";
@@ -58,8 +60,8 @@ export const mailLine = (
   account: string | null,
   mail: Pick<
     Extract<KinConnectionActivity, { readonly _tag: "mail" }>["mail"][number],
-    "receivedBy" | "threadId" | "date" | "from" | "subject"
-  >,
+    "receivedBy" | "threadId" | "date" | "from"
+  > & { readonly subject: string | null },
 ): KinPulseOutsideLine => ({
   source: "mail",
   connection: cut(label, 120)!,
@@ -225,7 +227,7 @@ const namedByNumber = Effect.fn("KinPulseOutside.namedByNumber")(function* <
   return undefined;
 });
 
-export interface Matched {
+interface PlaybookMatch {
   readonly line: KinPulseOutsideLine;
   /** Money threads go to Finance; client mail and meetings to the Chief of staff. */
   readonly domain: "finance" | "chief";
@@ -233,6 +235,23 @@ export interface Matched {
   readonly clientId?: string;
   readonly arrivalId?: string;
 }
+
+interface RuleMatch {
+  readonly line: KinPulseOutsideLine;
+  readonly more: ReadonlyArray<KinPulseOutsideLine>;
+  readonly notListed: number;
+  readonly arrivalId: string;
+  readonly rule: {
+    readonly ruleId: string;
+    readonly manual?: true;
+    readonly key: string;
+    readonly agentId: KinAgentId;
+    readonly chatId: KinChatId;
+    readonly saidBy: KinPersonId;
+  };
+}
+
+export type Matched = PlaybookMatch | RuleMatch;
 
 /**
  * Prioritizes check-in mail and calendar lines using Kin's records, and matches calendar watches.
@@ -361,7 +380,7 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
     orgId,
     lines.filter((line) => line.source === "calendar"),
   );
-  return yield* wakeMatches(orgId, at, matched);
+  return (yield* wakeMatches(orgId, at, matched)).map((wake) => wake.lineId);
 });
 
 export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
@@ -372,20 +391,31 @@ export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   if (matched.length === 0) return [];
-  const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-  const [finance] = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
+  const playbook = matched.some((match) => "domain" in match);
+  const chief = playbook
+    ? yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN })
+    : undefined;
+  const [finance] = matched.some((match) => "domain" in match && match.domain === "finance")
+    ? yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       AND a.role = 'lead' AND a.retired_at IS NULL
-    WHERE l.org_id = ${orgId} AND l.domain = 'finance' ORDER BY a.created_at, l.agent_id LIMIT 1`;
-  const woke: Array<string> = [];
-  for (const { line, domain, clientId, arrivalId } of matched) {
-    const agentId = domain === "finance" ? (finance?.agentId ?? chief?.agentId) : chief?.agentId;
+    WHERE l.org_id = ${orgId} AND l.domain = 'finance' ORDER BY a.created_at, l.agent_id LIMIT 1`
+    : [];
+  const woke: Array<{ lineId: string; eventId: KinEventId }> = [];
+  for (const match of matched) {
+    const { line, arrivalId } = match;
+    const agentId =
+      "rule" in match
+        ? match.rule.agentId
+        : match.domain === "finance"
+          ? (finance?.agentId ?? chief?.agentId)
+          : chief?.agentId;
     if (agentId === undefined) continue;
-    const key = outsideKey(line);
-    if (clientId !== undefined) {
+    const key = "rule" in match ? match.rule.key : outsideKey(line);
+    if ("clientId" in match && match.clientId !== undefined) {
       const sent = line.at === null ? Number.NaN : Date.parse(line.at);
       yield* logTouch(orgId, {
-        partyId: clientId,
+        partyId: match.clientId,
         kind: "email",
         at: Number.isFinite(sent) && sent >= 0 ? Math.min(sent, at) : at,
         note: (line.subject ?? "").slice(0, 300),
@@ -397,21 +427,36 @@ export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
         Effect.catch((cause) => Effect.logWarning("Kin couldn't note client mail", { cause })),
       );
     }
+    const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${key}`)}`);
+    const notBefore =
+      "rule" in match
+        ? yield* personQuietUntil(orgId, match.rule.saidBy, at)
+        : yield* agentQuietUntil(orgId, agentId, at);
     const queued = yield* queue
       .enqueue(
         yield* decodeEvent({
           _tag: "pulse",
           orgId,
-          eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${key}`)}`),
+          eventId,
           agentId,
           receivedAt: isoOf(at),
           dedupeKey: key,
           provenance: { _tag: "system" },
           factKeys: [],
-          outside: [line],
+          outside: "rule" in match ? [line, ...match.more] : [line],
           ...(arrivalId === undefined ? {} : { arrivalId }),
+          ...("rule" in match
+            ? {
+                chatId: match.rule.chatId,
+                rule: {
+                  ruleId: match.rule.ruleId,
+                  ...(match.rule.manual === true ? { manual: true } : {}),
+                },
+                ...(match.notListed > 0 ? { outsideNotListed: match.notListed } : {}),
+              }
+            : {}),
         }),
-        yield* heldUntil(orgId, agentId, at),
+        notBefore === undefined ? undefined : { notBefore },
       )
       .pipe(
         Effect.map((result) => !result.duplicate),
@@ -421,13 +466,7 @@ export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
           KinEventQueueConflict: () => Effect.succeed(false),
         }),
       );
-    if (queued) woke.push(line.id);
+    if (queued) woke.push({ lineId: line.id, eventId });
   }
   return woke;
 });
-
-/** A watch match nobody asked for waits out the owner's quiet hours. */
-const heldUntil = (orgId: KinOrgId, agentId: KinAgentId, at: number) =>
-  Effect.map(agentQuietUntil(orgId, agentId, at), (notBefore) =>
-    notBefore === undefined ? undefined : { notBefore },
-  );

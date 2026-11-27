@@ -5,18 +5,30 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
 import { assert, it } from "@effect/vitest";
-import { KinAgentId, KinChatError, KinChatId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinChatId,
+  KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EventQueue from "../lead/KinEventQueue.ts";
+import { turnAudience, turnChat } from "../lead/Audience.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
+import { pauseMailRulesFor } from "./ruleLifecycle.ts";
+import { ruleWakeStillAllowed } from "./ruleWake.ts";
 
 const orgId = KinOrgId.make("org");
 const agentId = KinAgentId.make("finance");
@@ -44,10 +56,10 @@ const tap = {
   tapId: "settings-tap",
 };
 const sqlLayer = NodeSqliteClient.layer({ filename: ":memory:" });
-const fixture = MailRules.layer.pipe(
-  Layer.provide(Layer.mock(KinConnections)({})),
-  Layer.provideMerge(sqlLayer),
+const rulesWithQueue = MailRules.layer.pipe(
+  Layer.provideMerge(Layer.merge(Layer.mock(KinConnections)({}), EventQueue.layer)),
 );
+const fixture = rulesWithQueue.pipe(Layer.provideMerge(sqlLayer));
 
 const seed = Effect.fn("KinMailRulesTest.seed")(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -244,7 +256,7 @@ it.effect(
       });
       const rules = yield* Effect.provide(
         MailRules.KinMailRules,
-        MailRules.layer.pipe(Layer.provide(headers)),
+        MailRules.layer.pipe(Layer.provide(Layer.merge(headers, EventQueue.layer))),
       );
       yield* sql`WITH RECURSIVE n(i) AS (VALUES (1) UNION ALL SELECT i + 1 FROM n WHERE i < 202)
       INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
@@ -277,11 +289,8 @@ it.effect(
       );
       assert.strictEqual(draft.matches[0]?.subject, "Juniper invoice");
       assert.strictEqual(draft.matches.at(-1)?.arrivalId, "a-3");
-      assert.deepStrictEqual(yield* rules.runNow(owners, ref), {
-        status: "not_yet",
-        arrivalId: "a-202",
-        message: "Kin can't run mail rules yet. Nothing ran.",
-      });
+      const result = yield* rules.runNow(owners, ref);
+      assert.include(result, { status: "queued", arrivalId: "a-202" });
       const missed = yield* rules.createFromTap(owners, {
         ...tap,
         tapId: "other-tap",
@@ -296,7 +305,22 @@ it.effect(
         Array.from({ length: 50 }, (_, i) => `m-${202 - i}`),
       );
       assert.deepStrictEqual(yield* rules.history(owners, ref), {
-        entries: [{ kind: "gap", arrivalId: "gap", from: 20, to: 40 }],
+        entries: [
+          {
+            kind: "mail",
+            arrivalId: "a-202",
+            fromAddress: "bill@juniper.example",
+            receivedAt: 202,
+            noticedAt: 202,
+            state: "woke",
+            outcome: null,
+            eventId: "eventId" in result ? result.eventId : null,
+            wakeupId: null,
+            settledAt: null,
+            refs: null,
+          },
+          { kind: "gap", arrivalId: "gap", from: 20, to: 40 },
+        ],
       });
       assert.deepStrictEqual(
         yield* sql`SELECT fired, last_wake_at FROM kin_mail_rules ORDER BY rule_id`,
@@ -305,8 +329,78 @@ it.effect(
           { fired: 0, last_wake_at: null },
         ],
       );
-      assert.deepStrictEqual(yield* sql`SELECT event_id FROM kin_events`, []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_id, tag, json_extract(json, '$.chatId') AS chat_id,
+          json_extract(json, '$.rule.ruleId') AS rule_id, json_extract(json, '$.rule.manual') AS manual
+        FROM kin_events`,
+        [{ agent_id: agentId, tag: "pulse", chat_id: chatId, rule_id: rule.ruleId, manual: 1 }],
+      );
     }).pipe(Effect.provide(sqlLayer)),
+);
+
+it.effect("pausing or disconnecting a rule settles its waiting mail before a feed tick", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const first = yield* rules.createFromTap(owners, tap);
+    const second = yield* rules.createFromTap(owners, { ...tap, tapId: "tap_53ea" });
+    for (const [n, rule] of [first, second].entries())
+      yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, noticed_at,
+        class, state, rule_id, rule_state) VALUES (${orgId}, ${`arr_660bf${n}`}, ${connectionId},
+        ${`m_532ca${n}`}, 1, 'known_biller', 'new', ${rule.ruleId}, 'batched')`;
+    yield* rules.pause(owners, { orgId, ruleId: first.ruleId });
+    yield* sql.withTransaction(pauseMailRulesFor(orgId, { kind: "mailbox", id: connectionId }, 2));
+    assert.deepStrictEqual(
+      yield* sql`SELECT rule_state, reason FROM kin_arrivals ORDER BY arrival_id`,
+      [
+        { rule_state: "held_paused", reason: "the rule is paused" },
+        { rule_state: "held_paused", reason: "the rule's company mailbox is disconnected" },
+      ],
+    );
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("a rule pulse claims alone and keeps the setter's private destination", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(9 * 60 * 60_000);
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const queue = yield* EventQueue.KinEventQueue;
+    yield* sql`UPDATE kin_people SET time_zone = 'UTC', hold_outside_hours = 0,
+      quiet_hours_json = '{"from":"22:00","to":"07:00"}' WHERE person_id = ${meera}`;
+    const rule = yield* rules.createFromTap(owners, tap);
+    yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, direct_key, last_seq, created_at)
+      VALUES ('org', 'rhea-finance', 'direct', 'rhea:finance', 0, '2026-11-27')`;
+    yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id, member_id,
+      role, joined_at) VALUES ('org', 'rhea-finance', 'person', 'zoya', 'rhea-finance-zoya',
+      'member', '2026-11-27')`;
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'rhea-finance' WHERE agent_id = ${agentId}`;
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_a99512', 'mail', 'm_7bcaf2', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.runNow(owners, ref);
+    yield* rules.runNow(owners, ref);
+    yield* sql`UPDATE kin_events SET json = json_set(json, '$.factKeys', json('["fixture"]'))`;
+    assert.deepStrictEqual(yield* sql`SELECT not_before FROM kin_events`, [
+      { not_before: null },
+      { not_before: null },
+    ]);
+    const wakeupId = KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD1");
+    const [ready] = yield* queue.readyLeads(orgId);
+    assert.strictEqual(ready?.agentId, agentId);
+    yield* TestClock.setTime(ready!.readyAt);
+    const events = yield* queue.claim({ orgId, agentId, wakeupId, model: "fixture" });
+    assert.lengthOf(events, 1);
+    const [event] = events;
+    if (event?._tag !== "pulse") return assert.fail("Expected a rule pulse.");
+    assert.deepStrictEqual(yield* turnChat({ orgId, agentId, wakeupId }), { chatId, asked: true });
+    assert.strictEqual(yield* turnAudience({ orgId, agentId, wakeupId }), "owner_only");
+    assert.isTrue(yield* ruleWakeStillAllowed(event));
+    yield* rules.pause(owners, ref);
+    assert.isFalse(yield* ruleWakeStillAllowed(event));
+  }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));

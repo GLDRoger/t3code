@@ -43,7 +43,9 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
+import * as MailRules from "../arrivals/KinMailRules.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import * as ChatHub from "../chat/KinChatHub.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -252,6 +254,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
     ),
     Layer.provide(Layer.succeed(KinRefreshObserver, { touch: () => Effect.void })),
     Layer.provideMerge(KinEventQueue.layer),
+    Layer.provideMerge(ChatHub.layer.pipe(Layer.provideMerge(Chat.layer))),
     Layer.provideMerge(KinPersistence.layer),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
@@ -481,6 +484,8 @@ const setUp = <E>(
   });
 type Env =
   | ArrivalFeed.KinArrivalFeed
+  | Chat.KinChatRepository
+  | ChatHub.KinChatHub
   | ConnectionSecrets.KinConnectionSecrets
   | KinConnections
   | KinRecords.KinRecords
@@ -745,6 +750,412 @@ const pulseEvents = Effect.gen(function* () {
       agent_id AS "agentId", json_extract(json, '$.arrivalId') AS "arrivalId" FROM kin_events
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
+
+const ruleMail = (fake: FakeMail, to: string, at: number, number: number, verified = true) =>
+  fake.deliver({
+    to,
+    from: "Juniper Cold Chain <billing@juniper.example>",
+    subject: "Invoice 42",
+    body: "Juniper Cold Chain invoice.",
+    messageId: `<invoice-${number}@juniper.example>`,
+    at,
+    authResults: verified ? ["mx.google.com; dmarc=pass header.from=juniper.example"] : [],
+  });
+
+const turnOnRule = Effect.fn("test.turnOnRule")(function* (
+  connectionId: string,
+  options: { named?: boolean; cap?: number; useCoOwner?: boolean } = {},
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const connections = yield* KinConnections;
+  const rules = yield* MailRules.KinMailRules.pipe(
+    Effect.provide(MailRules.layer),
+    Effect.provideService(KinConnections, connections),
+  );
+  if (options.useCoOwner)
+    yield* sql`UPDATE kin_people SET display_name = 'Meera' WHERE person_id = ${coOwner}`;
+  const person = options.useCoOwner ? coOwner : owner;
+  return yield* rules.createFromTap(people(person), {
+    orgId,
+    connectionId,
+    tapId: `tap-${connectionId}`,
+    agentId: options.useCoOwner ? lead : finance,
+    chatId: KinChatId.make(options.useCoOwner ? `cos-${coOwner}` : "fin-owner"),
+    what: "File the bill.",
+    match: {
+      from: options.named ? [{ domain: "juniper.example" }] : [],
+      subjectHas: [],
+      withFile: null,
+      classes: null,
+    },
+    ...(options.cap === undefined ? {} : { monthlyCap: options.cap }),
+  });
+});
+
+const storedRuleMail = Effect.gen(function* () {
+  return yield* (yield* SqlClient.SqlClient)<{
+    arrivalId: string;
+    state: string;
+    ruleId: string;
+    reason: string;
+    senderCheck: string;
+    hasFile: number;
+    eventId: string | null;
+  }>`SELECT arrival_id AS "arrivalId", rule_state AS state, rule_id AS "ruleId",
+    reason, sender_check AS "senderCheck", has_file AS "hasFile", event_id AS "eventId"
+    FROM kin_arrivals WHERE org_id = ${orgId} AND rule_id IS NOT NULL
+    ORDER BY noticed_at, message_id`;
+});
+
+const storedRuleEvents = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    json: string;
+    notBefore: number | null;
+  }>`SELECT json, not_before AS "notBefore"
+    FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
+  return yield* Effect.forEach(rows, ({ json, notBefore }) =>
+    decodeStoredEvent(json).pipe(Effect.map((event) => ({ event, notBefore }))),
+  );
+});
+
+it.effect("a matching mail wakes only the rule's lead and stores the verdict", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      const rule = yield* turnOnRule(mailbox, { named: true });
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      const [arrivalId] = (yield* readMail(mailbox)).recorded;
+      const events = yield* storedRuleEvents;
+      assert.lengthOf(events, 1);
+      assert.isString(arrivalId);
+      assert.include(events[0]!.event, {
+        _tag: "pulse",
+        agentId: finance,
+        chatId: KinChatId.make("fin-owner"),
+        arrivalId: arrivalId!,
+      });
+      assert.deepInclude(events[0]?.event, { rule: { ruleId: rule.ruleId } });
+      const history = yield* storedRuleMail;
+      assert.lengthOf(history, 1);
+      assert.include(history[0], {
+        arrivalId: arrivalId!,
+        ruleId: rule.ruleId,
+        state: "woke",
+        senderCheck: "passed",
+        hasFile: 0,
+        eventId: events[0]!.event.eventId,
+      });
+    }),
+  ),
+);
+
+it.effect("a rule already paused when a read starts leaves later mail to the playbook", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox);
+      yield* sql`UPDATE kin_mail_rules SET state = 'paused', paused_why = 'person'`;
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      const [arrivalId] = (yield* readMail(mailbox)).recorded;
+      assert.isString(arrivalId);
+      assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId: arrivalId! }]);
+      assert.deepStrictEqual(yield* storedRuleMail, []);
+    }),
+  ),
+);
+
+it.effect("one read keeps 300 matches and emits 25 sender-and-date lines plus 275 more", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox);
+      const changes = Array.from({ length: 300 }, (_, i) => ({
+        messageId: `m_27fa${i}`,
+        threadId: `th_17ba${i}`,
+      }));
+      const connections = yield* KinConnections;
+      const feed = yield* ArrivalFeed.KinArrivalFeed.pipe(
+        Effect.provide(Layer.fresh(ArrivalFeed.layer)),
+        Effect.provideService(KinConnections, {
+          ...connections,
+          changes: (org, id) =>
+            connections
+              .changes(org, id)
+              .pipe(Effect.map((read) => (read._tag === "off" ? read : { ...read, changes }))),
+          arrivals: () =>
+            Effect.succeed(
+              changes.map(({ messageId, threadId }) => ({
+                _tag: "read",
+                messageId,
+                arrival: {
+                  messageId,
+                  threadId,
+                  internetId: `<${messageId}@juniper.example>`,
+                  receivedAt: NOW,
+                  date: DateTime.formatIso(DateTime.makeUnsafe(NOW)),
+                  from: "Juniper Cold Chain <billing@juniper.example>",
+                  fromAddress: "billing@juniper.example",
+                  subject: "Invoice 42",
+                  to: [ACCOUNTS],
+                  cc: [],
+                  deliveredTo: [ACCOUNTS],
+                  authResults: [],
+                  hasFile: false,
+                  autoSubmitted: null,
+                  precedence: null,
+                  listUnsubscribe: false,
+                  bulk: false,
+                },
+              })),
+            ),
+        }),
+      );
+      assert.lengthOf((yield* feed.read(orgId, mailbox)).recorded, 300);
+      const events = yield* storedRuleEvents;
+      assert.lengthOf(events, 1);
+      const event = events[0]?.event;
+      assert.isTrue(event?._tag === "pulse");
+      if (event?._tag !== "pulse") return;
+      assert.strictEqual(event.outsideNotListed, 275);
+      assert.lengthOf(event.outside ?? [], 25);
+      assert.isTrue(
+        event.outside?.every(
+          (line) =>
+            line.who === "billing@juniper.example" &&
+            line.at === DateTime.formatIso(DateTime.makeUnsafe(NOW)) &&
+            line.subject === null,
+        ),
+      );
+      const history = yield* storedRuleMail;
+      assert.lengthOf(history, 300);
+      assert.strictEqual(history.filter((row) => row.state === "woke").length, 1);
+      assert.strictEqual(history.filter((row) => row.state === "batched").length, 299);
+      assert.isTrue(history.every((row) => row.eventId === event.eventId));
+    }),
+  ),
+);
+
+it.effect("matches wait through the ten-minute window and the next feed tick sends the batch", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox);
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      yield* readMail(mailbox);
+      yield* TestClock.adjust("9 minutes");
+      ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, 2);
+      ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, 3);
+      yield* readMail(mailbox);
+      assert.lengthOf(yield* storedRuleEvents, 1);
+      assert.deepStrictEqual(
+        (yield* storedRuleMail).map((row) => row.state),
+        ["woke", "batched", "batched"],
+      );
+      yield* TestClock.adjust("1 minute");
+      assert.deepStrictEqual((yield* readMail(mailbox)).recorded, []);
+      const events = yield* storedRuleEvents;
+      assert.lengthOf(events, 2);
+      const event = events[1]?.event;
+      assert.isTrue(event?._tag === "pulse");
+      if (event?._tag === "pulse") assert.lengthOf(event.outside ?? [], 2);
+      assert.strictEqual(
+        (yield* storedRuleMail).filter((row) => row.eventId === event?.eventId).length,
+        2,
+      );
+    }),
+  ),
+);
+
+const setRuleClock = (zone: string, quiet: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings
+    (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, ${zone}, '09:00', '18:00', '02:00', 1, 1, '10:00', ${quiet})`;
+  });
+
+it.effect("the cap holds the next arrivals, tells once, and resets on the company's first", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const before = Date.parse("2026-11-30T18:00:00Z");
+      yield* TestClock.setTime(before);
+      yield* setRuleClock("Asia/Kolkata", '{"from":"01:00","to":"02:00"}');
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox, { cap: 1 });
+      for (const number of [1, 2, 3]) {
+        ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, number);
+        yield* readMail(mailbox);
+        yield* TestClock.adjust("10 minutes");
+      }
+      assert.lengthOf(yield* storedRuleEvents, 1);
+      assert.deepStrictEqual(
+        (yield* storedRuleMail).map((row) => row.state),
+        ["woke", "held_cap", "held_cap"],
+      );
+      const notices = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = 'fin-owner' AND author_kind = 'system'`;
+      assert.lengthOf(notices, 1);
+      assert.match(notices[0]!.body, /December/);
+      ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, 4);
+      yield* readMail(mailbox);
+      assert.lengthOf(yield* storedRuleEvents, 2);
+      assert.deepStrictEqual(yield* sql`SELECT month, fired, cap_told FROM kin_mail_rules`, [
+        { month: "2026-12", fired: 1, cap_told: null },
+      ]);
+    }),
+  ),
+);
+
+it.effect("quiet hours hold a rule's wake for the setter in the setter's own chat", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET time_zone = 'UTC', quiet_hours_json = '{"from":"08:00","to":"11:00"}',
+      hold_outside_hours = 0 WHERE person_id = ${coOwner}`;
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox, { useCoOwner: true });
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      yield* readMail(mailbox);
+      const [wake] = yield* storedRuleEvents;
+      assert.include(wake?.event, { _tag: "pulse", chatId: KinChatId.make(`cos-${coOwner}`) });
+      assert.strictEqual(wake?.notBefore, NOW + 2 * 60 * 60_000);
+    }),
+  ),
+);
+
+it.effect("the same mail in two mailboxes only wakes a rule once", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const first = yield* connect(fake, "google", ACCOUNTS);
+      const second = yield* connect(fake, "microsoft", HELLO);
+      yield* readMail(first);
+      yield* readMail(second);
+      const rule = yield* turnOnRule(first);
+      yield* turnOnRule(second);
+      for (const to of [ACCOUNTS, HELLO]) ruleMail(fake, to, NOW, 1);
+      yield* readMail(first);
+      yield* readMail(second);
+      const [event, ...rest] = yield* storedRuleEvents;
+      assert.lengthOf(rest, 0);
+      assert.deepInclude(event?.event, { rule: { ruleId: rule.ruleId } });
+      assert.lengthOf(yield* arrivalRows, 2);
+    }),
+  ),
+);
+
+it.effect("a named sender without an aligned pass is held", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox, { named: true });
+      ruleMail(fake, ACCOUNTS, NOW, 1, false);
+      yield* readMail(mailbox);
+      assert.deepStrictEqual(yield* storedRuleEvents, []);
+      const [held] = yield* storedRuleMail;
+      assert.include(held, {
+        state: "held_unverified",
+        senderCheck: "not checked",
+        reason: "sender not verified",
+      });
+    }),
+  ),
+);
+
+it.effect.each([
+  "demoted setter",
+  "departed setter",
+  "removed chat",
+  "disconnected mailbox",
+  "changed words",
+  "paused rule",
+] as const)("holds matching mail after a %s", (change) =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* turnOnRule(mailbox, { useCoOwner: true });
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      const expected = {
+        "demoted setter": "the rule's setter is no longer an owner or co-owner",
+        "departed setter": "the rule's setter left the team",
+        "removed chat": "the rule's lead or direct chat is unavailable",
+        "disconnected mailbox": "the rule's company mailbox is disconnected",
+        "changed words": "the rule's wording changed",
+        "paused rule": "the rule is paused",
+      }[change];
+      const mutate = {
+        "demoted setter": sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${coOwner}`,
+        "departed setter": sql`UPDATE kin_people SET removed_at = ${NOW} WHERE person_id = ${coOwner}`,
+        "removed chat": sql`UPDATE kin_chats SET archived_at = ${stamp} WHERE chat_id = ${`cos-${coOwner}`}`,
+        "disconnected mailbox": sql`UPDATE kin_connections SET removed_at = ${NOW} WHERE connection_id = ${mailbox}`,
+        "changed words": sql`UPDATE kin_mail_rules SET what = 'Send the bill.'`,
+        "paused rule": sql`UPDATE kin_mail_rules SET state = 'paused', paused_why = 'person'`,
+      }[change];
+      const connections = yield* KinConnections;
+      const feed = yield* ArrivalFeed.KinArrivalFeed.pipe(
+        Effect.provide(Layer.fresh(ArrivalFeed.layer)),
+        Effect.provideService(KinConnections, {
+          ...connections,
+          arrivals: (org, id, ids) =>
+            connections.arrivals(org, id, ids).pipe(Effect.tap(() => mutate)),
+        }),
+      );
+      yield* feed.read(orgId, mailbox);
+      assert.deepStrictEqual(yield* storedRuleEvents, []);
+      assert.include((yield* storedRuleMail)[0], { state: "held_paused", reason: expected });
+    }),
+  ),
+);
+
+it.effect("mail classified as own, sign_in, or failed_checks never starts a rule", () =>
+  setUp((fake) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const mailbox = yield* connect(fake, "google", ACCOUNTS);
+      yield* readMail(mailbox);
+      yield* connect(fake, "microsoft", HELLO);
+      yield* turnOnRule(mailbox);
+      fake.deliver({ to: ACCOUNTS, from: HELLO, subject: "Invoice", body: "", at: NOW });
+      fake.deliver({
+        to: ACCOUNTS,
+        from: CLIENT,
+        subject: "Your verification code",
+        body: "",
+        at: NOW,
+      });
+      fake.deliver({
+        to: ACCOUNTS,
+        from: CLIENT,
+        subject: "Invoice",
+        body: "",
+        at: NOW,
+        authResults: ["mx.google.com; dmarc=fail header.from=lumen.example"],
+      });
+      yield* readMail(mailbox);
+      assert.sameMembers(
+        (yield* arrivalRows).map((row) => row.class),
+        ["sign_in", "failed_checks"],
+      );
+      assert.deepStrictEqual(yield* storedRuleMail, []);
+      assert.deepStrictEqual(yield* sql`SELECT rule_id FROM kin_mail_rules WHERE fired > 0`, []);
+      // A normal eligible mail in the same mailbox proves the filter was live.
+      ruleMail(fake, ACCOUNTS, NOW, 1);
+      yield* readMail(mailbox);
+      assert.lengthOf(yield* storedRuleMail, 1);
+    }),
+  ),
+);
 
 const isMemoryConfigError = Schema.is(Memory.MemoryConfigError);
 

@@ -11,7 +11,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
-import { connectionById } from "../connections/ConnectionRows.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
 import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
@@ -20,6 +21,9 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
+import { companyRuleMailbox } from "./ruleAccess.ts";
+import { mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
+import { activeRuleIds, claimRuleMail, flushRuleMail, matchingRules } from "./ruleWake.ts";
 
 /** Each mailbox is read once a minute; a host with no public address can't be told sooner. */
 const FEED_EVERY_MS = MINUTE_MS;
@@ -65,6 +69,8 @@ const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const make = Effect.gen(function* () {
   const connections = yield* KinConnections;
   const queue = yield* KinEventQueue;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
 
   // Per-message work shares the mailbox read's span.
@@ -86,7 +92,8 @@ const make = Effect.gen(function* () {
         yield* ArrivalStore.settleNothing(orgId, arrivalId, classified.reason, now);
       return undefined;
     }
-    const from = arrival.fromAddress?.toLowerCase() ?? null;
+    const facts = mailRuleHeaderFacts(arrival);
+    const from = arrival.fromAddress?.toLowerCase() ?? facts.fromAddress;
     const mailKey = from === null ? null : ArrivalStore.mailKeyOf(orgId, from, arrival.internetId);
     const elsewhere = yield* ArrivalStore.recordedElsewhere(orgId, mailKey, arrivalId);
     const made = yield* ArrivalStore.claim(
@@ -102,6 +109,8 @@ const make = Effect.gen(function* () {
         class: classified.class,
         reason: elsewhere ? "also recorded in another connected mailbox" : classified.reason,
         needsLook: !elsewhere && classified.look !== undefined,
+        hasFile: facts.hasFile,
+        senderCheck: facts.senderCheck,
       },
       now,
       parked !== undefined,
@@ -111,6 +120,8 @@ const make = Effect.gen(function* () {
       arrivalId,
       class: classified.class,
       look: elsewhere ? undefined : classified.look,
+      facts,
+      elsewhere,
     };
   });
 
@@ -129,16 +140,19 @@ const make = Effect.gen(function* () {
         ...fresh.map((change) => change.messageId),
         ...parked.map((one) => one.messageId),
       ];
+      const startedOn =
+        messageIds.length === 0 ? new Set<string>() : yield* activeRuleIds(orgId, connectionId);
       const reads =
         messageIds.length === 0 ? [] : yield* connections.arrivals(orgId, connectionId, messageIds);
-      const recorded = yield* sql.withTransaction(
+      return yield* sql.withTransaction(
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
-          let connection: Effect.Success<ReturnType<typeof connectionById>>;
+          const connection = yield* companyRuleMailbox(orgId, connectionId);
           const recorded: Array<string> = [];
           const matches: Array<Matched> = [];
           let newSenders = 0;
           let notices = 0;
+          const rules = yield* matchingRules(orgId, connectionId);
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
             const change = fresh[index];
@@ -186,6 +200,23 @@ const make = Effect.gen(function* () {
             if (arrived === undefined) continue;
             recorded.push(arrived.arrivalId);
             const { class: mailClass, look } = arrived;
+            if (!arrived.elsewhere) {
+              let claimed = false;
+              for (const { rule, filter } of rules) {
+                if (rule.state !== "on" && !startedOn.has(rule.ruleId)) continue;
+                const resultOfRule = matchMailRule(filter, {
+                  ...arrived.facts,
+                  connectionId,
+                  class: mailClass,
+                  subject: result.arrival.subject,
+                });
+                if (resultOfRule === "no_match") continue;
+                yield* claimRuleMail(rule, arrived.arrivalId, resultOfRule);
+                claimed = true;
+                break;
+              }
+              if (claimed) continue;
+            }
             if (look === undefined || typeof look.by !== "string") continue;
             switch (mailClass) {
               case "unknown_person":
@@ -202,9 +233,8 @@ const make = Effect.gen(function* () {
               default:
                 continue;
             }
-            connection ??= yield* connectionById(orgId, connectionId);
             if (connection === undefined) continue;
-            const mailbox = { account: connection.accountLabel, addresses: found.addresses };
+            const mailbox = { account: connection.account, addresses: found.addresses };
             const line = mailLine(connection.label, mailbox.account, {
               ...result.arrival,
               receivedBy: receivedAmong(mailbox, result.arrival.deliveredTo),
@@ -216,22 +246,32 @@ const make = Effect.gen(function* () {
               arrivalId: arrived.arrivalId,
             });
           }
+          yield* flushRuleMail(rules, yield* Clock.currentTimeMillis).pipe(
+            Effect.provideService(KinEventQueue, queue),
+            Effect.provideService(KinChatRepository, repo),
+            Effect.provideService(KinChatHub, hub),
+          );
           if (matches.length > 0)
             yield* wakeMatches(orgId, now, matches).pipe(
               Effect.provideService(KinEventQueue, queue),
             );
-          if (found.gap !== null)
-            yield* ArrivalStore.gap(
-              orgId,
-              connectionId,
-              found.gap,
-              `Kin couldn't see mail between ${isoOf(found.gap.from)} and ${isoOf(found.gap.to)}`,
-            );
-          yield* connections.changesSeen(orgId, connectionId, found.cursor);
-          return recorded;
+          if (connection !== undefined) {
+            if (found.gap !== null)
+              yield* ArrivalStore.gap(
+                orgId,
+                connectionId,
+                found.gap,
+                `Kin couldn't see mail between ${isoOf(found.gap.from)} and ${isoOf(found.gap.to)}`,
+              );
+            yield* connections.changesSeen(orgId, connectionId, found.cursor);
+          }
+          return {
+            off: false,
+            more: connection !== undefined && found.more,
+            recorded,
+          } satisfies FeedRead;
         }),
       );
-      return { off: false, more: found.more, recorded } satisfies FeedRead;
     },
     (effect, _orgId, connectionId) =>
       effect.pipe(

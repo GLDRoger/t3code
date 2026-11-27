@@ -124,6 +124,7 @@ export const KinMailRulePreview = Schema.Struct({
 export type KinMailRulePreview = typeof KinMailRulePreview.Type;
 
 export const KinMailRuleRunNow = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("queued"), arrivalId: id, eventId: id }),
   Schema.Struct({ status: Schema.Literal("no_match"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("not_yet"), arrivalId: id, message: Schema.String }),
 ]);

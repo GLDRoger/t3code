@@ -162,6 +162,8 @@ type Arrived = {
   readonly class: ArrivalClass;
   readonly reason: string;
   readonly needsLook: boolean;
+  readonly hasFile: boolean | null;
+  readonly senderCheck: "passed" | "failed" | "not checked" | null;
 };
 
 /** Only the first insert or transition out of parked claims a message. */
@@ -176,20 +178,23 @@ export const claim = Effect.fn("KinArrivalStore.claim")(function* (
   const outcome = arrived.needsLook ? null : "nothing";
   const settledAt = arrived.needsLook ? null : now;
   const reason = arrived.reason.slice(0, 200);
+  const hasFile = arrived.hasFile === null ? null : Number(arrived.hasFile);
   const made = parked
     ? yield* sql`UPDATE kin_arrivals SET thread_id = ${arrived.threadId},
           mail_key = ${arrived.mailKey}, from_address = ${arrived.fromAddress},
           received_at = ${arrived.receivedAt}, class = ${arrived.class},
+          has_file = ${hasFile}, sender_check = ${arrived.senderCheck},
           state = ${state},
           outcome = ${outcome}, reason = ${reason}, settled_at = ${settledAt}, retry_at = NULL
         WHERE org_id = ${orgId} AND arrival_id = ${arrived.arrivalId} AND state = 'parked'
         RETURNING arrival_id`
     : yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
           thread_id, mail_key, from_address, received_at, noticed_at, class, state, outcome,
-          reason, settled_at)
+          reason, settled_at, has_file, sender_check)
         VALUES (${orgId}, ${arrived.arrivalId}, ${arrived.connectionId}, ${arrived.messageId},
           ${arrived.threadId}, ${arrived.mailKey}, ${arrived.fromAddress}, ${arrived.receivedAt},
-          ${now}, ${arrived.class}, ${state}, ${outcome}, ${reason}, ${settledAt})
+          ${now}, ${arrived.class}, ${state}, ${outcome}, ${reason}, ${settledAt}, ${hasFile},
+          ${arrived.senderCheck})
         ON CONFLICT DO NOTHING RETURNING arrival_id`;
   return made.length > 0;
 });
