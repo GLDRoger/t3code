@@ -79,6 +79,7 @@ export function KinGroupSheet(props: {
   readonly orgId: KinOrgId;
   readonly personId: string | null;
   readonly muted: boolean;
+  readonly hasPins?: boolean;
   /** Agents the host marks retired: still listed here, and never the one that answers. */
   readonly retiredAgents: ReadonlySet<string>;
 }) {
@@ -388,7 +389,7 @@ export function KinGroupSheet(props: {
               {confirm?.kind === "remove"
                 ? KIN_GROUP_FORM.removeDetail(confirm.member.name, confirm.member.kind === "lead")
                 : confirm?.kind === "clear"
-                  ? kinClearChatBody("group", clearPreview.kept)
+                  ? kinClearChatBody("group", clearPreview.kept, props.hasPins ? "some" : "none")
                   : KIN_GROUP_FORM.closeDetail}
             </AlertDialogDescription>
           </AlertDialogHeader>

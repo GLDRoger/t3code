@@ -36,6 +36,7 @@ import * as KinRecords from "../work/KinRecords.ts";
 import * as Money from "../work/ownerMoney.ts";
 import { defineList, proposalFor } from "../work/registers.ts";
 import * as WorkStream from "../work/workStream.ts";
+import { undoBatch } from "../work/importUndo.ts";
 import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
@@ -141,6 +142,7 @@ describe("KinRefreshHub", () => {
           capacity: "unbounded",
         });
         const start = yield* Queue.take(ownerSees);
+        assert.strictEqual(start.pins, 0);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), {
           timeZone: 0,
           people: 0,
@@ -149,6 +151,7 @@ describe("KinRefreshHub", () => {
           workLists: 0,
           stop: 0,
           watches: 0,
+          pins: 0,
           shell: 0,
           numbers: 0,
           company: 0,
@@ -202,6 +205,7 @@ describe("KinRefreshHub", () => {
           workLists: 0,
           stop: 0,
           watches: 0,
+          pins: 0,
           shell: 0,
           numbers: 0,
           company: 0,
@@ -588,6 +592,102 @@ describe("KinRefreshHub", () => {
           { reason: "not_allowed" },
         );
         assert.strictEqual(yield* Queue.size(work), 0);
+      }).pipe(Effect.scoped, Effect.provide(withRecords)),
+  );
+
+  it.effect(
+    "refreshes a clients-won pin for a member whose Work stream cannot name the client",
+    () =>
+      Effect.gen(function* () {
+        const { owner: rhea } = yield* KinIdentity;
+        const { orgId } = rhea;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const zoya = { ...rhea, personId: KinPersonId.make("kin-person-zoya") };
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', '2026-11-01T00:00:00.000Z')`;
+        const changes = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
+        const opening = yield* Queue.take(changes);
+        const refreshes = yield* Stream.toQueue(subscribeRefreshes([zoya], { orgId }), {
+          capacity: "unbounded",
+        });
+        const before = yield* Queue.take(refreshes);
+        const ownerWork = yield* WorkStream.makeWorkStream([rhea], { orgId, acceptRows: true });
+        const memberWork = yield* WorkStream.makeWorkStream([zoya], { orgId, acceptRows: true });
+        yield* ownerWork.start(opening.seq);
+        yield* memberWork.start(opening.seq);
+        const writer = { actor: { _tag: "system" as const }, via: "import" as const };
+        const chatId = "kin-chat-tidewater-freight";
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES (${chatId}, ${orgId}, 'team_group', 0, '2026-11-01T00:00:00.000Z')`;
+        // With no clients-won goal pinned, a client write tells a member nothing.
+        yield* records.create(orgId, writer, {
+          list: "clients",
+          title: "Tidewater Freight",
+          originKey: "import:tidewater:kin-client-tidewater",
+          owner: { _tag: "person", personId: rhea.personId },
+        });
+        yield* Queue.take(changes);
+        yield* undoBatch(orgId, rhea.personId, "tidewater", { apply: true, includeChanged: false });
+        const won = yield* records.create(orgId, writer, {
+          list: "goals",
+          title: "Clients won this quarter",
+          originKey: "kin-goal-clients-won",
+          owner: { _tag: "person", personId: rhea.personId },
+          fields: { measure: "clients_won", target: "4" },
+        });
+        yield* Queue.take(changes);
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.strictEqual(yield* Queue.size(refreshes), 0);
+        yield* sql`INSERT INTO kin_chat_pins VALUES ('kin-chat-pin-clients-won', ${orgId}, ${chatId},
+          ${won.row.recordId}, ${rhea.personId}, 0)`;
+        yield* records.create(
+          orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "clients",
+            title: "Juniper Cold Chain",
+            originKey: "import:juniper:kin-client-juniper",
+            owner: { _tag: "person", personId: rhea.personId },
+          },
+        );
+        const changed = yield* Queue.take(changes);
+        assert.isTrue(
+          (yield* ownerWork.batch(ownerWork.pendingOf(changed))).some(
+            (event) => event._tag === "upsert" && event.record.key === "C-2",
+          ),
+        );
+        assert.deepStrictEqual(memberWork.pendingOf(changed), []);
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.strictEqual(yield* Queue.size(refreshes), 1);
+        assert.strictEqual((yield* Queue.take(refreshes)).pins, (before.pins ?? 0) + 1);
+        yield* undoBatch(orgId, rhea.personId, "juniper", { apply: true, includeChanged: false });
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.strictEqual(yield* Queue.size(refreshes), 1);
+        assert.strictEqual((yield* Queue.take(refreshes)).pins, (before.pins ?? 0) + 2);
+
+        const goal = yield* records.create(orgId, writer, {
+          list: "goals",
+          title: "Juniper Cold Chain referrals",
+          originKey: "kin-goal-juniper",
+          owner: { _tag: "person", personId: rhea.personId },
+          fields: { measure: "manual", target: "100", current: "62" },
+        });
+        yield* Queue.take(changes);
+        yield* sql`INSERT INTO kin_chat_pins VALUES ('kin-chat-pin-referrals', ${orgId}, ${chatId},
+          ${goal.row.recordId}, ${rhea.personId}, 0)`;
+        yield* records.update(
+          orgId,
+          writer,
+          goal.row.key,
+          { fields: { current: "63" } },
+          goal.row.rev,
+        );
+        const newGoal = yield* Queue.take(changes);
+        assert.deepStrictEqual(memberWork.pendingOf(newGoal), []);
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.strictEqual(yield* Queue.size(refreshes), 1);
+        assert.strictEqual((yield* Queue.take(refreshes)).pins, (before.pins ?? 0) + 3);
       }).pipe(Effect.scoped, Effect.provide(withRecords)),
   );
 

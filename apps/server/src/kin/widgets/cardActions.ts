@@ -58,6 +58,7 @@ import {
   proposedList,
 } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
+import { teammatesIn } from "../chat/memberAccess.ts";
 import {
   applyCredit,
   applyLabel,
@@ -249,24 +250,6 @@ const drawOf = Effect.fn("KinCardActions.drawOf")(function* (lead: DrawTurn) {
     people: [...new Set([...(behind?.readers ?? []), ...(behind?.askers ?? [])])].toSorted(),
     askers: [...(behind?.askers ?? [])].toSorted(),
   } satisfies CardDraw;
-});
-
-/** The card's readers who are not owner-level: every one of them must see what its line names. */
-const teammatesIn = Effect.fn("KinCardActions.teammatesIn")(function* (
-  orgId: KinOrgId,
-  chatId: KinChatId,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ personId: string }>`SELECT DISTINCT person_id AS "personId"
-    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
-      AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
-    ORDER BY person_id`;
-  const out: Array<KinPersonId> = [];
-  for (const row of rows) {
-    const person = KinPersonId.make(row.personId);
-    if (!(yield* ownerLevel(orgId, person))) out.push(person);
-  }
-  return out;
 });
 
 const recordRow = Effect.fn("KinCardActions.recordRow")(function* (

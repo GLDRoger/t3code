@@ -286,6 +286,7 @@ function KinGroupDetails(props: {
         message: kinClearChatBody(
           "group",
           AsyncResult.isSuccess(asked) ? asked.value.keptFiles : undefined,
+          "unknown",
         ),
         confirmText: KIN_CLEAR_CHAT_ACTION,
         destructive: true,

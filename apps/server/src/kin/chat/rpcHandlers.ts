@@ -26,6 +26,7 @@ import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinGroups, companyChatOf } from "./KinGroups.ts";
 import { KinVisualHosts } from "./KinVisualHosts.ts";
+import { KinChatPins } from "./pins.ts";
 
 const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
@@ -80,6 +81,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       stop: Context.get(kin.value.services.value, KinStop),
       timeZone: Context.get(kin.value.services.value, KinOwnerTimeZone),
       chat: Context.get(kin.value.services.value, KinChatService),
+      pins: Context.get(kin.value.services.value, KinChatPins),
       groups: Context.get(kin.value.services.value, KinGroups),
       visualHosts: Context.get(kin.value.services.value, KinVisualHosts),
     };
@@ -108,6 +110,20 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     services.pipe(
       Effect.flatMap(({ identity, visualHosts }) =>
         identity.resolve(session).pipe(Effect.flatMap((people) => run(visualHosts, people))),
+      ),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
+  const pins = <A>(
+    run: (
+      pins: KinChatPins["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, KinChatError>,
+  ) =>
+    services.pipe(
+      Effect.flatMap(({ identity, pins }) =>
+        identity.resolve(session).pipe(Effect.flatMap((people) => run(pins, people))),
       ),
       Effect.tapError(logInfra),
       Effect.mapError(mapError),
@@ -300,6 +316,9 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chat.pins": (input) => pins((service, people) => service.list(people, input)),
+    "kin.chat.pin": (input) => pins((service, people) => service.pin(people, input)),
+    "kin.chat.unpin": (input) => pins((service, people) => service.unpin(people, input)),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
     "kin.chat.working": (input) => group((groups, people) => groups.working(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),

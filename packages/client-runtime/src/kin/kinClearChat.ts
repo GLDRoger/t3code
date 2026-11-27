@@ -14,13 +14,23 @@ export function kinClearChatKept(keptFiles: number | undefined): string | null {
     : `${keptFiles} files stay because documents use them.`;
 }
 
+export type KinClearChatPins = "none" | "some" | "unknown";
+
 /**
- * What the confirm says. The line about memory shows only to someone whose leads keep any: a
- * lead's name in their direct chat, `"group"` in a group, `null` for a teammate's own chat.
- * `keptFiles` is what the host said a clear would leave.
+ * Confirm body: memory line for leads that keep any (`"group"`, lead name, or `null`), `keptFiles`
+ * from preview, and `pins` (`"some"`, `"none"`, or `"unknown"` when no count is already on screen).
  */
-export function kinClearChatBody(remembers: string | null, keptFiles?: number): string {
-  const gone = "This deletes every message here for good.";
+export function kinClearChatBody(
+  remembers: string | null,
+  keptFiles?: number,
+  pins: KinClearChatPins = "none",
+): string {
+  const gone =
+    pins === "some"
+      ? "This deletes every message here for good and unpins what is pinned here."
+      : pins === "unknown"
+        ? "This deletes every message here for good, and unpins anything pinned here."
+        : "This deletes every message here for good.";
   const memory =
     remembers === null
       ? ""

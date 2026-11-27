@@ -11,6 +11,7 @@ import {
   type KinDesktopNotice,
   type KinDesktopNoticesInput,
   type KinChatMembersInput,
+  type KinChatPinsInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
   type KinCashInput,
@@ -262,6 +263,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_CHAT_WS_METHODS.chatMembers,
   });
   const readMembers = kinGuardedRead(membersRead);
+  const pinsRead = createKinRpcCommand(runtime, {
+    label: "kin:chat-pins:read",
+    tag: KIN_CHAT_WS_METHODS.chatPins,
+  });
+  const readPins = kinGuardedRead(pinsRead);
   const workingRead = createKinRpcCommand(runtime, {
     label: "kin:chat-working:read",
     tag: KIN_CHAT_WS_METHODS.chatWorking,
@@ -1190,6 +1196,30 @@ export function makeKinClient<R, ER>(
     pin: createKinRpcCommand(runtime, {
       label: "kin:pin",
       tag: KIN_CHAT_WS_METHODS.chatsPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
+    chatPinsSupported: kinRefreshOn.hasTopic("pins"),
+    chatPins: createKinQueryAtomFamily(runtime, {
+      label: "kin:chat-pins",
+      execute: Effect.fn("KinClient.chatPins")(function* (input: KinChatPinsInput) {
+        return yield* readPins(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn("any", (target) => {
+        const pins = kinRefreshOn("pins")(target);
+        const people = kinRefreshOn("people")(target);
+        const timeZone = kinRefreshOn("timeZone")(target);
+        return Atom.make((get) => `${get(pins)}|${get(people)}|${get(timeZone)}`);
+      }),
+    }),
+    chatPin: createKinRpcCommand(runtime, {
+      label: "kin:chat-pin",
+      tag: KIN_CHAT_WS_METHODS.chatPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
+    chatUnpin: createKinRpcCommand(runtime, {
+      label: "kin:chat-unpin",
+      tag: KIN_CHAT_WS_METHODS.chatUnpin,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
     }),
     /** Empties this chat for everyone in it, for good; one in flight per chat. */
