@@ -41,7 +41,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as MailRules from "../arrivals/KinMailRules.ts";
@@ -111,6 +110,7 @@ import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
 import * as McpGateway from "./McpGateway.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
 
 // An invented company with two mail accounts on a local fake; nothing leaves the process.
 const orgId = KinOrgId.make("org");
@@ -230,6 +230,7 @@ const readTouches = <A, E, R>(read: Effect.Effect<A, E, R>) =>
     yield* read;
     return touched.slice(before);
   });
+const sqlite = makeMigratedSqliteLayer();
 const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
     Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
@@ -281,7 +282,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(ChatHub.layer.pipe(Layer.provideMerge(Chat.layer))),
     Layer.provideMerge(KinPersistence.layer),
-    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provideMerge(sqlite),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
     Layer.provide(gatedFiles(gates)),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-mail-e2e-" })),
@@ -492,8 +493,8 @@ const setUp = <E>(
     fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
     const cards: Array<Card> = [];
     const gates: Gates = {};
+    yield* TestClock.setTime(NOW);
     yield* Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
       yield* seed;
       const connections = yield* KinConnections;
       yield* connections.setSignInClient(people(owner), {
@@ -784,7 +785,7 @@ const pulseEvents = Effect.gen(function* () {
 const ruleMail = (fake: FakeMail, to: string, at: number, number: number, verified = true) =>
   fake.deliver({
     to,
-    from: "Juniper Cold Chain <billing@juniper.example>",
+    from: "Juniper Cold Chain <ledger@juniper.example>",
     subject: "Invoice 42",
     body: "Juniper Cold Chain invoice.",
     messageId: `<invoice-${number}@juniper.example>`,

@@ -152,6 +152,7 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.logTouch",
+  "kin.work.looked",
   "kin.work.marketing",
   "kin.work.money",
   "kin.work.moveDeal",

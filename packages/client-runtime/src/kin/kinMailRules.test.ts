@@ -741,7 +741,7 @@ describe("kinMailRuleHistoryRows: what matched, when, and what happened", () => 
     [{ runOutcome: null, holdReason: null }, "Running", "ok"],
   ] as const)("%j says %s", (overrides, happened, tone) => {
     expect(row(mail(overrides))).toEqual({
-      key: "arr_01JDCXD5E7F9G1H3J5K7M9N1P3",
+      key: expect.stringMatching(/^arr_01JDCXD5E7F9G1H3J5K7M9N1P3:/),
       title: "orders@junipercold.example",
       detail: `26 Nov, 10:42 · ${happened}`,
       tone,
@@ -753,6 +753,17 @@ describe("kinMailRuleHistoryRows: what matched, when, and what happened", () => 
       title: "Unknown sender",
       detail: "26 Nov, 10:43 · Running",
     });
+  });
+
+  it("keeps a Run now on mail that already ran apart from that first run", () => {
+    const rows = kinMailRuleHistoryRows(
+      [
+        mail({ eventId: "pulse-run-now" }),
+        mail({ state: "held_paused", eventId: "pulse-first", holdReason: "paused" }),
+      ],
+      { now: NOW, words: WORDS },
+    );
+    expect(new Set(rows.map((one) => one.key)).size).toBe(2);
   });
 
   it("shows a blind stretch so it isn't passed off as quiet", () => {

@@ -24,7 +24,7 @@ type Facts = {
   readonly subject?: string;
 };
 
-export const mailRuleDomain = (value: string) => {
+const mailRuleDomain = (value: string) => {
   const name = value.trim().toLowerCase();
   if (!/^[\p{L}\p{M}\p{N}.\u3002\uff0e\uff61-]+$/u.test(name)) return null;
   const ascii = NodeURL.domainToASCII(name).replace(/\.$/, "");
@@ -45,7 +45,7 @@ export const mailRuleSharedEnding = (value: string) => {
     : null;
 };
 
-export const mailRuleAddress = (value: string) => {
+const mailRuleAddress = (value: string) => {
   const found = /^([^\s<>@,;"()\\]+)@([^\s<>@,;"()\\]+)$/.exec(value.trim().toLowerCase());
   if (found === null) return null;
   const domain = mailRuleDomain(found[2]!);
