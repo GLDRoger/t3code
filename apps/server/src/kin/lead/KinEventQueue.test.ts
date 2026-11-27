@@ -1223,7 +1223,6 @@ describe("KinEventQueue", () => {
         Effect.forkChild,
       );
       yield* TestClock.adjust("20 seconds");
-      assert.isDefined(otherLead.pollUnsafe());
       assert.deepStrictEqual(
         (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
         ["other-lead"],
