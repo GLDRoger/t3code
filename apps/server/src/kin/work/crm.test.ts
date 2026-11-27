@@ -4169,8 +4169,26 @@ it.effect(
       yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
         WHERE key = 'P-1'`;
       yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
+      yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+      yield* TestClock.adjust(1);
+      const task = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: task.key,
+        rev: task.rev,
+        amount: { minor: 120_000, currency: "INR" },
+      });
       const theirs = yield* Clients.project([mate], { orgId, key: "P-1" });
       const ours = yield* Clients.project([owner], { orgId, key: "P-1" });
+      const amountChange = ours.changedThisWeek.items.find(
+        (one) =>
+          one.record.key === task.key && one.fields.some((field) => field.field === "amount"),
+      );
+      assert.isDefined(amountChange);
+      assert.notInclude(
+        theirs.changedThisWeek.items.map((one) => one.seq),
+        amountChange!.seq,
+      );
       assert.deepStrictEqual(
         ours.blocked.map((one) => one.record.key),
         ["W-2"],

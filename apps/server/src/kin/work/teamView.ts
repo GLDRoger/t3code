@@ -1628,6 +1628,11 @@ const TEAM_FIELDS = new Set([
   "repeat",
 ]);
 export const teamSeesField = (field: string) => TEAM_FIELDS.has(field);
+export const teamSeesChange = (sql: SqlClient.SqlClient) =>
+  sql`(c.kind = 'created' OR (c.kind = 'updated' AND EXISTS (
+    SELECT 1 FROM json_each(c.fields_json) f WHERE f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS])}
+  )))`;
+
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
   const shown = changes.flatMap((change): ReadonlyArray<KinRecordChange> => {
