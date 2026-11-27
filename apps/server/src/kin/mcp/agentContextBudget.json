@@ -2,21 +2,21 @@
   "mcpToolListJsonBytes": 64794,
   "kinToolListJsonBytes": 3071,
   "kinInstructionsBytes": {
-    "owner": 43948,
-    "confined": 43896
+    "owner": 44088,
+    "confined": 44036
   },
-  "kinSharedInstructionsHash": "7f95070e6c7e499cb3749e53ddb98485a5517d4e1f5241ec98bb7bba0e5201a9",
+  "kinSharedInstructionsHash": "02bd16739ecbb5c887a999efe843d28f36bd8f78c7d545940b63aefa7db0989c",
   "kinLeadToolListJsonBytes": {
-    "engineering": 138250,
-    "engineeringBesideFinanceAndSales": 124441,
-    "finance": 117428,
-    "shared": 72781,
-    "social": 120157,
-    "socialBesideFinanceAndSales": 106348,
-    "support": 117428
+    "engineering": 138324,
+    "engineeringBesideFinanceAndSales": 124515,
+    "finance": 117502,
+    "shared": 72806,
+    "social": 120231,
+    "socialBesideFinanceAndSales": 106422,
+    "support": 117502
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
-  "kinLeadAlwaysLoadedToolBytes": 29351,
+  "kinLeadAlwaysLoadedToolBytes": 29376,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -95,7 +95,7 @@
       "schema": 422
     },
     "kin_ask": {
-      "desc": 1600,
+      "desc": 1625,
       "schema": 769
     },
     "kin_ask_close": {
@@ -276,7 +276,7 @@
     },
     "number_record": {
       "desc": 250,
-      "schema": 311
+      "schema": 360
     },
     "numbers_read": {
       "desc": 192,
