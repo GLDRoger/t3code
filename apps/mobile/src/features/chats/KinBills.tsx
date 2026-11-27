@@ -51,7 +51,6 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
-  convertPastedImagesToAttachments,
   createComposerFileAttachment,
   pickComposerFiles,
   pickComposerMedia,
@@ -61,6 +60,7 @@ import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAssetUrl } from "../../state/assets";
 import { uploadComposerAttachmentShared } from "../../state/composer-attachment-uploads";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { createBillPhotoAttachment, preparePickedBillPhoto } from "./kinBillPhoto";
 import { forgetKinSharedFile } from "./kinSharedFileInbox";
 import type { KinSharedFile } from "./state/kinSharedFile";
 import { kinBillChoices, kinExpenseParamsOfBill } from "./state/kinBillsPick";
@@ -109,7 +109,7 @@ async function uploadBill(
     : { type: "file", id, name, mimeType, sizeBytes };
 }
 
-/** A photo of a bill from the camera, through the same path a pasted photo takes. */
+/** A photo of a bill from the camera. */
 async function takeBillPhoto(number: number) {
   const picker = await import("expo-image-picker");
   const allowed = await picker.requestCameraPermissionsAsync();
@@ -123,11 +123,17 @@ async function takeBillPhoto(number: number) {
   }
   const asset = taken.canceled ? undefined : taken.assets[0];
   if (asset === undefined) return { photo: null, error: null };
-  const converted = await convertPastedImagesToAttachments({ uris: [asset.uri] });
-  const [photo] = converted.attachments;
-  if (photo === undefined) return { photo: null, error: converted.error };
-  const extension = photo.mimeType === "image/png" ? "png" : "jpg";
-  return { photo: { ...photo, name: `bill-photo-${number}.${extension}` }, error: null };
+  try {
+    const photo = await createBillPhotoAttachment({
+      uri: asset.uri,
+      name: asset.fileName ?? `bill-photo-${number}.jpg`,
+      mimeType: asset.mimeType,
+    });
+    const extension = photo.mimeType === "image/jpeg" ? "jpg" : photo.mimeType.split("/")[1];
+    return { photo: { ...photo, name: `bill-photo-${number}.${extension}` }, error: null };
+  } catch (cause) {
+    return { photo: null, error: cause instanceof Error ? cause.message : KIN_BILLS.uploadFailed };
+  }
 }
 
 /** Money's Add › Bills on the phone: from the photo library, files or the camera, then one add. */
@@ -152,12 +158,8 @@ export function KinBillsAddScreen({ route }: StaticScreenProps<KinBillsAddParams
 async function sharedBill(shared: KinSharedFile) {
   try {
     if (shared.mimeType.startsWith("image/")) {
-      const converted = await convertPastedImagesToAttachments({ uris: [shared.uri] });
-      const [photo] = converted.attachments;
-      return {
-        bill: photo === undefined ? null : { ...photo, name: shared.name },
-        error: converted.error,
-      };
+      const bill = await createBillPhotoAttachment(shared);
+      return { bill: { ...bill, name: shared.name }, error: null };
     }
     const bill = await createComposerFileAttachment({
       uri: shared.uri,
@@ -226,11 +228,14 @@ function AddBills(props: KinWorkTarget & { readonly shared: KinSharedFile | null
     }
     const picked =
       from === "library"
-        ? await pickComposerMedia({ existingCount: held }).then((result) => ({
+        ? await pickComposerMedia({
+            existingCount: held,
+            preparePhoto: createBillPhotoAttachment,
+          }).then((result) => ({
             files: result.attachments,
             error: result.error,
           }))
-        : await pickComposerFiles({ existingCount: held });
+        : await pickComposerFiles({ existingCount: held, preparePhoto: preparePickedBillPhoto });
     if (picked.files.length > 0) adding.choose(kinBillChoices(picked.files));
     setPicking(picked.error);
   };

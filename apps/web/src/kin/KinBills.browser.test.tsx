@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinBills";
 import {
   EnvironmentId,
+  type KinAttachment,
   KinOrgId,
   KinRecordKey,
   type KinBillBatchSummary,
@@ -16,10 +17,21 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
+  uploaded: vi.fn<(file: File) => void>(),
   rows: [] as Array<unknown>,
   batch: null as unknown,
   act: null as unknown as (...args: Array<unknown>) => unknown,
   keepAll: null as unknown as (...args: Array<unknown>) => unknown,
+}));
+
+vi.mock(import("../lib/attachmentUploadQueue"), () => ({
+  startAttachmentUpload: ({ image }) => {
+    if (image.file !== null) state.uploaded(image.file);
+  },
+  awaitAttachmentUploads: async () => {},
+  getUploadedAttachments: ({ images }) => [...images],
+  readAttachmentUpload: () => undefined,
+  releaseAttachmentUpload: () => {},
 }));
 
 vi.mock(import("./useKinBills"), () => ({
@@ -43,7 +55,10 @@ vi.mock(import("./useKinBills"), () => ({
     keepAll: state.keepAll,
   })) as never,
   // The dialog's own steps, as the shared hook keeps them; nothing is sent.
-  useKinBillsAdd: (() => {
+  useKinBillsAdd: ((
+    _target: unknown,
+    upload: (file: File, name: string) => Promise<KinAttachment>,
+  ) => {
     const [held, set] = useState<KinBillsAdding<File>>(kinBillsAddingStart<File>);
     const step = (event: KinBillsEvent<File>) => set((was) => kinBillsStep(was, event));
     return {
@@ -52,7 +67,12 @@ vi.mock(import("./useKinBills"), () => ({
       choose: (files: Extract<KinBillsEvent<File>, { _tag: "chose" }>["files"]) =>
         step({ _tag: "chose", files }),
       remove: (id: string) => step({ _tag: "removed", id }),
-      send: async () => null,
+      send: async () => {
+        for (const file of held.files.filter((file) => file.upload._tag === "waiting")) {
+          await upload(file.source, file.name);
+        }
+        return null;
+      },
     };
   }) as never,
 }));
@@ -125,6 +145,74 @@ function setup() {
 }
 
 describe("bills added in bulk", () => {
+  it("uploads the original phone photo while chat still caps the same file", async () => {
+    state.uploaded.mockClear();
+    const canvas = new OffscreenCanvas(4032, 3024);
+    canvas.getContext("2d")!.fillRect(0, 0, canvas.width, canvas.height);
+    const original = new File([await canvas.convertToBlob({ type: "image/jpeg" })], "page.jpg", {
+      type: "image/jpeg",
+    });
+    await using screen = await render(
+      <KinAddBillsDialog {...target} onReview={() => {}} onOpenKey={() => {}} onClose={() => {}} />,
+    );
+    await userEvent.upload(screen.getByLabelText("Photos or PDFs of bills"), original);
+    await userEvent.click(screen.getByRole("button", { name: "Add 1 bill" }));
+    await vi.waitFor(() => expect(state.uploaded).toHaveBeenCalledOnce());
+    expect(state.uploaded.mock.calls[0]![0].size).toBe(original.size);
+    expect(new Uint8Array(await state.uploaded.mock.calls[0]![0].arrayBuffer())).toEqual(
+      new Uint8Array(await original.arrayBuffer()),
+    );
+    const { prepareImageForAttachment } = await import("../lib/imageCompression");
+    expect(await prepareImageForAttachment(original, 10 * 1024 * 1024)).toMatchObject({
+      ok: true,
+      recompressed: true,
+      imageSize: { width: 2000, height: 1500 },
+    });
+  });
+
+  it.each([
+    { limit: "pixels", width: 8000, height: 6500, trailingBytes: 0, expected: [7844, 6373] },
+    {
+      limit: "bytes",
+      width: 4032,
+      height: 3024,
+      trailingBytes: 12 * 1024 * 1024,
+      expected: [3312, 2484],
+    },
+  ])(
+    "fits a bill over the $limit ceiling without applying the chat edge",
+    async ({ width, height, trailingBytes, expected }) => {
+      state.uploaded.mockClear();
+      const canvas = new OffscreenCanvas(width, height);
+      canvas.getContext("2d")!.fillRect(0, 0, width, height);
+      const jpeg = await canvas.convertToBlob({ type: "image/jpeg" });
+      const original = new File(
+        [jpeg, new Uint8Array(Math.max(0, trailingBytes - jpeg.size))],
+        "large-bill.jpg",
+        { type: "image/jpeg" },
+      );
+      await using screen = await render(
+        <KinAddBillsDialog
+          {...target}
+          onReview={() => {}}
+          onOpenKey={() => {}}
+          onClose={() => {}}
+        />,
+      );
+      await userEvent.upload(screen.getByLabelText("Photos or PDFs of bills"), original);
+      await userEvent.click(screen.getByRole("button", { name: "Add 1 bill" }));
+      await vi.waitFor(() => expect(state.uploaded).toHaveBeenCalledOnce());
+      const sent = state.uploaded.mock.calls[0]![0];
+      expect(sent.size).toBeLessThanOrEqual(10 * 1024 * 1024);
+      const bitmap = await createImageBitmap(sent);
+      try {
+        expect([bitmap.width, bitmap.height]).toEqual(expected);
+      } finally {
+        bitmap.close();
+      }
+    },
+  );
+
   it("lists every chosen file, and says why one isn't a bill before anything uploads", async () => {
     await using screen = await render(
       <KinAddBillsDialog {...target} onReview={() => {}} onOpenKey={() => {}} onClose={() => {}} />,
