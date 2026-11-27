@@ -1656,7 +1656,7 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
     sha256: row.sha256,
     batchId: row.batchId,
     file,
-    ...(photo === undefined
+    ...(photo === undefined || (photo.id !== row.attachmentId && photo.sizeBytes >= row.sizeBytes)
       ? {}
       : { preview: { ...file, attachmentId: photo.id, mimeType: photo.mimeType } }),
     state: shownState(row, record),

@@ -1706,8 +1706,9 @@ describe("bill_cut", () => {
       yield* seed;
       const { attachmentsDir } = yield* ServerConfig.ServerConfig;
       const small = yield* Effect.promise(() => createCanvas(40, 30).encode("jpeg", 90));
+      const wide = yield* Effect.promise(() => billPhoto(2400, 1800));
       const files = [
-        yield* photoPage,
+        yield* upload("wide.jpg", wide, "image/jpeg"),
         yield* upload("small.jpg", small, "image/jpeg"),
         yield* upload("bill.pdf", "%PDF fixture", "application/pdf"),
       ];
@@ -1740,6 +1741,30 @@ describe("bill_cut", () => {
       assert.isEmpty((yield* prepare({ ...turn, billPhotos: true })).attachments);
       const legacy = yield* prepare({ ...turn, billPhotos: "legacy" });
       assert.strictEqual(legacy.attachments[0]?.id, id);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("never offers a copy bigger than the original it stands for", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const blank = yield* Effect.promise(() => createCanvas(1600, 1200).encode("png"));
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [yield* upload("blank.png", blank)],
+          clientRequestId: "bigger-copy",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+      const copy = NodePath.join(
+        attachmentsDir,
+        `${billPhotoPreviewId(bill!.file.attachmentId)}.jpg`,
+      );
+      assert.isAbove(NodeFS.statSync(copy).size, blank.byteLength);
+      assert.isUndefined(bill!.preview);
     }).pipe(Effect.provide(layer)),
   );
 
