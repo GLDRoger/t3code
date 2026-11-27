@@ -413,7 +413,6 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           provenance: { _tag: "system" },
           chatId: KinChatId.make(first.cardChatId),
           batchId,
-          outside: true,
           bills: hashes,
         })
         .pipe(

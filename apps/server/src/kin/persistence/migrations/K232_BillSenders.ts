@@ -13,7 +13,6 @@ export default Effect.gen(function* () {
     last_seen_at INTEGER,
     decided_by_person_id TEXT,
     decided_at INTEGER,
-    subscription_record_id TEXT,
     created_at INTEGER NOT NULL,
     known_biller INTEGER NOT NULL DEFAULT 0 CHECK (known_biller IN (0, 1)),
     widget_id TEXT,
