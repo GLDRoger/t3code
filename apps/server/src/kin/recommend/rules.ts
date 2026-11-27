@@ -18,6 +18,14 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { USUAL_LIMITS } from "../lead/KinBudget.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
+import { candidateGate } from "../work/statements/bankAlertCandidates.ts";
+import {
+  BANK_SENDER_RULE,
+  liveHeldMail,
+  list as listSenders,
+  normalizeAddress,
+} from "../work/statements/bankSenderRows.ts";
+import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { dayIn } from "../work/money.ts";
 import { DAY_MS } from "../durations.ts";
 export { DAY_MS };
@@ -409,11 +417,88 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
   return verdicts;
 });
 
+export const bankSender = Effect.fn("KinRecommendRules.bankSender")(function* (
+  ctx: RuleContext,
+  only?: { readonly address: string },
+) {
+  const { orgId, at } = ctx;
+  const senders = yield* listSenders(orgId);
+  const waiting = senders.filter(
+    (sender) =>
+      sender.state === "candidate" && (only === undefined || sender.address === only.address),
+  );
+  if (waiting.length === 0) return [];
+  const held = yield* liveHeldMail(orgId, at, { address: only?.address });
+  const currentBank = yield* candidateGate(orgId);
+  const sql = yield* SqlClient.SqlClient;
+  const [org] = yield* sql<{ name: string }>`SELECT name FROM kin_orgs WHERE org_id = ${orgId}`;
+  if (org === undefined) return [];
+  const byAddress = Map.groupBy(held, (row) => row.address);
+  return waiting.flatMap((sender): ReadonlyArray<Verdict> => {
+    const hint = currentBank(sender.address);
+    if (
+      hint === undefined ||
+      hint.bankName !== sender.bankName ||
+      hint.matchedFrom !== sender.matchedFrom
+    )
+      return [];
+    const known = hint.accounts;
+    const rows = byAddress.get(sender.address) ?? [];
+    const mailboxes = [...new Set(rows.map((row) => normalizeAddress(row.mailbox)))];
+    const count = rows.reduce((total, row) => total + row.count, 0);
+    if (count === 0 || mailboxes.includes(undefined)) return [];
+    const liveEndings = new Set(rows.flatMap((row) => row.endings));
+    const unknown = [...liveEndings].filter((ending) => !known.has(ending)).toSorted();
+    const accounts = sender.seenAccounts
+      .filter((ending) => liveEndings.has(ending) && (known.size === 0 || known.has(ending)))
+      .slice(0, 3);
+    if (accounts.length === 0) return [];
+    const shownUnknown = known.size === 0 ? [] : unknown.slice(0, 3 - accounts.length);
+    const sibling = senders.find(
+      (one) => one.state === "approved" && one.bankKey === sender.bankKey,
+    );
+    const copy = bankSenderCopy({
+      address: sender.address,
+      bankName: sender.bankName,
+      source: hint.matchedFrom,
+      company: org.name,
+      mailboxes: mailboxes.flatMap((one) => one ?? []),
+      since: formatDay(ctx, Math.min(...rows.map((row) => row.first))),
+      count,
+      accounts,
+      knownAccounts: known.size > 0,
+      shownUnknown,
+      sibling: sibling?.address,
+    });
+    // Choice cards cap both fields. Never shorten the two strings that identify the sender.
+    if (copy.ask.length > 240 || copy.noticed.length + copy.gives.length + 2 > 1500) return [];
+    return [
+      {
+        _tag: "fires",
+        candidate: {
+          rule: BANK_SENDER_RULE,
+          subject: sender.address,
+          weight: count,
+          urgent: true,
+          ...copy,
+          change: {
+            kind: "bank_sender",
+            address: sender.address,
+            bankName: sender.bankName,
+            accounts,
+            ...(sibling === undefined ? {} : { siblingAddress: sibling.address }),
+          },
+        },
+      },
+    ];
+  });
+});
+
 /**
  * Rules in rank order: the first that fires speaks. The limit that holds every agent back comes
  * first, then a connection, then one paused agent.
  */
-export const RULES = [dailyLimit, connectionPaused, agentPaused] as const;
+export const RULES = [dailyLimit, connectionPaused, agentPaused, bankSender] as const;
 
 /** The rule a change came from, asked again for that change's one subject, as the tap does. */
 export const ruleFor = (ctx: RuleContext, change: RecommendChange) => {
@@ -426,5 +511,7 @@ export const ruleFor = (ctx: RuleContext, change: RecommendChange) => {
       return { rule: CONNECTION_PAUSED, verdicts: connectionPaused(ctx, change) };
     case "agent_resume":
       return { rule: AGENT_PAUSED, verdicts: agentPaused(ctx, change) };
+    case "bank_sender":
+      return { rule: BANK_SENDER_RULE, verdicts: bankSender(ctx, change) };
   }
 };

@@ -45,6 +45,7 @@ import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
+import { KinBankSenderRpcs, KIN_BANK_SENDER_RPC_SCOPES } from "./kinBankSenders.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
 import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
@@ -224,6 +225,7 @@ export const KinRpcs = [
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinBankSenderRpcs,
   ...KinHostRpcs,
   ...KinWatchRpcs,
   ...KinBillRpcs,
@@ -234,6 +236,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
+  ...KIN_BANK_SENDER_RPC_SCOPES,
   ...KIN_DEAL_RPC_SCOPES,
   ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
@@ -530,6 +533,10 @@ const KIN_RPC_ACCESS = {
   "kin.pulse.aside": "person",
   "kin.open.read": "person",
   "kin.open.subscribe": "person",
+  // Which mail may write Bank transactions: the owner level's, as other money settings are.
+  "kin.bankSenders.list": "owner_level",
+  "kin.bankSenders.add": "owner_level",
+  "kin.bankSenders.remove": "owner_level",
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
@@ -646,6 +653,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.pulse.aside": "kin-pulse",
   "kin.open.read": "kin-pulse",
   "kin.open.subscribe": "kin-pulse",
+  "kin.bankSenders.list": "kin-work",
+  "kin.bankSenders.add": "kin-work",
+  "kin.bankSenders.remove": "kin-work",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
   "kin.host.status": "kin-host",

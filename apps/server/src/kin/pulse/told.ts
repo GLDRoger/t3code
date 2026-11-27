@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { dayIn } from "../work/money.ts";
 import { isDeclineKey } from "./declines.ts";
 import { isLeftKey, settleLeft } from "./leftForCheckIn.ts";
-import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
+import { BANK_SENDER_WAITING, bankBriefLine, UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { HOUR_MS, DAY_MS } from "./thresholds.ts";
 
 /** Facts about something coming due: their measure counts down to it. */
@@ -322,15 +322,25 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
       const mentioned = new RegExp(`(?<![\\p{L}\\p{N}_])${key}(?![\\p{L}\\p{N}_])`, "u");
       const title = fact.subject.title.trim().toLowerCase();
       const client = fact.scope.clientTitle?.trim().toLowerCase();
+      const bankLine = bankBriefLine(fact);
+      const waitingLine =
+        fact.sense === BANK_SENDER_WAITING
+          ? new RegExp(
+              `Kin is holding [0-9]+ mails? from ${RegExp.escape(fact.subject.key)} until you say whether it is `,
+            )
+          : undefined;
+      const automatedBankLine =
+        bankLine !== undefined &&
+        texts.some(
+          ({ automated, text }) =>
+            automated && (waitingLine?.test(text) ?? text.includes(bankLine)),
+        );
       if (
-        mentioned.test(spoken) ||
-        (title.length >= 4 && spoken.includes(title)) ||
-        (client && spoken.includes(client)) ||
-        (fact.key === UNREADABLE_BANK_ALERTS_KEY &&
-          texts.some(
-            ({ automated, text }) =>
-              automated && text.includes(`${fact.subject.title}. ${fact.consequence}`),
-          ))
+        automatedBankLine ||
+        (fact.sense !== BANK_SENDER_WAITING &&
+          (mentioned.test(spoken) ||
+            (title.length >= 4 && spoken.includes(title)) ||
+            (client && spoken.includes(client))))
       )
         named.add(fact.key);
     }

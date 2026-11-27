@@ -235,6 +235,7 @@ export const SECTIONS = {
     holder_removed: null,
     statement_missing: "money",
     bank_alerts_unreadable: "money",
+    bank_sender_waiting: "money",
     payment_seen: "invoices",
     repaid_seen: "money",
     deal_no_next_step: "deals",
