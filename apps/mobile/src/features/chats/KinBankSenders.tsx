@@ -230,7 +230,9 @@ function BankSenderMobileRow(props: {
             key={segment.start}
             textRole="body"
             className={
-              segment.domain ? "font-t3-semibold text-foreground" : "text-foreground-muted"
+              segment.domain
+                ? "max-w-full font-t3-semibold text-foreground"
+                : "max-w-full text-foreground-muted"
             }
           >
             {segment.text}
