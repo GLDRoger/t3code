@@ -1699,9 +1699,15 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const due = wake.lastOutputAt + STALL_MS - now;
       if (due > 0) return yield* Effect.sleep(due);
-      if (wake.state !== "stalled")
-        yield* wake.lock.withPermits(1)(show(wake, "stalled", null, wake.lastOutputAt));
-      yield* Effect.sleep(STALL_MS);
+      const next = yield* wake.lock.withPermits(1)(
+        Effect.gen(function* () {
+          const remaining = wake.lastOutputAt + STALL_MS - (yield* Clock.currentTimeMillis);
+          if (remaining > 0) return remaining;
+          if (wake.state !== "stalled") yield* show(wake, "stalled", null, wake.lastOutputAt);
+          return STALL_MS;
+        }),
+      );
+      yield* Effect.sleep(next);
     }).pipe(Effect.forever),
   );
 

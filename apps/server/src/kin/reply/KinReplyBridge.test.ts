@@ -289,6 +289,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
   /** Runs as the agent's reply is written onto a message it already posted, before the write. */
+  readonly beforeReply?: Effect.Effect<void>;
   readonly beforeExtend?: Effect.Effect<void>;
   readonly afterExtend?: Effect.Effect<void>;
   readonly journalLines?: Array<string>;
@@ -400,10 +401,18 @@ const setup = Effect.fn("test.setup")(function* (input: {
     interrupts: [],
   };
   const gate = Context.get(services, KinLevelGate);
-  const { beforeExtend, afterExtend, journalLines, postError, onNotice } = input;
+  const { beforeReply, beforeExtend, afterExtend, journalLines, postError, onNotice } = input;
   const gated = Context.add(services, KinLevelGate, {
     ...gate,
-    postReply: postError === undefined ? gate.postReply : () => Effect.fail(postError),
+    postReply:
+      beforeReply === undefined && postError === undefined
+        ? gate.postReply
+        : (...args) =>
+            (beforeReply ?? Effect.void).pipe(
+              Effect.andThen(
+                postError === undefined ? gate.postReply(...args) : Effect.fail(postError),
+              ),
+            ),
     extend:
       beforeExtend === undefined && afterExtend === undefined
         ? gate.extend
@@ -3754,6 +3763,35 @@ it.effect.each([
       assert.strictEqual((yield* posted).at(-1)?.body, reply);
     }
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a progress update restarts the working timer when its old deadline falls during the post",
+  () =>
+    Effect.gen(function* () {
+      const posting = yield* Deferred.make<void>();
+      const finishPost = yield* Deferred.make<void>();
+      const { bridge, services, orgId, wakeupId, chatId } = yield* setupSend({
+        ask: "Is the loading slot booked?",
+        beforeReply: Deferred.succeed(posting, undefined).pipe(
+          Effect.andThen(Deferred.await(finishPost)),
+        ),
+      });
+      const update = yield* bridge
+        .update({ orgId, wakeupId, text: "Checking the loading slot." })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(posting);
+      yield* TestClock.adjust("2 minutes");
+      yield* Deferred.succeed(finishPost, undefined);
+      yield* Fiber.join(update);
+      yield* TestClock.adjust("1 second");
+      const presence = Context.get(services, KinPresence);
+      const state = () =>
+        presence.lines(orgId, chatId).find((row) => row.wakeupId === wakeupId)?.state;
+      assert.notStrictEqual(state(), "stalled");
+      yield* TestClock.adjust("119 seconds");
+      assert.strictEqual(state(), "stalled");
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a progress update retried through the post gate returns the stored message", () =>
