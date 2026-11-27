@@ -17,6 +17,7 @@ import {
   citedNumber,
   invoiceOffer,
   levelWithBest,
+  nameIn,
   paymentOffer,
   overOffer,
   rateCandidate,
@@ -232,21 +233,86 @@ export type CreditPair = NonNullable<ReturnType<typeof pairOf>>;
  * those level with the best (`first`). `recorded` is money already recorded on an invoice with no
  * bank row that the matcher ranks level with or above them: the credit may be that payment.
  */
+type OpenInvoice = Effect.Success<ReturnType<typeof invoiceCandidates>>[number];
 type RateChoice = NonNullable<ReturnType<typeof rateCandidate>> & {
-  readonly invoice: Effect.Success<ReturnType<typeof invoiceCandidates>>[number];
+  readonly invoice: OpenInvoice;
+};
+type SameChoice = {
+  readonly invoice: OpenInvoice;
+  readonly owed: KinMoney;
 };
 
 export type CreditMatch = {
   readonly credit: OpenCredit;
   readonly ranked: ReadonlyArray<CreditPair>;
   readonly first: ReadonlyArray<CreditPair>;
-  readonly choice?: {
-    readonly client: string;
-    readonly options: ReadonlyArray<RateChoice>;
-    readonly round: number;
-    readonly total: number;
-  };
+  readonly choice?: { readonly client: string; readonly round: number; readonly total: number } & (
+    | { readonly kind: "rate"; readonly options: ReadonlyArray<RateChoice> }
+    | {
+        readonly kind: "same";
+        readonly clientId: string;
+        readonly options: ReadonlyArray<SameChoice>;
+      }
+  );
   readonly recorded: { readonly key: string; readonly paidOn: string } | undefined;
+};
+
+const choiceOrder = (
+  a: { readonly invoice: OpenInvoice; readonly score: number },
+  b: { readonly invoice: OpenInvoice; readonly score: number },
+) =>
+  b.score - a.score ||
+  (b.invoice.issued ?? "").localeCompare(a.invoice.issued ?? "") ||
+  a.invoice.key.localeCompare(b.invoice.key);
+
+const sameCurrencyChoice = (
+  credit: OpenCredit,
+  invoices: ReadonlyArray<OpenInvoice>,
+  ranked: ReadonlyArray<CreditPair>,
+  round: number,
+): Extract<NonNullable<CreditMatch["choice"]>, { kind: "same" }> | undefined => {
+  if (!invoices.some((invoice) => invoice.currency === credit.currency)) return undefined;
+  const nameScores = new Map<string, number>();
+  const named = invoices.flatMap((invoice) => {
+    if (
+      invoice.clientId == null ||
+      !invoice.client?.trim() ||
+      invoice.issued === null ||
+      invoice.issued > credit.date
+    )
+      return [];
+    let score = nameScores.get(invoice.client);
+    if (score === undefined) {
+      score = nameIn(invoice.client, credit.row.description);
+      nameScores.set(invoice.client, score);
+    }
+    return score < 0.5 ? [] : [{ invoice, score: 10 + Math.round(30 * score) }];
+  });
+  const options = named.filter(({ invoice }) => invoice.currency === credit.currency);
+  const client = options[0]?.invoice;
+  if (
+    client?.client == null ||
+    client.clientId == null ||
+    named.some(({ invoice }) => invoice.clientId !== client.clientId)
+  )
+    return undefined;
+  const matched = new Map(
+    ranked.map(({ invoice, candidate }) => [invoice.recordId, candidate.score]),
+  );
+  return {
+    kind: "same",
+    client: client.client,
+    clientId: client.clientId,
+    options: options
+      .map((one) => ({ ...one, score: matched.get(one.invoice.recordId) ?? one.score }))
+      .toSorted(choiceOrder)
+      .map(({ invoice }) => ({
+        invoice,
+        owed: { minor: invoice.amountMinor - invoice.paidMinor, currency: credit.currency },
+      })),
+    round,
+    total: options.length,
+  };
 };
 
 const takenBackPairs = Effect.fn("KinStatements.takenBackPairs")(function* (
@@ -308,43 +374,47 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
           b.candidate.score - a.candidate.score || a.invoice.key.localeCompare(b.invoice.key),
       );
     const best = ranked[0];
-    let choice: CreditMatch["choice"];
-    if (best === undefined) {
+    const round = rounds.get(credit.recordId) ?? 0;
+    let choice: CreditMatch["choice"] =
+      best?.candidate.fit === "rate" || ranked.some(({ candidate }) => candidate.fit === "exact")
+        ? undefined
+        : sameCurrencyChoice(credit, available, ranked, round);
+    if (choice === undefined && best === undefined) {
       const options = available
         .flatMap((invoice) => {
           if (invoice.clientId == null || !invoice.client?.trim()) return [];
           const rate = rateCandidate(credit.row, invoice, credit.currency);
-          return rate === undefined || rate.cited !== undefined ? [] : [{ ...rate, invoice }];
+          return rate === undefined || rate.cited !== undefined
+            ? []
+            : [{ ...rate, invoice, score: rate.candidate.score }];
         })
-        .toSorted(
-          (a, b) =>
-            b.candidate.score - a.candidate.score ||
-            (b.invoice.issued ?? "").localeCompare(a.invoice.issued ?? "") ||
-            a.invoice.key.localeCompare(b.invoice.key),
-        );
+        .toSorted(choiceOrder);
       const invoice = options[0]?.invoice;
       if (
-        invoice?.client == null ||
-        options.some((option) => option.invoice.clientId !== invoice.clientId)
+        invoice?.client != null &&
+        options.every((option) => option.invoice.clientId === invoice.clientId)
       )
-        continue;
+        choice = {
+          kind: "rate",
+          client: invoice.client,
+          options: options.slice(0, 4),
+          round,
+          total: options.length,
+        };
+    }
+    if (choice !== undefined) {
       numbers ??= yield* sql<{ key: string; number: string | null }>`SELECT key,
       CASE WHEN json_type(fields_json, '$.number') = 'text'
         THEN json_extract(fields_json, '$.number') END AS number
       FROM kin_records WHERE org_id = ${orgId} AND register_id = 'invoices' ORDER BY key`;
-      if (numbers.some((one) => citedNumber(credit.row, one) !== undefined)) continue;
-      choice = {
-        client: invoice.client,
-        options: options.slice(0, 4),
-        round: rounds.get(credit.recordId) ?? 0,
-        total: options.length,
-      };
+      if (numbers.some((one) => citedNumber(credit.row, one) !== undefined)) choice = undefined;
     }
+    if (best === undefined && choice === undefined) continue;
     const [rival] = payments
       .flatMap((payment) => {
         const { receivedMinor, receivedCurrency } = payment;
         const bankAmount =
-          (best === undefined || best.candidate.fit === "rate") &&
+          (best === undefined || choice !== undefined || best.candidate.fit === "rate") &&
           receivedMinor !== null &&
           receivedCurrency === credit.currency
             ? { ...payment, amountMinor: receivedMinor, currency: receivedCurrency }
@@ -362,6 +432,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
         credit,
         ranked,
         first: levelWithBest(ranked, (one) => one.candidate.score),
+        ...(rival === undefined && choice !== undefined ? { choice } : {}),
         recorded: outranked ? { key: rival.payment.key, paidOn: rival.payment.paidOn } : undefined,
       });
       continue;

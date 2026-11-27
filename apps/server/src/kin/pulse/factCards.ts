@@ -27,6 +27,7 @@ import {
   FACT_CARD_KIND_LIST,
   type FactCardPlan,
   type InvoiceChoicePlan,
+  type PaymentTerms,
   isFactCard,
   plansOf,
   type DuePlan,
@@ -35,11 +36,11 @@ import {
   type StallPlan,
   type WaitedPlan,
 } from "../widgets/cardPlans.ts";
-import { dayIn } from "../work/money.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
 import { noticeDay } from "../work/crm.ts";
 import { daysOverdue, endOfDay, recordName, startOfDay } from "../work/recordRows.ts";
 import { shortDay } from "../work/statements/bankKnown.ts";
-import { paymentChanged } from "../work/statements/creditPayment.ts";
+import { paymentChanged, sameChoicePayment } from "../work/statements/creditPayment.ts";
 import { rateMoney } from "../work/statements/invoiceCredits.ts";
 import { crmSees, teamGuard, viewSees } from "../work/teamView.ts";
 import { draftersFor } from "./draftWake.ts";
@@ -57,11 +58,24 @@ import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
 /** An unanswered nudge holds off the next for this long, as an agent's nudge does (`nudge.ts`). */
 const NUDGE_BACK_OFF_MS = 7 * DAY_MS;
 const QUESTION_MAX = 240;
+const ACTION_LINE_MAX = 200;
 const clamp = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 /** "Thu 26 Nov" in `zone`. */
 const dayWord = (ms: number, zone: string) =>
   formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
+
+const sameChoiceLine = (payment: PaymentTerms) => {
+  const money = (minor: number) => formatMoney({ minor, currency: payment.currency });
+  const parts = payment.splits ?? [payment];
+  const allocation = parts.map(({ amountMinor, key, owedAfterMinor }) =>
+    owedAfterMinor === 0
+      ? `${money(amountMinor)} settles ${key}`
+      : `${money(amountMinor)} goes to ${key}`,
+  );
+  if (payment.leftMinor) allocation.push(`${money(payment.leftMinor)} stays as client credit`);
+  return `${allocation.join(", ")}.`;
+};
 
 /** The card's button and the line under it, for each sealed answer. */
 export const factCardShown = (plan: FactCardPlan) => {
@@ -85,12 +99,18 @@ export const factCardShown = (plan: FactCardPlan) => {
     case "invoice_choice": {
       const { payment } = plan;
       if (payment === null) return { label: "None of these", line: "" };
+      const label = clamp(
+        recordName(payment.key, payment.number === payment.key ? null : payment.number),
+        80,
+      );
+      if (payment.rate === undefined || payment.received === undefined)
+        return {
+          label: (payment.splits?.length ?? 0) > 1 ? "Split across invoices" : label,
+          line: sameChoiceLine(payment),
+        };
       const owed = rateMoney({ minor: payment.amountMinor, currency: payment.currency });
       return {
-        label: clamp(
-          recordName(payment.key, payment.number === payment.key ? null : payment.number),
-          80,
-        ),
+        label,
         line: `${owed} owed. Records ${rateMoney(payment.received)} received for it, at ${kinRateShown(payment.rate)}.`,
       };
     }
@@ -1008,30 +1028,39 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
       title: credit.title,
       rev: credit.rev,
     };
+    const payments =
+      choice.kind === "rate"
+        ? choice.options.map(({ invoice, owed, received, rate }) => ({
+            kind: "record_payment" as const,
+            recordId: invoice.recordId,
+            key: invoice.key,
+            title: invoice.title,
+            number: invoice.number ?? invoice.key,
+            client: choice.client,
+            seen: invoice.seen,
+            invoiceRev: invoice.rev,
+            bankRecordId: credit.recordId,
+            bankKey: credit.key,
+            rev: credit.rev,
+            amountMinor: owed.minor,
+            currency: owed.currency,
+            received,
+            rate,
+            day: credit.date,
+            withheldMinor: null,
+            owedAfterMinor: 0,
+          }))
+        : (() => {
+            const options = choice.options.slice(0, 4);
+            const [first, ...more] = options;
+            const singles = options.map((one) => sameChoicePayment(credit, choice, one));
+            if (first === undefined || more.length === 0 || credit.amountMinor <= first.owed.minor)
+              return singles;
+            const split = sameChoicePayment(credit, choice, first, more);
+            return sameChoiceLine(split).length <= ACTION_LINE_MAX ? [...singles, split] : singles;
+          })();
     const plans: ReadonlyArray<InvoiceChoicePlan> = [
-      ...choice.options.map(({ invoice, owed, received, rate }) => ({
-        ...base,
-        payment: {
-          kind: "record_payment" as const,
-          recordId: invoice.recordId,
-          key: invoice.key,
-          title: invoice.title,
-          number: invoice.number ?? invoice.key,
-          client: choice.client,
-          seen: invoice.seen,
-          invoiceRev: invoice.rev,
-          bankRecordId: credit.recordId,
-          bankKey: credit.key,
-          rev: credit.rev,
-          amountMinor: owed.minor,
-          currency: owed.currency,
-          received,
-          rate,
-          day: credit.date,
-          withheldMinor: null,
-          owedAfterMinor: 0,
-        },
-      })),
+      ...payments.map((payment) => ({ ...base, payment })),
       { ...base, payment: null },
     ];
     const received = rateMoney({ minor: credit.amountMinor, currency: credit.currency });
@@ -1042,7 +1071,10 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
       factKey: fact.key,
       round: choice.round,
       question: `Which invoice does ${credit.key} pay?`,
-      detail: `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`,
+      detail:
+        choice.kind === "rate"
+          ? `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`
+          : `${received} came in from ${choice.client} on ${shortDay(credit.date)}. Choose how to record ${credit.key}.`,
       options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
       posted,
     });

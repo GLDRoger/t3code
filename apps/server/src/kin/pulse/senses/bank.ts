@@ -197,7 +197,9 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
   const sql = yield* SqlClient.SqlClient;
   const ids = [
     ...new Set(
-      matches.flatMap((one) => (one.first.length === 1 ? [one.first[0]!.invoice.recordId] : [])),
+      matches.flatMap((one) =>
+        one.choice === undefined && one.first.length === 1 ? [one.first[0]!.invoice.recordId] : [],
+      ),
     ),
   ];
   const rows = new Map(
@@ -207,21 +209,32 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
           ORDER BY r.key`).map((row) => [row.recordId, row]),
   );
-  const invoices = matches.some((one) => one.first.some((pair) => pair.candidate.fit === "over"))
+  const invoices = matches.some(
+    (one) => one.choice === undefined && one.first.some((pair) => pair.candidate.fit === "over"),
+  )
     ? yield* invoiceCandidates(ctx.orgId, undefined)
     : [];
-  // A declined choice belongs to the bank row even if a later match is an ordinary offer.
-  const declined = new Set(
-    (yield* sql<{ recordId: string }>`SELECT json_extract(p.plan_json, '$.recordId') AS "recordId"
+  // A choice resolved for this bank row stays resolved even when a later match changes.
+  const resolved = new Set(
+    (yield* sql<{ recordId: string }>`SELECT CASE json_extract(p.plan_json, '$.kind')
+      WHEN 'invoice_choice' THEN json_extract(p.plan_json, '$.recordId')
+      ELSE json_extract(p.plan_json, '$.bankRecordId') END AS "recordId"
       FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
-      WHERE p.org_id = ${ctx.orgId} AND p.ran_message_id IS NOT NULL
-        AND json_extract(p.plan_json, '$.kind') = 'invoice_choice'
-        AND json_type(p.plan_json, '$.payment') = 'null'
-        AND json_type(w.state_json, '$.outcome') IS NULL
+      WHERE p.org_id = ${ctx.orgId} AND p.ran_message_id IS NOT NULL AND (
+        (json_extract(p.plan_json, '$.kind') = 'invoice_choice'
+          AND json_type(p.plan_json, '$.payment') = 'null'
+          AND json_type(w.state_json, '$.outcome') IS NULL)
+        OR (json_extract(w.state_json, '$.outcome.title') = 'Payment recorded' AND (
+          (json_extract(p.plan_json, '$.kind') = 'invoice_choice'
+            AND json_type(p.plan_json, '$.payment.client.id') = 'text')
+          OR (json_extract(p.plan_json, '$.kind') = 'record_payment'
+            AND json_type(p.plan_json, '$.invoiceRev') = 'integer')
+        ))
+      )
       ORDER BY p.widget_id, p.option_id`).map((row) => row.recordId),
   );
   return matches.flatMap(({ credit, ranked, first, choice }): Array<SensedFact> => {
-    if (declined.has(credit.recordId)) return [];
+    if (resolved.has(credit.recordId)) return [];
     const shared = {
       sense: "payment_seen" as const,
       family: "money" as const,
@@ -235,13 +248,17 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
     };
     if (choice !== undefined) {
       const { client, options, total } = choice;
-      const items = options.map(
-        ({ invoice, owed }) =>
-          `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
-      );
+      const items = options
+        .slice(0, 4)
+        .map(
+          ({ invoice, owed }) =>
+            `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
+        );
       const consequence = fitted(
         (shown) =>
-          `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`,
+          choice.kind === "rate"
+            ? `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`
+            : `${creditText(credit)} from ${client} could pay ${listed(items, shown, total)}. Kin can't tell which it pays. Nothing is recorded until an owner or co-owner chooses.`,
         items.length,
       );
       if (consequence.length > CONSEQUENCE_MAX) return [];
