@@ -1,3 +1,4 @@
+import * as MailRules from "./arrivals/KinMailRules.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -238,6 +239,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
+        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         Layer.merge(KinShell.layer),
         Layer.merge(FollowUps.itemsLayer),
         Layer.merge(KinNumbers.layer),
