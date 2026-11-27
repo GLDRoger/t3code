@@ -230,7 +230,7 @@ const Category = KinToolText(
 );
 const Amount = KinToolText(
   60,
-  'As said ("4,200.50", "€30", "12k"); negative for a refund or credit.',
+  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way. For an expense refund or credit, give a negative amount.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
   description: "ISO code, when the amount names none.",
