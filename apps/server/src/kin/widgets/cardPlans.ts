@@ -2,7 +2,6 @@ import {
   type KinChatId,
   KinMessageId,
   KinMailRuleCardState,
-  KinPersonId,
   KinMoney,
   type KinOrgId,
   KinPersonId,

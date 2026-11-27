@@ -191,6 +191,8 @@ const storeArrival = Effect.fn("test.storeArrival")(function* (
         class: classified.class,
         reason: classified.reason,
         needsLook: classified.look !== undefined,
+        hasFile: null,
+        senderCheck: null,
       },
       SLOT,
       false,
