@@ -575,7 +575,8 @@ export function kinMailRuleHistoryRows(
         tone: "attention",
       };
     return {
-      key: entry.arrivalId,
+      // Run now runs a mail again, so one mail can have several rows.
+      key: `${entry.arrivalId}:${entry.eventId ?? entry.state}`,
       title: entry.fromAddress ?? KIN_MAIL_RULES.unknownSender,
       detail: `${when(entry.receivedAt ?? entry.noticedAt, words)} · ${happened(entry)}`,
       tone: entry.state.startsWith("held_") ? "attention" : "ok",
