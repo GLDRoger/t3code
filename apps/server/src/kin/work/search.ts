@@ -1,5 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfList } from "../shell/sections.ts";
+import { registerSectionColumns, sectionOfList, sectionOfRegister } from "../shell/sections.ts";
 import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -8,7 +8,13 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { docKindWords, searchIndexed, stepText, teamListSearchText } from "./searchIndex.ts";
+import {
+  docKindWords,
+  keysOfSearch,
+  searchIndexed,
+  stepText,
+  teamListSearchText,
+} from "./searchIndex.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { ownMoneyDraft, seenBy, teamLists, type KinViewer } from "./teamView.ts";
 
@@ -99,15 +105,19 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly scope: KinViewer;
     /** With nothing that has every word, look again for any of them (`widened`). */
     readonly widen?: boolean;
-    /** Deals too, and a deal by its exact key: a person's own search box asks. */
+    /** Deals too, when the caller can open them. */
     readonly deals?: boolean;
     readonly bankTransactions?: boolean;
+    /** Exact keys can reach lists that don't take part in ordinary word search. */
+    readonly allKeys?: boolean;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const words = wordsOf(input.text);
   const indexed = yield* searchIndexed();
-  if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
+  if (words.length === 0)
+    return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false, keyedCount: 0 };
+  const keys = keysOfSearch(input.text);
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
   const shell = yield* KinShell.get(orgId);
   const deals = input.deals === true && KinShell.sectionOn(shell, "deals");
@@ -117,27 +127,33 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ? yield* findBankList(orgId)
       : undefined;
   const bankId = bank !== undefined && (bank.archivedAt === null || input.closed) ? bank.id : null;
-  const registers = (deals ? [...kinds, "deals"] : kinds).filter((kind) => {
-    const section = sectionOfList(kind);
-    return section === null || KinShell.sectionOn(shell, section);
-  });
-  if (bankId !== null) registers.push(bankId);
-  if (registers.length === 0 && shared.length === 0)
-    return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
+  const registers = [
+    ...(deals ? [...kinds, "deals"] : kinds).filter((kind) => {
+      const section = sectionOfList(kind);
+      return section === null || KinShell.sectionOn(shell, section);
+    }),
+    ...shared,
+  ];
+  const wordRegisters = bankId === null ? registers : [...registers, bankId];
+  const keyRegisters = bank === undefined ? registers : [...registers, bank.id];
+  const allKeys = input.allKeys ?? (input.kinds === undefined || input.kinds.length === 0);
   const onTeamList = shared.length === 0 ? sql`0 = 1` : sql`r.register_id IN ${sql.in(shared)}`;
-  const where = [
+  const visible = [
     sql`r.org_id = ${orgId}`,
-    sql`r.register_id IN ${sql.in([...registers, ...shared])}`,
-    ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
     // A money list labels every entry private, so a teammate finds what Money shows them, and
     // their own priced draft as they read it.
     ...(input.viewer === "team"
       ? [
-          sql`(r.register_id IN ${sql.in(bankId === null ? KIN_MONEY_SEARCH_KINDS : [...KIN_MONEY_SEARCH_KINDS, bankId])} OR NOT ${sensitiveNow(sql)}
+          sql`(r.register_id IN ${sql.in(bank === undefined ? KIN_MONEY_SEARCH_KINDS : [...KIN_MONEY_SEARCH_KINDS, bank.id])} OR NOT ${sensitiveNow(sql)}
             OR ${ownDraftOf(sql, input.scope)})`,
         ]
       : []),
     seenBy(sql, input.scope),
+  ];
+  const where = [
+    ...visible,
+    sql`r.register_id IN ${sql.in(wordRegisters)}`,
+    ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
     r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
@@ -174,22 +190,47 @@ export const search = Effect.fn("KinSearch.search")(function* (
       return [...opened, ...found];
     });
   };
-  // No index holds a key; a deal's, typed whole, finds that deal first.
-  const typed = input.text.trim().toUpperCase();
   const keyed =
-    deals && /^DL-\d{1,9}$/.test(typed)
-      ? yield* sql<Row>`SELECT ${columns}, 'public' AS part, r.title AS snippet FROM kin_records r
-          WHERE ${sql.and([...where, sql`r.register_id = 'deals'`, sql`r.key = ${typed}`])}`
-      : [];
-  const every = yield* find(false);
-  const widened = every.length === 0 && words.length > 1 && input.widen === true;
+    keys.length === 0 || (!allKeys && keyRegisters.length === 0)
+      ? []
+      : (yield* sql<
+          Row & Parameters<typeof sectionOfRegister>[0] & { readonly archivedAt: number | null }
+        >`
+          SELECT ${columns}, 'public' AS part, r.title AS snippet, ${registerSectionColumns(sql)},
+            g.archived_at AS "archivedAt"
+          FROM kin_records r JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+          WHERE ${sql.and([...visible, sql`r.key IN ${sql.in(keys)}`])}
+          ORDER BY r.key`).filter((row) => {
+          if (keyRegisters.includes(row.registerId)) return true;
+          if (
+            !allKeys ||
+            row.registerId === "deals" ||
+            row.registerId === "bank_transactions" ||
+            row.name?.trim().toLowerCase() === "bank transactions"
+          )
+            return false;
+          const section = sectionOfRegister(row) ?? sectionOfList(row.id);
+          return section === null || KinShell.sectionOn(shell, section);
+        });
+  const exact = new Map(keyed.map((row) => [row.recordId, row]));
+  const every = wordRegisters.length === 0 || keyed.length >= input.limit ? [] : yield* find(false);
+  const widened =
+    wordRegisters.length > 0 &&
+    keyed.length === 0 &&
+    every.length === 0 &&
+    words.length > 1 &&
+    input.widen === true &&
+    input.limit > 0;
   const rows = [...keyed, ...(widened ? yield* find(true) : every)];
   const seen = new Set<string>();
   const best = rows.filter((row) => !seen.has(row.recordId) && seen.add(row.recordId));
   const shown = best.slice(0, input.limit);
   const docs = yield* latestOf(
     orgId,
-    shown.filter((row) => listOf(row.registerId) === "docs").map((row) => row.recordId),
+    shown
+      .slice(keyed.length)
+      .filter((row) => listOf(row.registerId) === "docs")
+      .map((row) => row.recordId),
   );
   const hits = shown.map((row): Hit => {
     const body = docs.get(row.recordId)?.body;
@@ -209,7 +250,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
             list === "milestones" || list === "goals" || list === "deals" ? "work" : list)(
             listOf(row.registerId),
           ),
-      ...(row.registerId === bankId ? { bankTransaction: true as const } : {}),
+      ...(row.registerId === bank?.id ? { bankTransaction: true as const } : {}),
       title: row.title,
       // A project's notes carry its price and terms, which only its lead and the owner read; a
       // deal's fields (a stage id, a value in minor units) are no one's words.
@@ -223,11 +264,19 @@ export const search = Effect.fn("KinSearch.search")(function* (
         : { section: { id: section.id, title: section.title } }),
       ...(row.clientKey === null ? {} : { client: row.clientKey }),
       sensitive: row.sensitive === 1 || row.part === "sensitive",
-      closed: row.state === "done" || row.state === "dropped",
+      closed:
+        row.state === "done" ||
+        row.state === "dropped" ||
+        (exact.get(row.recordId)?.archivedAt ?? null) !== null,
       updatedAt: row.updatedAt,
     };
   });
-  return { hits, indexed, widened: widened && hits.length > 0 };
+  return {
+    hits,
+    indexed,
+    widened: widened && hits.length > 0,
+    keyedCount: Math.min(keyed.length, hits.length),
+  };
 });
 
 /** A snippet indexed before members' ids were left out of the index, without them. */

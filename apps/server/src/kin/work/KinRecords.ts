@@ -72,7 +72,7 @@ import {
   insertComment,
   requestHashOf as commentHashOf,
 } from "./recordComments.ts";
-import { indexRecord, indexRecords } from "./searchIndex.ts";
+import { indexRecord, indexRecords, keysOfSearch } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
   fieldList,
@@ -4196,8 +4196,11 @@ const make = Effect.gen(function* () {
       where.push(sql`r.key IN ${sql.in(input.keys)}`);
     if (input.closedAfter !== undefined) where.push(sql`r.closed_at >= ${input.closedAfter}`);
     const text = input.text?.trim().toLowerCase();
-    if (text !== undefined && text !== "")
-      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0)`);
+    if (text !== undefined && text !== "") {
+      const keys = keysOfSearch(text);
+      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0
+        ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`);
+    }
     return sql.and(where);
   };
 

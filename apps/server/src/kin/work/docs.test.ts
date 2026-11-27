@@ -7,6 +7,7 @@ import {
   KinChatError,
   KinChatId,
   KinDocsRpcs,
+  KinMemoryItemId,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -31,6 +32,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { keyHidden } from "./codingAgent.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -1528,6 +1530,189 @@ it.effect("one search finds entries and docs, and the team view hides what label
   }).pipe(Effect.provide(layer)),
 );
 
+const keySearchRows = [
+  ["expenses", "EXP", "EXP-25", "Reefer inspection", "done"],
+  ["invoices", "INV", "INV-31", "Freight billing", "dropped"],
+  ["subscriptions", "SUB", "SUB-4", "Dispatch software", "open"],
+  ["clients", "C", "C-6", "Juniper Cold Chain", "open"],
+  ["contacts", "CT", "CT-7", "Arjun", "open"],
+  ["projects", "P", "P-8", "Cold storage", "open"],
+  ["docs", "D", "D-18", "Handling guide", "dropped"],
+  ["work", "W", "W-3", "Rhea's loading plan", "open"],
+  ["dates", "DT", "DT-9", "Permit renewal", "open"],
+  ["quotes", "QT", "QT-11", "Packaging estimate", "open"],
+  ["receipts", "RCT", "RCT-12", "Deposit", "open"],
+  ["truck_checks", "TC2", "TC2-21", "Brake inspection", "open"],
+  ["deals", "DL", "DL-20", "Warehouse extension", "open"],
+] as const;
+
+const seedKeySearch = Effect.fn("KinDocsTest.seedKeySearch")(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+  yield* sql`UPDATE kin_people SET display_name = CASE person_id WHEN ${ownerId} THEN 'Rhea'
+      ELSE 'Zoya' END, sees_money = 0 WHERE org_id = ${orgId}`;
+  const bank = yield* ensureBankList(orgId, 0);
+  for (const [list, prefix, key, title, state] of [
+    ...keySearchRows,
+    [bank.id, bank.prefix, "BNK-16", "Fuel transfer", "open"],
+    ["work", "W", "W-10", "Top 10 routes", "open"],
+    ["work", "W", "W-11", "INV 2026 notes", "open"],
+    ["work", "W", "W-12", "EXP 25 discussion", "open"],
+    ["work", "W", "W-13", "EXP 25 summary", "done"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, ${list}, ${list}, ${prefix}, 0) ON CONFLICT DO NOTHING`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
+        sensitive, marked_by_person_id)
+      VALUES (${orgId}, ${key}, ${list}, ${key}, ${title}, ${state}, 'person', ${ownerId},
+        'person', ${ownerId}, ${key}, 0, 0, ${key === "W-3" || list === bank.id ? 1 : 0},
+        ${key === "W-3" ? ownerId : null})`;
+    yield* indexRecord(orgId, key);
+  }
+  yield* sql`UPDATE kin_registers SET archived_at = 1 WHERE org_id = ${orgId}
+    AND register_id IN ('truck_checks', ${bank.id})`;
+});
+
+it.effect(
+  "exact record identifiers lead Work search across lists without widening closed results",
+  () =>
+    Effect.gen(function* () {
+      yield* seedKeySearch();
+      const find = (text: string) =>
+        OwnerDocs.search([owner], { orgId, everything: true, text }).pipe(
+          Effect.map(({ hits }) => hits),
+        );
+      for (const text of ["EXP-25", "exp-25", "exp 25", "exp25", "#EXP-25", "  #eXp-25  "]) {
+        const hits = yield* find(text);
+        expect.soft(hits[0], text).toMatchObject({ key: "EXP-25", kind: "expenses", closed: true });
+        expect
+          .soft(
+            hits.map((hit) => hit.key),
+            text,
+          )
+          .not.toContain("W-13");
+      }
+      for (const [list, , key, , state] of keySearchRows) {
+        expect.soft((yield* find(key))[0], list).toMatchObject({
+          key,
+          closed: state !== "open" || list === "truck_checks",
+        });
+      }
+      expect.soft((yield* find("tc221"))[0]).toMatchObject({ key: "TC2-21" });
+      expect.soft((yield* find("BNK-16"))[0]).toMatchObject({
+        key: "BNK-16",
+        bankTransaction: true,
+        closed: true,
+      });
+      expect.soft((yield* find("EXP-2")).map((hit) => hit.key)).not.toContain("EXP-25");
+      for (const text of [
+        "reefer inspection",
+        "freight billing",
+        "handling guide",
+        "fuel transfer",
+      ]) {
+        expect.soft(yield* find(text), text).toEqual([]);
+      }
+      const scoped = yield* OwnerDocs.search([owner], { orgId, kinds: ["docs"], text: "EXP-25" });
+      expect.soft(scoped.hits).toEqual([]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an exact identifier takes the last slot over a memory word hit", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const itemId = KinMemoryItemId.make("search-memory");
+    const read = (text: string) =>
+      OwnerDocs.search([owner], { orgId, everything: true, text, limit: 1 });
+    expect((yield* read("EXP-25")).hits.map((hit) => hit.key)).toEqual(["EXP-25"]);
+    expect((yield* read("top 10")).hits.map((hit) => hit.key)).toEqual([itemId]);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layer,
+        Layer.mock(KinMemoryChanges)({
+          search: () =>
+            Effect.succeed([
+              {
+                itemId: KinMemoryItemId.make("search-memory"),
+                title: "Cold chain notes",
+                snippet: "Dispatch notes",
+                sensitive: false,
+                recordedAt: 0,
+                saidBy: "Rhea",
+                trust: "owner",
+                from: null,
+              },
+            ]),
+        }),
+      ),
+    ),
+  ),
+);
+
+it.effect("an unreadable identifier is indistinguishable from a missing one", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const zoya = { _tag: "person" as const, orgId, personId: mateId };
+    const find = (text: string, who = zoya) =>
+      OwnerDocs.search([who], { orgId, everything: true, text });
+    for (const key of ["EXP-25", "BNK-16", "W-3", "D-18"]) {
+      const missing = yield* find(key.replace(/\d+$/, "999"));
+      const denied = yield* find(key);
+      expect.soft((yield* find(key, owner)).hits[0], key).toMatchObject({ key });
+      expect.soft(denied.hits, key).toEqual([]);
+      expect.soft(JSON.stringify(denied), key).toBe(JSON.stringify(missing));
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("identifier-shaped words without a matching key still return ordinary hits", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const results = yield* Effect.forEach(["INV 2026", "top 10"], (text) =>
+      OwnerDocs.search([owner], { orgId, everything: true, text }),
+    );
+    expect(results).toMatchInlineSnapshot(`
+      [
+        {
+          "asOf": "1970-01-01T00:00:00.000Z",
+          "hits": [
+            {
+              "closed": false,
+              "key": "W-11",
+              "kind": "work",
+              "recordId": "W-11",
+              "sensitive": false,
+              "snippet": "INV 2026 notes",
+              "title": "INV 2026 notes",
+              "updatedAt": "1970-01-01T00:00:00.000Z",
+            },
+          ],
+          "indexed": true,
+        },
+        {
+          "asOf": "1970-01-01T00:00:00.000Z",
+          "hits": [
+            {
+              "closed": false,
+              "key": "W-10",
+              "kind": "work",
+              "recordId": "W-10",
+              "sensitive": false,
+              "snippet": "Top 10 routes",
+              "title": "Top 10 routes",
+              "updatedAt": "1970-01-01T00:00:00.000Z",
+            },
+          ],
+          "indexed": true,
+        },
+      ]
+    `);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each([
   ["Kin-created", false],
   ["adopted", true],
@@ -1578,6 +1763,15 @@ it.effect.each([
     assert.lengthOf((yield* OwnerDocs.search([member], input)).hits, 0);
     assert.lengthOf((yield* OwnerDocs.search([owner], { orgId, text, kinds: ["docs"] })).hits, 0);
     assert.lengthOf((yield* Work.list([owner], { orgId, list })).records, 1);
+    const identifier = `#${row.key.toLowerCase().replace("-", " ")}`;
+    expect
+      .soft(
+        (yield* Work.list([owner], { orgId, list, text: identifier })).records.map(
+          (record) => record.key,
+        ),
+      )
+      .toEqual([row.key]);
+    assert.lengthOf((yield* Work.list([member], { orgId, list, text: identifier })).records, 0);
     const findBankTitle = () =>
       OwnerDocs.search([owner], input).pipe(
         Effect.map(({ hits }) =>
@@ -2648,6 +2842,13 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       ),
       first.key,
     );
+    const identifier = `#${first.key.toLowerCase().replace("-", " ")}`;
+    expect
+      .soft((yield* OwnerDocs.list([mate], { orgId, text: identifier })).docs.map((doc) => doc.key))
+      .toEqual([first.key]);
+    expect
+      .soft((yield* LeadDocs.searchTool(scopeOf(lead), { text: identifier })).hits[0]?.key)
+      .toBe(first.key);
     // The page says who reads it: the owner is told it is hers too; she, that only she and owners.
     assert.deepStrictEqual((yield* OwnerDocs.get([owner], { orgId, key: first.key })).kindLabel, {
       reader: { name: "Mate" },
