@@ -176,7 +176,7 @@ export function KinChatPinsStrip(props: { readonly pins: KinChatPinsController }
               numberOfLines={1}
               ellipsizeMode="tail"
               className={cn(
-                "min-w-0 shrink tabular-nums",
+                "shrink-0 tabular-nums",
                 first.view.tone === "late" ? "text-danger-foreground" : "text-foreground-muted",
               )}
             >
