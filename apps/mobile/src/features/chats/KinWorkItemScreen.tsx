@@ -44,7 +44,6 @@ import {
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  kinUnavailableEntryLine,
   kinWorkEntryKind,
   kinWorkGone,
   kinWorkItemFailed,
@@ -245,8 +244,7 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
       <KinWorkFrame title={kinWorkEntryKind(null).title} onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title={kinUnavailableEntryLine(null)}
-          detail="Open Work from your Kin chats."
+          {...kinWorkGone(null)}
         />
       </KinWorkFrame>
     );

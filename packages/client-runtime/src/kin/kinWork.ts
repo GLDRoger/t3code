@@ -121,14 +121,15 @@ export interface KinWorkEntryKind {
   readonly noun: string;
   /** Heading / bar title: "Task", "Invoice", "Client", "Bank transaction", "Entry". */
   readonly title: string;
-  /** Place where entries of this kind live, when known; null for custom or unknown lists. */
-  readonly place: string | null;
+  /** The web sidebar's and the phone dock's place that shows entries of this kind. */
+  readonly place: "Tasks" | "Money" | "Clients" | "Docs";
 }
 
+// Docs shows every list Money doesn't (`kinPlaceLists`), so an entry of a list people made is there.
 const KIN_ENTRY_FALLBACK_KIND: KinWorkEntryKind = {
   noun: "entry",
   title: "Entry",
-  place: null,
+  place: "Docs",
 };
 
 const KIN_ENTRY_KINDS: Readonly<Record<string, KinWorkEntryKind>> = {
@@ -137,19 +138,19 @@ const KIN_ENTRY_KINDS: Readonly<Record<string, KinWorkEntryKind>> = {
   EXP: { noun: "expense", title: "Expense", place: "Money" },
   RCT: { noun: "receipt", title: "Receipt", place: "Money" },
   QT: { noun: "quote", title: "Quote", place: "Money" },
-  CN: { noun: "credit note", title: "Credit note", place: "Money" },
-  BNK: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
-  BTX: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
-  BANK: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
-  BKTX: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
-  BK9: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  CN: { noun: "credit note", title: "Credit note", place: "Docs" },
+  BNK: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BTX: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BANK: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BKTX: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BK9: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
   DT: { noun: "date", title: "Date", place: "Money" },
   G: { noun: "goal", title: "Goal", place: "Money" },
   C: { noun: "client", title: "Client", place: "Clients" },
   CT: { noun: "contact", title: "Contact", place: "Clients" },
-  P: { noun: "project", title: "Project", place: "Projects" },
-  M: { noun: "milestone", title: "Milestone", place: "Projects" },
-  DL: { noun: "deal", title: "Deal", place: "Deals" },
+  P: { noun: "project", title: "Project", place: "Clients" },
+  M: { noun: "milestone", title: "Milestone", place: "Clients" },
+  DL: { noun: "deal", title: "Deal", place: "Clients" },
   D: { noun: "doc", title: "Doc", place: "Docs" },
 };
 
@@ -184,12 +185,7 @@ export function kinWorkGone(key?: string | null): {
   const kind = kinWorkEntryKind(key);
   return {
     title: kinUnavailableEntryLine(key),
-    detail:
-      kind.place === "Clients"
-        ? "Open Clients to see who there is now."
-        : kind.place !== null
-          ? `Open ${kind.place} to see what there is now.`
-          : "Open Work to see what there is now.",
+    detail: `Open ${kind.place} to see ${kind.noun === "client" || kind.noun === "contact" ? "who" : "what"} there is now.`,
   };
 }
 
