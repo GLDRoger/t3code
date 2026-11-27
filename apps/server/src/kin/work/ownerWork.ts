@@ -16,6 +16,7 @@ import {
   type KinWorkLinkAddInput,
   type KinWorkLinkRemoveInput,
   type KinWorkListInput,
+  type KinWorkLookedInput,
   type KinWorkNudgeInput,
   type KinWorkPrincipal,
   type KinWorkShareInput,
@@ -55,6 +56,7 @@ import {
 } from "./KinRecords.ts";
 import { CodingAgentCall } from "./keyCall.ts";
 import { fieldList, LISTS, type ListName, parseFields, TEAM_LIST_RESERVED } from "./lists.ts";
+import * as Looks from "./looks.ts";
 import { milestoneLinks, principalText } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
@@ -784,6 +786,30 @@ export const get = Effect.fn("KinWork.get")(function* (
   return yield* throughConnection(people, connection, input.orgId, (viewer) =>
     getAs(viewer, input, connection),
   );
+});
+
+export const looked = Effect.fn("KinWork.looked")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkLookedInput,
+) {
+  if ((yield* CodingAgentCall) !== undefined) return yield* notFound("with that id");
+  const sql = yield* SqlClient.SqlClient;
+  const upTo = yield* millis(input.upTo, "upTo");
+  yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const { person, teammate } = yield* viewerOf(people, input.orgId);
+        yield* Looks.look(
+          input.orgId,
+          person.personId,
+          input.recordId,
+          upTo,
+          teammate ? viewerOfPeople([person.personId]) : KIN_OWNER_LEVEL,
+        );
+      }),
+    )
+    .pipe(workFailure);
+  return {};
 });
 
 const getAs = Effect.fn("KinWork.getAs")(function* (

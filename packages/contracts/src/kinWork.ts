@@ -708,6 +708,13 @@ export const KinWorkGetInput = Schema.Union([
 ]);
 export type KinWorkGetInput = typeof KinWorkGetInput.Type;
 
+export const KinWorkLookedInput = Schema.Struct({
+  orgId: KinOrgId,
+  recordId: KinRecordId,
+  upTo: IsoDateTime,
+});
+export type KinWorkLookedInput = typeof KinWorkLookedInput.Type;
+
 /** What a client or vendor and we owe each other, open entries only. */
 const KinPartyCounts = {
   weOwe: NonNegativeInt,
@@ -1857,6 +1864,7 @@ export const KIN_WORK_WS_METHODS = {
   summary: "kin.work.summary",
   list: "kin.work.list",
   get: "kin.work.get",
+  looked: "kin.work.looked",
   subscribe: "kin.work.subscribe",
   create: "kin.work.create",
   assign: "kin.work.assign",
@@ -1908,6 +1916,11 @@ export const KinWorkRpcs = [
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.get, { payload: KinWorkGetInput, success: KinRecordDetail, error }),
+  Rpc.make(KIN_WORK_WS_METHODS.looked, {
+    payload: KinWorkLookedInput,
+    success: Schema.Struct({}),
+    error,
+  }),
   Rpc.make(KIN_WORK_WS_METHODS.subscribe, {
     payload: KinWorkSubscribeInput,
     success: KinWorkEvent,
@@ -2082,6 +2095,7 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.summary]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.list]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.looked]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.subscribe]: AuthKinChatScope,
   // Giving a lead work wakes it as a message to it does: a teammate's runs as theirs, within
   // their daily turns, in their own chat with it (`KinRecords.teammateWake`).

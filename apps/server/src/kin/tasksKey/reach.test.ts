@@ -543,6 +543,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.work.summary": "not a person action (screens only: Tasks screen counts)",
   "kin.work.list": ["list_tasks", "list_my_tasks", "list_invoices", "list_entries"],
   "kin.work.get": ["get_task", "open_invoice"],
+  "kin.work.looked": "stays in the app: a person opened the screen",
   "kin.work.subscribe": "not a person action (screens only: live Tasks stream)",
   "kin.work.create": ["create_task", "add_promise", "add_entry"],
   "kin.work.assign": ["update_task"],
