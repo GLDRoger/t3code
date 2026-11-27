@@ -189,6 +189,21 @@ export type MailMessage = {
   readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;
 };
 
+export const AGENDA_LIMIT = 300;
+
+export type MailAgendaWindow = { readonly from: string; readonly to: string };
+
+export type MailAgendaEvent = {
+  readonly id: string;
+  readonly title: string | null;
+  readonly start: string;
+  readonly end: string | null;
+  readonly allDay: boolean;
+  readonly zone: string | null;
+  readonly link: string | null;
+  readonly repeats: boolean;
+};
+
 export type MailCalendarEvent = {
   readonly eventId: string;
   readonly summary: string | null;
@@ -262,6 +277,7 @@ export interface MailVendor {
     readonly extra: Readonly<Record<string, string>>;
   };
   readonly canSend: (granted: string | undefined) => boolean;
+  readonly readsCalendar: (granted: string | undefined) => boolean;
   /** A page of threads: the inbox when `query` is null, else what the vendor's search found. */
   readonly threads: (
     context: MailContext,
@@ -273,6 +289,10 @@ export interface MailVendor {
     threadId: string,
     files: boolean,
   ) => Call<ReadonlyArray<MailMessage>>;
+  readonly agenda: (
+    context: Pick<MailContext, "http" | "token">,
+    window: MailAgendaWindow,
+  ) => Call<ReadonlyArray<MailAgendaEvent>>;
   readonly events: (
     context: MailContext,
     query: {
@@ -347,6 +367,7 @@ export interface MailProvider {
   };
   /** Whether the granted scopes allow sending; an older sign-in may lack them. */
   readonly canSend: (granted: string | undefined) => boolean;
+  readonly readsCalendar: (granted: string | undefined) => boolean;
   /** Reads, and the tools that send (always Ask me), named as in MAIL_TOOL. */
   readonly tools: ReadonlyArray<ListedTool>;
   readonly sendTools: ReadonlyArray<ListedTool>;
@@ -357,6 +378,11 @@ export interface MailProvider {
     http: HttpClient.HttpClient,
     token: string,
   ) => Call<ReadonlyArray<KinMailAddress>>;
+  readonly agenda: (
+    http: HttpClient.HttpClient,
+    token: string,
+    window: MailAgendaWindow,
+  ) => Call<ReadonlyArray<MailAgendaEvent>>;
   /** Runs one read tool; every item says its account and which address received it. */
   readonly call: (
     http: HttpClient.HttpClient,

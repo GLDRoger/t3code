@@ -76,6 +76,7 @@ import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
 import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
+import { microsoftReadsCalendar } from "./Microsoft.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -3326,6 +3327,17 @@ describe("KinConnections sending", () => {
       }),
     ),
   );
+
+  it("reads calendar permission from Microsoft Graph scope names", () => {
+    for (const [granted, allowed] of [
+      ["Mail.Read Calendars.Read", true],
+      ["https://graph.microsoft.com/CALENDARS.ReadWrite", true],
+      ["Mail.Read Calendars.ReadBasic", false],
+      [undefined, false],
+    ] as const) {
+      assert.strictEqual(microsoftReadsCalendar(granted), allowed);
+    }
+  });
 
   it("reads what a Google grant allows from either family of scopes", () => {
     const auth = (...names: ReadonlyArray<string>) =>

@@ -2,13 +2,16 @@ import { KIN_SIGN_IN_CLIENTS } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import { isAutomatedNotice } from "../arrivals/classify.ts";
 import { KinGatewayError, tryAgain } from "./McpGateway.ts";
 import {
+  AGENDA_LIMIT,
   firstLines,
   MAIL_TOOL,
+  type MailAgendaEvent,
   type MailCalendarEvent,
   type MailContext,
   type Mailbox,
@@ -61,6 +64,45 @@ export const unreached = (vendor: Pick<MailVendor, "name">) =>
 /** Whether a call failed because the vendor answered this status. */
 export const answeredWith = (error: KinGatewayError, status: number) =>
   error.message.includes(`(${status})`) || error.message.includes(`(HTTP ${status})`);
+
+export const httpsLink = (link: string | undefined) => {
+  const url = link === undefined ? null : URL.parse(link);
+  return url?.protocol === "https:" && !url.username && !url.password ? (link ?? null) : null;
+};
+
+export const agendaZone = (zone: string | undefined) =>
+  zone !== undefined && Option.isSome(DateTime.zoneMakeNamed(zone)) ? zone : null;
+
+export const agendaStartOrder = (a: MailAgendaEvent, b: MailAgendaEvent) =>
+  a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+
+export const agendaTime = (value: string | undefined, allDay: boolean) => {
+  if (value === undefined) return null;
+  if (allDay) return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))
+    return null;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? DateTime.formatIso(DateTime.makeUnsafe(at)) : null;
+};
+
+export const agendaPages = Effect.fn("KinMail.agendaPages")(function* (
+  read: (next: string | null) => Effect.Effect<
+    {
+      readonly events: ReadonlyArray<MailAgendaEvent>;
+      readonly next: string | null;
+    },
+    KinGatewayError
+  >,
+) {
+  let earliest: ReadonlyArray<MailAgendaEvent> = [];
+  let next: string | null = null;
+  do {
+    const page = yield* read(next);
+    earliest = [...earliest, ...page.events].sort(agendaStartOrder).slice(0, AGENDA_LIMIT + 1);
+    next = page.next;
+  } while (next !== null);
+  return earliest;
+});
 
 const MAX_RECIPIENTS = 10;
 const MESSAGE_CHARS = 12_000;
@@ -511,6 +553,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       accountClient: rule.accountClient,
     },
     canSend: vendor.canSend,
+    readsCalendar: vendor.readsCalendar,
+    agenda: (http, token, window) => vendor.agenda({ http, token }, window),
     tools: readTools(vendor),
     sendTools: sendTools(vendor),
     account: vendor.account,

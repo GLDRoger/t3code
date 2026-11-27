@@ -32,6 +32,7 @@ type Run = {
   readonly http: HttpClient.HttpClient;
   readonly token: string;
   readonly omitLinkId: () => void;
+  readonly requests: ReadonlyArray<URL>;
   readonly call: (
     tool: string,
     args?: Record<string, unknown>,
@@ -48,8 +49,14 @@ const harness = (provider: MailProvider) => {
   });
   let omitLinkId = false;
   const handle = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  const requests: Array<URL> = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const response = await handle(input, init);
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(new URL(url));
+    // Also exercise Kin's cancellation filter when Google sends a cancelled event.
+    if (url.searchParams.has("fields")) url.searchParams.set("showDeleted", "true");
+    const response = await handle(new Request(url, request));
     if (!omitLinkId || !response.ok) return response;
     const body = (await response.json()) as {
       messages?: Array<Record<string, unknown>>;
@@ -65,6 +72,7 @@ const harness = (provider: MailProvider) => {
   return {
     fake,
     layer,
+    requests,
     omitLinkId: () => {
       omitLinkId = true;
     },
@@ -72,7 +80,7 @@ const harness = (provider: MailProvider) => {
 };
 
 const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, KinGatewayError>) => {
-  const { fake, layer, omitLinkId } = harness(provider);
+  const { fake, layer, omitLinkId, requests } = harness(provider);
   return Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
     const token = `fake-at.1.${OWNER}`;
@@ -82,7 +90,7 @@ const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, Kin
         .pipe(
           Effect.map((result) => JSON.parse((result.content[0] as { readonly text: string }).text)),
         );
-    yield* body({ provider, fake, http, token, call, omitLinkId });
+    yield* body({ provider, fake, http, token, call, omitLinkId, requests });
   }).pipe(Effect.provide(layer));
 };
 
@@ -393,6 +401,88 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
           assert.strictEqual(one.summary, "Board prep");
           sameInstant(one.start, NOW + 24 * HOUR);
           assert.strictEqual(one.status, "confirmed");
+        }),
+    ],
+    [
+      "reads only Dates fields, retaining all-day dates, exclusive ends and valid links",
+      ({ provider, fake, http, token, requests }) =>
+        Effect.gen(function* () {
+          const link =
+            provider.preset === "google"
+              ? "https://calendar.google.com/calendar/event?eid=trip"
+              : "https://outlook.office.com/calendar/item/trip";
+          const event = {
+            account: OWNER,
+            id: "trip",
+            title: "Tidewater Freight trip",
+            start: Date.parse("2026-11-27T00:00:00Z"),
+            end: Date.parse("2026-11-30T00:00:00Z"),
+            updated: NOW,
+            guests: ["zoya@tidewater.example"],
+            notes: "Private trip notes",
+            location: "Private trip location",
+          };
+          fake.putEvent({ ...event, allDay: true, zone: "Asia/Kolkata", link, repeats: 2 });
+          fake.putEvent({ ...event, id: "cancelled", state: "cancelled" });
+          fake.putEvent({
+            ...event,
+            id: "timed",
+            title: "Tidewater Freight check-in",
+            start: event.start + HOUR,
+            end: event.start + 2 * HOUR,
+            link: "http://calendar.example/timed",
+          });
+          fake.putEvent({
+            ...event,
+            id: "credentials",
+            start: event.start + 3 * HOUR,
+            link: "https://rhea:secret@calendar.example/trip",
+          });
+          const agenda = yield* provider.agenda(http, token, {
+            from: "2026-11-26T00:00:00.000Z",
+            to: "2026-12-02T00:00:00.000Z",
+          });
+          assert.deepStrictEqual(agenda, [
+            {
+              id: "trip_0",
+              title: event.title,
+              start: "2026-11-27",
+              end: "2026-11-30",
+              allDay: true,
+              zone: "Asia/Kolkata",
+              link,
+              repeats: true,
+            },
+            {
+              id: "timed",
+              title: "Tidewater Freight check-in",
+              start: "2026-11-27T01:00:00.000Z",
+              end: "2026-11-27T02:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+            {
+              id: "credentials",
+              title: event.title,
+              start: "2026-11-27T03:00:00.000Z",
+              end: "2026-11-30T00:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+          ]);
+          const projection = requests[0]?.searchParams.get(
+            provider.preset === "google" ? "fields" : "$select",
+          );
+          assert.strictEqual(
+            projection,
+            provider.preset === "google"
+              ? "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)"
+              : "id,subject,start,end,isAllDay,type,webLink,isCancelled,originalStartTimeZone",
+          );
         }),
     ],
     [

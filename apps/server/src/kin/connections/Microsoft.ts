@@ -9,7 +9,9 @@ import * as Schema from "effect/Schema";
 
 import {
   ACTIVITY_MAIL,
+  AGENDA_LIMIT,
   isPlainAddress,
+  type MailAgendaEvent,
   type MailArrival,
   type MailCalendarEvent,
   type MailContext,
@@ -18,7 +20,17 @@ import {
   type MailVendor,
 } from "./MailProvider.ts";
 import { htmlToText } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import {
+  agendaPages,
+  agendaTime,
+  agendaZone,
+  answeredWith,
+  failure,
+  httpsLink,
+  mailProvider,
+  unreached,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 import { DAY_MS } from "../durations.ts";
 
@@ -46,8 +58,14 @@ const MICROSOFT_SCOPES = [
 // Microsoft names Graph scopes either bare or as full URIs, in any case.
 const scopeName = (scope: string) =>
   scope.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase();
+const scopesOf = (granted: string | undefined) =>
+  new Set((granted ?? "").split(/\s+/).map(scopeName));
+export const microsoftReadsCalendar = (granted: string | undefined) => {
+  const scopes = scopesOf(granted);
+  return scopes.has("calendars.read") || scopes.has("calendars.readwrite");
+};
 const canSend = (granted: string | undefined) => {
-  const scopes = new Set((granted ?? "").split(/\s+/).map(scopeName));
+  const scopes = scopesOf(granted);
   return MICROSOFT_SEND_SCOPES.every((scope) => scopes.has(scope.toLowerCase()));
 };
 
@@ -157,9 +175,8 @@ const receivedOf = (message: unknown) => {
 };
 const linkOf = (message: unknown) => {
   const id = text(field(message, "id"));
-  const webLink = text(field(message, "webLink"));
-  const url = id && webLink ? URL.parse(webLink) : null;
-  return webLink && url?.protocol === "https:" && !url.username && !url.password ? { webLink } : {};
+  const webLink = id ? httpsLink(text(field(message, "webLink"))) : null;
+  return webLink === null ? {} : { webLink };
 };
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
@@ -254,6 +271,32 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   revision: text(field(event, "@odata.etag")) ?? null,
   notifiesGuests: field(event, "isOrganizer") === true,
 });
+const agendaBoundary = (value: unknown, allDay: boolean) =>
+  agendaTime(
+    allDay ? text(field(value, "dateTime"))?.split("T")[0] : (instant(value) ?? undefined),
+    allDay,
+  );
+
+const agendaEvent = (event: unknown): ReadonlyArray<MailAgendaEvent> => {
+  const id = text(field(event, "id"));
+  const allDay = field(event, "isAllDay") === true;
+  const start = agendaBoundary(field(event, "start"), allDay);
+  if (!id || start === null || field(event, "isCancelled") === true) return [];
+  const recurrence = recurrenceOf(event);
+  return [
+    {
+      id,
+      title: text(field(event, "subject")) ?? null,
+      start,
+      end: agendaBoundary(field(event, "end"), allDay),
+      allDay,
+      zone: agendaZone(text(field(event, "originalStartTimeZone"))),
+      link: httpsLink(text(field(event, "webLink"))),
+      repeats: recurrence === "occurrence" || recurrence === "series",
+    },
+  ];
+};
+
 const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
 const UTC = 'outlook.timezone="UTC"';
@@ -653,6 +696,7 @@ const microsoft: MailVendor = {
     extra: { prompt: "select_account" },
   },
   canSend,
+  readsCalendar: microsoftReadsCalendar,
   threads: (context, page) => {
     const at = pageOr(
       page.pageToken,
@@ -677,6 +721,28 @@ const microsoft: MailVendor = {
     );
   },
   thread: conversation,
+  agenda: (context, { from, to }) =>
+    agendaPages((next) =>
+      api(context, next ?? `${GRAPH}/calendarView`, {
+        prefer: UTC,
+        ...(next === null
+          ? {
+              params: {
+                startDateTime: from,
+                endDateTime: to,
+                $top: String(AGENDA_LIMIT + 1),
+                $select:
+                  "id,subject,start,end,isAllDay,type,webLink,isCancelled,originalStartTimeZone",
+              },
+            }
+          : {}),
+      }).pipe(
+        Effect.map((page) => ({
+          events: list(field(page, "value")).flatMap(agendaEvent),
+          next: nextPage(page),
+        })),
+      ),
+    ),
   events: (context, query) => {
     const at = pageOr(query.pageToken, `${calendarBase(query.calendarId)}/calendarView`);
     return api(context, at.url, {
