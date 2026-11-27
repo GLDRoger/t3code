@@ -2,10 +2,10 @@
 
 **Rules.** Each thing on GitHub wakes an agent at most once, whether Kin read it on several looks or stopped halfway through one. On a PR's thread: once Kin has caught up, every teammate's PR and `/kin` either woke an agent or was stopped for the hour with a note; only a teammate's PR or `/kin` wakes an agent, and a stranger's `/kin` and the agent's own signed replies never do; at most one 👀 per thing; one "stopped for the hour" note per thread per hour. On a new issue that triage answers (a stranger's too, in a turn that may post one comment): Kin answers people at most three times after its first comment, one comment each (`RepliesCapped`); only a person's comment wakes a reply, never the agent's own or a bot's (`NoReplyToSelf`); issues wake at most ten agents an hour per repo (`RepoHourCapped`) and strangers at most ten an hour across the owner's repos (`OutsideHourCapped`).
 
-| Switch rule | Checked |
-| --- | --- |
-| `OffNextLook` | A look that starts with triage off does not wake an agent for an issue. |
-| `OffAtOnce` | Once triage is off, Kin claims no triage wake or comment, even for a look or turn already under way. |
+| Switch rule   | Checked                                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------- |
+| `OffNextLook` | A look that starts with triage off does not wake an agent for an issue.                              |
+| `OffAtOnce`   | Once triage is off, Kin claims no triage wake or comment, even for a look or turn already under way. |
 
 **Harm guarded.** An agent answering itself in a loop, on a PR or an issue, or answering a bot; a stranger starting work with the owner's login, beyond one confined comment per new issue; a PR reviewed twice after a restart; a teammate's `/kin` lost because the server stopped mid-look or a busy look hit its cap; a thread spammed with notes; a flood of new issues waking agents past the hour; an issue answered after the owner said not to.
 **Bound.** Each run watches one thread. A PR's: up to four things (the agent's replies included), one wake-up per look, two per thread in the hour, one stop anywhere (97,826 states, as before). Or one new issue: up to five things (the issue, comments by a person or a bot, the agent's comments), two looks at once, one hour's end, the switch turned off once, one stop anywhere; replies scaled to two (the code's three), the hour's ceilings to two per repo and one for strangers (the code's ten each). 325,978 states (97,826 of them the PR's). `--variants`: 16/16 caught.
