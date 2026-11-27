@@ -21,14 +21,18 @@ import {
 
 /** A person's own calendars, and the company's for owner level, beside Work dates. Read only. */
 
+const calendarNotConnected = (connectionsInSettings: boolean) =>
+  `Connect your calendar under ${
+    connectionsInSettings ? "Settings → Connections → Your mailboxes" : "Settings → Your mailboxes"
+  } to see its events here.`;
+
 export const KIN_CALENDAR = {
   toggle: "Calendar events",
   untitled: "(No title)",
   repeats: "Repeats",
   loading: "Loading your calendar…",
   loadFailed: "Couldn't load your calendar. Your Work dates are all here.",
-  notConnected:
-    "Connect your calendar under Settings → Connections → Your mailboxes to see its events here.",
+  notConnected: calendarNotConnected(true),
   more: "Some events don't fit here. Your calendar has them all.",
 };
 
@@ -243,8 +247,17 @@ const mailboxOf = (source: KinCalendarSource) =>
 
 const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+export interface KinCalendarNoticeOptions {
+  /** Whether this client has a Connections screen in Settings; web and desktop do, the phone doesn't. */
+  readonly connectionsInSettings?: boolean;
+}
+
 /** The one line under the toolbar; null when there is nothing to say. */
-export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | null {
+export function kinCalendarNotice(
+  state: KinCalendarState,
+  options?: KinCalendarNoticeOptions,
+): KinCalendarNotice | null {
+  const connectionsInSettings = options?.connectionsInSettings ?? true;
   switch (state._tag) {
     case "off":
     case "unavailable":
@@ -257,7 +270,8 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
       break;
   }
   const { sources, more } = state.calendar;
-  if (sources.length === 0) return notice(KIN_CALENDAR.notConnected, { mailboxes: true });
+  if (sources.length === 0)
+    return notice(calendarNotConnected(connectionsInSettings), { mailboxes: true });
   const withCap = (text: string, options: Partial<KinCalendarNotice>) =>
     notice(more ? `${text} ${KIN_CALENDAR.more}` : text, options);
   const unreached = sources.filter(
@@ -279,11 +293,15 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
   }
   const stuck = sources.find((source) => source.status !== "ok");
   if (stuck !== undefined) {
-    const where = stuck.company ? "Settings → Connections" : "Your mailboxes";
+    const where = stuck.company
+      ? connectionsInSettings
+        ? "under Settings → Connections"
+        : "in Kin on your computer, under Settings → Connections"
+      : "under Your mailboxes";
     return withCap(
       stuck.status === "signed_out"
-        ? `Sign in to ${mailboxOf(stuck)} again under ${where}.`
-        : `${stuck.account ?? capitalised(mailboxOf(stuck))} was connected without calendar access. Connect it again under ${where} and allow Calendar.`,
+        ? `Sign in to ${mailboxOf(stuck)} again ${where}.`
+        : `${stuck.account ?? capitalised(mailboxOf(stuck))} was connected without calendar access. Connect it again ${where} and allow Calendar.`,
       { mailboxes: !stuck.company },
     );
   }

@@ -151,7 +151,13 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
                 <ListActionRow
                   key={service.service}
                   label={COPY.connect(service.label)}
-                  {...(service.ready ? {} : { description: COPY.notReady(service.label) })}
+                  {...(service.ready
+                    ? {}
+                    : {
+                        description: COPY.notReady(service.label, {
+                          connectionsInSettings: false,
+                        }),
+                      })}
                   disabled={!service.ready}
                   loading={busy}
                   onPress={() => void signIn(service.service)}
@@ -195,7 +201,13 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
                   <ListActionRow
                     key={service.service}
                     label={COPY.connect(service.label)}
-                    {...(service.ready ? {} : { description: COPY.notReady(service.label) })}
+                    {...(service.ready
+                      ? {}
+                      : {
+                          description: COPY.notReady(service.label, {
+                            connectionsInSettings: false,
+                          }),
+                        })}
                     disabled={!service.ready}
                     loading={busy}
                     onPress={() => void signIn(service.service)}
