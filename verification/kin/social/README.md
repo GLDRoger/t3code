@@ -12,3 +12,5 @@
 - `apps/server/src/kin/social/SocialService.ts`: `draft`, `week`, `handOver`, `settle`, `cancelOne`, `onError`, `pass`
 - `apps/server/src/kin/social/cards.ts`: `applyWeekTap` (remove, confirm, undo, retry, client OK), `writeWeekCard`
 - `apps/server/src/kin/social/rows.ts`: `duePosts`, `digestOf`, `idempotencyKey`, `LATE_MS`, `UNDO_CLOSES_MS`
+
+**Re-confirmed 2026-11-27** on `7691643e09` with the TLC scratch cleanup (no spec change). All 12 rules hold over 297,302 states in 1,982.351 s.
