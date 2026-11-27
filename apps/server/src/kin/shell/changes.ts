@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import { get, listOfSection, set } from "./KinShell.ts";
+import { canDockBuiltIn, get, listOfSection, set } from "./KinShell.ts";
 import { BUILT_IN_SECTIONS, kinTitle } from "./words.ts";
 
 /**
@@ -125,6 +125,8 @@ const changesOf = (
         to: after.noun ?? "client",
         ...(before.noun === undefined ? {} : { from: before.noun }),
       });
+    if (canDockBuiltIn(id) && (after.dock !== false) !== (before.dock !== false))
+      changes.push({ kind: after.dock !== false ? "dock" : "undock", what });
     return changes;
   }),
   ...listChangesOf(current, next, names),

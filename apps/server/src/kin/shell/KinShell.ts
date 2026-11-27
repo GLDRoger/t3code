@@ -25,6 +25,9 @@ const BUILT_INS = [
   "invoices",
   "docs",
 ] as const satisfies readonly SectionId[];
+const BUILT_IN_DOCK_SECTIONS = ["docs", "money", "clients"] as const satisfies readonly SectionId[];
+export const canDockBuiltIn = (id: string) => BUILT_IN_DOCK_SECTIONS.some((one) => one === id);
+
 export const defaultShell = (): Shell => ({
   rev: 0,
   sections: BUILT_INS.map((id) => ({ id, on: true })),
@@ -166,10 +169,12 @@ const conflict = new KinChatError({
  * the same rules before making its card.
  */
 export const shellRefusal = (input: readonly KinShellSection[]): string | undefined => {
-  for (const { id, on, name, noun } of ordered(input)) {
+  for (const { id, on, name, noun, dock } of ordered(input)) {
     if (input.filter((section) => section.id === id).length > 1)
       return "A section can only be set once.";
     if (id === "docs" && !on) return "Docs can't be turned off.";
+    if (dock !== undefined && listOfSection(id) === undefined && !canDockBuiltIn(id))
+      return "Only Money, Clients and Docs have a place in the dock.";
     for (const label of [name, noun]) {
       if (label === undefined) continue;
       if (hasControl(label)) return "A name is one line of plain text.";
@@ -183,13 +188,17 @@ const dockRefusal = (sections: readonly KinShellSection[], held: readonly KinShe
   const docked = (section: KinShellSection) =>
     listOfSection(section.id) !== undefined && section.on && section.dock === true;
   const next = sections.filter(docked);
-  const room =
-    5 - (3 + Number(storedOn({ sections }, "money")) + Number(storedOn({ sections }, "clients")));
+  const builtInsDocked = BUILT_IN_DOCK_SECTIONS.filter((id) => {
+    const section = sections.find((one) => one.id === id);
+    return section?.on !== false && section?.dock !== false;
+  });
+  const room = 5 - (2 + builtInsDocked.length);
   if (
     next.length > room &&
-    next.some((one) => !held.some((before) => before.id === one.id && docked(before)))
+    (next.some((one) => !held.some((before) => before.id === one.id && docked(before))) ||
+      held.some((before) => before.dock === false && builtInsDocked.some((id) => id === before.id)))
   )
-    return "The dock holds five places. Turn one off first.";
+    return "The dock holds five places. Take one out of the dock first.";
   return undefined;
 };
 

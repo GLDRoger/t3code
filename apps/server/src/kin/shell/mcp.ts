@@ -18,7 +18,7 @@ import { askOwner } from "../work/leadMoney.ts";
 import { KinToolText } from "../work/leadSchemas.ts";
 import { admitted, type Lead, leadTool, retryKey } from "../work/leadWork.ts";
 import { SHELL_CHANGE, applied, bindShellChange, listNames, shellChangeLines } from "./changes.ts";
-import { get, listOfSection, listSectionsRefusal, shellRefusal } from "./KinShell.ts";
+import { get, listSectionsRefusal, shellRefusal } from "./KinShell.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const SECTION_IDS = ["clients", "deals", "money", "invoices"] as const;
@@ -64,8 +64,6 @@ const runPropose = Effect.fnUntraced(function* (
     )
   )
     return yield* invalid("Only Clients can be called by the company's own word.");
-  if (input.sections.some((one) => one.dock !== undefined && listOfSection(one.id) === undefined))
-    return yield* invalid("Only a list section is put in the phone's dock here.");
   const shell = yield* get(lead.orgId);
   const next = applied(shell, input.sections);
   // The setter's own checks, in its words, before the owner sees a card it would refuse.

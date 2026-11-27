@@ -57,6 +57,7 @@ import {
   kinSectionNamed,
   kinSectionOffNotice,
   kinSectionOn,
+  type KinDockPlace,
 } from "@t3tools/client-runtime/kin/kinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -77,43 +78,81 @@ export function KinWorkEntry(target: KinWorkTarget) {
 function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | null }) {
   const open = useKinOpenPlace(props);
   const summary = props.live?.summary ?? null;
-  const hostClients = kinWorkHostClients(summary);
-  const money = useKinMoneySummary(props, { enabled: true }).state;
-  const docs = useKinDocsRecent(props);
   // A place whose section the company turned off has no row.
   const moneyOn = useKinSectionOn(props.environmentId, "money");
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
-  const named = useKinSectionNamed(props.environmentId);
-  const counts = useKinClientCounts(props, hostClients && clientsOn);
-  const scope = useKinViewerScope(props.environmentId);
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
-      {!moneyOn || money._tag === "refused" || money._tag === "failed" ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="money"
-          summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
-          onPress={() => open("money")}
-        />
-      )}
-      {!hostClients || !clientsOn ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="clients"
-          summary={counts === null ? null : named(kinClientsLine(counts.clients, counts.projects))}
-          onPress={() => open("clients")}
-        />
-      )}
-      {docs.refused ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="docs"
-          summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
-          onPress={() => open("docs")}
-        />
+      {moneyOn ? <KinMoneyEntry {...props} /> : null}
+      {kinWorkHostClients(summary) && clientsOn ? <KinClientsEntry {...props} /> : null}
+      <KinDocsEntry {...props} />
+    </>
+  );
+}
+
+/**
+ * On a docked Chats list, a row for each of this person's places the company took out of the dock,
+ * opening it as a page. `places` are the ones the host says they reach.
+ */
+export function KinOutOfDockEntries(
+  props: KinWorkTarget & { readonly places: ReadonlyArray<KinDockPlace> },
+) {
+  return (
+    <>
+      {props.places.map((place) =>
+        place === "money" ? (
+          <KinMoneyEntry key={place} {...props} />
+        ) : place === "clients" ? (
+          <KinClientsEntry key={place} {...props} />
+        ) : (
+          <KinDocsEntry key={place} {...props} />
+        ),
       )}
     </>
+  );
+}
+
+function KinMoneyEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const money = useKinMoneySummary(props, { enabled: true }).state;
+  const scope = useKinViewerScope(props.environmentId);
+  if (money._tag === "refused" || money._tag === "failed") return null;
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="money"
+      summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
+      onPress={() => open("money")}
+    />
+  );
+}
+
+function KinClientsEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const named = useKinSectionNamed(props.environmentId);
+  const counts = useKinClientCounts(props, true);
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="clients"
+      summary={counts === null ? null : named(kinClientsLine(counts.clients, counts.projects))}
+      onPress={() => open("clients")}
+    />
+  );
+}
+
+function KinDocsEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const docs = useKinDocsRecent(props);
+  if (docs.refused) return null;
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="docs"
+      summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
+      onPress={() => open("docs")}
+    />
   );
 }
 

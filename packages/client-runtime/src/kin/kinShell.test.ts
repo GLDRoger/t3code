@@ -14,6 +14,8 @@ import {
   kinSectionOn,
   kinDockRoom,
   kinDockWithLists,
+  kinPlaceDockSwitch,
+  kinPlacesOutOfDock,
   kinListCanBeSection,
   kinListSections,
   kinListSectionDocked,
@@ -411,6 +413,95 @@ describe("a company's own lists as sections", () => {
     expect(
       kinListSectionDocked(withLists({ id: "list:stock", on: true, dock: true }), "list:stock"),
     ).toBe(false);
+  });
+
+  const undocked =
+    (...ids: ReadonlyArray<string>) =>
+    (section: KinShell["sections"][number]) =>
+      ids.includes(section.id) ? { ...section, dock: false } : section;
+
+  // The host's own cases (KinShell.test.ts): room is 5 − (2 + Docs in + Money and Clients on and in).
+  it.each([
+    ["every place in", defaults.sections, 0],
+    ["Money out", defaults.sections.map(undocked("money")), 1],
+    ["Money and Clients out", defaults.sections.map(undocked("money", "clients")), 2],
+    ["Docs out", defaults.sections.map(undocked("docs")), 1],
+    ["all three out", defaults.sections.map(undocked("money", "clients", "docs")), 3],
+    ["Money out and off, Clients off", off("clients").sections.map(undocked("money")), 2],
+  ] as const)("the dock's room with %s", (_, sections, room) => {
+    expect(kinDockRoom({ rev: 9, sections }).room).toBe(room);
+  });
+
+  it("draws the dock without a place taken out of it, and offers that place on Chats", () => {
+    const shell: KinShell = {
+      rev: 9,
+      sections: [
+        ...defaults.sections.map(undocked("money")),
+        { id: "list:stock", on: true, dock: true },
+        { id: "list:bookings", on: true, dock: true },
+      ],
+    };
+    const owner = ["chats", "tasks", "money", "clients", "docs"] as const;
+    expect(kinDockWithLists(owner, shell)).toEqual([
+      "chats",
+      "tasks",
+      "clients",
+      "docs",
+      "list:stock",
+    ]);
+    expect(kinPlacesOutOfDock(owner, shell)).toEqual(["money"]);
+    // A teammate who reaches Clients alone gets no row for Money.
+    expect(kinPlacesOutOfDock(["chats", "tasks", "clients"], shell)).toEqual([]);
+    // A shell with no dock said, or none at all: today's dock.
+    expect(kinDockWithLists(owner, defaults)).toEqual(owner);
+    expect(kinDockWithLists(owner, undefined)).toEqual(owner);
+    expect(kinPlacesOutOfDock(owner, defaults)).toEqual([]);
+  });
+
+  it("offers a place's dock switch while it is on, and says when the dock is full", () => {
+    const moneyOut = defaults.sections.map(undocked("money"));
+    expect(kinPlaceDockSwitch(defaults, "money")).toEqual({
+      docked: true,
+      disabled: false,
+      full: false,
+    });
+    expect(kinPlaceDockSwitch({ rev: 1, sections: moneyOut }, "money")).toEqual({
+      docked: false,
+      disabled: false,
+      full: false,
+    });
+    const full: KinShell = {
+      rev: 1,
+      sections: [...moneyOut, { id: "list:stock", on: true, dock: true }],
+    };
+    expect(kinPlaceDockSwitch(full, "money")).toEqual({
+      docked: false,
+      disabled: true,
+      full: true,
+    });
+    expect(kinPlaceDockSwitch(full, "docs")).toEqual({
+      docked: true,
+      disabled: false,
+      full: false,
+    });
+    expect(kinPlaceDockSwitch(off("money"), "money")).toEqual({
+      docked: true,
+      disabled: true,
+      full: false,
+    });
+  });
+
+  it("takes Money, Clients or Docs out of the dock and back, keeping the flag through a switch", () => {
+    const moneyOf = (shell: KinShell) => shell.sections.find((section) => section.id === "money");
+    const out = kinShellChanged(defaults, { id: "money", dock: false }).shell;
+    expect(moneyOf({ rev: 0, ...out })).toEqual({ id: "money", on: true, dock: false });
+    const offAgain = kinShellChanged({ rev: 1, ...out }, { id: "money", on: false }).shell;
+    expect(moneyOf({ rev: 1, ...offAgain })).toEqual({ id: "money", on: false, dock: false });
+    const back = kinShellChanged({ rev: 1, ...out }, { id: "money", dock: true }).shell;
+    expect(moneyOf({ rev: 1, ...back })).toEqual({ id: "money", on: true, dock: true });
+    expect(
+      kinShellChanged({ rev: 2, sections: [] }, { id: "docs", dock: false }).shell.sections,
+    ).toEqual([{ id: "docs", on: true, dock: false }]);
   });
 
   it("switches, docks, adds and removes a list section with every other section as held", () => {

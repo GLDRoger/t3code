@@ -743,7 +743,9 @@ describe("lists through the tools", () => {
         check: { field: "Capacity", below: 10 },
       };
       const dockedBookings = yield* decodeDefine(previousShape);
-      const dockRefusal = { message: "The dock holds five places. Turn one off first." };
+      const dockRefusal = {
+        message: "The dock holds five places. Take one out of the dock first.",
+      };
       assert.include(yield* Effect.flip(LeadMoney.define(scope, dockedBookings)), dockRefusal);
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_list_proposals`, 0);
       yield* KinShell.set(orgId, ownerId, 0, [{ id: "clients", on: false }]);

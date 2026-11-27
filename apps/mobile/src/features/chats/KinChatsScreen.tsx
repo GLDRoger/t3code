@@ -36,7 +36,10 @@ import { ThreadListV2SettledShelfHeader } from "../threads/thread-list-v2-items"
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
-import { KinWorkEntry } from "./KinWorkScreen";
+import { KinOutOfDockEntries, KinWorkEntry } from "./KinWorkScreen";
+import { kinPlacesOutOfDock } from "@t3tools/client-runtime/kin/kinShell";
+import { kinPlacesAtom } from "./state/kinChatOnly";
+import { useKinShell } from "./state/useKinShell";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinNumbersEntry } from "./KinNumbersScreens";
@@ -180,6 +183,9 @@ export function KinChatsList({
               {state._tag === "ready" && myPersonId !== null ? (
                 <KinWhatKinIs environmentId={state.environmentId} personId={myPersonId} />
               ) : null}
+              {newLeadAt === null || !docked ? null : (
+                <KinOutOfDock environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+              )}
               {
                 // Numbers is a place off the dock: its row sits here, where Chats opens.
                 newLeadAt === null ? null : (
@@ -226,6 +232,15 @@ export function KinChatsList({
       </ScreenContent>
     </View>
   );
+}
+
+/** Rows for this person's places the company took out of the phone's dock. */
+function KinOutOfDock(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const places = useAtomValue(kinPlacesAtom(props));
+  const shell = useKinShell(props.environmentId);
+  if (!places.answered) return null;
+  const out = kinPlacesOutOfDock(places.destinations, shell);
+  return out.length === 0 ? null : <KinOutOfDockEntries {...props} places={out} />;
 }
 
 /** Right after joining: the name the team gave this person, to keep or change. */
