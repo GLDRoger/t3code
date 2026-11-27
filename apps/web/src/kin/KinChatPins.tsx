@@ -23,6 +23,7 @@ import { Button } from "../components/ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../components/ui/popover";
 import { cn } from "../lib/utils";
 import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
+import { useKinDestinations } from "./useKinPlaces";
 import {
   subscribeKinPinsForeground,
   useKinPinActions,
@@ -59,11 +60,12 @@ function PinChipContent(props: { readonly view: KinPinView }) {
 
 function PinChip(props: {
   readonly item: KinPinItem;
+  readonly opens: KinPinView["opens"];
   readonly onOpen: (opens: NonNullable<KinPinView["opens"]>) => void;
 }) {
   const { view } = props.item;
-  if (view.opens !== null) {
-    const target = view.opens;
+  if (props.opens !== null) {
+    const target = props.opens;
     return (
       <button
         type="button"
@@ -99,6 +101,7 @@ export function KinChatPinsStrip(props: {
     subscribeForeground: subscribeKinPinsForeground,
   });
   const actions = useKinPinActions({ environmentId, orgId });
+  const { destinations } = useKinDestinations({ environmentId, orgId });
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [unpinning, setUnpinning] = useState<KinChatPinId | null>(null);
   const [problem, setProblem] = useState<{
@@ -109,6 +112,10 @@ export function KinChatPinsStrip(props: {
   const writable = kinChatMayWritePins(members, personId);
   const strip = kinPinStrip(pins, views, { canUnpin: actions.canUnpin, writable });
   if (!supported || strip.count === 0 || strip.first === null) return null;
+
+  // Goals live inside Money on web; a reader without Money gets the glance and no dead end.
+  const opensFor = (view: KinPinView) =>
+    view.opens?.kind === "goal" && !destinations.includes("money") ? null : view.opens;
 
   const openSource = (opens: NonNullable<KinPinView["opens"]>) => {
     setPopoverOpen(false);
@@ -139,7 +146,7 @@ export function KinChatPinsStrip(props: {
   };
 
   const first = strip.first;
-  const firstOpens = first.view.opens;
+  const firstOpens = opensFor(first.view);
   const showTrigger = strip.more !== null || strip.canUnpinAny;
 
   return (
@@ -150,7 +157,12 @@ export function KinChatPinsStrip(props: {
     >
       <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
         {strip.items.map((item) => (
-          <PinChip key={item.pin.pinId} item={item} onOpen={openSource} />
+          <PinChip
+            key={item.pin.pinId}
+            item={item}
+            opens={opensFor(item.view)}
+            onOpen={openSource}
+          />
         ))}
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-2 md:hidden">
@@ -203,7 +215,7 @@ export function KinChatPinsStrip(props: {
               </div>
               <ul className="flex flex-col divide-y divide-border/60">
                 {strip.items.map((item) => {
-                  const opens = item.view.opens;
+                  const opens = opensFor(item.view);
                   const rowProblem = problem?.pinId === item.pin.pinId ? problem.text : null;
                   const body = (
                     <>

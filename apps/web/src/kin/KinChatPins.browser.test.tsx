@@ -26,6 +26,12 @@ const host = vi.hoisted(() => ({
     readonly reason: "not_allowed" | "invalid_state";
     readonly message: string;
   } | null,
+  destinations: ["chats", "tasks", "money"] as ReadonlyArray<string>,
+}));
+
+vi.mock(import("./useKinPlaces"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinDestinations: (() => ({ destinations: host.destinations, known: true })) as never,
 }));
 
 vi.mock(import("./useKinHost"), async (importOriginal) => ({
@@ -133,6 +139,7 @@ function setup(patch: Partial<typeof host> = {}) {
   host.pinCalls = [];
   host.unpinCalls = [];
   host.pinRefusal = null;
+  host.destinations = ["chats", "tasks", "money"];
   Object.assign(host, patch);
 }
 
@@ -228,6 +235,62 @@ describe("pinned live cards on web", () => {
     await expect.element(unpinGone).toBeVisible();
     await userEvent.click(unpinGone);
     expect(host.unpinCalls).toEqual([{ chatId: "chat-1", pinId: "pin-gone" }]);
+  });
+
+  it("opens a goal pin only for a reader who has Money, where Goals live", async () => {
+    const goal: KinChatPin = {
+      _tag: "goal",
+      pinId: KinChatPinId.make("pin-goal"),
+      pinnedAt: "2026-11-26T00:00:00.000Z",
+      pinnedBy: "Rhea",
+      key: KinRecordKey.make("G-1"),
+      title: "Sign two new clinics",
+      state: "open",
+      measure: "manual",
+      current: 1,
+      target: 2,
+      dueOn: null,
+      behind: false,
+    };
+    setup({ pins: [goal], destinations: ["chats", "tasks"] });
+    await using teammate = await render(
+      <AppAtomRegistryProvider>
+        <KinChatPinsStrip
+          environmentId={envId}
+          orgId={orgId}
+          chatId={chatId}
+          personId={rheaId}
+          members={[member("member")]}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    const region = page.getByRole("region", { name: "Pinned in this chat" });
+    await expect.element(region.getByText("Sign two new clinics").first()).toBeInTheDocument();
+    await expect
+      .element(region.getByRole("button", { name: /Sign two new clinics/ }).first())
+      .not.toBeInTheDocument();
+    await teammate.unmount();
+
+    setup({ pins: [goal] });
+    await using _owner = await render(
+      <AppAtomRegistryProvider>
+        <KinChatPinsStrip
+          environmentId={envId}
+          orgId={orgId}
+          chatId={chatId}
+          personId={rheaId}
+          members={[member("owner")]}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    await expect
+      .element(
+        page
+          .getByRole("region", { name: "Pinned in this chat" })
+          .getByRole("button", { name: /Sign two new clinics/ })
+          .first(),
+      )
+      .toBeInTheDocument();
   });
 
   it("lists only writable chats in the picker and shows the server refusal verbatim", async () => {
