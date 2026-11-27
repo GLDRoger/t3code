@@ -262,7 +262,7 @@ export const sendHeader = (input: {
     .join(" ");
 
 export const REMINDER_DUE =
-  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone. If what it needs is still missing, such as an address, the message is one line: what it was for and what you need, such as \"Time to send Corran Supplies the signed order: what's their address?\". Where you looked and what you found tell them nothing they can act on, so leave them out.";
+  "This reminder is due now. When it is for something you can start (a mail, a nudge, a record), start it first and kin_send last, saying what waits on a tap. A check in it is yours to do, from Kin's records and your tools, before asking anyone. If what it needs is still missing, such as an address, the message is one line: what it was for and what you need, such as \"Time to send Corran Supplies the signed order: what's their address?\". Where you looked and what you found tell them nothing they can act on, so leave them out.";
 /** Each fixed label a lead's prompt puts on a quote; Kin's evals check a case's labels against these. */
 export const QUOTE_LABELS = {
   docReference: "doc reference (data)",
