@@ -72,7 +72,7 @@ import { KinPicturesConnect } from "./KinPicturesConnect";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { kinSettingsAtIn, kinSettingsFindIn } from "./kinSettingsAddress";
-import { KinMailRulePage } from "./settings/KinMailRules";
+import { KinMailRulePage, useKinMailRulesLanding } from "./settings/KinMailRules";
 import { KinSettingsChoice, useKinSettingsSave } from "./settings/KinSettingsControls";
 import {
   KinSettingsEmpty,
@@ -215,8 +215,10 @@ function ConnectionsBody(
   const [open, setOpen] = useState<Open | null>(
     named === "" ? null : { kind: "connection", id: named },
   );
-  // A search for mail rules opens the one company mailbox they live under.
+  // A search for mail rules opens the company mailbox they live under. As the address said on
+  // arrival: the landing takes `at` away at the first scroll or click.
   const searched = useLocation({ select: (location) => kinSettingsAtIn(location.searchStr) });
+  const [findingRules] = useState(searched === "kin-mail-rules");
   const [adding, setAdding] = useState<Adding | null>(null);
   const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
@@ -267,8 +269,13 @@ function ConnectionsBody(
       return last;
     });
 
+  const rulesAt = useKinMailRulesLanding(props, open === null && findingRules && accounts.length > 1);
   const landed =
-    open === null && searched === "kin-mail-rules" && accounts.length === 1 ? accounts[0] : null;
+    open !== null || !findingRules
+      ? null
+      : accounts.length === 1
+        ? accounts[0]
+        : accounts.find((account) => account.connectionId === rulesAt);
   const opened =
     open?.kind === "connection" || open?.kind === "rule"
       ? (connections.find((connection) => connection.connectionId === open.id) ?? null)
@@ -421,7 +428,7 @@ function ConnectionsBody(
           <KinSettingsSection
             key={preset}
             title={MAIL.providerAccounts(preset)}
-            // With several company mailboxes, a search for mail rules lands on their list.
+            // With several company mailboxes and no rule yet, a search for mail rules lands here.
             {...(index === 0 ? { searchId: searchableSetting("kin-mail-rules").id } : {})}
           >
             {list.map((account) => {

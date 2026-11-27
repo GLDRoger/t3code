@@ -8,6 +8,7 @@ const host = vi.hoisted(() => ({
   connections: [] as Array<unknown>,
   adds: [] as Array<Record<string, unknown>>,
   refuse: null as string | null,
+  rules: [] as Array<{ readonly connectionId: string }>,
 }));
 
 vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
@@ -25,6 +26,13 @@ vi.mock(
   import("./KinMyMailbox"),
   () => ({ KinMyMailbox: () => null, KinPeopleMailboxes: () => null }) as never,
 );
+// A mailbox's Rules block has its own test; here it only says which mailbox it is under.
+vi.mock(import("./settings/KinMailRules"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  KinMailRulesBlock: ((props: { readonly connectionId: string }) => (
+    <p>{`Rules under ${props.connectionId}`}</p>
+  )) as never,
+}));
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
@@ -52,10 +60,14 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
     }),
   );
   const quiet = Atom.make(AsyncResult.initial());
+  const rules = Atom.make(() => AsyncResult.success({ rules: host.rules }));
+  const granted = Atom.make("granted" as const);
   return {
     ...real,
     kinClient: {
       ...real.kinClient,
+      mailRules: () => rules,
+      mailRulesList: { ...real.kinClient.mailRulesList, permissionStateAtom: () => granted },
       connections: () => list,
       connection: () => quiet,
       connectionCalls: () => quiet,
@@ -114,10 +126,29 @@ function made(label: string): KinConnection {
   } as unknown as KinConnection;
 }
 
-function setup(refuse: string | null) {
-  host.connections = [];
+function mailbox(id: string, preset: "google" | "microsoft", address: string): KinConnection {
+  return {
+    ...made(address),
+    connectionId: KinConnectionId.make(id),
+    preset,
+    kind: "builtin",
+    urlHost: null,
+    auth: "oauth",
+    accountLabel: address,
+  } as unknown as KinConnection;
+}
+
+function setup(
+  refuse: string | null,
+  seed: {
+    readonly connections?: Array<KinConnection>;
+    readonly rules?: Array<{ readonly connectionId: string }>;
+  } = {},
+) {
+  host.connections = seed.connections ?? [];
   host.adds = [];
   host.refuse = refuse;
+  host.rules = seed.rules ?? [];
 }
 
 const screen = () => (
@@ -196,5 +227,23 @@ describe("adding a connection with a key", () => {
     await userEvent.click(page.getByRole("alertdialog").getByRole("button", { name: "Discard" }));
     await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
     expect(host.adds).toHaveLength(0);
+  });
+});
+
+describe("a settings search for mail rules", () => {
+  it("opens the company mailbox its rules are under, and stays there once the address lets go", async () => {
+    setup(null, {
+      connections: [
+        mailbox("conn-g", "google", "accounts@ambermill.example"),
+        mailbox("conn-m", "microsoft", "hello@ambermill.example"),
+      ],
+      rules: [{ connectionId: "conn-m" }],
+    });
+    await using view = await render(screen(), { router: "/?at=kin-mail-rules" });
+    await expect.element(page.getByText("Rules under conn-m")).toBeVisible();
+    // The landing takes `at` away at the person's first scroll, click or key.
+    await view.router!.history.replace("/");
+    await expect.element(page.getByText("Rules under conn-m")).toBeVisible();
+    expect(page.getByText("Rules under conn-g").query()).toBeNull();
   });
 });

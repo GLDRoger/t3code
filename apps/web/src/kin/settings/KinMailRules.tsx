@@ -77,6 +77,18 @@ function useMailRulePermissions(environmentId: EnvironmentId) {
   return { list, can };
 }
 
+/** The mailbox a search for mail rules opens with several company mailboxes: its first rule's. */
+export function useKinMailRulesLanding(target: Target, wanted: boolean): string | null {
+  const { environmentId, orgId } = target;
+  const list = useAtomValue(kinClient.mailRulesList.permissionStateAtom(environmentId));
+  const result = useAtomValue(
+    wanted && list === "granted"
+      ? kinClient.mailRules({ environmentId, input: { orgId } })
+      : KIN_MAIL_RULES_IDLE,
+  );
+  return Option.getOrNull(AsyncResult.value(result))?.rules[0]?.connectionId ?? null;
+}
+
 /** Every lead, retired ones too, for names; only the owner level reads it, as here. */
 function useMailRuleLeads(target: Target, ready: boolean): ReadonlyArray<KinMailRuleLead> {
   const result = useAtomValue(ready ? kinClient.agents(target) : NO_LEADS);
