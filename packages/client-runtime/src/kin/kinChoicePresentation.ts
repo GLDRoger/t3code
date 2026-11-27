@@ -247,14 +247,23 @@ export const KIN_SEND_COPY = {
 /** The tick a card for a mail that may already have gone needs before its Confirm. */
 export const KIN_SEND_CHECKED = "I've checked the sent mail";
 
-/** "An earlier try at this mail at 9:52 AM may already have gone…", or on another day. */
-export function kinMayHaveGoneLine(at: string, now: Date = new Date()): string {
-  const tried = new Date(at);
-  const when =
-    tried.toDateString() === now.toDateString()
-      ? `at ${formatKinWhen(tried, "time")}`
-      : `on ${formatKinWhen(tried, "dayTime")}`;
-  return `An earlier try at this mail ${when} may already have gone. Check the account's sent mail before you confirm.`;
+/**
+ * "An earlier try at this mail at 9:52 AM may already have gone…"; once Kin found the mail in the
+ * account's sent mail (`seenInSentAt`), when it went and that the tick sends a second copy.
+ */
+export function kinMayHaveGoneLine(
+  sendTry: Pick<KinSendTry, "at" | "seenInSentAt">,
+  now: Date = new Date(),
+): string {
+  const when = (at: string) => {
+    const date = new Date(at);
+    return date.toDateString() === now.toDateString()
+      ? `at ${formatKinWhen(date, "time")}`
+      : `on ${formatKinWhen(date, "dayTime")}`;
+  };
+  return sendTry.seenInSentAt === undefined
+    ? `An earlier try at this mail ${when(sendTry.at)} may already have gone. Check the account's sent mail before you confirm.`
+    : `This mail went ${when(sendTry.seenInSentAt)} and is in the account's sent mail; ticking and confirming sends a second copy.`;
 }
 
 /** An open editor: the words as typed, bound to the card revision it was opened on. */
@@ -410,7 +419,7 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
       send.mayHaveGone === undefined || send.outcome !== null
         ? null
         : {
-            line: kinMayHaveGoneLine(send.mayHaveGone.at, now),
+            line: kinMayHaveGoneLine(send.mayHaveGone, now),
             tryId: send.mayHaveGone.tryId,
             at: send.mayHaveGone.at,
             confirmId,
@@ -903,7 +912,7 @@ export function kinSendEditWarned<V extends Pick<KinChoiceCardView, "send">>(
     send: {
       ...view.send,
       mayHaveGone: {
-        line: kinMayHaveGoneLine(gone.at, now),
+        line: kinMayHaveGoneLine(gone, now),
         tryId: gone.tryId,
         at: gone.at,
         confirmId: view.send.mayHaveGone?.confirmId ?? null,
