@@ -268,6 +268,22 @@ describe("mobile themes", () => {
       }
     }
 
+    // An outline button's edge, a card's Undo, must show on the card in dark; light keeps its hairline.
+    for (const themeId of MOBILE_THEME_IDS) {
+      for (const appearance of ["light", "dark"] as const) {
+        const variables =
+          themeId === DEFAULT_MOBILE_THEME_ID
+            ? readDefaultMobileThemeVariables(appearance)
+            : getMobileThemeVariables(themeId, appearance);
+        if (appearance === "light")
+          expect(variables["--color-secondary-border"]).toBe(variables["--color-border"]);
+        else
+          expect(
+            contrastRatio(variables["--color-secondary-border"], variables["--color-grouped-card"]),
+          ).toBeGreaterThanOrEqual(1.6);
+      }
+    }
+
     for (const themeId of BUILT_IN_THEME_IDS) {
       for (const appearance of ["light", "dark"] as const) {
         const variables = getMobileThemeVariables(themeId, appearance);
