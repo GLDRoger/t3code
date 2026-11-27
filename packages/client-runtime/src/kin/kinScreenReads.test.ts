@@ -53,6 +53,10 @@ describe("makeKinScreenReads", () => {
     reads.markAnswered(target, "fact-2", true);
     reads.markAnswered(target, "fact-1", false);
     expect(reads.registry.get(reads.answered(target))).toEqual(["fact-2"]);
+    reads.markAnswered(target, "fact-3", true, "INV-1");
+    reads.markAnswered(target, "fact-4", true, "INV-1");
+    reads.liftAnswered(target, "INV-1");
+    expect(reads.registry.get(reads.answered(target))).toEqual(["fact-2"]);
   });
 });
 

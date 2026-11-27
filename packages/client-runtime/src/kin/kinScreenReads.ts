@@ -169,10 +169,23 @@ export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.
   );
   const answered = ({ environmentId, orgId }: KinScreenTarget) =>
     answeredAtom(`${environmentId}:${orgId}`);
-  const markAnswered = (target: KinScreenTarget, factKey: string, on: boolean) => {
+  // A lift names only the record, so the facts set aside with it are kept to show them again.
+  const asideFacts = new Map<string, ReadonlyArray<string>>();
+  const asideKey = ({ environmentId, orgId }: KinScreenTarget, record: string) =>
+    `${environmentId}:${orgId}:${record}`;
+  const markAnswered = (target: KinScreenTarget, factKey: string, on: boolean, record?: string) => {
     const atom = answered(target);
     const rest = registry.get(atom).filter((key) => key !== factKey);
     registry.set(atom, on ? [...rest, factKey] : rest);
+    if (on && record !== undefined) {
+      const key = asideKey(target, record);
+      asideFacts.set(key, [...(asideFacts.get(key) ?? []), factKey]);
+    }
+  };
+  const liftAnswered = (target: KinScreenTarget, record: string) => {
+    const key = asideKey(target, record);
+    for (const factKey of asideFacts.get(key) ?? []) markAnswered(target, factKey, false);
+    asideFacts.delete(key);
   };
   /** A host that streams Needs attention sends an answer's effect; an older one is asked again. */
   const afterAttentionHandle = (target: KinScreenTarget, scope?: KinAttentionScope) => {
@@ -221,6 +234,7 @@ export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.
     attentionStreamed,
     answered,
     markAnswered,
+    liftAnswered,
     afterAttentionHandle,
     askLeads,
     sendEntryChange,
