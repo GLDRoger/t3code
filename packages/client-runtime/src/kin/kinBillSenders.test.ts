@@ -211,11 +211,16 @@ describe("reading an approved sender's bills since a day", () => {
     ["Asia/Kolkata", Date.UTC(2026, 1, 28, 19, 0), "2026-02-01", "2026-03-01"],
     ["America/Los_Angeles", Date.UTC(2026, 0, 1, 3, 0), "2025-11-01", "2025-12-31"],
     ["UTC", Date.UTC(2026, 0, 1, 3, 0), "2025-12-01", "2026-01-01"],
-  ])("in %s starts on the first of last month, and today is the latest day", (zone, now, day, today) => {
-    expect(kinBillSenderSinceDefault(now, zone)).toBe(day);
-    expect(kinBillSenderToday(now, zone)).toBe(today);
-    expect(kinBillSenderSinceChoices(now, zone).every((choice) => choice.day <= today)).toBe(true);
-  });
+  ])(
+    "in %s starts on the first of last month, and today is the latest day",
+    (zone, now, day, today) => {
+      expect(kinBillSenderSinceDefault(now, zone)).toBe(day);
+      expect(kinBillSenderToday(now, zone)).toBe(today);
+      expect(kinBillSenderSinceChoices(now, zone).every((choice) => choice.day <= today)).toBe(
+        true,
+      );
+    },
+  );
 
   it("offers the first of last month, this month and this year, without repeats", () => {
     expect(kinBillSenderSinceChoices(NOW, "UTC")).toEqual([
