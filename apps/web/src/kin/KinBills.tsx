@@ -1,9 +1,9 @@
 import {
   KIN_BILLS,
   kinBillBatchSentence,
-  kinBillCounts,
   kinBillExpenseStart,
   kinBillIsPdf,
+  kinBillReviewCounts,
   kinBillRowView,
   kinBillsButton,
   kinBillsCanKeepAll,
@@ -21,6 +21,7 @@ import {
   type EnvironmentId,
   type KinAttachment,
   type KinBillRow,
+  type KinFileRef,
   type KinRecordKey,
 } from "@t3tools/contracts";
 import { ChevronRightIcon, FileIcon, UploadIcon, XIcon } from "lucide-react";
@@ -455,14 +456,19 @@ function KinBillBatchReview(
       ...(skipped === undefined ? {} : { skipped }),
     }),
   );
-  const urls = useAssetUrls(
+  const resource = (file: KinFileRef) => ({
+    _tag: "attachment" as const,
+    attachmentId: file.attachmentId,
+    fileName: file.name,
+    mimeType: file.mimeType,
+  });
+  const pictures = useAssetUrls(
     environmentId,
-    views.map((view) => ({
-      _tag: "attachment" as const,
-      attachmentId: view.file.attachmentId,
-      fileName: view.file.name,
-      mimeType: view.file.mimeType,
-    })),
+    views.map((view) => resource(view.picture)),
+  );
+  const originals = useAssetUrls(
+    environmentId,
+    views.map((view) => resource(view.file)),
   );
   if (state._tag === "refused") return <KinWorkNotice {...KIN_BILLS.onlyOwner} />;
   if (state._tag === "gone")
@@ -478,7 +484,7 @@ function KinBillBatchReview(
   if (state._tag === "failed")
     return <KinLoadFailed what={KIN_BILLS.loadFailed} cause={state.cause} onRetry={refresh} />;
   const previewKey = `kin-bills:${environmentId}:${props.batchId}`;
-  const counts = batch?.states ?? kinBillCounts(rows);
+  const counts = kinBillReviewCounts(batch?.states ?? null, rows);
   const canKeepAll = actions.allowed && kinBillsCanKeepAll(counts);
   const run = (view: KinBillRowView, action: KinBillAction) => {
     switch (action) {
@@ -536,7 +542,8 @@ function KinBillBatchReview(
           <BillRow
             key={view.key}
             view={view}
-            src={urls[index] ?? null}
+            src={pictures[index] ?? null}
+            original={originals[index] ?? null}
             previewKey={previewKey}
             canChange={actions.allowed}
             busy={actions.busy !== null}
@@ -591,7 +598,9 @@ const LABEL = (view: KinBillRowView, action: KinBillAction) => {
 /** One bill: its file, what was read in fixed places, its state and its taps. */
 const BillRow = memo(function BillRow(props: {
   readonly view: KinBillRowView;
+  /** The smaller copy the row draws; `original` is what opens. */
   readonly src: string | null;
+  readonly original: string | null;
   readonly previewKey: string;
   readonly canChange: boolean;
   readonly busy: boolean;
@@ -599,6 +608,7 @@ const BillRow = memo(function BillRow(props: {
   readonly onAction: (view: KinBillRowView, action: KinBillAction) => void;
 }) {
   const { view, src } = props;
+  const opens = props.original ?? src;
   const { file } = view;
   const actions = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
@@ -606,9 +616,9 @@ const BillRow = memo(function BillRow(props: {
     <li aria-label={view.accessibilityLabel} className="flex gap-3 py-3">
       {view.pdf ? (
         <a
-          {...(src === null ? {} : { href: src, download: file.name })}
+          {...(opens === null ? {} : { href: opens, download: file.name })}
           aria-label={`Open ${file.name}`}
-          aria-disabled={src === null}
+          aria-disabled={opens === null}
           className={cn(
             "flex size-16 shrink-0 flex-col items-center justify-center gap-1 border border-border/80 px-1 text-muted-foreground",
             OPENS,
@@ -625,7 +635,7 @@ const BillRow = memo(function BillRow(props: {
           aria-label={`Open ${file.name}`}
           onClick={() =>
             openExpandedImagePreview(props.previewKey, {
-              images: [{ src, name: file.name, mimeType: file.mimeType }],
+              images: [{ src: opens ?? src, name: file.name, mimeType: file.mimeType }],
               index: 0,
             })
           }
@@ -633,7 +643,7 @@ const BillRow = memo(function BillRow(props: {
         >
           <AttachmentImage
             name={file.name}
-            mimeType={file.mimeType}
+            mimeType={view.picture.mimeType}
             src={src}
             alt={file.name}
             loading="lazy"

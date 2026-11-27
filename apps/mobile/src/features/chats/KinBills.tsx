@@ -8,8 +8,8 @@ import {
 import {
   KIN_BILLS,
   kinBillBatchSentence,
-  kinBillCounts,
   kinBillExpenseStart,
+  kinBillReviewCounts,
   kinBillRowView,
   kinBillsButton,
   kinBillsCanKeepAll,
@@ -297,6 +297,7 @@ function AddBills(props: KinWorkTarget & { readonly shared: KinSharedFile | null
                 key={file.id}
                 className="min-h-12 flex-row items-center gap-3 bg-grouped-card px-4 py-2"
               >
+                <ChosenThumb draft={file.source} />
                 <View className="flex-1 gap-0.5">
                   <Text textRole="body" numberOfLines={1} className="text-foreground">
                     {file.name}
@@ -520,7 +521,7 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
         )}
       </Frame>
     );
-  const counts = batch?.states ?? kinBillCounts(rows);
+  const counts = kinBillReviewCounts(batch?.states ?? null, rows);
   const canKeepAll = actions.allowed && kinBillsCanKeepAll(counts);
   return (
     <Frame title={title} onBack={back} onRefresh={refresh}>
@@ -613,15 +614,21 @@ function BillThumb(props: {
   readonly environmentId: EnvironmentId;
   readonly onPreview: (source: FilePreviewSource) => void;
 }) {
-  const { file, pdf } = props.view;
+  const { file, picture, pdf } = props.view;
   const resource = {
     _tag: "attachment" as const,
     attachmentId: file.attachmentId,
     fileName: file.name,
     mimeType: pdf ? "application/pdf" : file.mimeType,
   };
-  // A PDF opens from the host when tapped; only a photo draws from it here.
-  const uri = useAssetUrl(props.environmentId, pdf ? null : resource);
+  const shown = {
+    _tag: "attachment" as const,
+    attachmentId: picture.attachmentId,
+    fileName: picture.name,
+    mimeType: picture.mimeType,
+  };
+  // A PDF opens from the host when tapped; a photo draws its smaller copy and opens the original.
+  const uri = useAssetUrl(props.environmentId, pdf ? null : shown);
   return (
     <Pressable
       accessibilityRole="button"
@@ -641,14 +648,34 @@ function BillThumb(props: {
         <SymbolView name="doc.text" size={22} tintColorClassName="accent-icon-muted" />
       ) : uri === null ? null : (
         <ExpoImage
-          source={assetImageSource(props.environmentId, resource, uri)}
+          source={assetImageSource(props.environmentId, shown, uri)}
           style={{ width: 64, height: 64 }}
           contentFit="cover"
-          recyclingKey={file.attachmentId}
+          recyclingKey={picture.attachmentId}
           accessibilityIgnoresInvertColors
         />
       )}
     </Pressable>
+  );
+}
+
+/** A chosen photo from its file on the phone, before it is sent; a PDF as its icon. */
+function ChosenThumb(props: { readonly draft: DraftComposerAttachment }) {
+  const { draft } = props;
+  return (
+    <View className="size-10 items-center justify-center overflow-hidden rounded-lg border border-border bg-subtle-strong">
+      {draft.type === "image" ? (
+        <ExpoImage
+          source={{ uri: draft.previewUri }}
+          style={{ width: 40, height: 40 }}
+          contentFit="cover"
+          recyclingKey={draft.id}
+          accessibilityIgnoresInvertColors
+        />
+      ) : (
+        <SymbolView name="doc.text" size={18} tintColorClassName="accent-icon-muted" />
+      )}
+    </View>
   );
 }
 

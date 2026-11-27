@@ -16,8 +16,10 @@ import {
   kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFileRefusal,
+  kinBillReviewCounts,
   kinBillRowView,
   kinBillsAddingStart,
+  kinBillsCanKeepAll,
   kinBillsButton,
   kinBillsEntry,
   kinBillsKeptAll,
@@ -195,6 +197,56 @@ describe("a bill on the review list", () => {
       null,
       "9042",
     ]);
+  });
+
+  it("shows the smaller copy when the host has one, and opens the original", () => {
+    const original = row().file;
+    const preview = { ...original, attachmentId: "kin-bill-preview-1" };
+    const view = kinBillRowView(row({ preview }));
+    expect([view.picture, view.file]).toEqual([preview, original]);
+    // An older host, a PDF, or no copy yet: the original both ways.
+    expect(kinBillRowView(row()).picture).toEqual(original);
+  });
+
+  it("says a bill missing only its date needs its date, not that it couldn't be read", () => {
+    const dateOnly = {
+      state: "unreadable",
+      expense: undefined,
+      problem: "Couldn't read: date",
+      read: { vendor: "Harbor Power", amount: "84.20", currency: "USD", number: "HP-118" },
+    } as const;
+    const view = kinBillRowView(row(dateOnly));
+    expect([view.label, view.problem, view.actions]).toEqual([
+      "Needs its date",
+      "Every other figure was read: enter the date by hand, or read it again.",
+      ["byHand", "readAgain", "dismiss"],
+    ]);
+    expect(view.accessibilityLabel).not.toContain("Couldn't read");
+    // The reading agent's own words about it stay whole.
+    const said = "Couldn't read: date. Finance: The date is torn off.";
+    expect(kinBillRowView(row({ ...dateOnly, problem: said }))).toMatchObject({
+      label: "Needs its date",
+      problem: said,
+    });
+    // Anything else missing too, or a date that was read, is still a bill not read.
+    for (const other of [
+      { ...dateOnly, problem: "Couldn't read: date, amount" },
+      { ...dateOnly, read: { vendor: "Harbor Power", currency: "USD" } },
+      { ...dateOnly, read: { ...dateOnly.read, date: "2026-11-02" } },
+    ])
+      expect(kinBillRowView(row(other)).label).toBe("Couldn't read this one");
+    // A clean read whose date is in question already says so.
+    expect(
+      kinBillRowView(
+        row({
+          ...dateOnly,
+          problem: "The date is after today: check it.",
+          readClean: true,
+          check: "date",
+          read: { ...dateOnly.read, date: "2027-01-02" },
+        }),
+      ).label,
+    ).toBe("Check the date");
   });
 
   it("carries why Keep all left it", () => {
@@ -517,6 +569,58 @@ describe("a batch", () => {
         4,
       ),
     ).toBe("4 bills: 1 to keep, 1 couldn't be read, 2 need a check.");
+    // A bill missing only its date is counted as that, from the batch's rows over the host's count.
+    const missingDate = row({
+      sha256: SHA(3),
+      state: "unreadable",
+      expense: undefined,
+      problem: "Couldn't read: date",
+      read: { vendor: "Inkspot Cloud", amount: "12", currency: "USD" },
+    });
+    const inQuestion = row({
+      sha256: SHA(4),
+      state: "unreadable",
+      expense: undefined,
+      problem: "The date is after today: check it.",
+      readClean: true,
+      check: "date",
+    });
+    const blurred = row({
+      sha256: SHA(5),
+      state: "unreadable",
+      expense: undefined,
+      problem: "Kin could not read this one",
+    });
+    const host = {
+      reading: 0,
+      read: 1,
+      kept: 0,
+      dropped: 0,
+      duplicate: 0,
+      unreadable: 3,
+      check: 1,
+    };
+    const rows = [row(), missingDate, inQuestion, blurred];
+    expect(kinBillBatchSentence(kinBillReviewCounts(host, rows), 4)).toBe(
+      "4 bills: 1 to keep, 1 couldn't be read, 1 needs a check, 1 needs its date.",
+    );
+    expect(kinBillBatchSentence(kinBillReviewCounts(null, rows), 4)).toBe(
+      "4 bills: 1 to keep, 1 couldn't be read, 1 needs a check, 1 needs its date.",
+    );
+    const allDates = [missingDate, { ...missingDate, sha256: SHA(6) }];
+    const none = {
+      reading: 0,
+      read: 0,
+      kept: 0,
+      dropped: 0,
+      duplicate: 0,
+      unreadable: 2,
+      check: 0,
+    };
+    const counts = kinBillReviewCounts(none, allDates);
+    expect(kinBillBatchSentence(counts, 2)).toBe("2 bills: 2 need their date.");
+    // The host keeps only a clean read's expense, so Keep all has nothing to keep here.
+    expect(kinBillsCanKeepAll(counts)).toBe(false);
     const older = summary("b-0", "2025-03-02T09:00:00", { read: 1, unreadable: 3 });
     expect(kinBillsEntry([one, older], now)).toEqual({
       batchId: null,
