@@ -14,11 +14,12 @@ import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 
 import {
+  KIN_MAIL_CANCEL_UNDO_MS,
   kinSendEditHeldKey,
   kinSendEditHold,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 
-import { render } from "../../test/render";
+import { fakeTimers, render } from "../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
 import { KinCard } from "./KinCards";
 
@@ -560,6 +561,51 @@ describe("an agent's open question", () => {
     await screen.rerender(view(mail()));
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
     await expect.element(page.getByRole("button", { name: /^Dismiss/ })).not.toBeInTheDocument();
+  });
+
+  it("asks before a mail's Cancel, holds it for Undo, and sends it once when the wait ends or the card leaves", async () => {
+    setup();
+    const dontSend = async () => {
+      await userEvent.click(page.getByRole("button", { name: "Cancel" }));
+      await expect
+        .element(page.getByRole("alertdialog").getByText("Don't send this mail?"))
+        .toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Keep it" })).toBeVisible();
+      await userEvent.click(page.getByRole("button", { name: "Don't send" }));
+      await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+      await expect.element(page.getByRole("status")).toHaveTextContent("This mail won't be sent.");
+      await expect.element(page.getByRole("button", { name: "Undo" })).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    };
+    {
+      await using _screen = await render(view());
+      using _timers = fakeTimers();
+      await dontSend();
+      expect(state.acted).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(KIN_MAIL_CANCEL_UNDO_MS);
+      expect(state.acted).toMatchObject([{ widgetId: "choice:m1", value: "option-2" }]);
+    }
+    expect(state.acted).toHaveLength(1);
+
+    {
+      await using _screen = await render(view());
+      using _timers = fakeTimers();
+      await dontSend();
+      await userEvent.click(page.getByRole("button", { name: "Undo" }));
+      await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+      await vi.advanceTimersByTimeAsync(KIN_MAIL_CANCEL_UNDO_MS);
+    }
+    expect(state.acted).toHaveLength(1);
+
+    // Leaving the chat inside the wait sends the Cancel then.
+    {
+      await using _screen = await render(view());
+      using _timers = fakeTimers();
+      await dontSend();
+    }
+    await vi.waitFor(() => expect(state.acted).toHaveLength(2));
+    expect(state.acted[1]).toMatchObject({ widgetId: "choice:m1", value: "option-2" });
   });
 });
 
