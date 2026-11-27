@@ -2391,9 +2391,14 @@ it.effect.each([true, false])(
             .soft(yield* refused({ ...action, clientActionId: "tap-juniper-turn-on-again" }))
             .toBe("This mail rule card was already answered.");
           expect.soft(yield* rules()).toHaveLength(1);
-          expect
-            .soft(yield* decided(card))
-            .toMatchObject({ status: "on", ruleId: expect.any(String) });
+          // Who turned it on, by id and by name as Kin's other reads give them.
+          const [tapper] = yield* sql<{ name: string }>`SELECT display_name AS name
+            FROM kin_people WHERE person_id = ${person.personId}`;
+          expect.soft(yield* decided(card)).toEqual({
+            status: "on",
+            ruleId: expect.any(String),
+            by: { personId: person.personId, name: tapper!.name },
+          });
           expect
             .soft(
               yield* propose({ ...proposal, match: { ...match, subjectHas: ["shipping orders"] } }),

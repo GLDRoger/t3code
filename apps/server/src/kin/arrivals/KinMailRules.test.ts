@@ -500,6 +500,51 @@ it.effect("every rule change and run reaches each owner-level screen, and never 
   }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );
 
+it.effect(
+  "a rule whose setter is no longer owner level says so on the next read and runs nothing",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* seed();
+      const rules = yield* MailRules.KinMailRules;
+      const rheas = [
+        { _tag: "person", orgId, personId: rhea },
+      ] satisfies ReadonlyArray<PersonIdentity>;
+      yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_5d0f3e', 'mail', 'm_8a61c4', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+      const rule = yield* rules.createFromTap(owners, tap);
+      const ref = { orgId, ruleId: rule.ruleId };
+      assert.notProperty(rule, "setterDemoted");
+      const stored = sql`SELECT state, paused_why, updated_at FROM kin_mail_rules`;
+      const before = yield* stored;
+      // Rhea makes Meera a member: the rule row is untouched, and the next read says why it won't run.
+      yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${meera}`;
+      const [demoted] = (yield* rules.list(rheas, { orgId })).rules;
+      assert.include(demoted, { state: "on", setterDemoted: true });
+      assert.deepStrictEqual(yield* stored, before);
+      assert.strictEqual(
+        (yield* rules.runNow(rheas, ref).pipe(Effect.flip)).reason,
+        "not_allowed",
+        "Run now",
+      );
+      assert.deepStrictEqual(yield* sql`SELECT event_id FROM kin_events`, []);
+      for (const viewer of [teammates, owners])
+        assert.strictEqual(
+          (yield* rules.list(viewer, { orgId }).pipe(Effect.flip)).reason,
+          "not_allowed",
+        );
+      // A co-owner again: the flag clears.
+      yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${meera}`;
+      const [restored] = (yield* rules.list(rheas, { orgId })).rules;
+      assert.include(restored, { state: "on" });
+      assert.notProperty(restored, "setterDemoted");
+      // A setter with no profile left is the leaver's pause to tell, as the wake holds it `setter_left`.
+      yield* sql`UPDATE kin_mail_rules SET said_by = 'person_9c1e2a'`;
+      assert.notProperty((yield* rules.list(rheas, { orgId })).rules[0], "setterDemoted");
+    }).pipe(Effect.provide(fixture)),
+);
+
 it("the limit notice names the rule as Settings lists it, and counts one run or many", () => {
   const notice = (monthlyCap: number) =>
     mailRuleLimitNotice({

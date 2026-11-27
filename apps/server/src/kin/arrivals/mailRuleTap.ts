@@ -137,6 +137,10 @@ export const mailRuleTap = Effect.fn("KinMailRules.answerCard")(function* ({
   );
   return {
     ...state,
-    decision: { status: "on", ruleId: rule.ruleId },
+    decision: {
+      status: "on",
+      ruleId: rule.ruleId,
+      ...(rule.setterName.trim() === "" ? {} : { by: { personId, name: rule.setterName.trim() } }),
+    },
   } satisfies KinMailRuleCardState;
 });

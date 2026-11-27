@@ -26,6 +26,7 @@ import { KinConnections } from "../connections/ConnectionsService.ts";
 import { looksLikeSignInMail } from "../connections/MailText.ts";
 import { DAY_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
 import { holdRuleMail, stopQueuedRuleMail } from "./ruleLifecycle.ts";
@@ -91,7 +92,8 @@ export class KinMailRules extends Context.Service<
   }
 >()("t3/kin/arrivals/KinMailRules") {}
 
-type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month"> & {
+type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month" | "setterDemoted"> & {
+  readonly demoted: 0 | 1;
   readonly matchJson: string;
   readonly contentHash: string;
   readonly month: string | null;
@@ -136,6 +138,8 @@ const make = Effect.gen(function* () {
     r.connection_id AS "connectionId", r.match_json AS "matchJson", r.what,
     r.agent_id AS "agentId", r.chat_id AS "chatId", r.said_by AS "saidBy",
     COALESCE(p.display_name, '') AS "setterName", r.source_event AS "sourceEvent", r.activation,
+    CASE WHEN p.person_id IS NOT NULL AND p.removed_at IS NULL
+      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} THEN 1 ELSE 0 END AS demoted,
     r.content_sha256 AS "contentHash", r.state, r.paused_why AS "pausedWhy",
     r.monthly_cap AS "monthlyCap", r.month, r.fired, r.last_wake_at AS "lastWakeAt",
     r.created_at AS "createdAt", r.updated_at AS "updatedAt"
@@ -156,10 +160,13 @@ const make = Effect.gen(function* () {
       contentHash: _contentHash,
       sourceEvent: _sourceEvent,
       activation: _activation,
+      demoted,
       ...view
     } = row;
     return {
       ...view,
+      // The wake's own check (`ruleSetter`): on the team, not owner level.
+      ...(demoted === 1 ? { setterDemoted: true as const } : {}),
       match,
       wordingChanged: match === null,
       ...monthlyMailRuleLimit(row, at, zone),

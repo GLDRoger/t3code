@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinTrimmedText, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinChatId, KinOrgId, KinPersonId } from "./kinChat.ts";
 
 const id = TrimmedNonEmptyString.check(Schema.isMaxLength(160));
@@ -188,7 +188,17 @@ export const KinMailRuleCardState = Schema.Struct({
   expiresAt: Schema.Int,
   decision: Schema.Union([
     Schema.Struct({ status: Schema.Literal("proposed") }),
-    Schema.Struct({ status: Schema.Literal("on"), ruleId: id }),
+    Schema.Struct({
+      status: Schema.Literal("on"),
+      ruleId: id,
+      /** Who tapped Turn on, by name at the time; absent on cards answered before it was kept. */
+      by: Schema.optionalKey(
+        Schema.Struct({
+          personId: KinPersonId,
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+        }),
+      ),
+    }),
     Schema.Struct({ status: Schema.Literal("dismissed") }),
     // A later proposal for the same filters took its place before either was tapped.
     Schema.Struct({ status: Schema.Literal("replaced") }),
@@ -222,6 +232,11 @@ export const KinMailRule = Schema.Struct({
   chatId: KinChatId,
   saidBy: KinPersonId,
   setterName: Schema.String,
+  /**
+   * Its setter is still on the team but no longer the owner or a co-owner, so it runs nothing
+   * (each match is held `setter_demoted`) until someone at owner level resumes it. Read, not stored.
+   */
+  setterDemoted: Schema.optionalKey(Schema.Literal(true)),
   state: Schema.Literals(["proposed", "on", "paused", "removed"]),
   pausedWhy: Schema.NullOr(Schema.Literals(["person", "left", "mailbox", "agent"])),
   monthlyCap: cap,
