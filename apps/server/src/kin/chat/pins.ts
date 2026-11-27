@@ -67,7 +67,7 @@ export class KinChatPins extends Context.Service<
   }
 >()("t3/kin/chat/pins/KinChatPins") {}
 
-export const pinSeen = Effect.fn("KinPins.seen")(function* (
+const pinSeen = Effect.fn("KinPins.seen")(function* (
   orgId: KinOrgId,
   people: ReadonlyArray<KinPersonId>,
   row: RecordRow,

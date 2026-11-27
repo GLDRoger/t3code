@@ -680,7 +680,7 @@ export async function kinMailRuleResumeSend(input: {
 
 export type KinMailRuleCardAction = (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
 
-export const KIN_MAIL_RULE_CARD = {
+const KIN_MAIL_RULE_CARD = {
   eyebrow: "Mail rule",
   turnOn: "Turn on",
   notNow: "Not now",
