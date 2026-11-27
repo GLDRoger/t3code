@@ -26,6 +26,7 @@ import {
   normalizeAddress,
 } from "../work/statements/bankSenderRows.ts";
 import { bankSenderCopy } from "./bankSenderCopy.ts";
+import { companyName } from "../work/companyProfile.ts";
 import { dayIn } from "../work/money.ts";
 import { DAY_MS } from "../durations.ts";
 export { DAY_MS };
@@ -430,9 +431,7 @@ export const bankSender = Effect.fn("KinRecommendRules.bankSender")(function* (
   if (waiting.length === 0) return [];
   const held = yield* liveHeldMail(orgId, at, { address: only?.address });
   const currentBank = yield* candidateGate(orgId);
-  const sql = yield* SqlClient.SqlClient;
-  const [org] = yield* sql<{ name: string }>`SELECT name FROM kin_orgs WHERE org_id = ${orgId}`;
-  if (org === undefined) return [];
+  const company = yield* companyName(orgId);
   const byAddress = Map.groupBy(held, (row) => row.address);
   return waiting.flatMap((sender): ReadonlyArray<Verdict> => {
     const hint = currentBank(sender.address);
@@ -461,7 +460,7 @@ export const bankSender = Effect.fn("KinRecommendRules.bankSender")(function* (
       address: sender.address,
       bankName: sender.bankName,
       source: hint.matchedFrom,
-      company: org.name,
+      company,
       mailboxes: mailboxes.flatMap((one) => one ?? []),
       since: formatDay(ctx, Math.min(...rows.map((row) => row.first))),
       count,

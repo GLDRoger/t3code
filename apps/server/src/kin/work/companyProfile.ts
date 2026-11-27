@@ -181,6 +181,16 @@ export const countryAskProfile = Effect.fn("KinCompanyProfile.countryAskProfile"
   };
 });
 
+/** The company as people read it: the trade name, else the legal name, else the org's own name. */
+export const companyName = Effect.fn("KinCompanyProfile.companyName")(function* (orgId: KinOrgId) {
+  const { data } = yield* storedProfile(orgId);
+  const named = data.tradeName || data.legalName;
+  if (named) return named;
+  const sql = yield* SqlClient.SqlClient;
+  const [org] = yield* sql<{ name: string }>`SELECT name FROM kin_orgs WHERE org_id = ${orgId}`;
+  return org?.name.trim() || undefined;
+});
+
 const encodeCountryAsk = Schema.encodeEffect(Schema.fromJsonString(CountryAskState));
 export const writeCountryAsk = Effect.fn("KinCompanyProfile.writeCountryAsk")(function* (
   orgId: KinOrgId,

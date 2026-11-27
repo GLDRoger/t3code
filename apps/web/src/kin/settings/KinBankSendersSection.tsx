@@ -265,14 +265,17 @@ function BankSenderRow(props: {
     <KinSettingsRow
       stack
       title={
-        row.addressDomain === "" ? (
-          <span className="break-all">{row.address}</span>
-        ) : (
-          <span className="break-all">
-            <span className="font-normal text-muted-foreground">{row.addressLocal}@</span>
-            <span className="font-semibold text-foreground">{row.addressDomain}</span>
-          </span>
-        )
+        <span>
+          {row.addressSegments.map((segment) => (
+            // Each piece wraps as one unit, so the line breaks after an @ or a dot, never mid-label.
+            <span
+              key={segment.start}
+              className={`inline-block max-w-full ${segment.domain ? "font-semibold text-foreground" : "font-normal text-muted-foreground"}`}
+            >
+              {segment.text}
+            </span>
+          ))}
+        </span>
       }
       detail={
         <span className="flex flex-col gap-0.5">

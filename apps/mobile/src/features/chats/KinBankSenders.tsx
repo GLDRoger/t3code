@@ -222,16 +222,21 @@ function BankSenderMobileRow(props: {
     row.accountsLine === null ? row.bankName : `${row.bankName} · ${row.accountsLine}`;
   return (
     <View className="gap-1.5 px-4 py-3">
-      <Text textRole="body" selectable className="text-foreground">
-        {row.addressDomain === "" ? (
-          row.address
-        ) : (
-          <>
-            <Text className="text-foreground-muted">{row.addressLocal}@</Text>
-            <Text className="font-t3-semibold text-foreground">{row.addressDomain}</Text>
-          </>
-        )}
-      </Text>
+      {/* One text per piece in a wrapping row: the line breaks only after an @ or a dot, where a
+          single text would also break at a hyphen inside the domain. */}
+      <View accessible accessibilityLabel={row.address} className="flex-row flex-wrap">
+        {row.addressSegments.map((segment) => (
+          <Text
+            key={segment.start}
+            textRole="body"
+            className={
+              segment.domain ? "font-t3-semibold text-foreground" : "text-foreground-muted"
+            }
+          >
+            {segment.text}
+          </Text>
+        ))}
+      </View>
       <View className="flex-row flex-wrap items-center gap-2">
         <Chip size="small" label={row.stateLabel} />
       </View>

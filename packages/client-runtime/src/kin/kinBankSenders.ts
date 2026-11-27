@@ -75,11 +75,11 @@ export const KIN_BANK_SENDERS = {
     waiting: "Waiting for the owner",
     declined: "Not counted",
   } satisfies Readonly<Record<KinBankSenderState, string>>,
-  waitingForOwner: (ownerName: string | null) => {
-    const name = ownerName?.trim() ?? "";
-    return name === ""
-      ? "Waiting for the owner to answer in chat"
-      : `Waiting for ${name} to answer in chat`;
+  waitingForOwner: (ownerName: string | null, asked: boolean) => {
+    const name = ownerName?.trim() || "the owner";
+    return asked
+      ? `Waiting for ${name} to answer in chat`
+      : `Kin will ask ${name} about this address in chat`;
   },
   accounts: (endings: ReadonlyArray<string>) =>
     endings.length === 1 ? `Account ending ${endings[0]}` : `Accounts ending ${endings.join(", ")}`,
@@ -95,9 +95,11 @@ export const KIN_BANK_SENDERS = {
   firstSeen: (date: string) => `First seen ${date}`,
   addReplaces: (bankName: string, endings: ReadonlyArray<string>) =>
     `Kin already counts this address as ${bankName}'s for ${endingsPhrase(endings)}, and adding it here replaces that with the bank name and endings below.`,
-  addWaiting: (ownerName: string | null) => {
-    const name = ownerName?.trim() ?? "";
-    return `This address is waiting for ${name === "" ? "the owner" : name}'s answer in chat, and adding it here counts its alerts now.`;
+  addWaiting: (ownerName: string | null, asked: boolean) => {
+    const name = ownerName?.trim() || "the owner";
+    return asked
+      ? `This address is waiting for ${name}'s answer in chat, and adding it here counts its alerts now.`
+      : `Kin will ask ${name} about this address in chat; adding it here counts its alerts now.`;
   },
   carriedOver: "Carried over from earlier alerts",
   addressLabel: "Alert email address",
@@ -124,14 +126,19 @@ export const KIN_BANK_SENDER_EMPTY_DRAFT: KinBankSenderDraft = {
   accounts: "",
 };
 
-/** Splits an email at `@` so clients can show the domain distinctly without ever truncating it. */
-export function kinBankSenderAddressParts(address: string): {
-  readonly local: string;
-  readonly domain: string;
-} {
+/**
+ * The address in pieces that each end after an `@` or a `.`, so a client breaks a long one only
+ * there (never inside a domain label, which reads as a different domain) and never cuts it.
+ */
+export function kinBankSenderAddressSegments(
+  address: string,
+): ReadonlyArray<{ readonly text: string; readonly start: number; readonly domain: boolean }> {
   const at = address.lastIndexOf("@");
-  if (at === -1) return { local: address, domain: "" };
-  return { local: address.slice(0, at), domain: address.slice(at + 1) };
+  return [...address.matchAll(/[^@.]*[@.]|[^@.]+$/g)].map(({ 0: text, index: start }) => ({
+    text,
+    start,
+    domain: start > at,
+  }));
 }
 
 /** Unique bank names already entered by the company, Company details first, deduplicated by case. */
@@ -196,7 +203,9 @@ export function kinBankSenderAddInput(
 /** What Add will do to an address already on the list, said before submit; null when it only adds. */
 export function kinBankSenderAddNotice(
   address: string,
-  rows: ReadonlyArray<Pick<KinBankSenderRow, "address" | "bankName" | "state" | "accounts">>,
+  rows: ReadonlyArray<
+    Pick<KinBankSenderRow, "address" | "bankName" | "state" | "accounts" | "askedInChat">
+  >,
   ownerName: string | null,
 ): string | null {
   const typed = address.trim().toLowerCase();
@@ -205,7 +214,8 @@ export function kinBankSenderAddNotice(
   if (row === undefined) return null;
   if (row.state === "approved" && row.accounts.length > 0)
     return KIN_BANK_SENDERS.addReplaces(row.bankName, row.accounts);
-  if (row.state === "waiting") return KIN_BANK_SENDERS.addWaiting(ownerName);
+  if (row.state === "waiting")
+    return KIN_BANK_SENDERS.addWaiting(ownerName, row.askedInChat !== false);
   return null;
 }
 
@@ -220,8 +230,7 @@ function formatSenderDate(at: number, now: number, words: KinBankSenderWords): s
 
 export interface KinBankSenderRowView {
   readonly address: string;
-  readonly addressLocal: string;
-  readonly addressDomain: string;
+  readonly addressSegments: ReturnType<typeof kinBankSenderAddressSegments>;
   readonly bankName: string;
   readonly state: KinBankSenderState;
   readonly stateLabel: string;
@@ -243,7 +252,6 @@ export function kinBankSenderRowView(
   },
 ): KinBankSenderRowView {
   const words = options.words ?? {};
-  const parts = kinBankSenderAddressParts(row.address);
   const accountsLine = row.accounts.length > 0 ? KIN_BANK_SENDERS.accounts(row.accounts) : null;
   const counts = [
     ...(row.recordedCount > 0 ? [KIN_BANK_SENDERS.recorded(row.recordedCount)] : []),
@@ -275,8 +283,7 @@ export function kinBankSenderRowView(
 
   return {
     address: row.address,
-    addressLocal: parts.local,
-    addressDomain: parts.domain,
+    addressSegments: kinBankSenderAddressSegments(row.address),
     bankName: row.bankName,
     state: row.state,
     stateLabel: KIN_BANK_SENDERS.states[row.state],
@@ -284,7 +291,10 @@ export function kinBankSenderRowView(
     countsLine,
     decidedLine,
     waitingLine:
-      row.state === "waiting" ? KIN_BANK_SENDERS.waitingForOwner(options.ownerName) : null,
+      row.state === "waiting"
+        ? // An older server sends no flag: keep the words it was built with.
+          KIN_BANK_SENDERS.waitingForOwner(options.ownerName, row.askedInChat !== false)
+        : null,
     canRemove: row.state === "approved",
     canAddAgain: row.state === "declined",
   };

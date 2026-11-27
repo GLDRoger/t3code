@@ -7,7 +7,7 @@ import {
   KIN_BANK_SENDER_METHODS,
   kinBankSenderAddInput,
   kinBankSenderAddNotice,
-  kinBankSenderAddressParts,
+  kinBankSenderAddressSegments,
   kinBankSenderKnownBanks,
   kinBankSenderPermissions,
   kinBankSenderRows,
@@ -35,21 +35,25 @@ const makeRow = (overrides: Partial<Row> = {}): Row => ({
   ...overrides,
 });
 
-describe("kinBankSenderAddressParts", () => {
-  it("splits local part and domain at the last @ without truncating long addresses", () => {
-    const longAddress =
-      "very.long.automated.notifications.service+tidewater@alerts.sub.harborbank.example";
-    expect(kinBankSenderAddressParts(longAddress)).toEqual({
-      local: "very.long.automated.notifications.service+tidewater",
-      domain: "alerts.sub.harborbank.example",
-    });
-  });
-
-  it("handles an address without @ gracefully", () => {
-    expect(kinBankSenderAddressParts("not-an-address")).toEqual({
-      local: "not-an-address",
-      domain: "",
-    });
+describe("kinBankSenderAddressSegments", () => {
+  it.each([
+    [
+      "very.long.automated.notifications.service+tidewater@alerts.sub.harborbank.example",
+      ["very.", "long.", "automated.", "notifications.", "service+tidewater@"],
+      ["alerts.", "sub.", "harborbank.", "example"],
+    ],
+    [
+      "alerts@harborbank.relay-mail.example",
+      ["alerts@"],
+      ["harborbank.", "relay-mail.", "example"],
+    ],
+    ["odd@name@harborbank.example", ["odd@", "name@"], ["harborbank.", "example"]],
+    ["not-an-address", [], ["not-an-address"]],
+  ])("breaks %j only after @ and after a dot", (address, local, domain) => {
+    const segments = kinBankSenderAddressSegments(address);
+    expect(segments.map((one) => one.text).join("")).toBe(address);
+    expect(segments.filter((one) => !one.domain).map((one) => one.text)).toEqual(local);
+    expect(segments.filter((one) => one.domain).map((one) => one.text)).toEqual(domain);
   });
 });
 
@@ -134,6 +138,8 @@ describe("kinBankSenderAddNotice", () => {
     makeRow({ address: "multi@harborbank.example", accounts: ["4821", "7310"] }),
     makeRow({ address: "notices@harborbank.example", state: "waiting", accounts: [] }),
     makeRow({ address: "old@harborbank.example", state: "declined", accounts: [] }),
+    makeRow({ address: "asked@harborbank.example", state: "waiting", askedInChat: true }),
+    makeRow({ address: "unasked@harborbank.example", state: "waiting", askedInChat: false }),
   ];
 
   it.each([
@@ -156,6 +162,21 @@ describe("kinBankSenderAddNotice", () => {
       "notices@harborbank.example",
       null,
       "This address is waiting for the owner's answer in chat, and adding it here counts its alerts now.",
+    ],
+    [
+      "asked@harborbank.example",
+      "Rhea",
+      "This address is waiting for Rhea's answer in chat, and adding it here counts its alerts now.",
+    ],
+    [
+      "unasked@harborbank.example",
+      "Rhea",
+      "Kin will ask Rhea about this address in chat; adding it here counts its alerts now.",
+    ],
+    [
+      "unasked@harborbank.example",
+      null,
+      "Kin will ask the owner about this address in chat; adding it here counts its alerts now.",
     ],
     ["old@harborbank.example", "Rhea", null],
     ["new@harborbank.example", "Rhea", null],
@@ -195,8 +216,11 @@ describe("kinBankSenderRowView", () => {
     );
     expect(view).toMatchObject({
       address: "alerts@harborbank.example",
-      addressLocal: "alerts",
-      addressDomain: "harborbank.example",
+      addressSegments: [
+        { text: "alerts@", domain: false },
+        { text: "harborbank.", domain: true },
+        { text: "example", domain: true },
+      ],
       bankName: "Harbor Bank",
       state: "approved",
       stateLabel: "Counting",
@@ -262,6 +286,22 @@ describe("kinBankSenderRowView", () => {
       { ownerName: null, now: NOW, words: WORDS },
     );
     expect(withoutOwnerName.waitingLine).toBe("Waiting for the owner to answer in chat");
+  });
+
+  it.each([
+    [undefined, "Rhea", "Waiting for Rhea to answer in chat"],
+    [true, "Rhea", "Waiting for Rhea to answer in chat"],
+    [false, "Rhea", "Kin will ask Rhea about this address in chat"],
+    [false, null, "Kin will ask the owner about this address in chat"],
+  ])("a Waiting row asked in chat %j says so only once Kin has asked", (asked, owner, line) => {
+    const row = makeRow({ state: "waiting", accounts: [], decidedBy: null, decidedAt: null });
+    const view = kinBankSenderRowView(asked === undefined ? row : { ...row, askedInChat: asked }, {
+      ownerName: owner,
+      now: NOW,
+      words: WORDS,
+    });
+    expect(view.waitingLine).toBe(line);
+    expect(view.stateLabel).toBe("Waiting for the owner");
   });
 
   it("presents a Declined row as Not counted with no Remove and Add-again allowed", () => {
