@@ -2,15 +2,19 @@
 import * as NodeBuffer from "node:buffer";
 import * as NodeV8 from "node:v8";
 
+import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import { createCanvas, loadImage, type Canvas, type Image } from "@napi-rs/canvas";
 import {
+  BILL_PHOTO_MAX_PIXELS,
+  IMAGE_ATTACHMENT_MAX_EDGE,
   IMAGE_DIMENSIONS_HEADER_BYTES,
   readImageDimensions,
-  readJpegOrientation,
 } from "@t3tools/shared/imageDimensions";
 
 import { openPdfPageDocument, PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 import {
+  BILL_CUTTER_OUTPUT_BYTES,
+  BILL_MODEL_IMAGE_BYTES,
   MAX_BILL_BOXES,
   refuseBillPage,
   type BillBox,
@@ -19,10 +23,9 @@ import {
 } from "./billCutterProtocol.ts";
 import { inflatedTooFar } from "./statements/pdfStreamLimits.ts";
 
-const PHOTO_PIXELS = 50_000_000;
 const PDF_PIXELS = 12_000_000;
 const PDF_SCALE = 300 / 72;
-const CROP_LONG_EDGE = 2500;
+const PDF_CROP_LONG_EDGE = 2500;
 const CROP_QUALITY = 85;
 const GRID = 1000;
 const PAD = 20;
@@ -55,6 +58,7 @@ const makeJpeg = async (
   height: number,
   maxEdge: number,
   quality: number,
+  maxBytes?: number,
 ) => {
   const scale = Math.min(1, maxEdge / Math.max(width, height));
   const sheet = createCanvas(
@@ -65,39 +69,62 @@ const makeJpeg = async (
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, sheet.width, sheet.height);
   context.drawImage(source, left, top, width, height, 0, 0, sheet.width, sheet.height);
-  const jpeg = await sheet.encode("jpeg", quality);
-  // Drop the native canvas surface now rather than leaving nine full-size crops for GC.
-  sheet.width = 1;
-  return jpeg;
+  try {
+    const jpeg = await sheet.encode("jpeg", quality);
+    if (maxBytes === undefined || jpeg.byteLength <= maxBytes) return jpeg;
+    for (const retryQuality of [65, 45]) {
+      const smaller = await sheet.encode("jpeg", retryQuality);
+      if (smaller.byteLength <= maxBytes) return smaller;
+    }
+    throw new Error("JPEG exceeds image byte limit");
+  } finally {
+    // Drop the native canvas surface now rather than leaving nine full-size crops for GC.
+    sheet.width = 1;
+  }
 };
 
 const cut = async (
   source: Canvas | Image,
   boxes: ReadonlyArray<BillBox>,
-  drawPreview: boolean,
+  pdfCropLongEdge?: number,
 ): Promise<BillPageOutcome> => {
   const { width, height } = source;
+  const photo = pdfCropLongEdge === undefined;
+  const maxEdge = pdfCropLongEdge ?? Math.max(width, height);
   const crops: Array<Uint8Array> = [];
+  let bytes = 0;
   for (const [x, y, w, h] of boxes) {
     const left = Math.floor((Math.max(0, x - PAD) * width) / GRID);
     const top = Math.floor((Math.max(0, y - PAD) * height) / GRID);
     const right = Math.ceil((Math.min(GRID, x + w + PAD) * width) / GRID);
     const bottom = Math.ceil((Math.min(GRID, y + h + PAD) * height) / GRID);
-    crops.push(
-      await makeJpeg(source, left, top, right - left, bottom - top, CROP_LONG_EDGE, CROP_QUALITY),
+    const crop = await makeJpeg(
+      source,
+      left,
+      top,
+      right - left,
+      bottom - top,
+      maxEdge,
+      CROP_QUALITY,
+      photo ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES : undefined,
     );
+    bytes += crop.byteLength;
+    if (photo && bytes > BILL_CUTTER_OUTPUT_BYTES) return refuseBillPage("damaged");
+    crops.push(crop);
   }
-  const preview = drawPreview
-    ? await makeJpeg(
-        source,
-        0,
-        0,
-        width,
-        height,
-        PDF_PAGE_IMAGES.longEdge,
-        PDF_PAGE_IMAGES.jpegQuality,
-      )
-    : undefined;
+  const preview =
+    photo && boxes.length === 0
+      ? await makeJpeg(
+          source,
+          0,
+          0,
+          width,
+          height,
+          IMAGE_ATTACHMENT_MAX_EDGE,
+          PDF_PAGE_IMAGES.jpegQuality,
+          BILL_MODEL_IMAGE_BYTES,
+        )
+      : undefined;
   return {
     _tag: "cut",
     frame: { width, height },
@@ -111,17 +138,13 @@ const cutPhoto = async (bytes: NodeBuffer.Buffer, boxes: ReadonlyArray<BillBox>)
   if (isHeic(header)) return refuseBillPage("heic");
   const dimensions = readImageDimensions(header);
   if (dimensions === null) return refuseBillPage("damaged");
-  if (dimensions.width * dimensions.height > PHOTO_PIXELS) return refuseBillPage("photo_pixels");
+  if (dimensions.width * dimensions.height > BILL_PHOTO_MAX_PIXELS)
+    return refuseBillPage("photo_pixels");
 
   // Canvas applies JPEG EXIF during decode, so both outputs can sample the same bitmap directly.
   const photo = await loadImage(bytes);
-  if (photo.width * photo.height > PHOTO_PIXELS) return refuseBillPage("photo_pixels");
-  return cut(
-    photo,
-    boxes,
-    readJpegOrientation(header) !== 1 ||
-      Math.max(photo.width, photo.height) > PDF_PAGE_IMAGES.longEdge,
-  );
+  if (photo.width * photo.height > BILL_PHOTO_MAX_PIXELS) return refuseBillPage("photo_pixels");
+  return cut(photo, boxes);
 };
 
 const cutPdf = async (bytes: Uint8Array, input: Extract<BillPage, { kind: "pdf" }>) => {
@@ -150,7 +173,7 @@ const cutPdf = async (bytes: Uint8Array, input: Extract<BillPage, { kind: "pdf" 
     };
     await page.render(target as unknown as Parameters<typeof page.render>[0]).promise;
     page.cleanup();
-    return await cut(sheet, input.boxes, false);
+    return await cut(sheet, input.boxes, PDF_CROP_LONG_EDGE);
   } finally {
     await task.destroy();
   }
