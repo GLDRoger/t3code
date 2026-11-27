@@ -52,13 +52,13 @@ VARIABLES
   hourOut,    \* outside wakes in the org this hour
   hours,
   offWoke,    \* a look that read the switch off woke triage
-  lateWoke    \* triage woke while the switch was off
+  lateTriage  \* triage claimed a wake or a post while the switch was off
 
 vars == <<item, thread, cursor, handled, capped, wakes, pending, reactions, phase, upTo, at, woken,
           later, react, hourWakes, notes, stops, triageOn, looks, seenTo, kinSaid, sent, hourTriage,
-          hourOut, hours, offWoke, lateWoke>>
+          hourOut, hours, offWoke, lateTriage>>
 pullVars == <<cursor, capped, reactions, phase, upTo, at, woken, later, react, hourWakes, notes>>
-issueVars == <<triageOn, looks, seenTo, kinSaid, sent, hourTriage, hourOut, hours, offWoke, lateWoke>>
+issueVars == <<triageOn, looks, seenTo, kinSaid, sent, hourTriage, hourOut, hours, offWoke, lateTriage>>
 
 Things == 1..(IF MaxThings > MaxIssue THEN MaxThings ELSE MaxIssue)
 NotLooking == [cand |-> 0, read |-> 0, on |-> TRUE]
@@ -78,7 +78,7 @@ Init ==
   /\ phase = "idle" /\ upTo = 0 /\ at = 1 /\ woken = 0 /\ later = FALSE /\ react = 0
   /\ hourWakes = 0 /\ notes = 0 /\ stops = 0
   /\ triageOn = TRUE /\ looks = [l \in Looks |-> NotLooking] /\ seenTo = 0 /\ kinSaid = 0
-  /\ sent = 0 /\ hourTriage = 0 /\ hourOut = 0 /\ hours = 0 /\ offWoke = FALSE /\ lateWoke = FALSE
+  /\ sent = 0 /\ hourTriage = 0 /\ hourOut = 0 /\ hours = 0 /\ offWoke = FALSE /\ lateTriage = FALSE
 
 (* People act on GitHub, whether Kin is running or not. *)
 Happen(k) ==
@@ -167,7 +167,7 @@ Stop ==
   /\ phase' = "idle" /\ react' = 0 /\ upTo' = 0 /\ at' = 1 /\ woken' = 0 /\ later' = FALSE
   /\ looks' = [l \in Looks |-> NotLooking] /\ sent' = 0
   /\ UNCHANGED <<item, capped, thread, cursor, handled, wakes, pending, reactions, hourWakes, notes>>
-  /\ UNCHANGED <<triageOn, seenTo, kinSaid, hourTriage, hourOut, hours, offWoke, lateWoke>>
+  /\ UNCHANGED <<triageOn, seenTo, kinSaid, hourTriage, hourOut, hours, offWoke, lateTriage>>
 
 ------------------------------------------------------------------------------------------------
 (* Issue triage, on one new issue in a repo with triage on. The issue is opened since triage
@@ -190,7 +190,7 @@ SwitchOff ==
   /\ item = "issue" /\ triageOn
   /\ triageOn' = FALSE
   /\ UNCHANGED <<item, thread, handled, wakes, pending, stops, looks, seenTo, kinSaid, sent,
-                 hourTriage, hourOut, hours, offWoke, lateWoke>>
+                 hourTriage, hourOut, hours, offWoke, lateTriage>>
   /\ UNCHANGED pullVars
 
 (* GitHubWatch.ts lookContext then weigh: the switch as the look begins (triageStates), Kin's
@@ -214,11 +214,12 @@ Read(l) ==
         ELSE /\ seenTo' = IF Len(thread) > seenTo THEN Len(thread) ELSE seenTo
              /\ UNCHANGED looks
   /\ UNCHANGED <<item, thread, handled, wakes, pending, stops, triageOn, kinSaid, sent, hourTriage,
-                 hourOut, hours, offWoke, lateWoke>>
+                 hourOut, hours, offWoke, lateTriage>>
   /\ UNCHANGED pullVars
 
-(* GitHubWatch.ts claimTrigger, one transaction: skip a stored key; past the hour's allowance
-   (hasAutomaticAllowance: outside wakes per org, triage wakes per repo) leave it for a later look,
+(* GitHubWatch.ts claimTrigger, one transaction: re-read the switch and skip a stored key;
+   past the hour's allowance (hasAutomaticAllowance: outside wakes per org, triage wakes per repo)
+   leave it for a later look,
    its comments held unseen; a reply checks Kin's history again (triageHistory: Kin spoke before
    it, replies left) or is passed over; else store it and queue the wake-up. Then the look marks
    what it read seen. *)
@@ -231,30 +232,30 @@ Claim(l) ==
          ok == k = 1 \/ (kinSaid # 0 /\ kinSaid < k /\
                          (RepliesWoken < TriageReplies \/ Broken \in {"no-reply-cap", "reply-cap-at-look"}))
          seen == IF looks[l].read > seenTo THEN looks[l].read ELSE seenTo
-     IN IF k \in handled
+     IN IF k \in handled \/ (~triageOn /\ Broken \notin {"off-at-claim", "ignore-off"})
         THEN /\ seenTo' = seen
-             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateWoke>>
+             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateTriage>>
         ELSE IF full
         THEN /\ seenTo' = IF k = 1 THEN seen ELSE seenTo
-             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateWoke>>
+             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateTriage>>
         ELSE IF ~ok
         THEN /\ seenTo' = seen
-             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateWoke>>
+             /\ UNCHANGED <<handled, wakes, pending, hourTriage, hourOut, offWoke, lateTriage>>
         ELSE /\ handled' = handled \cup {k}
              /\ wakes' = [wakes EXCEPT ![k] = @ + 1]
              /\ pending' = pending \cup {k}
              /\ hourTriage' = hourTriage + 1
              /\ hourOut' = IF outside THEN hourOut + 1 ELSE hourOut
              /\ offWoke' = (offWoke \/ ~looks[l].on)
-             /\ lateWoke' = (lateWoke \/ ~triageOn)
+             /\ lateTriage' = (lateTriage \/ ~triageOn)
              /\ seenTo' = seen
   /\ looks' = [looks EXCEPT ![l] = NotLooking]
   /\ UNCHANGED <<item, thread, stops, triageOn, kinSaid, sent, hours>>
   /\ UNCHANGED pullVars
 
 (* The triage turn (lead/WakeupRunner.ts, github/boundIssue.ts postIssueComment): it ends quiet,
-   or posts its one comment with kin_github_comment (review_url claimed once per key). A refused
-   post stores nothing the rules count and leaves the turn free to try again or end quiet. *)
+   or claims its one comment (the switch and review_url are checked in one transaction). Post
+   represents an admitted comment GitHub takes; a refusal leaves the turn free to end quiet. *)
 Quiet(i) ==
   /\ item = "issue" /\ i \in pending
   /\ pending' = pending \ {i}
@@ -262,11 +263,13 @@ Quiet(i) ==
 
 Post(i) ==
   /\ item = "issue" /\ i \in pending /\ sent = 0 /\ Len(thread) < MaxIssue
+  /\ triageOn \/ Broken = "off-at-post"
   /\ pending' = pending \ {i}
   /\ thread' = Append(thread, "own")
   /\ sent' = Len(thread) + 1
+  /\ lateTriage' = (lateTriage \/ ~triageOn)
   /\ UNCHANGED <<item, handled, wakes, stops, triageOn, looks, seenTo, kinSaid, hourTriage, hourOut,
-                 hours, offWoke, lateWoke>>
+                 hours, offWoke>>
   /\ UNCHANGED pullVars
 
 (* GitHub's answer: stored as triaged:<ref> "posted" at the comment's time; or it never came
@@ -276,7 +279,7 @@ Answer(told) ==
   /\ kinSaid' = IF told THEN sent ELSE kinSaid
   /\ sent' = 0
   /\ UNCHANGED <<item, thread, handled, wakes, pending, stops, triageOn, looks, seenTo, hourTriage,
-                 hourOut, hours, offWoke, lateWoke>>
+                 hourOut, hours, offWoke, lateTriage>>
   /\ UNCHANGED pullVars
 
 (* An hour ends: the allowances count wakes of the past hour only. *)
@@ -284,7 +287,7 @@ HourEnds ==
   /\ item = "issue" /\ hours < MaxHours
   /\ hours' = hours + 1 /\ hourTriage' = 0 /\ hourOut' = 0
   /\ UNCHANGED <<item, thread, handled, wakes, pending, stops, triageOn, looks, seenTo, kinSaid,
-                 sent, offWoke, lateWoke>>
+                 sent, offWoke, lateTriage>>
   /\ UNCHANGED pullVars
 
 Next ==
@@ -314,9 +317,7 @@ RepliesCapped ==
     /\ Cardinality({i \in 1..Len(thread) : thread[i] = "own"}) <= 1 + TriageReplies
 NoReplyToSelf == item = "issue" => \A i \in 2..Len(thread) : wakes[i] > 0 => thread[i] = "person"
 OffNextLook == ~offWoke
-\* Not in the config: it does not hold (the README's MUST FIX). Add it once the claim re-reads
-\* the switch.
-OffAtOnce == ~lateWoke
+OffAtOnce == ~lateTriage
 RepoHourCapped == hourTriage <= RepoHour
 OutsideHourCapped == hourOut <= OutsideHour
 =============================================================================

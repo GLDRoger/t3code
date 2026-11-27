@@ -23,7 +23,7 @@ export const rules: Record<string, string> = {
   OffNextLook:
     "Once the owner turns off replies to new issues, no look that starts after that answers an issue.",
   OffAtOnce:
-    "Once the owner turns off replies to new issues, Kin wakes no agent for an issue, even in a look already under way.",
+    "Once the owner turns off replies to new issues, Kin starts no triage wake or comment, even if a look or turn is already under way.",
   RepoHourCapped:
     "In one repo, issues wake at most ten agents an hour, from teammates and strangers alike.",
   OutsideHourCapped: "Strangers wake at most ten agents an hour across the owner's repos.",
@@ -89,6 +89,16 @@ export const variants = [
     name: "ignore-off",
     breaks: "OffNextLook",
     what: "a look answers new issues with replies to them turned off",
+  },
+  {
+    name: "off-at-claim",
+    breaks: "OffAtOnce",
+    what: "a look that read the switch on wakes an agent after the owner turns it off",
+  },
+  {
+    name: "off-at-post",
+    breaks: "OffAtOnce",
+    what: "an agent woken before the owner turns triage off still posts a comment",
   },
   {
     name: "no-repo-hour",

@@ -51,6 +51,7 @@ import {
   knownRepos,
   type KnownRepo,
   repoList,
+  triageIsOn,
   triageStates,
   watchRow,
   type WatchRow,
@@ -770,6 +771,7 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
   const repo = thread.repo.toLowerCase();
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (isTriage(trigger.kind) && !(yield* triageIsOn(orgId, repo))) return "off" as const;
       const [already] = yield* sql<{ outcome: string; at: number }>`SELECT outcome, at
         FROM kin_github_handled WHERE org_id = ${orgId} AND trigger_key = ${trigger.key}`;
       const retry = already !== undefined && askedBy !== undefined && reclaimable(already, now);
