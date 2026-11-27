@@ -187,6 +187,7 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
   projectId: string,
   now: number,
   viewer: KinViewer,
+  showMoney: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<RecordRow>`${selectRecords(sql)}
@@ -194,7 +195,7 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
       AND r.project_id = ${projectId} AND r.state != 'dropped' AND ${seenBy(sql, viewer)}
       AND (r.state IN ${sql.in(OPEN)} OR r.date_at >= ${now - DAY_MS})
     ORDER BY r.date_at IS NULL, r.date_at, r.key LIMIT 10`;
-  return rows.map((row): KinRecord => toRecord(row, now));
+  return rows.map((row): KinRecord => toRecord(row, now, showMoney));
 });
 
 /**

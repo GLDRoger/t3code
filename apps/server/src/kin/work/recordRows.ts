@@ -517,7 +517,7 @@ const refOf = (recordId: string | null, key: string | null, title: string | null
     ? undefined
     : { recordId: KinRecordId.make(recordId), key, title: title as KinRecord["title"] };
 
-export const toRecord = (row: RecordRow, now: number): KinRecord => {
+export const toRecord = (row: RecordRow, now: number, showMoney = true): KinRecord => {
   const number = row.pullUrl === null ? undefined : pullNumber(row.pullUrl);
   const ref = refOf(row.partyId, row.partyKey, row.partyTitle);
   const party = ref === undefined ? undefined : { ...ref, kind: partyKind(row.partyCategory) };
@@ -559,7 +559,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(row.sensitive === 1 && row.markedBy !== null
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
-    ...moneyOf(row),
+    ...moneyOf(row, showMoney),
     ...listNameOf(row.registerId),
     ...stepsCount(row),
     ...(row.registerId === "work" && row.urgent === 1 ? { urgent: true as const } : {}),
@@ -638,8 +638,8 @@ const handedBackOf = (row: RecordRow) => {
 };
 
 /** Its amount, own date and repeat; in a defined list, the list, its category and a balance. */
-const moneyOf = (row: RecordRow) => {
-  const amount = amountOf(row);
+const moneyOf = (row: RecordRow, showMoney: boolean) => {
+  const amount = showMoney ? amountOf(row) : undefined;
   const repeat = repeatOf(row.repeatJson);
   const tds = row.withheld - (row.credited ?? 0);
   return {
