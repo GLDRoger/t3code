@@ -179,7 +179,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinImport.layer,
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
-                Layer.provide(
+                Layer.provideMerge(
                   Toolchain.layer.pipe(
                     Layer.provide(ProcessRunner.layer),
                     Layer.provide(FetchHttpClient.layer),
