@@ -295,6 +295,7 @@ const samples = {
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
     { ...message, body: "", status: "deleted", withdrawn: { why: "The client paid", at } },
+    { ...message, progress: true },
   ],
   KinMessageWithdrawn: [
     { why: "The client paid", at },
@@ -337,6 +338,7 @@ const samples = {
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
     { _tag: "reset", lastSeq: 1 },
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
+    { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, clearUpdates: true },
     { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "message", message },
     { _tag: "widget", widget },

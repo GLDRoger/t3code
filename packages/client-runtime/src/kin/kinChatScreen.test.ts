@@ -9,6 +9,7 @@ import {
   type KinMemberId,
   type KinMessage,
   type KinOrgId,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -307,6 +308,22 @@ describe("kinChatFeedView", () => {
       unseen: 1,
     });
     expect(rows.rows).toEqual(view.rows);
+  });
+
+  it("clears a turn's progress update once its reply is in, as the host's setting says", () => {
+    const turn = "0b7e4d1a-2c3f-4a5b-8d9e-1f2a3b4c5d6e" as KinWakeupId;
+    const held = messages.map((message) =>
+      message.seq === 2
+        ? { ...message, sourceWakeupId: turn, progress: true as const }
+        : message.seq === 4
+          ? { ...message, sourceWakeupId: turn }
+          : message,
+    );
+    const shown = (clearUpdates: boolean) =>
+      keys(feed({ live: { ...emptyKinChat, messages: held, clearUpdates } }));
+    expect(shown(false)).toContain("fixture-2");
+    expect(shown(true)).not.toContain("fixture-2");
+    expect(shown(true)).toContain("fixture-4");
   });
 
   it("says where the composer stands", () => {

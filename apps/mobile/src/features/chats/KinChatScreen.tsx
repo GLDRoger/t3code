@@ -1012,7 +1012,8 @@ function KinChatFeed(props: {
   const barSpace = useBarOverlap();
   const barOverlap = standIn === null ? barSpace : 0;
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
-  const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
+  const ownMarkdownStyle = useMarkdownStyleIn(markdownStyle, "text-user-bubble-foreground");
+  const updateMarkdownStyle = useMarkdownStyleIn(markdownStyle, "text-foreground-muted");
   // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [actions, setActions] = useState<{ readonly messageId: string; readonly open: number }>({
@@ -1487,6 +1488,7 @@ function KinChatFeed(props: {
         row={item}
         markdownStyle={markdownStyle}
         ownMarkdownStyle={ownMarkdownStyle}
+        updateMarkdownStyle={updateMarkdownStyle}
         direct={props.direct}
         onPressPreview={setPreviewFile}
         onOpenPerson={(personId) =>
@@ -1846,6 +1848,7 @@ function KinChatFeed(props: {
           canReact,
           markdownStyle,
           ownMarkdownStyle,
+          updateMarkdownStyle,
         ]}
         estimatedItemSize={72}
         drawDistance={500}
@@ -2038,9 +2041,12 @@ function KinFeedMessageActions(props: {
 }
 
 /** The feed's markdown colours for text on T3's user bubble. */
-function useOwnBubbleMarkdownStyle(base: NativeMarkdownTextStyle): NativeMarkdownTextStyle {
+function useMarkdownStyleIn(
+  base: NativeMarkdownTextStyle,
+  colorClassName: string,
+): NativeMarkdownTextStyle {
   const text = String(
-    StyleSheet.flatten(useResolveClassNames("text-user-bubble-foreground"))?.color ?? base.color,
+    StyleSheet.flatten(useResolveClassNames(colorClassName))?.color ?? base.color,
   );
   return { ...base, color: text, strongColor: text };
 }
