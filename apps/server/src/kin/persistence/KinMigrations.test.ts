@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
+import K001ChatCore from "./migrations/K001_ChatCore.ts";
+import K031LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
@@ -25,6 +27,7 @@ import K088MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import K107Connections from "./migrations/K107_Connections.ts";
 import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
+import CardTapDeliveries from "./migrations/K232_CardTapDeliveries.ts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -2365,6 +2368,39 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("adds card taps to lead deliveries and preserves every legacy row byte for byte", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* K001ChatCore;
+      yield* K031LeadDeliveries;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org-tidewater', 'Tidewater Freight', '2026-11-27')`;
+      yield* sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B7', 'reminder', 'chief', 'direct', 'card-1',
+          'reminder', '{ "label": "Rhea" }', 'Rhea’s reminder', 100, 'pending', NULL, 7, 8),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B8', 'routine', 'chief', 'direct', 'card-2',
+          'routine', '{"items":[1,2]}', 'Routine', 200, 'delivered', 'message-2', 9, 10),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B9', 'scheduled_task', 'chief', 'direct', 'card-3',
+          'scheduled_task', '{"done":false}', 'Scheduled task', 300, 'fallback', NULL, 11, 12)`;
+      const rows = sql`SELECT *, hex(state_json) AS state_bytes, hex(fallback_body) AS body_bytes
+        FROM kin_lead_deliveries ORDER BY org_id, event_id`;
+      const before = yield* rows;
+      assert.lengthOf(before, 3);
+      const insertTap = sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1BA', 'card_tap', 'chief', 'direct', 'card-4',
+          'choice', '{}', '', 400, 'pending', NULL, 13, 14)`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(insertTap)));
+      yield* sql.withTransaction(CardTapDeliveries);
+      assert.deepStrictEqual(yield* rows, before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master
+        WHERE tbl_name = 'kin_lead_deliveries' AND name = 'idx_kin_lead_deliveries_pending'`,
+        [{ name: "idx_kin_lead_deliveries_pending" }],
+      );
+      yield* insertTap;
+      assert.lengthOf(yield* rows, 4);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K231 keeps arrival rows through upgrade and rerun", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2390,7 +2426,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'arrival', 'mail', 'message', 1, 'settled')`;
       const rows = sql`SELECT arrival_id, rule_id, rule_state, has_file, sender_check
         FROM kin_arrivals`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",
@@ -2409,7 +2445,7 @@ describe("Kin migrations", () => {
       const invalid = yield* Effect.exit(sql`UPDATE kin_arrivals SET has_file = 2`);
       assert.isTrue(Exit.isFailure(invalid));
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",

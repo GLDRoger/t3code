@@ -113,6 +113,7 @@ import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
+import { trackedCardTapIds } from "./cardTapDeliveries.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
@@ -246,6 +247,22 @@ const make = Effect.gen(function* () {
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
+  const deliveries = yield* Effect.serviceOption(LeadDelivery.KinLeadDelivery);
+  const cardTapsOf = (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) =>
+    trackedCardTapIds(orgId, eventIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.orElseSucceed((): ReadonlyArray<KinEventId> => []),
+    );
+  const settleCardTaps = (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) =>
+    Option.isNone(deliveries)
+      ? Effect.void
+      : deliveries.value
+          .settleCardTaps(orgId, eventIds)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin card tap settlement failed", { orgId, cause }),
+            ),
+          );
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -267,7 +284,7 @@ const make = Effect.gen(function* () {
     // Why it failed, from the error itself; a time-out has none and keeps the plain retries.
     const cause =
       status !== "failed" || Option.isNone(care) ? undefined : (setup ?? troubleCause(failure));
-    const claimed = cause === undefined ? [] : yield* claimedEvents(row);
+    const claimed = cause === undefined && Option.isNone(lane) ? [] : yield* claimedEvents(row);
     const now = yield* Clock.currentTimeMillis;
     let holdUntil: number | undefined;
     // A full disk: the trouble's one automatic clean, then one more try at once, telling nobody.
@@ -336,6 +353,9 @@ const make = Effect.gen(function* () {
       if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
     }
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
+    const cardTaps = yield* cardTapsOf(row.orgId, claimed);
+    yield* settleCardTaps(row.orgId, cardTaps);
+    if (cardTaps.length > 0 && cardTaps.length === claimed.length) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
@@ -536,6 +556,16 @@ const make = Effect.gen(function* () {
       fromWakeupIds: earlier.map((wake) => wake.wakeupId),
     }).pipe(provideSql);
   });
+  const deferEvents = Effect.fn("WakeupRunner.deferEvents")(function* (
+    input: Parameters<KinBudget.KinBudget["Service"]["defer"]>[0],
+  ) {
+    yield* budget.defer(input);
+    yield* settleCardTaps(
+      input.orgId,
+      input.events.filter((event) => event._tag === "widget.action").map((event) => event.eventId),
+    );
+  });
+
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -1090,7 +1120,7 @@ const make = Effect.gen(function* () {
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
-          yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          yield* deferEvents({ orgId, agentId, wakeupId, ...group });
           yield* onCards(Bills.paused(orgId, group.events, group.nextReset));
           events = events.filter((event) => !ids.has(event.eventId));
         }
@@ -1540,7 +1570,13 @@ const make = Effect.gen(function* () {
         attemptLimit: "run",
         notBefore: yield* Clock.currentTimeMillis,
       });
-      if (released.failedEventIds.length > 0 && Option.isSome(bridge) && Option.isSome(lane))
+      const cardTaps = yield* cardTapsOf(row.orgId, released.failedEventIds);
+      yield* settleCardTaps(row.orgId, cardTaps);
+      if (
+        released.failedEventIds.length > cardTaps.length &&
+        Option.isSome(bridge) &&
+        Option.isSome(lane)
+      )
         yield* bridge.value.failed({
           orgId: row.orgId,
           wakeupId: row.wakeupId,
@@ -1817,7 +1853,7 @@ const make = Effect.gen(function* () {
                     }
                   }
                 const waits = events.filter((event) => deferred.has(event.eventId));
-                yield* budget.defer({
+                yield* deferEvents({
                   orgId,
                   agentId,
                   wakeupId,

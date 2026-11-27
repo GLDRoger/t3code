@@ -126,7 +126,7 @@ const routineRuntime = Layer.mergeAll(
   KinWatchRounds.layer,
   KinRecommend.layer,
 ).pipe(
-  Layer.provideMerge(LeadDelivery.layer),
+  Layer.provideMerge(LeadDelivery.sweepLayer),
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
@@ -321,6 +321,7 @@ const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
 
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
+    Layer.provide(LeadDelivery.serviceLayer),
     Layer.provide(
       Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer, KinTurnContent.layer).pipe(
         Layer.provideMerge(KinChatRepository.layer),

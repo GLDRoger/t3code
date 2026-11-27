@@ -25,14 +25,18 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { sendClientMessageId } from "../reply/turnVoice.ts";
+import { decodeCardTapAnswer } from "./cardTapDeliveries.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 
-export type DeliveryKind = "reminder" | "routine" | "scheduled_task";
+export type DeliveryKind = "reminder" | "routine" | "scheduled_task" | "card_tap";
+export const CARD_TAP_DEADLINE_MS = 60 * 60_000;
 
 /**
  * What the server does once the lead's wake-up for `eventId` ends. `reminder` and `routine`
@@ -80,6 +84,10 @@ export class KinLeadDelivery extends Context.Service<
     readonly fallback: (delivery: Delivery) => Effect.Effect<void, KinLeadDeliveryError>;
     /** Settles this org's pending deliveries whose wake-up ended, failed or waited too long. */
     readonly settle: (orgId: KinOrgId) => Effect.Effect<void, KinLeadDeliveryError>;
+    readonly settleCardTaps: (
+      orgId: KinOrgId,
+      eventIds: ReadonlyArray<KinEventId>,
+    ) => Effect.Effect<void, KinLeadDeliveryError>;
   }
 >()("t3/kin/lead/LeadDelivery/KinLeadDelivery") {}
 
@@ -88,6 +96,7 @@ export const DELIVERY_DEADLINE_MS: Record<DeliveryKind, number> = {
   reminder: 10 * 60_000,
   routine: 20 * 60_000,
   scheduled_task: 30 * 60_000,
+  card_tap: CARD_TAP_DEADLINE_MS,
 };
 const EXCERPT_MAX = 200;
 const NOTHING_TO_REPORT = "nothing to report.";
@@ -245,7 +254,8 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const queue = yield* KinEventQueue.KinEventQueue;
   const care = yield* Effect.serviceOption(KinHostCare);
-  const ticks = yield* Scheduler.Scheduler;
+  const chat = yield* Effect.serviceOption(KinChatService);
+  const presence = yield* Effect.serviceOption(KinPresence);
   const hub = yield* Effect.serviceOption(KinChatHub);
   const cards = yield* makeCardWriter;
 
@@ -277,6 +287,47 @@ const make = Effect.gen(function* () {
     now: number,
   ) {
     const { orgId } = delivery;
+    if (delivery.kind === "card_tap") {
+      if (Option.isNone(chat)) return;
+      const answer = yield* decodeCardTapAnswer(delivery.widget.state);
+      const messageId = KinMessageId.make(`kin-card-tap-failed:${delivery.eventId}`);
+      if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
+      const reopened = yield* chat.value.reopenAnswered({
+        ...answer,
+        orgId,
+        widgetId: delivery.widget.widgetId,
+      });
+      if (!reopened) return;
+      const why = Option.isSome(care)
+        ? yield* care.value.causeFor(orgId, delivery.agentId)
+        : undefined;
+      const { agentName, label } = answer;
+      const body =
+        why === undefined
+          ? `${agentName} didn't get to your “${label}” this time. Nothing was done, and the card takes your tap again.`
+          : `${agentName} didn't get to your “${label}”: ${KIN_TROUBLE_WHY[why.cause]}. Nothing was done, and the card takes your tap again.`;
+      const message = yield* repo.insertMessage({
+        orgId,
+        chatId: delivery.chatId,
+        audience: "chat",
+        messageId,
+        author: { _tag: "system" },
+        kind: "system",
+        body,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: iso(now),
+        editedAt: null,
+      });
+      if (Option.isSome(hub)) yield* hub.value.publish({ type: "message.posted", orgId, message });
+      return;
+    }
     if (delivery.kind === "scheduled_task") {
       // Why the run didn't happen, when an open trouble knows it; once the owner was told of
       // that trouble, this line rings no one.
@@ -498,6 +549,7 @@ const make = Effect.gen(function* () {
           lapsed = true;
           return yield* fallback;
         }
+        if (row.kind === "card_tap") return yield* finish("delivered", null);
         // Schedules link to the lead's message; reminders and routines need a free card slot.
         const from = iso(event.startedAt ?? now);
         const until = iso(event.endedAt ?? now);
@@ -558,16 +610,25 @@ const make = Effect.gen(function* () {
       }),
     );
     if (lapsed && Option.isSome(care)) yield* care.value.refresh(orgId);
+    if (lapsed && row.kind === "card_tap" && Option.isSome(presence))
+      yield* syncQueued(presence.value, orgId, delivery.agentId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
   });
 
   const settle = Effect.fn("KinLeadDelivery.settle")(
-    function* (orgId: KinOrgId) {
+    function* (orgId: KinOrgId, cardTapIds?: ReadonlyArray<KinEventId>) {
       const now = yield* Clock.currentTimeMillis;
       const rows = yield* sql<Row>`SELECT event_id AS "eventId", kind, agent_id AS "agentId",
           chat_id AS "chatId", widget_id AS "widgetId", widget_type AS "widgetType",
           state_json AS state, fallback_body AS "fallbackBody", deadline_at AS "deadlineAt"
         FROM kin_lead_deliveries WHERE org_id = ${orgId} AND status = 'pending'
-        ORDER BY created_at, event_id LIMIT 100`;
+        ${
+          cardTapIds === undefined
+            ? sql`ORDER BY created_at, event_id LIMIT 100`
+            : sql`AND kind = 'card_tap' AND event_id IN ${sql.in(cardTapIds)}
+            ORDER BY created_at, event_id`
+        }`;
       for (const row of rows)
         yield* settleOne(orgId, row, now).pipe(
           Effect.catch((cause) =>
@@ -575,7 +636,7 @@ const make = Effect.gen(function* () {
           ),
         );
     },
-    (effect, orgId) =>
+    (effect, orgId, _cardTapIds?: ReadonlyArray<KinEventId>) =>
       effect.pipe(
         Effect.mapError(
           (cause) =>
@@ -595,20 +656,6 @@ const make = Effect.gen(function* () {
           cause: isSqlError(cause) ? toPersistenceSqlError("KinLeadDelivery")(cause) : cause,
         }),
     );
-
-  yield* ticks.register(
-    "kin-lead-deliveries",
-    Effect.gen(function* () {
-      const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
-        FROM kin_lead_deliveries WHERE status = 'pending' ORDER BY org_id`;
-      for (const { orgId } of orgs)
-        yield* settle(KinOrgId.make(orgId)).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin lead deliveries failed", { orgId, cause }),
-          ),
-        );
-    }).pipe(Effect.catch((cause) => Effect.logWarning("Kin lead delivery scan failed", { cause }))),
-  );
 
   return KinLeadDelivery.of({
     handOff: Effect.fn("KinLeadDelivery.handOff")((event, delivery) =>
@@ -631,7 +678,35 @@ const make = Effect.gen(function* () {
       }).pipe(wrap(delivery.orgId)),
     ),
     settle,
+    settleCardTaps: Effect.fn("KinLeadDelivery.settleCardTaps")((orgId, eventIds) =>
+      eventIds.length === 0 ? Effect.void : settle(orgId, eventIds),
+    ),
   });
 });
 
-export const layer = Layer.effect(KinLeadDelivery, make);
+export const serviceLayer = Layer.effect(KinLeadDelivery, make);
+export const sweepLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const ticks = yield* Scheduler.Scheduler;
+    const delivery = yield* KinLeadDelivery;
+    yield* ticks.register(
+      "kin-lead-deliveries",
+      Effect.gen(function* () {
+        const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
+          FROM kin_lead_deliveries WHERE status = 'pending' ORDER BY org_id`;
+        for (const { orgId } of orgs)
+          yield* delivery
+            .settle(KinOrgId.make(orgId))
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin lead deliveries failed", { orgId, cause }),
+              ),
+            );
+      }).pipe(
+        Effect.catch((cause) => Effect.logWarning("Kin lead delivery scan failed", { cause })),
+      ),
+    );
+  }),
+);
+export const layer = sweepLayer.pipe(Layer.provideMerge(serviceLayer));
