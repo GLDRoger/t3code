@@ -48,6 +48,7 @@ export const NEVER_SHARED_FIELDS = [
   "quote",
   "sensitive",
   "shared_by",
+  "sender_mail_voice",
 ] as const satisfies ReadonlyArray<keyof MemoryItemHead>;
 
 /** A teammate's attribution, by the names kept when it was said; never their person or chat id. */
