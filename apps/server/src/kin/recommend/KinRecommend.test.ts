@@ -48,6 +48,7 @@ import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import * as KinOpen from "../open/KinOpen.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
+import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { runRecommend } from "./card.ts";
 import * as KinRecommend from "./KinRecommend.ts";
 import { ruleContext } from "./ledger.ts";
@@ -1559,6 +1560,10 @@ it.effect.each([
         assert.include(error, { reason: "not_allowed" });
         assert.include((yield* BankSenders.list(ctx.orgId))[0], { state: "candidate" });
         yield* tap(ctx, posted.widgetId, "option-1");
+        assert.deepStrictEqual(yield* outcomeOf(ctx), {
+          title: "Done",
+          text: `Kin will count alerts from ${harborAddress} about the account ending 4821.`,
+        });
         const [approved] = yield* BankSenders.list(ctx.orgId);
         assert.include(approved, { state: "approved" });
         assert.deepStrictEqual(approved!.accounts, ["4821"]);
@@ -1607,6 +1612,33 @@ it.effect.each([
       }
     }),
   ),
+);
+
+it.each([
+  ["alerts@harborbank.example", undefined],
+  ["alerts@mail.harborbank.example", "That name belongs to whoever owns harborbank.example."],
+  ["alerts@harborbank.relay-mail.example", "That name belongs to whoever owns relay-mail.example."],
+] as const)(
+  "bank sender card %s names who owns the domain only under a sub-domain",
+  (address, owns) => {
+    const { noticed } = bankSenderCopy({
+      address,
+      bankName: "Harbor Bank",
+      source: "company_details",
+      company: "Tidewater Freight",
+      mailboxes: ["ops@tidewater.example"],
+      since: "24 Nov",
+      count: 1,
+      accounts: ["4821"],
+      knownAccounts: true,
+      shownUnknown: [],
+    });
+    const domain = address.slice(address.indexOf("@") + 1);
+    assert.include(
+      noticed,
+      `confirmed it was sent by ${domain}. ${owns === undefined ? "Kin noticed" : `${owns} Kin noticed`}`,
+    );
+  },
 );
 
 it.effect(

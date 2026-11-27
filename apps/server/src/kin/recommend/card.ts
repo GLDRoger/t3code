@@ -18,6 +18,7 @@ import { accessSql } from "../people/KinAccess.ts";
 import * as BankSenders from "../work/statements/bankSenders.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { DECLINE_QUIET_MS, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
+import { accountList } from "./bankSenderCopy.ts";
 import { type RecommendChange, agentNow, connectionNow, limitNow, ruleFor } from "./rules.ts";
 
 const LABEL_MAX = 80;
@@ -284,7 +285,7 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
         }
       : {
           title: "Done",
-          text: `Kin will count alerts from ${address} about the account endings you approved.`,
+          text: `Kin will count alerts from ${address} about the ${accountList(accounts)}.`,
         };
   }
   if (plan.answer === "not_now") {

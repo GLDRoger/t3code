@@ -533,10 +533,11 @@ const KIN_RPC_ACCESS = {
   "kin.pulse.aside": "person",
   "kin.open.read": "person",
   "kin.open.subscribe": "person",
-  // What Kin suggested to the owner and his answers: his alone, as the cards are.
+  // Which mail may write Bank transactions: the owner level's, as other money settings are.
   "kin.bankSenders.list": "owner_level",
   "kin.bankSenders.add": "owner_level",
   "kin.bankSenders.remove": "owner_level",
+  // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
   "kin.host.status": "owner_level",
