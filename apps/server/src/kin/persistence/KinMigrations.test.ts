@@ -1,4 +1,6 @@
 import { latestOwnTextAtSql } from "../chat/KinChatRepository.ts";
+import K001ChatCore from "./migrations/K001_ChatCore.ts";
+import K031LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
@@ -26,6 +28,7 @@ import K107Connections from "./migrations/K107_Connections.ts";
 import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
 import BillReadsMigration from "./migrations/K217_BillReads.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
+import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -2354,7 +2357,7 @@ describe("Kin migrations", () => {
         yield* BillReadsMigration;
         yield* sql`CREATE TABLE kin_sql_migrations (migration_id INTEGER PRIMARY KEY,
         name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
-        for (const [id, name] of kinMigrations.filter(([id]) => id <= 235))
+        for (const [id, name] of kinMigrations.filter(([id]) => id !== 236))
           yield* sql`INSERT INTO kin_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
         yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
         file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id, widget_id,
@@ -2374,6 +2377,39 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, cropped);
         assert.deepStrictEqual(yield* runKinMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("adds card taps to lead deliveries and preserves every legacy row byte for byte", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* K001ChatCore;
+      yield* K031LeadDeliveries;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org-tidewater', 'Tidewater Freight', '2026-11-27')`;
+      yield* sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B7', 'reminder', 'chief', 'direct', 'card-1',
+          'reminder', '{ "label": "Rhea" }', 'Rhea’s reminder', 100, 'pending', NULL, 7, 8),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B8', 'routine', 'chief', 'direct', 'card-2',
+          'routine', '{"items":[1,2]}', 'Routine', 200, 'delivered', 'message-2', 9, 10),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B9', 'scheduled_task', 'chief', 'direct', 'card-3',
+          'scheduled_task', '{"done":false}', 'Scheduled task', 300, 'fallback', NULL, 11, 12)`;
+      const rows = sql`SELECT *, hex(state_json) AS state_bytes, hex(fallback_body) AS body_bytes
+        FROM kin_lead_deliveries ORDER BY org_id, event_id`;
+      const before = yield* rows;
+      assert.lengthOf(before, 3);
+      const insertTap = sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1BA', 'card_tap', 'chief', 'direct', 'card-4',
+          'choice', '{}', '', 400, 'pending', NULL, 13, 14)`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(insertTap)));
+      yield* sql.withTransaction(CardTapDeliveries);
+      assert.deepStrictEqual(yield* rows, before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master
+        WHERE tbl_name = 'kin_lead_deliveries' AND name = 'idx_kin_lead_deliveries_pending'`,
+        [{ name: "idx_kin_lead_deliveries_pending" }],
+      );
+      yield* insertTap;
+      assert.lengthOf(yield* rows, 4);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("K231 and K235 keep arrival rows through upgrade and rerun", () =>

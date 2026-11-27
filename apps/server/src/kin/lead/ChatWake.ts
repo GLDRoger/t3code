@@ -2,6 +2,7 @@ import {
   KinAgentId,
   type KinChatId,
   KinEventId,
+  KinChoiceCardState,
   KinMessageId,
   KinOrgId,
   TrimmedNonEmptyString,
@@ -37,8 +38,12 @@ import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { HOUR_MS } from "../durations.ts";
+import { plainFactCardTap } from "../pulse/plainFactCardTap.ts";
+import * as LeadDelivery from "./LeadDelivery.ts";
+import type { CardTapAnswer } from "./cardTapDeliveries.ts";
 import { SKIP_KEEP_DAYS } from "../host/offlineSkips.ts";
 
+const decodeChoice = Schema.decodeUnknownOption(KinChoiceCardState);
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({ actionId: TrimmedNonEmptyString, handled: Schema.optional(Schema.Boolean) }),
@@ -90,6 +95,7 @@ const make = Effect.gen(function* () {
   const hub = yield* KinChatHub;
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
+  const deliveries = yield* Effect.serviceOption(LeadDelivery.KinLeadDelivery);
   const presence = yield* Effect.serviceOption(KinPresence);
   const team = yield* Effect.serviceOption(KinTeam);
   const dailyTurns = yield* LeadAccess.dailyTurns;
@@ -115,6 +121,7 @@ const make = Effect.gen(function* () {
     personId: KinPersonId,
     target: { readonly agentId: KinAgentId; readonly name: string; readonly direct: boolean },
     dedupeKey: string,
+    cardTap = false,
   ) {
     const pair = { orgId: message.orgId, agentId: target.agentId, personId };
     const known = yield* sql`SELECT 1 FROM kin_events
@@ -135,6 +142,7 @@ const make = Effect.gen(function* () {
     }).pipe(access);
     if (used.turns < dailyTurns || !(yield* teammatesLimited(message.orgId).pipe(access)))
       return true;
+    if (cardTap) return false;
     // Everyone in a group reads the line, so there it names who it is about.
     const [person] = target.direct
       ? []
@@ -227,16 +235,99 @@ const make = Effect.gen(function* () {
 
   const enqueue = (event: KinEvent) =>
     queue.enqueue(event).pipe(
-      Effect.map((result) => !result.duplicate),
+      Effect.map((result) => (result.duplicate ? ("duplicate" as const) : ("queued" as const))),
       Effect.catchTags({
-        KinEventQueueRetiredAgent: () => Effect.succeed(false),
-        KinEventQueueUnknownAgent: () => Effect.succeed(false),
+        KinEventQueueRetiredAgent: () => Effect.succeed("refused" as const),
+        KinEventQueueUnknownAgent: () => Effect.succeed("refused" as const),
         KinEventQueueConflict: (error) =>
           Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
-            Effect.as(false),
+            Effect.as("refused" as const),
           ),
       }),
     );
+
+  const wakeFactCard = Effect.fn("KinChatWake.wakeFactCard")(function* (
+    message: KinMessage,
+    delivery: LeadDelivery.KinLeadDelivery["Service"],
+    tap: NonNullable<Effect.Success<ReturnType<typeof plainFactCardTap>>>,
+    actionId: string,
+  ) {
+    const { orgId, chatId } = message;
+    const queuedFor = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const widget = Option.getOrUndefined(
+          yield* repo.getWidget({ orgId, widgetId: tap.widgetId }),
+        );
+        if (
+          widget === undefined ||
+          widget.type !== "choice" ||
+          widget.chatId !== chatId ||
+          widget.closedAt === null ||
+          tap.revision === undefined ||
+          widget.revision !== tap.revision + 1 ||
+          widget.messageId !== message.replyTo
+        )
+          return;
+        const card = Option.getOrUndefined(decodeChoice(widget.state));
+        const option = card?.options.find((option) => option.optionId === tap.optionId);
+        if (
+          option === undefined ||
+          card?.answer?.via !== "tap" ||
+          card.answer.personId !== tap.personId ||
+          card.answer.optionId !== tap.optionId
+        )
+          return;
+        const asked = yield* repo.getMessage({ orgId, messageId: widget.messageId });
+        if (Option.isNone(asked) || asked.value.author._tag !== "agent") return;
+        const { agentId } = asked.value.author;
+        const agent = yield* repo.getAgent({ orgId, agentId });
+        if (Option.isNone(agent)) return;
+        const { displayName: name, ownerPersonId } = agent.value;
+        const event = wakeEvent(message, agentId, actionId);
+        const item = {
+          kind: "card_tap",
+          orgId,
+          eventId: event.eventId,
+          agentId,
+          chatId,
+          widget: {
+            widgetId: widget.widgetId,
+            type: widget.type,
+            state: {
+              personId: tap.personId,
+              optionId: tap.optionId,
+              revision: widget.revision,
+              label: option.label,
+              agentName: name,
+            } satisfies typeof CardTapAnswer.Type,
+          },
+          fallbackBody: "",
+          deadlineAt: DateTime.toEpochMillis(event.receivedAt) + LeadDelivery.CARD_TAP_DEADLINE_MS,
+        } satisfies LeadDelivery.Delivery;
+        const owner = yield* mayActAsOwner(orgId, tap.personId, { personId: ownerPersonId }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.orElseSucceed(() => false),
+        );
+        const accepted =
+          owner ||
+          (yield* admitted(
+            message,
+            tap.personId,
+            { agentId, name, direct: true },
+            event.dedupeKey,
+            true,
+          ));
+        const result = accepted ? yield* enqueue(event) : "refused";
+        if (result === "refused") {
+          yield* delivery.fallback(item);
+          return;
+        }
+        yield* delivery.track(item);
+        return result === "queued" ? agentId : undefined;
+      }),
+    );
+    if (queuedFor !== undefined) yield* showQueued(orgId, chatId, queuedFor);
+  });
 
   const wake = Effect.fn("KinChatWake.wake")(
     function* (message: KinMessage) {
@@ -250,6 +341,23 @@ const make = Effect.gen(function* () {
         (yield* team.value.personAsked(message).pipe(Effect.orElseSucceed(() => false)))
       )
         return;
+      const tap =
+        message.kind === "widget_action"
+          ? yield* decodeTap(message.body).pipe(Effect.option)
+          : Option.none();
+      // A tap the server finished alone, such as Snooze or Pause, is not the lead's to answer.
+      if (Option.isSome(tap) && tap.value.handled === true) return;
+      const actionId = tap.pipe(Option.map((value) => value.actionId));
+      if (message.kind === "widget_action" && Option.isNone(actionId))
+        return yield* Effect.logWarning("Kin widget action has no readable action id", {
+          orgId: message.orgId,
+          messageId: message.messageId,
+        });
+      if (Option.isSome(deliveries) && Option.isSome(actionId)) {
+        const factTap = yield* plainFactCardTap(message.orgId, message);
+        if (factTap !== undefined)
+          return yield* wakeFactCard(message, deliveries.value, factTap, actionId.value);
+      }
       const leads = yield* sql<{
         agentId: string;
         memberId: string;
@@ -273,18 +381,6 @@ const make = Effect.gen(function* () {
       );
       const targets = mentioned.length > 0 ? mentioned : leads.slice(0, 1);
       if (targets.length === 0) return yield* retiredNotice(message);
-      const tap =
-        message.kind === "widget_action"
-          ? yield* decodeTap(message.body).pipe(Effect.option)
-          : Option.none();
-      // A tap the server finished alone, such as Snooze or Pause, is not the lead's to answer.
-      if (Option.isSome(tap) && tap.value.handled === true) return;
-      const actionId = tap.pipe(Option.map((value) => value.actionId));
-      if (message.kind === "widget_action" && Option.isNone(actionId))
-        return yield* Effect.logWarning("Kin widget action has no readable action id", {
-          orgId: message.orgId,
-          messageId: message.messageId,
-        });
       for (const target of targets) {
         const agentId = KinAgentId.make(target.agentId);
         const event = wakeEvent(message, agentId, Option.getOrUndefined(actionId));
@@ -305,10 +401,14 @@ const make = Effect.gen(function* () {
                   personId,
                   { agentId, name: target.name, direct: target.kind === "direct" },
                   dedupeKey,
-                ).pipe(Effect.flatMap((admit) => (admit ? enqueue(event) : Effect.succeed(false)))),
+                ).pipe(
+                  Effect.flatMap((admit) =>
+                    admit ? enqueue(event) : Effect.succeed("refused" as const),
+                  ),
+                ),
               )
               .pipe(Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
-        if (queued) yield* showQueued(message.orgId, message.chatId, agentId);
+        if (queued === "queued") yield* showQueued(message.orgId, message.chatId, agentId);
       }
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),

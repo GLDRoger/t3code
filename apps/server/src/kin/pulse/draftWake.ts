@@ -3,7 +3,6 @@ import * as NodeCrypto from "node:crypto";
 import {
   formatKinWhen,
   isKinSalesDomain,
-  KIN_CHOICE_CARD_ACTION,
   KIN_TEXT_LOCALE,
   KinAgentId,
   KinChatId,
@@ -37,7 +36,7 @@ import { dayIn, formatMoneyPlain } from "../work/money.ts";
 import { principalOfText } from "../work/projectSpine.ts";
 import { labelledNow, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { crmSeenBy, placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
-import { isFactCard, plansOf } from "../widgets/cardPlans.ts";
+import { plainFactCardTap } from "./plainFactCardTap.ts";
 import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
 import { daysText, iso, type SenseContext } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
@@ -897,15 +896,6 @@ export const NOTICE_GIVEN = (input: {
 export const STALL_STUCK = (input: { readonly name: string; readonly key: string }) =>
   `Kin's own card asked ${input.name} where ${input.key} is, and ${input.name} chose Stuck. Ask ${input.name} what is in the way in one short question in your reply, and nothing else: no card, no list of guesses, nothing retold, and no tool that changes ${input.key}.`;
 
-const decodeChoiceTap = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      widgetId: Schema.String,
-      actionId: Schema.String,
-      value: Schema.optional(Schema.Unknown),
-    }),
-  ),
-);
 /**
  * The line a tap on the plain answer of Kin's own card about a fact adds to the turn reading it,
  * read as the turn starts: what the tapper may see, their mailboxes now. Undefined for other taps.
@@ -914,14 +904,9 @@ export const cardTapText = Effect.fn("KinPulse.cardTapText")(function* (
   orgId: KinOrgId,
   message: KinMessage,
 ) {
-  if (message.kind !== "widget_action" || message.author._tag !== "human") return undefined;
-  const personId = message.author.personId;
-  const tap = Option.getOrUndefined(decodeChoiceTap(message.body));
-  if (tap?.actionId !== KIN_CHOICE_CARD_ACTION || typeof tap.value !== "string") return undefined;
-  const plans = yield* plansOf(orgId, tap.widgetId);
-  if (plans.has(tap.value)) return undefined;
-  const plan = [...plans.values()].find(isFactCard);
-  if (plan === undefined || plan.personId !== personId) return undefined;
+  const tap = yield* plainFactCardTap(orgId, message);
+  if (tap === undefined) return undefined;
+  const { plan, personId } = tap;
   if (plan.kind === "stall_answer") return STALL_STUCK({ name: plan.personName, key: plan.key });
   if (plan.kind !== "notice_renew") return undefined;
   const sql = yield* SqlClient.SqlClient;
