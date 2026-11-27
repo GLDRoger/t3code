@@ -24,9 +24,10 @@ import { regionOf } from "../work/region.ts";
 import { isInvoiceDraft, listDef, stateLabel } from "../work/registers.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import { issueEntry } from "./amounts.ts";
+import { entryInputs } from "./entryInputs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
-import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
+import { invoiceFromQuote } from "./quotes.ts";
 import { proposalOutcome, type ReceiptRequest } from "./receiptProposals.ts";
 import { againstRefusal, createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
@@ -341,7 +342,7 @@ const fromQuote = Effect.fn("KinDocuments.fromQuote")(function* (
       "A quote is invoiced with the invoices list's recipe, such as invoice. Nothing was made.",
     );
   const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
-  const quoted = yield* quotedInputs(lead.orgId, input.from!);
+  const quoted = yield* entryInputs(lead.orgId, input.from!);
   const copied = Object.fromEntries(Object.entries(quoted).filter(([name]) => own.has(name)));
   const overriding = Object.keys(input.inputs ?? {}).filter(
     (name) => Object.hasOwn(copied, name) || QUOTED.has(name),
