@@ -588,7 +588,7 @@ describe("KinPulse", () => {
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
       assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
-      // A suggested repeating invoice's next draft names no amount and waits on Keep.
+      // A suggested repeating invoice's next draft names no amount and is not yet kept.
       yield* insert({
         id: "INV-17",
         list: "invoices",
@@ -598,7 +598,7 @@ describe("KinPulse", () => {
         dateAt: B + 15 * DAY,
       });
       const [retainer] = keyed((yield* read(B + 10 * DAY)).facts, "retainer_due", "INV-17");
-      assert.match(retainer!.consequence, /; it is still a draft that waits on Keep\.$/);
+      assert.match(retainer!.consequence, /; it is still a draft, suggested and not yet kept\.$/);
       assert.notInclude(retainer!.consequence, "12,345");
 
       // V27: our own task under a client is a late task, not something we owe the client.
@@ -2929,7 +2929,7 @@ describe("KinPulse", () => {
       assert.match(hers, /^Your meeting (with .+ )?was /);
       assert.match(
         keyed((yield* read(at)).facts, "meeting_passed", "W-14")[0]!.consequence,
-        /^Meeting with Meera was /,
+        /^Meeting with Meera was .+ Ask how it went, then add the outcome/,
       );
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-W-14'`;
       const outside = (yield* read(at, { _tag: "people", people: [KinPersonId.make("other")] }))
@@ -2969,7 +2969,10 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = ${mate}`;
       const removed = keyed((yield* read(at)).facts, "holder_removed", "W-8")[0];
       assert.deepStrictEqual(removed?.actor, { _tag: "owner" });
-      assert.match(removed?.consequence ?? "", /^Held by .+, whose access was removed\./);
+      assert.match(
+        removed?.consequence ?? "",
+        /^Held by (.+), whose access was removed\. Give it to someone else, or give \1 access again in Settings → Team\.$/,
+      );
       assert.notInclude(
         (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
         "holder_removed",
@@ -3270,12 +3273,12 @@ describe("KinPulse", () => {
         yield* credit("BNK-3", 95_000, 9, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
         assert.strictEqual(
           (yield* factOf("BNK-2"))!.consequence,
-          "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: same amount from Harbourline Logistics. BNK-3 (₹95,000, 10 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+          "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: same amount from Harbourline Logistics. BNK-3 (₹95,000, 10 Nov) could also be this invoice's payment. It isn't recorded as paid until the owner confirms.",
         );
         const third = yield* factOf("BNK-3");
         assert.strictEqual(
           third!.consequence,
-          "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. BNK-2 (₹95,000, 9 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+          "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. BNK-2 (₹95,000, 9 Nov) could also be this invoice's payment. It isn't recorded as paid until the owner confirms.",
         );
 
         // The owner says it isn't: told no more, and no wake, whatever invoices come later.

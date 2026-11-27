@@ -177,7 +177,7 @@ export const overpaymentConsequence = (input: {
   const others = input.others.map((one) => `${one.key} (${amount(one.owed)})`);
   return fitted(
     (shown) =>
-      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
+      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Once confirmed, it pays this invoice in full and keeps ${amount(received - owed)} as ${client}'s credit.${
         others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
       } It isn't recorded until it is confirmed on a card.`,
     Math.min(4, others.length),
@@ -341,7 +341,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
             }${
               alongside.length === 0
                 ? ""
-                : ` ${listed(alongside, Math.min(shown, alongside.length))} ${alongside.length === 1 ? "fits" : "fit"} this invoice as well.`
+                : ` ${listed(alongside, Math.min(shown, alongside.length))} ${alongside.length === 1 ? "could also be" : "could each also be"} this invoice's payment.`
             } It isn't recorded as paid until the owner confirms.`,
           Math.max(others.length, alongside.length),
         ),

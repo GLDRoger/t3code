@@ -7,16 +7,16 @@
   },
   "kinSharedInstructionsHash": "02bd16739ecbb5c887a999efe843d28f36bd8f78c7d545940b63aefa7db0989c",
   "kinLeadToolListJsonBytes": {
-    "engineering": 139300,
-    "engineeringBesideFinanceAndSales": 125491,
-    "finance": 118478,
-    "shared": 73725,
-    "social": 121207,
-    "socialBesideFinanceAndSales": 107398,
-    "support": 118478
+    "engineering": 139576,
+    "engineeringBesideFinanceAndSales": 125767,
+    "finance": 118754,
+    "shared": 74001,
+    "social": 121483,
+    "socialBesideFinanceAndSales": 107674,
+    "support": 118754
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
-  "kinLeadAlwaysLoadedToolBytes": 30332,
+  "kinLeadAlwaysLoadedToolBytes": 30542,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -95,7 +95,7 @@
       "schema": 422
     },
     "kin_ask": {
-      "desc": 2350,
+      "desc": 2448,
       "schema": 769
     },
     "kin_ask_close": {
@@ -107,7 +107,7 @@
       "schema": 825
     },
     "kin_cancel": {
-      "desc": 231,
+      "desc": 297,
       "schema": 115
     },
     "kin_chart": {
@@ -143,7 +143,7 @@
       "schema": 88
     },
     "kin_defer": {
-      "desc": 544,
+      "desc": 640,
       "schema": 877
     },
     "kin_document": {
@@ -327,7 +327,7 @@
       "schema": 208
     },
     "record_create": {
-      "desc": 2829,
+      "desc": 2845,
       "schema": 4434
     },
     "record_get": {
