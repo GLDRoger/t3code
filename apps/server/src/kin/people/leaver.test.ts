@@ -854,6 +854,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_bill_requests: "person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
+  // Who pinned a card, shown like a message's author; any writable member unpins, readers' access decides.
+  kin_chat_pins: "pinned_by_person_id",
   kin_chats: "lead_agent_id",
   kin_client_touches: "logged_by_id person_id",
   kin_company_profile: "updated_by_id",
@@ -880,6 +882,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_leads: "agent_id created_by_person_id",
   kin_mail_rules: "agent_id said_by",
   kin_list_proposals: "agent_id",
+  // A person's own last-looked marks, read only for that person; kept like kin_read_state for a rejoin.
+  kin_looks: "person_id",
   kin_memory_shared_writes: "person_id",
   kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",
   kin_money_budgets: "set_by_id",

@@ -35,7 +35,6 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
 import * as ServerConfig from "../../config.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -56,6 +55,8 @@ import {
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Work from "./ownerWork.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Money's live stream (`moneyStream.ts`): the parts each owner-level screen holds, folded from its
 // stream with the client's own `kinMoneyApply`, equal a fresh read of each after every step of a
@@ -100,20 +101,21 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
+const sqlite = makeMigratedSqliteLayer();
 const testLayer = KinImport.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
   Layer.provideMerge(RefreshHub.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-money-stream-" })),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  withFixtureClock(NOW),
 );
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* TestClock.setTime(NOW);
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Studio', ${created})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)

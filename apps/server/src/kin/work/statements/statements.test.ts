@@ -72,6 +72,8 @@ import * as Region from "../region.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
+import { makeMigratedSqliteLayer } from "../../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../../fixtureClock.testkit.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
 // The ids Kin's identity bootstraps, so the server's own layer below knows this owner too.
@@ -118,13 +120,14 @@ const logged: Array<string> = [];
 const logger = Logger.make(({ message, cause }) => {
   logged.push(JSON.stringify(message), String(cause));
 });
+const sqlite = makeMigratedSqliteLayer();
 const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFloor.layer).pipe(
   Layer.provideMerge(KinChatRepository.layer),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-statements-" })),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(
     Layer.succeed(
@@ -134,6 +137,7 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFl
   ),
   Layer.provideMerge(Logger.layer([logger])),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  withFixtureClock(NOW),
 );
 
 const fixture = (name: string) =>
@@ -208,7 +212,6 @@ const turn = (
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords.KinRecords;
-  yield* TestClock.setTime(NOW);
   yield* sql`INSERT OR IGNORE INTO kin_orgs VALUES (${orgId}, 'Lakeview Studio', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)

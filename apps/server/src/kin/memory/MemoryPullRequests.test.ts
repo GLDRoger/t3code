@@ -11,7 +11,6 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { ghApiOutput, ghApiStderr } from "../github/fakeGitHub.ts";
 import { KinGitHubApi, parseGhApi } from "../github/GitHubWatch.ts";
@@ -24,6 +23,8 @@ import * as Lander from "./MemoryLander.ts";
 import * as PullRequests from "./MemoryPullRequests.ts";
 import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
@@ -61,6 +62,7 @@ it.each([
   expect(githubRepoOf(url)).toBe(slug);
 });
 
+const sqlite = makeMigratedSqliteLayer();
 const scenarios = [
   "merged",
   "rerun",
@@ -132,7 +134,6 @@ const codeOwnersOf = (codeowners: string, path: string) => {
 // `it.effect`: real git, but GitHub's silences only end when the test clock moves.
 it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(Date.UTC(2026, 10, 9));
     const fs = yield* FileSystem.FileSystem;
     const vcs = yield* Vcs.VcsProcess;
     const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
@@ -1406,8 +1407,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       Layer.mergeAll(
         gitLayer,
         NodeServices.layer,
-        Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
-      ),
+        Persistence.layer.pipe(Layer.provideMerge(sqlite)),
+      ).pipe(withFixtureClock(Date.UTC(2026, 10, 9))),
     ),
     Effect.scoped,
   ),

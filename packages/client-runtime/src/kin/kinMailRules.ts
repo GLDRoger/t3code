@@ -575,7 +575,8 @@ export function kinMailRuleHistoryRows(
         tone: "attention",
       };
     return {
-      key: entry.arrivalId,
+      // Run now runs a mail again, so one mail can have several rows.
+      key: `${entry.arrivalId}:${entry.eventId ?? entry.state}`,
       title: entry.fromAddress ?? KIN_MAIL_RULES.unknownSender,
       detail: `${when(entry.receivedAt ?? entry.noticedAt, words)} · ${happened(entry)}`,
       tone: entry.state.startsWith("held_") ? "attention" : "ok",
@@ -680,7 +681,7 @@ export async function kinMailRuleResumeSend(input: {
 
 export type KinMailRuleCardAction = (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
 
-export const KIN_MAIL_RULE_CARD = {
+const KIN_MAIL_RULE_CARD = {
   eyebrow: "Mail rule",
   turnOn: "Turn on",
   notNow: "Not now",

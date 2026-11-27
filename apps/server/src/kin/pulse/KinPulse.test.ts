@@ -20,7 +20,6 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -63,6 +62,8 @@ import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } fr
 import { ensureBankList } from "../work/statements/bankList.ts";
 import { UNREAD_ALERT_MARKER } from "../work/statements/bankAlerts.ts";
 import { formatMoneyPlain } from "../work/money.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -76,10 +77,11 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const stamp = "2026-10-01T00:00:00.000Z";
 
+const sqlite = makeMigratedSqliteLayer();
 const layer = KinShell.layer.pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
 );
 
 interface Entry {
@@ -413,7 +415,7 @@ const SENSES: ReadonlyArray<readonly [string, string, number, string?, string?]>
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
 
 /** Chat services too, for the notices Kin posts itself. */
-const chatLayer = Chat.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const chatLayer = Chat.layer.pipe(Layer.provideMerge(sqlite), withFixtureClock(B));
 
 /** Meera may message the Chief of staff. */
 const letMate = Effect.gen(function* () {

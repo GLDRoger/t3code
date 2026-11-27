@@ -49,6 +49,8 @@ import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { addLead, fixture, item, orgId, otherOrg, seed } from "./routines.testkit.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
@@ -67,6 +69,7 @@ const makeDeferral = (id: string, overrides: Partial<MemoryItemHead> = {}) =>
 const deferral = makeDeferral("def-1");
 const widgetFor = (itemId: string) => KinWidgetId.make(`deferral:${orgId}:${itemId}`);
 const widgetId = widgetFor("def-1");
+const startsAt = Date.parse("2026-11-09T09:00:00.000Z");
 const dueAt = Date.parse("2026-11-13T03:30:00.000Z");
 const headsUpAt = dueAt - 30 * 60_000;
 
@@ -82,6 +85,7 @@ const attachItems = Layer.effectDiscard(
   }),
 );
 
+const sqlite = makeMigratedSqliteLayer();
 const layerFor = <E = never>(
   items: ReadonlyArray<MemoryItemHead>,
   options: Parameters<typeof fixture<E>>[1] = {},
@@ -90,7 +94,8 @@ const layerFor = <E = never>(
     Layer.provideMerge(TriggerService.layer),
     Layer.provideMerge(LeadDelivery.layer),
     Layer.provideMerge(Budget.layer.pipe(Layer.provide(MemoryCache.layer))),
-    Layer.provideMerge(fixture(items, options)),
+    Layer.provideMerge(fixture(items, { ...options, sqlite })),
+    withFixtureClock(startsAt),
   );
 
 const fakeGithub = (states: Map<string, Omit<GithubLinkState, "link">>) => ({
@@ -120,7 +125,6 @@ const setup = Effect.fn("test.deferralFlowSetup")(function* (level = "L2") {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"21:00","to":"08:00"}')`;
   yield* sql`UPDATE kin_leads SET level = ${level} WHERE org_id = ${orgId}`;
-  yield* TestClock.setTime(Date.parse("2026-11-09T09:00:00.000Z"));
 });
 
 const tick = Effect.fn("test.deferralTick")(function* (at: number) {
