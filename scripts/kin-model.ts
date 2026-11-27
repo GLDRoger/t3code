@@ -7,14 +7,17 @@
 //   node scripts/kin-model.ts <name> --broken <variant>   check a deliberately broken variant
 //   node scripts/kin-model.ts <name> --variants           every broken variant must break its rule
 //   node scripts/kin-model.ts <name> --if-java            skip, and pass, when no Java is installed
+//   node scripts/kin-model.ts <name> --keep               keep and print each TLC scratch folder
 //
 // TLC is the pinned tla2tools.jar, fetched once into ~/.cache/kin-model (or $KIN_MODEL_CACHE) and
 // checked against its sha256. It needs Java 11 or newer on PATH, or mise to run Temurin 21.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeStreamConsumers from "node:stream/consumers";
 import * as NodeURL from "node:url";
 
 const TLC_VERSION = "1.7.4";
@@ -483,16 +486,35 @@ const runTlc = async (
   model: Model,
   config: string,
   dumpDot: boolean,
+  keepScratch: boolean,
 ): Promise<{ verdict: Verdict; dot: string | null; ms: number }> => {
   const jar = await tlcJar();
+  const [file, ...prefix] = java();
+  if (file === undefined) throw new Error("No Java command.");
   const work = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), `kin-model-${model.name}-`));
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- The standalone TLC runner owns the native process group.
+  const useProcessGroup = NodeOS.platform() !== "win32";
+  let child: NodeChildProcess.ChildProcess | undefined;
+  let interrupted: "SIGINT" | "SIGTERM" | "SIGHUP" | undefined;
+  const stop = (signal: NonNullable<typeof interrupted>) => {
+    interrupted ??= signal;
+    if (child?.pid === undefined) return;
+    // Stop TLC and any launcher around it before removing the files they can still write.
+    try {
+      if (useProcessGroup) process.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch (error: unknown) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
+  };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  for (const signal of signals) process.on(signal, stop);
   try {
+    if (keepScratch) console.log(`TLC scratch: ${work}`);
     NodeFS.writeFileSync(NodePath.join(work, `${model.module}.tla`), model.spec);
     NodeFS.writeFileSync(NodePath.join(work, `${model.module}.cfg`), config);
-    const [file, ...prefix] = java();
-    if (file === undefined) throw new Error("No Java command.");
     const started = performance.now();
-    const run = NodeChildProcess.spawnSync(
+    const run = NodeChildProcess.spawn(
       file,
       [
         ...prefix,
@@ -515,10 +537,16 @@ const runTlc = async (
         `${model.module}.cfg`,
         `${model.module}.tla`,
       ],
-      { cwd: work, encoding: "utf8", maxBuffer: 1 << 28 },
+      { cwd: work, detached: useProcessGroup, stdio: ["ignore", "pipe", "pipe"] },
     );
+    child = run;
+    const [, stdout, stderr] = await Promise.all([
+      NodeEvents.once(run, "close"),
+      NodeStreamConsumers.text(run.stdout),
+      NodeStreamConsumers.text(run.stderr),
+    ]);
     const ms = Math.round(performance.now() - started);
-    const output = `${run.stdout}\n${run.stderr}`;
+    const output = `${stdout}\n${stderr}`;
     const dotFile = NodePath.join(work, "graph.dot");
     return {
       verdict: readVerdict(output),
@@ -526,7 +554,9 @@ const runTlc = async (
       ms,
     };
   } finally {
-    NodeFS.rmSync(work, { recursive: true, force: true });
+    for (const signal of signals) process.off(signal, stop);
+    if (!keepScratch) NodeFS.rmSync(work, { recursive: true, force: true });
+    if (interrupted !== undefined) process.exit(128 + NodeOS.constants.signals[interrupted]);
   }
 };
 
@@ -540,12 +570,21 @@ interface RuleResult {
  * Each invariant in one run (TLC names the one that breaks; a broken one is dropped and the rest
  * rerun), then each property alone, since TLC does not say which property a lasso breaks.
  */
-const checkRules = async (model: Model, broken: string): Promise<RuleResult[]> => {
+const checkRules = async (
+  model: Model,
+  broken: string,
+  keepScratch: boolean,
+): Promise<RuleResult[]> => {
   const { invariants, properties } = configRules(model.config);
   const results: RuleResult[] = [];
   let left = [...invariants];
   while (left.length > 0) {
-    const { verdict, ms } = await runTlc(model, configWith(model.config, left, broken), false);
+    const { verdict, ms } = await runTlc(
+      model,
+      configWith(model.config, left, broken),
+      false,
+      keepScratch,
+    );
     if (verdict._tag === "invariant" && verdict.rule !== null && left.includes(verdict.rule)) {
       results.push({ rule: verdict.rule, verdict, ms });
       left = left.filter((rule) => rule !== verdict.rule);
@@ -555,7 +594,12 @@ const checkRules = async (model: Model, broken: string): Promise<RuleResult[]> =
     break;
   }
   for (const rule of properties) {
-    const { verdict, ms } = await runTlc(model, configWith(model.config, [rule], broken), false);
+    const { verdict, ms } = await runTlc(
+      model,
+      configWith(model.config, [rule], broken),
+      false,
+      keepScratch,
+    );
     results.push({ rule, verdict, ms });
   }
   return results;
@@ -673,7 +717,7 @@ const main = async (args: ReadonlyArray<string>) => {
   const name = args[0];
   if (name === undefined || name.startsWith("-")) {
     console.error(
-      "Usage: node scripts/kin-model.ts <name> [--chart <file.md>] [--broken <variant>] [--variants]",
+      "Usage: node scripts/kin-model.ts <name> [--chart <file.md>] [--broken <variant>] [--variants] [--keep]",
     );
     return 2;
   }
@@ -687,6 +731,7 @@ const main = async (args: ReadonlyArray<string>) => {
   }
   const model = await loadModel(name);
   const { view } = model;
+  const keepScratch = args.includes("--keep");
   const started = performance.now();
 
   if (args.includes("--variants")) {
@@ -696,6 +741,7 @@ const main = async (args: ReadonlyArray<string>) => {
         model,
         configWith(model.config, [variant.breaks], variant.name),
         false,
+        keepScratch,
       );
       const caught: RuleResult = { rule: variant.breaks, verdict, ms };
       const ok =
@@ -719,7 +765,7 @@ const main = async (args: ReadonlyArray<string>) => {
       `No variant ${broken}; variants: ${view.variants.map((one) => one.name).join(", ")}.`,
     );
   console.log(`${view.title}${broken === "none" ? "" : `  [broken: ${broken}]`}\n`);
-  const results = await checkRules(model, broken);
+  const results = await checkRules(model, broken, keepScratch);
   for (const result of results) for (const line of say(view, result)) console.log(line);
   const failed = results.filter((one) => one.verdict._tag !== "pass");
 
@@ -730,7 +776,7 @@ const main = async (args: ReadonlyArray<string>) => {
         config.replace(new RegExp(`^(\\s*${name}\\s*=\\s*).*$`, "m"), `$1${value}`),
       configWith(model.config, [], broken),
     );
-    const { verdict, dot } = await runTlc(model, drawn, true);
+    const { verdict, dot } = await runTlc(model, drawn, true, keepScratch);
     if (dot === null) throw new Error(`TLC drew no state graph: ${JSON.stringify(verdict)}`);
     const breaking = failed.flatMap((one) =>
       "trace" in one.verdict ? [{ rule: one.rule, trace: one.verdict.trace }] : [],
