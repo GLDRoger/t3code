@@ -298,4 +298,70 @@ describe("calendar events beside Work dates", () => {
       "Your Google mailbox was connected without calendar access. Connect it again under Your mailboxes and allow Calendar.",
     ]);
   });
+
+  it.each([
+    {
+      label: "web, company signed out",
+      calendarSources: [{ ...outlook!, status: "signed_out" as const }],
+      connectionsInSettings: undefined,
+      mailboxes: false,
+      text: "Sign in to office@tidewater.example again under Settings → Connections.",
+    },
+    {
+      label: "phone, company signed out",
+      calendarSources: [{ ...outlook!, status: "signed_out" as const }],
+      connectionsInSettings: false,
+      mailboxes: false,
+      text: "Sign in to office@tidewater.example again in Kin on your computer, under Settings → Connections.",
+    },
+    {
+      label: "web, company without calendar access",
+      calendarSources: [{ ...outlook!, status: "no_calendar_permission" as const }],
+      connectionsInSettings: true,
+      mailboxes: false,
+      text: "office@tidewater.example was connected without calendar access. Connect it again under Settings → Connections and allow Calendar.",
+    },
+    {
+      label: "phone, company without calendar access",
+      calendarSources: [{ ...outlook!, status: "no_calendar_permission" as const }],
+      connectionsInSettings: false,
+      mailboxes: false,
+      text: "office@tidewater.example was connected without calendar access. Connect it again in Kin on your computer, under Settings → Connections and allow Calendar.",
+    },
+    {
+      label: "phone, own signed out stays under Your mailboxes",
+      calendarSources: [{ ...google!, status: "signed_out" as const }],
+      connectionsInSettings: false,
+      mailboxes: true,
+      text: "Sign in to rhea@tidewater.example again under Your mailboxes.",
+    },
+    {
+      label: "web, no calendar connected",
+      calendarSources: [],
+      connectionsInSettings: undefined,
+      mailboxes: true,
+      text: "Connect your calendar under Settings → Connections → Your mailboxes to see its events here.",
+    },
+    {
+      label: "phone, no calendar connected",
+      calendarSources: [],
+      connectionsInSettings: false,
+      mailboxes: true,
+      text: "Connect your calendar under Settings → Your mailboxes to see its events here.",
+    },
+  ])(
+    "names the real Settings path for each surface ($label)",
+    ({ calendarSources, connectionsInSettings, mailboxes, text }) => {
+      expect(
+        kinCalendarNotice(
+          {
+            _tag: "ready",
+            calendar: { sources: calendarSources, events: [], more: false },
+            refreshing: false,
+          },
+          connectionsInSettings === undefined ? undefined : { connectionsInSettings },
+        ),
+      ).toMatchObject({ mailboxes, text });
+    },
+  );
 });
