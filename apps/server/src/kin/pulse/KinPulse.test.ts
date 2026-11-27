@@ -3102,7 +3102,7 @@ describe("KinPulse", () => {
           ),
         );
       const advice =
-        "Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
+        "Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
       assert.isEmpty(yield* facts());
       yield* insertAlert("old", at - 15 * DAY);
       yield* insertAlert("future", at + DAY);
@@ -3421,7 +3421,7 @@ describe("KinPulse", () => {
       yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
         VALUES (${orgId}, 'invented-alert', 'invented-connection', 'invented-thread', ${B}, ${B}, 'unparsed')`;
       const title = "1 bank alert could not be read";
-      const expected = `${title}. Sent Sun 1 Nov. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
+      const expected = `${title}. Sent Sun 1 Nov. Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
       const input = { orgId, now: B, viewer: KIN_OWNER_LEVEL };
       const offered = { ...input, offeredFacts: new Set(["bank_alerts_unreadable"]) };
       assert.isEmpty(yield* morningMoneyLines(input));

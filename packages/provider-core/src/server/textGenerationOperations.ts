@@ -59,7 +59,9 @@ export const decodeJsonReply = <S extends Schema.Top>(
   text: string,
 ) => {
   const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(request.outputSchema));
-  return decodeOutput(extractJsonObject(text)).pipe(
+  return decodeOutput(
+    request.operation === "generateStructuredText" ? text : extractJsonObject(text),
+  ).pipe(
     Effect.mapError(
       (cause) =>
         new TextGenerationError({
@@ -84,7 +86,11 @@ export const generatedThreadTitle = (raw: string) => {
     : Effect.succeed(title);
 };
 
-export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+export function fromRunner(
+  name: string,
+  run: Runner,
+  options?: { readonly toolFree: boolean },
+): ProviderTextGeneration {
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -195,7 +201,13 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateStructuredText: NonNullable<ProviderTextGeneration["generateStructuredText"]> =
+    Effect.fn(`${name}.generateStructuredText`)((input) =>
+      run({ operation: "generateStructuredText", ...input }),
+    );
+
   return {
+    ...(options?.toolFree ? { generateStructuredText } : {}),
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

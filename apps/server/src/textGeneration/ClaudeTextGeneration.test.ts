@@ -116,6 +116,30 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
+  it.effect("reads JSON without tools, ambient settings, or a saved session", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ result: '{"kind":"other"}' }),
+        argsMustContain: "--safe-mode --setting-sources  --disallowedTools mcp__*",
+        argsMustNotContain: "--json-schema",
+        stdinMustContain: "Synthetic input only.",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const result = yield* textGeneration.generateStructuredText!({
+            cwd: process.cwd(),
+            prompt: "Synthetic input only.",
+            outputSchema: Schema.Struct({ kind: Schema.Literal("other") }),
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+            ),
+          });
+          expect(result).toEqual({ kind: "other" });
+        }),
+    ),
+  );
+
   it.effect("loads only user settings when generating review guides", () =>
     withFakeClaudeEnv(
       {

@@ -79,7 +79,7 @@ export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(f
     scope: {},
     since: iso(alerts.first),
     measure: { value: count, unit: "count", threshold: 1, from: { _tag: "default" } },
-    consequence: `Sent ${sent}. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`,
+    consequence: `Sent ${sent}. Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`,
     actor: agentOrOwner(finance),
     sensitive: true,
     wake: "brief",
