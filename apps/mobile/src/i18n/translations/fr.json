@@ -5607,5 +5607,14 @@
   "856812e7e1fc445e": "Appels d’outils dans la discussion",
   "8d545d54c0a9e950": "Masque les commandes, modifications et recherches lancées par les agents. Masquer les réussis garde les échecs. Zen n’affiche que les réponses finales. Les approbations, questions et erreurs s’affichent toujours.",
   "99d51127f573296b": "Autre compte",
-  "8ec2c57414669b79": "Connectez un second espace de travail ou utilisateur {tracker}."
+  "8ec2c57414669b79": "Connectez un second espace de travail ou utilisateur {tracker}.",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "bfbcb7fa64c13d58": "Add an environment to load projects and start coding sessions."
 }

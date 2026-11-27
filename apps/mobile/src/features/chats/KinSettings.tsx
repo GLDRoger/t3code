@@ -25,6 +25,7 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
+import { KinChatsSettleRows } from "./KinChatsSettleRows";
 import { KinQuietHoursRows } from "./KinQuietHoursRows";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
@@ -212,12 +213,20 @@ export function KinSettings(props: {
           orgId === null ||
           profiles === null ||
           myPersonId === null ? null : (
-            <KinQuietHoursRows
-              environmentId={host.environmentId}
-              orgId={orgId}
-              profiles={profiles}
-              personId={myPersonId}
-            />
+            <>
+              <KinQuietHoursRows
+                environmentId={host.environmentId}
+                orgId={orgId}
+                profiles={profiles}
+                personId={myPersonId}
+              />
+              <KinChatsSettleRows
+                environmentId={host.environmentId}
+                orgId={orgId}
+                profiles={profiles}
+                personId={myPersonId}
+              />
+            </>
           )}
           {host._tag !== "host" || orgId === null ? null : (
             <KinBriefsSection

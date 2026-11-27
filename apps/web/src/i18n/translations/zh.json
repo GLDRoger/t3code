@@ -11837,7 +11837,6 @@
   "f2bf529f85e05494": "共享与访问",
   "7cf24feddad00a5e": "偏好设置",
   "58058320796d28f6": "代码",
-  "8478d0e5c2bd1aef": "Kin",
   "d8cd577c915539bd": "{label} 账户和 token",
   "a5ea998202be1fbc": "{label} 凭据",
   "8f636f473e42e657": "任何 本地 文件 未提交 更改 已编辑 已跟踪 文件 忽略 env 构建 输出 清理",
@@ -12817,5 +12816,16 @@
   "99d51127f573296b": "其他账号",
   "8ec2c57414669b79": "连接第二个 {tracker} 工作区或用户。",
   "99963c0142e17f00": "用于新的 {tracker} 账号。",
-  "6d8e4ebc889bace9": "添加账号"
+  "6d8e4ebc889bace9": "添加账号",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "0e8f3321924ca223": "Deals",
+  "3df9c49976cb55bf": "Sections",
+  "67508b5a9a7db096": "Profile"
 }
