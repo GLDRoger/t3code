@@ -1078,6 +1078,14 @@ it.effect.each([
   ],
   [
     "company_details",
+    "unverified",
+    material("forged-look-alike", {
+      fromAddress: "alerts@harborbank-notices.example",
+      auth: "spf=pass (dmarc=pass header.from=harborbank-notices.example); dmarc=fail header.from=harborbank-notices.example",
+    }),
+  ],
+  [
+    "company_details",
     "sender",
     material("no-digits", { body: "Wrong account **5530, reference 99848215." }),
   ],

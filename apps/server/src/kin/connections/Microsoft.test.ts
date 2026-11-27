@@ -41,7 +41,11 @@ const messages = [
     internetMessageId: "<m1@client.example>",
     internetMessageHeaders: [
       { name: "References", value: "<m0@client.example>" },
-      { name: "Authentication-Results", value: "spf=pass; dkim=pass; dmarc=pass" },
+      {
+        name: "Authentication-Results",
+        value:
+          "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
+      },
     ],
     hasAttachments: false,
     body: {
