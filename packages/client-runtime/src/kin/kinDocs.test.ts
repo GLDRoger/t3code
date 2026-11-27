@@ -197,6 +197,35 @@ describe("kinSearchHit", () => {
       kinSearchHit({ ...hitInput, key: "CT-2", kind: "contacts", client: "C-1" }).clientKey,
     ).toBe("C-1");
   });
+
+  it("shows a record's identifier and state, and no identifier for what memory keeps", () => {
+    const base = {
+      recordId: KinRecordId.make("w12"),
+      title: "Fix the tins",
+      snippet: "Fix the tins",
+      sensitive: false,
+      updatedAt: version().at,
+    };
+    const rows = [
+      { key: "W-12", kind: "work", closed: false },
+      { key: "W-12", kind: "work", closed: true },
+      { key: "D-3", kind: "docs", closed: true },
+      { key: "BT-4", kind: "work", closed: true, bankTransaction: true },
+      { key: "mem-7", kind: "memory", closed: false },
+    ] as const;
+    expect(
+      rows.map((row) => {
+        const hit = kinSearchHit({ ...base, ...row });
+        return [hit.identifier, hit.closed, hit.accessibilityLabel];
+      }),
+    ).toEqual([
+      ["W-12", null, "Task: Fix the tins. W-12"],
+      ["W-12", "Closed", "Task: Fix the tins. W-12. Closed"],
+      ["D-3", "Deleted", "Doc: Fix the tins. D-3. Deleted"],
+      ["BT-4", "Closed", "Bank transaction: Fix the tins. BT-4. Closed"],
+      [null, null, "Remembered: Fix the tins"],
+    ]);
+  });
 });
 
 describe("kinDocsMine", () => {

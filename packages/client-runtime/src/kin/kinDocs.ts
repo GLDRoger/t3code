@@ -265,13 +265,16 @@ export const kinSearchHint = (scope: KinViewerScope, shell?: KinShell | null) =>
   return scope.all
     ? {
         title: KIN_SEARCH.hint.title,
-        detail: `${listed.join(", ")}, and the decisions your agents remember, by any words in them.`,
+        detail: `${listed.join(", ")}, and the decisions your agents remember, ${SEARCH_BY}`,
       }
     : {
         title: KIN_SEARCH.hint.title,
-        detail: `${andList(listed)} you can see, by any words in them.`,
+        detail: `${andList(listed)} you can see, ${SEARCH_BY}`,
       };
 };
+
+// A task's prefix, so a teammate without Money is not shown one that finds nothing.
+const SEARCH_BY = "by any words in them or an identifier like W-12.";
 
 const upperFirst = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
@@ -1408,6 +1411,8 @@ export interface KinSearchHitView {
   readonly key: string;
   readonly kind: KinSearchKind;
   readonly kindLabel: string;
+  /** The record's identifier as the server sent it ("W-12"); null for what memory keeps. */
+  readonly identifier: string | null;
   readonly title: string;
   readonly snippet: string | null;
   /** The doc section the words are in, to open it there. */
@@ -1443,6 +1448,8 @@ export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSea
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
+  // A memory hit's key is a memory item id, not something a person can type back.
+  const identifier = hit.kind === "memory" ? null : hit.key;
   const kindLabel =
     hit.bankTransaction === true
       ? "Bank transaction"
@@ -1456,6 +1463,7 @@ export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSea
     key: hit.key,
     kind: hit.kind,
     kindLabel,
+    identifier,
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
@@ -1467,6 +1475,7 @@ export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSea
       `${kindLabel}: ${hit.title}`,
       section?.title ?? null,
       snippet === "" ? null : snippet,
+      identifier,
       hit.sensitive && hit.kind !== "memory" ? "Private" : null,
       closed,
     ]
