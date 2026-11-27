@@ -1,7 +1,8 @@
 import type { KinSinceLookedView } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { HistoryIcon } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
+import { observeResize } from "../lib/observeResize";
 import { cn } from "../lib/utils";
 
 const subscribeVisibility = (onChange: () => void) => {
@@ -48,7 +49,47 @@ export function KinSinceLookedLine(props: {
   readonly className?: string;
 }) {
   const { view } = props;
+  const textRef = useRef<HTMLSpanElement | null>(null);
+  const [fit, setFit] = useState<{ readonly forText: string; readonly index: number }>({
+    forText: "",
+    index: 0,
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures rendered variants against two lines so narrow widths drop trailing fragments instead of clamping mid-word
+  useLayoutEffect(() => {
+    const node = textRef.current;
+    if (view === null || node === null || view.variants.length <= 1) return;
+    const measure = () => {
+      if (node.clientWidth === 0) return;
+      const style = getComputedStyle(node);
+      const parsed = Number.parseFloat(style.lineHeight);
+      const lineHeight = Number.isFinite(parsed)
+        ? parsed
+        : (Number.parseFloat(style.fontSize) || 12) * 1.4;
+      const maxHeight = lineHeight * 2 + 1;
+      const current = node.textContent ?? "";
+      let chosen = view.variants.length - 1;
+      for (let i = 0; i < view.variants.length; i += 1) {
+        const candidate = view.variants[i]!;
+        if (node.textContent !== candidate) node.textContent = candidate;
+        if (node.getBoundingClientRect().height <= maxHeight) {
+          chosen = i;
+          break;
+        }
+      }
+      if (node.textContent !== current) node.textContent = current;
+      setFit((prev) =>
+        prev.forText === view.text && prev.index === chosen
+          ? prev
+          : { forText: view.text, index: chosen },
+      );
+    };
+    measure();
+    return observeResize(node, measure);
+  }, [view]);
+
   if (view === null) return null;
+  const shown = fit.forText === view.text ? (view.variants[fit.index] ?? view.text) : view.text;
   return (
     <button
       type="button"
@@ -61,7 +102,9 @@ export function KinSinceLookedLine(props: {
       )}
     >
       <HistoryIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-      <span className="line-clamp-2 min-w-0 flex-1 text-pretty wrap-break-word">{view.text}</span>
+      <span ref={textRef} className="min-w-0 flex-1 text-pretty wrap-break-word">
+        {shown}
+      </span>
     </button>
   );
 }

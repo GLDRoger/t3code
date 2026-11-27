@@ -40,6 +40,8 @@ export interface KinSinceLookedView {
   readonly more: string | null;
   /** The full one-line summary shown in secondary text. */
   readonly text: string;
+  /** Summary variants from fullest to shortest, dropping whole trailing fragments and raising "and N more". */
+  readonly variants: ReadonlyArray<string>;
   /** Where tapping the line navigates or scrolls. */
   readonly opens: KinSinceLookedOpens;
   /** Spoken label naming both the summary and what tapping opens. */
@@ -222,13 +224,26 @@ function buildView(input: {
   const shownCount = shownRuns.reduce((sum, run) => sum + run.count, 0);
   const remaining = Math.max(0, input.total - shownCount);
   const more = input.capped ? "and many more" : remaining > 0 ? `and ${remaining} more` : null;
-  const parts = more === null ? shown : [...shown, more];
-  const text = `${lead}: ${parts.join(" · ")}`;
+  const formatKept = (keep: number) => {
+    const kept = shownRuns.slice(0, keep);
+    const covered = kept.reduce((sum, run) => sum + run.count, 0);
+    const unshown = Math.max(0, input.total - covered);
+    const tail = input.capped ? "and many more" : unshown > 0 ? `and ${unshown} more` : null;
+    const parts =
+      tail === null ? kept.map((run) => run.text) : [...kept.map((run) => run.text), tail];
+    return `${lead}: ${parts.join(" · ")}`;
+  };
+  const variants: Array<string> = [];
+  for (let keep = shownRuns.length; keep >= 1; keep -= 1) {
+    variants.push(formatKept(keep));
+  }
+  const text = variants[0]!;
   return {
     lead,
     lines: shown,
     more,
     text,
+    variants,
     opens: input.opens,
     accessibilityLabel: `${text}. ${OPENS_LABEL[input.opens.kind]}`,
   };

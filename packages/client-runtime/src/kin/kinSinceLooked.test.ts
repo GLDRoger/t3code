@@ -265,6 +265,7 @@ describe("kinEntrySinceLooked", () => {
       lines: ["Meera started on it"],
       more: null,
       text: "1 change since Tuesday: Meera started on it",
+      variants: ["1 change since Tuesday: Meera started on it"],
       opens: { kind: "history" },
       accessibilityLabel: "1 change since Tuesday: Meera started on it. Open history.",
     });
@@ -445,6 +446,121 @@ describe("kinEntrySinceLooked", () => {
     expect(viewCapped?.more).toBe("and many more");
   });
 
+  it("provides shorter variants that drop trailing whole fragments and raise 'and N more' for narrow widths", () => {
+    const four = entry({
+      changes: [
+        change({
+          seq: 4,
+          by: chief,
+          via: "lead",
+          askedBy: rheaId,
+          at: "2026-11-26T14:00:00.000Z",
+          fields: [{ field: "steps", from: "", to: "step" }],
+        }),
+        change({
+          seq: 3,
+          by: meera,
+          at: "2026-11-26T13:00:00.000Z",
+          fields: [{ field: "title", from: "Old", to: "New" }],
+        }),
+        change({
+          seq: 2,
+          by: zoya,
+          at: "2026-11-26T12:00:00.000Z",
+          fields: [{ field: "notes", from: "", to: "a" }],
+        }),
+        change({
+          seq: 1,
+          by: meera,
+          at: "2026-11-26T11:00:00.000Z",
+          fields: [{ field: "state", from: "open", to: "doing" }],
+        }),
+      ],
+    });
+    const view4 = kinEntrySinceLooked(four, "2026-11-24T12:00:00.000Z", names, now);
+    expect(view4?.variants).toEqual([
+      "4 changes since Tuesday: Chief of staff, for you, changed its steps · Meera renamed it · and 2 more",
+      "4 changes since Tuesday: Chief of staff, for you, changed its steps · and 3 more",
+    ]);
+
+    // Dropping a collapsed fragment raises N by its collapsed count.
+    const collapsedTail = entry({
+      changes: [
+        change({
+          seq: 5,
+          by: zoya,
+          at: "2026-11-26T15:00:00.000Z",
+          fields: [{ field: "title", from: "A", to: "B" }],
+        }),
+        change({
+          seq: 4,
+          by: meera,
+          at: "2026-11-26T14:00:00.000Z",
+          fields: [{ field: "notes", from: "a", to: "b" }],
+        }),
+        change({
+          seq: 3,
+          by: meera,
+          at: "2026-11-26T13:00:00.000Z",
+          fields: [{ field: "notes", from: "b", to: "c" }],
+        }),
+        change({
+          seq: 2,
+          by: chief,
+          at: "2026-11-26T12:00:00.000Z",
+          kind: "linked",
+          fields: [{ field: "url", from: null, to: "https://example.com" }],
+        }),
+        change({
+          seq: 1,
+          by: meera,
+          at: "2026-11-26T11:00:00.000Z",
+          fields: [{ field: "state", from: "open", to: "doing" }],
+        }),
+      ],
+    });
+    const viewCollapsed = kinEntrySinceLooked(
+      collapsedTail,
+      "2026-11-24T12:00:00.000Z",
+      names,
+      now,
+    );
+    expect(viewCollapsed?.variants).toEqual([
+      "5 changes since Tuesday: Zoya renamed it · Meera changed the brief (2) · and 2 more",
+      "5 changes since Tuesday: Zoya renamed it · and 4 more",
+    ]);
+
+    // A 3-change summary with no initial tail gains "and 1 more" / "and 2 more" as fragments drop.
+    const three = entry({
+      changes: [
+        change({
+          seq: 3,
+          by: zoya,
+          at: "2026-11-26T13:00:00.000Z",
+          fields: [{ field: "title", from: "A", to: "B" }],
+        }),
+        change({
+          seq: 2,
+          by: meera,
+          at: "2026-11-26T12:00:00.000Z",
+          fields: [{ field: "notes", from: "", to: "a" }],
+        }),
+        change({
+          seq: 1,
+          by: meera,
+          at: "2026-11-26T11:00:00.000Z",
+          fields: [{ field: "state", from: "open", to: "doing" }],
+        }),
+      ],
+    });
+    const view3 = kinEntrySinceLooked(three, "2026-11-24T12:00:00.000Z", names, now);
+    expect(view3?.variants).toEqual([
+      "3 changes since Tuesday: Zoya renamed it · Meera changed the brief · Meera started on it",
+      "3 changes since Tuesday: Zoya renamed it · Meera changed the brief · and 1 more",
+      "3 changes since Tuesday: Zoya renamed it · and 2 more",
+    ]);
+  });
+
   it("says 'and many more' when changes hit the 50-change cap newer than the mark", () => {
     const changes = Array.from({ length: KIN_RECORD_CHANGES_CAP }, (_, i) =>
       change({
@@ -559,6 +675,10 @@ describe("kinDocSinceLooked", () => {
       lines: ["Chief of staff, for you: Tightened delivery SLA", "Meera: Added customs checklist"],
       more: "and 2 more",
       text: "4 changes since Tuesday: Chief of staff, for you: Tightened delivery SLA · Meera: Added customs checklist · and 2 more",
+      variants: [
+        "4 changes since Tuesday: Chief of staff, for you: Tightened delivery SLA · Meera: Added customs checklist · and 2 more",
+        "4 changes since Tuesday: Chief of staff, for you: Tightened delivery SLA · and 3 more",
+      ],
       opens: { kind: "diff", from: 2, to: 6 },
       accessibilityLabel:
         "4 changes since Tuesday: Chief of staff, for you: Tightened delivery SLA · Meera: Added customs checklist · and 2 more. Compare with the version you last saw.",
