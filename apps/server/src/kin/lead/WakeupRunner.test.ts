@@ -548,7 +548,15 @@ describe("WakeupRunner", () => {
             },
             Layer.mergeAll(
               ChatHub.layer,
-              KinLeadPrompt.layer,
+              KinLeadPrompt.layer.pipe(
+                Layer.provide(
+                  Layer.mock(Memory.Memory)({
+                    query: () => Effect.succeed([]),
+                    readPromptSnapshot: () =>
+                      Effect.succeed({ rules: "", index: "", items: [], bodies: new Map() }),
+                  }),
+                ),
+              ),
               Layer.mock(KinReplyBridge)({
                 lane: () =>
                   Effect.succeedSome({
