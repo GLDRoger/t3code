@@ -1216,7 +1216,11 @@ export const KinChatPin = Schema.Union([
     dueOn: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[1-9]\d{3}-\d{2}-\d{2}$/))),
     behind: Schema.Boolean,
   }),
-  Schema.TaggedStruct("gone", KinChatPinMeta),
+  Schema.TaggedStruct("gone", {
+    pinId: KinChatPinId,
+    pinnedAt: Schema.optionalKey(IsoDateTime),
+    pinnedBy: Schema.optionalKey(Schema.String),
+  }),
   Schema.TaggedStruct("hidden", { pinId: KinChatPinId }),
 ]);
 export type KinChatPin = typeof KinChatPin.Type;

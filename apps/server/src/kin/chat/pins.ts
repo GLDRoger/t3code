@@ -202,8 +202,15 @@ const make = Effect.gen(function* () {
   });
 
   const stored = Effect.fn("KinPins.stored")(function* (input: KinChatPinsInput) {
-    return yield* sql<{ pinId: string; recordId: string; pinnedAt: number; pinnedBy: string }>`
+    return yield* sql<{
+      pinId: string;
+      recordId: string;
+      pinnedAt: number;
+      pinnedBy: string;
+      pinnedByPersonId: string;
+    }>`
       SELECT p.pin_id AS "pinId", p.record_id AS "recordId", p.pinned_at AS "pinnedAt",
+        p.pinned_by_person_id AS "pinnedByPersonId",
         COALESCE(person.display_name, '') AS "pinnedBy"
       FROM kin_chat_pins p LEFT JOIN kin_people person
         ON person.org_id = p.org_id AND person.person_id = p.pinned_by_person_id
@@ -218,8 +225,9 @@ const make = Effect.gen(function* () {
     known?: { readonly row: RecordRow; readonly goal: KinGoal | undefined },
   ) {
     const { orgId, personId } = person;
-    const people = (yield* ownerLevel(orgId, personId)) ? [] : [personId];
-    const viewer = people.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(people);
+    const isOwnerLevel = yield* ownerLevel(orgId, personId);
+    const people = isOwnerLevel ? [] : [personId];
+    const viewer = isOwnerLevel ? KIN_OWNER_LEVEL : viewerOfPeople(people);
     const rows = yield* Effect.forEach(pins, (pin) =>
       known?.row.recordId === pin.recordId ? Effect.succeed(known.row) : byId(orgId, pin.recordId),
     );
@@ -234,7 +242,12 @@ const make = Effect.gen(function* () {
           const pinId = KinChatPinId.make(pin.pinId);
           const meta = { pinId, pinnedAt: iso(pin.pinnedAt), pinnedBy: pin.pinnedBy };
           const row = rows[index];
-          if (row === undefined) return { _tag: "gone", ...meta } as const;
+          if (row === undefined) {
+            // A deleted source cannot prove that another reader used to be able to see it.
+            return isOwnerLevel || pin.pinnedByPersonId === personId
+              ? ({ _tag: "gone", ...meta } as const)
+              : ({ _tag: "gone", pinId } as const);
+          }
           const goal =
             known?.row.recordId === row.recordId ? known.goal : byRecord.get(row.recordId);
           if (!(yield* pinSeen(orgId, people, row, goal)))

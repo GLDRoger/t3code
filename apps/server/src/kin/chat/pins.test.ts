@@ -80,7 +80,7 @@ const setup = Effect.gen(function* () {
     list: "projects",
     title: "Juniper Cold Chain handover 73451",
     owner: { _tag: "person", personId: rhea.personId },
-    originKey: "kin-project-juniper-handover",
+    originKey: "import:pin-redaction:project:juniper-handover",
   });
   const addZoya = groups.addMember([rhea], {
     ...input,
@@ -108,27 +108,57 @@ it.effect("refuses a project a group member cannot open", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("keeps private source bytes out of reads after a demotion and a join", () =>
+it.effect("withholds private source bytes after a demotion, a join, and hard deletion", () =>
   Effect.gen(function* () {
-    const { sql, rhea, meera, zoya, pins, input, project, addZoya } = yield* setup;
+    const { sql, rhea, meera, zoya, pins, input, project, addZoya, create } = yield* setup;
     const {
       pins: [pinned],
-    } = yield* pins.pin([rhea], { ...input, key: project.key });
-    assert.isDefined(pinned);
-    assert.strictEqual(pinned._tag, "project");
+    } = yield* pins.pin([meera], { ...input, key: project.key });
+    if (pinned?._tag !== "project") return assert.fail("Expected a project pin");
     assert.strictEqual((yield* pins.list([meera], input)).pins[0]?._tag, "project");
+    const open = yield* create({
+      list: "work",
+      title: "Check the cold room",
+      owner: { _tag: "person", personId: zoya.personId },
+      originKey: "import:pin-redaction:task:cold-room",
+    });
+    const {
+      pins: [visible],
+    } = yield* pins.pin([meera], { ...input, key: open.key });
+    if (visible?._tag !== "task") return assert.fail("Expected a task pin");
     yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${meera.personId}`;
     const hidden = { _tag: "hidden", pinId: pinned.pinId } as const;
     const demoted = yield* pins.list([meera], input);
-    assert.deepStrictEqual(demoted.pins, [hidden]);
+    assert.deepStrictEqual(demoted.pins, [{ _tag: "hidden", pinId: visible.pinId }, hidden]);
     const bytes = JSON.stringify(demoted);
     for (const secret of [project.title, "Juniper Cold Chain", "73451", project.key])
       assert.notInclude(bytes, secret);
-    assert.strictEqual((yield* pins.list([rhea], input)).pins[0]?._tag, "project");
+    assert.deepInclude((yield* pins.list([rhea], input)).pins, pinned);
     yield* addZoya;
-    assert.deepStrictEqual((yield* pins.list([zoya], input)).pins, [hidden]);
+    assert.deepStrictEqual((yield* pins.list([zoya], input)).pins, [visible, hidden]);
     const attempt = yield* Effect.flip(pins.pin([zoya], { ...input, key: project.key }));
     assert.strictEqual(attempt.reason, "not_allowed");
+
+    yield* undoBatch(input.orgId, rhea.personId, "pin-redaction", {
+      apply: true,
+      includeChanged: false,
+    });
+
+    const goneTask = { _tag: "gone", pinId: visible.pinId } as const;
+    const goneProject = { _tag: "gone", pinId: pinned.pinId } as const;
+    const goneBytes = JSON.stringify(yield* pins.list([zoya], input));
+    assert.notInclude(goneBytes, "pinnedBy");
+    assert.notInclude(goneBytes, "pinnedAt");
+    assert.deepStrictEqual(JSON.parse(goneBytes), { pins: [goneTask, goneProject] });
+    for (const reader of [rhea, meera]) {
+      assert.deepStrictEqual((yield* pins.list([reader], input)).pins, [
+        { ...goneTask, pinnedBy: visible.pinnedBy, pinnedAt: visible.pinnedAt },
+        { ...goneProject, pinnedBy: pinned.pinnedBy, pinnedAt: pinned.pinnedAt },
+      ]);
+    }
+    assert.deepStrictEqual((yield* pins.unpin([zoya], { ...input, pinId: pinned.pinId })).pins, [
+      goneTask,
+    ]);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -183,8 +213,7 @@ it.effect("keeps a dropped task shown and an undone import gone", () =>
     const {
       pins: [added],
     } = yield* pins.pin([rhea], { ...input, key: imported.key });
-    assert.isTrue(added !== undefined && added._tag !== "hidden");
-    if (added === undefined || added._tag === "hidden") return assert.fail("Expected a shown pin");
+    if (added?._tag !== "task") return assert.fail("Expected a task pin");
     yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = ${dropped.recordId}`;
     yield* undoBatch(input.orgId, rhea.personId, "juniper", { apply: true, includeChanged: false });
     const read = (yield* pins.list([rhea], input)).pins;

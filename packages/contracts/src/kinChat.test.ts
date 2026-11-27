@@ -464,7 +464,12 @@ const samples = {
     { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
   ],
   KinChatPinId: [pinId],
-  KinChatPin: [...livePins, { ...pinMeta, _tag: "gone" }, { _tag: "hidden", pinId }],
+  KinChatPin: [
+    ...livePins,
+    { ...pinMeta, _tag: "gone" },
+    { _tag: "gone", pinId },
+    { _tag: "hidden", pinId },
+  ],
   KinChatPinsInput: [pinsInput],
   KinChatPinInput: [{ ...pinsInput, key: "P-73" }],
   KinChatUnpinInput: [{ ...pinsInput, pinId }],
