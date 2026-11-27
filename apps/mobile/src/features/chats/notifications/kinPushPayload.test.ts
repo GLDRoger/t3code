@@ -633,8 +633,9 @@ describe("kinReconcileRemovals", () => {
   it("removes what the host settled, and what it forgot once older than a week", () => {
     const now = Date.parse("2026-11-23T12:00:00Z");
     const day = 24 * 60 * 60 * 1000;
-    const note = (identifier: string, topic: string, daysOld: number) => ({
-      date: now - daysOld * day,
+    // iOS gives a notification's date in seconds, Android in milliseconds.
+    const note = (identifier: string, topic: string, daysOld: number, seconds = false) => ({
+      date: seconds ? (now - daysOld * day) / 1000 : now - daysOld * day,
       request: {
         identifier,
         content: {
@@ -654,6 +655,8 @@ describe("kinReconcileRemovals", () => {
       // The host may simply not be the one that sent it: younger than a week, it stays.
       note("forgotten-young", "a:act-2", 3),
       note("standing", "q:q-1", 9),
+      note("forgotten-old-ios", "a:act-1", 8, true),
+      note("forgotten-young-ios", "a:act-2", 0, true),
     ];
     const here = {
       environmentId: EnvironmentId.make("env-1"),
@@ -669,7 +672,7 @@ describe("kinReconcileRemovals", () => {
         },
         now,
       ),
-    ).toEqual(["settled", "forgotten-old"]);
+    ).toEqual(["settled", "forgotten-old", "forgotten-old-ios"]);
   });
 });
 

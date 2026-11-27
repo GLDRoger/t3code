@@ -213,6 +213,11 @@ type KinChatFeedInput = {
    * Team-room discussion's id, which opens on its first row.
    */
   readonly landOn: string | null;
+  /**
+   * The stream has answered since the chat opened. Until then only the saved copy shows, which
+   * can't hold what a push just named, so a `landOn` it lacks isn't read back for.
+   */
+  readonly caughtUp: boolean;
   readonly ownsLead: boolean;
   readonly agentName: string | null;
   readonly retired: boolean;
@@ -352,7 +357,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
         : null;
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.
-  const landPage = landOn !== null && landIndex < 0 ? earlierPage : null;
+  const landPage = landOn !== null && landIndex < 0 && input.caughtUp ? earlierPage : null;
   const showIntro = kinIntroVisible({
     // Nobody is there to greet in a retired agent's chat.
     ownsLead: input.ownsLead && !input.retired,
