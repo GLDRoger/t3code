@@ -1,9 +1,15 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
-import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
+  KinAgentId,
+  KinPersonId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinAgentRowLine,
+  kinBackgroundModel,
   kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
@@ -251,5 +257,35 @@ describe("kinChatReadOnlyLine", () => {
     expect(kinChatReadOnlyLine({ kind: "person", name: null })).toBe(
       "You can read this chat, but you two can no longer message each other.",
     );
+  });
+});
+
+describe("background checks model", () => {
+  const chosen = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.2-sol" };
+  const offered = [DEFAULT_KIN_BACKGROUND_MODEL_SELECTION, chosen];
+  it.each([
+    [
+      "absent",
+      undefined,
+      offered,
+      { kind: "default", selection: DEFAULT_KIN_BACKGROUND_MODEL_SELECTION, runs: true },
+    ],
+    ["chosen", chosen, offered, { kind: "chosen", selection: chosen, runs: true }],
+    ["each agent's own", null, offered, { kind: "each" }],
+    [
+      "chosen, not offered",
+      chosen,
+      [DEFAULT_KIN_BACKGROUND_MODEL_SELECTION],
+      { kind: "chosen", selection: chosen, runs: false },
+    ],
+    [
+      "default, not offered",
+      undefined,
+      [chosen],
+      { kind: "default", selection: DEFAULT_KIN_BACKGROUND_MODEL_SELECTION, runs: false },
+    ],
+    ["models not loaded yet", chosen, null, { kind: "chosen", selection: chosen, runs: true }],
+  ] as const)("reads the setting when %s", (_label, setting, list, expected) => {
+    expect(kinBackgroundModel(setting, list)).toEqual(expected);
   });
 });

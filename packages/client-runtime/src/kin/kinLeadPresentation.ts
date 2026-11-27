@@ -8,7 +8,12 @@ import type {
   ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
-import { KIN_PROVIDER_FACTS, kinCantDo, kinProviderFacts } from "@t3tools/contracts";
+import {
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
+  KIN_PROVIDER_FACTS,
+  kinCantDo,
+  kinProviderFacts,
+} from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
@@ -355,6 +360,52 @@ export const KIN_AGENTS_PAGE = {
   unchosen: (line: string) => `${line}, as your first agent`,
   save: "Save model",
 } as const;
+
+/** Settings → Agents, web and desktop: the model reading bills and verified-done checks run on. */
+export const KIN_BACKGROUND_MODEL = {
+  row: "Model for background checks",
+  /** The row's line; `line` is the model's line, so no model is named here in fixed words. */
+  detail: (line: string, kind: "default" | "chosen") =>
+    `${line}${kind === "default" ? " (the default)" : ""} reads bills and marks work done once GitHub shows it finished.`,
+  each: "Each agent's own model reads bills and marks work done once GitHub shows it finished.",
+  cantRun: (line: string) =>
+    `${line} can't run here now, so each agent's own model does these checks meanwhile.`,
+  cantRunStatus: "Can't run now",
+  title: "Choose the model for background checks",
+  description:
+    "Reading bills, and marking work done once GitHub shows it finished, run on this model. Anything written for a person, check-ins and briefs always use each agent's own model.",
+  choices: "Run background checks on",
+  useDefault: (line: string) => `The default, ${line}`,
+  another: "Another model",
+  eachChoice: "Each agent's own model",
+  model: "Model",
+  save: "Save model",
+} as const;
+
+/**
+ * The host's background checks model in its three states: the built-in default (no setting),
+ * a chosen model, or each agent's own (`null`). `runs` is false only once the offered models
+ * have loaded (`offered` not null) and none matches.
+ */
+export function kinBackgroundModel(
+  setting: ModelSelection | null | undefined,
+  offered: ReadonlyArray<ModelSelection> | null,
+):
+  | {
+      readonly kind: "default" | "chosen";
+      readonly selection: ModelSelection;
+      readonly runs: boolean;
+    }
+  | { readonly kind: "each" } {
+  if (setting === null) return { kind: "each" };
+  const selection = setting ?? DEFAULT_KIN_BACKGROUND_MODEL_SELECTION;
+  const runs =
+    offered === null ||
+    offered.some(
+      (model) => model.instanceId === selection.instanceId && model.model === selection.model,
+    );
+  return { kind: setting === undefined ? "default" : "chosen", selection, runs };
+}
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {
