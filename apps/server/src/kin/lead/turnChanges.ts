@@ -1,3 +1,4 @@
+import { STORED_UPDATE_PREFIX } from "../reply/turnVoice.ts";
 import {
   formatKinWhen,
   KIN_TEXT_LOCALE,
@@ -154,6 +155,7 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
         SELECT reply.message_id, reply.source_wakeup_id AS wakeup_id, reply.author_agent_id AS agent_id
         FROM kin_messages reply WHERE reply.org_id = ${orgId} AND reply.message_id IN ${sql.in(messageIds)}
           AND reply.author_kind = 'agent' AND reply.source_wakeup_id IS NOT NULL AND reply.body <> ''
+          AND substr(COALESCE(reply.client_message_id, ''), 1, ${STORED_UPDATE_PREFIX.length}) <> ${STORED_UPDATE_PREFIX}
           AND NOT EXISTS (
             SELECT 1 FROM kin_messages m
             WHERE m.org_id = reply.org_id AND m.chat_id = reply.chat_id

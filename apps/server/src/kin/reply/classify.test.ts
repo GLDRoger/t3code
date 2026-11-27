@@ -29,7 +29,7 @@ const call = (toolName: string) =>
   toolLabel({ type: "dynamic_tool", toolName: `mcp__kin__${toolName}` } as OrchestrationV2TurnItem);
 
 it("gives every lead tool a status a person would say, never Kin's own vocabulary", () => {
-  const silent = ["kin_skip", "kin_react", "kin_journal"];
+  const silent = ["kin_send", "kin_skip", "kin_react", "kin_journal"];
   const labels: Array<readonly [string, string | null]> = Object.keys(KinLeadToolkit.tools).map(
     (name) => [name, call(name)] as const,
   );

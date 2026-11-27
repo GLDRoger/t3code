@@ -47,6 +47,7 @@ import {
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
+  DEFAULT_SERVER_SETTINGS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -65,6 +66,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Tracer from "effect/Tracer";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
@@ -315,6 +317,40 @@ const seed = Effect.fn("test.seed")(function* (
 });
 
 describe("KinChatService", () => {
+  it.effect("both chat backlogs carry the host's current progress-update setting", () =>
+    Effect.gen(function* () {
+      const settings = yield* Ref.make({
+        ...DEFAULT_SERVER_SETTINGS,
+        kinClearUpdatesAfterReply: true,
+      });
+      const configured = layer.pipe(
+        Layer.provide(Layer.mock(ServerSettingsService)({ getSettings: Ref.get(settings) })),
+      );
+      yield* Effect.gen(function* () {
+        const { service, person, chat } = yield* seed(false, { owner: "Rhea", agent: "Finance" });
+        const backlogs = service
+          .subscribe(person, { chatId: chat.chatId })
+          .pipe(Stream.filter((event) => event._tag === "backlog"));
+        const events = yield* Stream.toPull(backlogs);
+        const [opened] = yield* events;
+        assert.strictEqual(opened?._tag, "backlog");
+        if (opened?._tag !== "backlog") return;
+        assert.propertyVal(opened, "clearUpdates", true);
+        yield* Ref.update(settings, (value) => ({ ...value, kinClearUpdatesAfterReply: false }));
+        for (let n = 0; n < 100; n += 1) {
+          yield* service.send(person, {
+            chatId: chat.chatId,
+            body: `Loading slot ${n + 1}`,
+            clientMessageId: `loading-slot-${n + 1}`,
+          });
+        }
+        const [checkpoint] = yield* events;
+        assert.strictEqual(checkpoint?._tag, "backlog");
+        assert.propertyVal(checkpoint, "clearUpdates", false);
+      }).pipe(Effect.provide(configured));
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a reply group spends the last available notice once", () =>
     Effect.gen(function* () {
       const { service, person, agent, chat } = yield* seed(true);
