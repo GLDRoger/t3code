@@ -5,9 +5,13 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
+import { turnEventToolkit } from "../../lead/eventIds.ts";
 
-import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
+import {
+  AcceptedUnadvertisedArguments,
+  AdvertisedDescriptions,
+} from "../../../mcp/advertisedJsonSchema.ts";
 import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -84,7 +88,7 @@ export const DatesResult = Money.DatesResult.mapFields((fields) => ({
 }));
 
 /** Work: the company's entries. The state of work comes from these tools and the Work section only. */
-export const KinWorkToolkit = Toolkit.make(
+export const KinWorkToolkit = turnEventToolkit(
   numberRecordTool.annotate(McpSchema.EnabledWhen, enabled),
   numbersReadTool.annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("records_query", {
@@ -126,6 +130,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: CreateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AcceptedUnadvertisedArguments, ["records[].taxNumber", "records[].taxPlace"])
     .annotate(AdvertisedDescriptions, [
       {
         path: ["properties", "records", "items"],
@@ -156,6 +161,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: Work.UpdateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AcceptedUnadvertisedArguments, ["taxNumber", "taxPlace"])
     .annotate(AdvertisedDescriptions, [
       {
         path: [],

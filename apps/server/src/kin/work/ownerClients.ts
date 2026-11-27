@@ -490,19 +490,23 @@ const defined = <T extends Record<string, unknown>>(value: T) =>
   };
 const fieldsOf = (value: Readonly<Record<string, FieldValue | null | undefined>>) =>
   defined(value) as Readonly<Record<string, FieldValue | null>>;
+type PartyTaxInput = Pick<KinPartyUpdateInput, "orgId" | "gstin" | "taxNumber" | "accountsForTax">;
+const partyTaxNumber = (input: PartyTaxInput) =>
+  input.taxNumber === undefined ? input.gstin : input.taxNumber;
+
 /** The client fields an invoice reads, under the keys the documents read them by. */
 const partyFields = (input: KinPartyCreateInput | KinPartyUpdateInput) => ({
   terms: input.terms,
   address: input.address,
-  gstin: input.taxNumber === undefined ? input.gstin : input.taxNumber,
+  gstin: partyTaxNumber(input),
   accountsForTax: input.accountsForTax === undefined ? undefined : String(input.accountsForTax),
   placeOfSupply: input.placeOfSupply,
 });
 const isGstin = Schema.is(KinGstin);
 const invalidTax = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
-const checkPartyTax = Effect.fn("KinWork.crm.checkPartyTax")(function* (
-  input: KinPartyCreateInput | KinPartyUpdateInput,
+export const checkPartyTax = Effect.fn("KinWork.crm.checkPartyTax")(function* (
+  input: PartyTaxInput,
   before = parseFields("{}"),
 ) {
   if (input.gstin !== undefined && input.taxNumber !== undefined)
@@ -515,7 +519,7 @@ const checkPartyTax = Effect.fn("KinWork.crm.checkPartyTax")(function* (
     return yield* invalidTax(
       "taxNumber is not a GSTIN: give the 15 characters alone, like 29ABCDE1234F1Z5. Nothing changed.",
     );
-  const number = partyFields(input).gstin;
+  const number = partyTaxNumber(input);
   if (
     (input.accountsForTax ?? accountsForTax(before)) &&
     !(number === undefined ? before.gstin : number)
