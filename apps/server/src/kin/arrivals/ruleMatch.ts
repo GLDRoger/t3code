@@ -51,7 +51,7 @@ export const mailRulePhrase = (text: string) =>
     .trim();
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const excluded = new Set<string>(["own", "sign_in", "failed_checks"]);
+const excluded = new Set<string>(["gap", "own", "sign_in", "failed_checks"]);
 
 export const mailRuleHeaderFacts = (
   mail: Pick<MailArrival, "from" | "fromAddress" | "hasFile" | "authResults">,
@@ -96,7 +96,9 @@ export const matchMailRule = (
     const domain = address.slice(address.lastIndexOf("@") + 1);
     if (
       !rule.from.some((sender) => {
-        if ("address" in sender) return mailRuleAddress(sender.address) === address;
+        if ("address" in sender && typeof sender.address === "string")
+          return mailRuleAddress(sender.address) === address;
+        if (!("domain" in sender)) return false;
         const expected = mailRuleDomain(sender.domain);
         return expected !== null && (domain === expected || domain.endsWith(`.${expected}`));
       })

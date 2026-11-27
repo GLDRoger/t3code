@@ -63,6 +63,7 @@ import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinTasksKeyRpcs, KIN_TASKS_KEY_RPC_SCOPES } from "./kinTasksKey.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
+import { KIN_MAIL_RULE_RPC_SCOPES, KinMailRuleRpcs } from "./kinMailRules.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
 import { KinPicturesRpcs, KIN_PICTURES_RPC_SCOPES } from "./kinPictures.ts";
 import { KinOwnerTimeZone, KinOwnerTimeZoneGetInput, KinOwnerTimeZoneRead } from "./kinTriggers.ts";
@@ -218,6 +219,7 @@ export const KinRpcs = [
   ...KinShellRpcs,
   ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
+  ...KinMailRuleRpcs,
   ...KinSocialRpcs,
   ...KinPicturesRpcs,
   ...KinRefreshRpcs,
@@ -248,6 +250,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_TASKS_KEY_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
+  ...KIN_MAIL_RULE_RPC_SCOPES,
   ...KIN_SOCIAL_RPC_SCOPES,
   ...KIN_PICTURES_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
@@ -575,6 +578,14 @@ const KIN_RPC_ACCESS = {
   "kin.connections.update": "owner_level",
   "kin.connections.setReach": "owner_level",
   "kin.connections.remove": "owner_level",
+  "kin.mailRules.create": "owner_level",
+  "kin.mailRules.pause": "owner_level",
+  "kin.mailRules.resume": "owner_level",
+  "kin.mailRules.remove": "owner_level",
+  "kin.mailRules.list": "owner_level",
+  "kin.mailRules.history": "owner_level",
+  "kin.mailRules.preview": "owner_level",
+  "kin.mailRules.runNow": "owner_level",
   "kin.connections.calls": "owner_level",
   "kin.connections.signInStart": "owner_level",
   "kin.connections.signInFinish": "owner_level",
@@ -874,6 +885,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.update": "kin-connections",
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
+  "kin.mailRules.create": "kin-connections",
+  "kin.mailRules.pause": "kin-connections",
+  "kin.mailRules.resume": "kin-connections",
+  "kin.mailRules.remove": "kin-connections",
+  "kin.mailRules.list": "kin-connections",
+  "kin.mailRules.history": "kin-connections",
+  "kin.mailRules.preview": "kin-connections",
+  "kin.mailRules.runNow": "kin-connections",
   "kin.connections.calls": "kin-connections",
   "kin.connections.signInStart": "kin-connections",
   "kin.connections.signInFinish": "kin-connections",

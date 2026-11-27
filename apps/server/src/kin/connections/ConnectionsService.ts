@@ -1,3 +1,4 @@
+import { pauseMailRulesFor } from "../arrivals/ruleLifecycle.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- random ids for rows and secret names.
 import * as NodeCrypto from "node:crypto";
 import {
@@ -1759,11 +1760,20 @@ const make = Effect.gen(function* () {
       else {
         const now = yield* Clock.currentTimeMillis;
         // Agents stop at once; the key goes after, and a failure there leaves nothing callable.
-        yield* sql`UPDATE kin_connections SET removed_at = ${now}, updated_at = ${now}
-          WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
-            AND removed_at IS NULL`;
-        yield* sql`DELETE FROM kin_connection_cursors
-          WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`UPDATE kin_connections SET removed_at = ${now}, updated_at = ${now}
+            WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
+              AND removed_at IS NULL`;
+            yield* pauseMailRulesFor(
+              input.orgId,
+              { kind: "mailbox", id: input.connectionId },
+              now,
+            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            yield* sql`DELETE FROM kin_connection_cursors
+            WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
+          }),
+        );
         yield* touched(input.orgId);
         yield* gateway.invalidate(input.connectionId);
         yield* secrets.remove(input.connectionId);
@@ -1930,6 +1940,10 @@ const make = Effect.gen(function* () {
                 AND removed_at IS NULL AND person_id IS ${row.personId ?? null}
               RETURNING connection_id`;
             if (ended.length === 0) return yield* notFound;
+            if (row.personId == null)
+              yield* pauseMailRulesFor(orgId, { kind: "mailbox", id: row.connectionId }, now).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
             const made = yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset,
                 label, kind, url, url_host, auth, auth_header, reach, state, account_label,
                 sign_in_gen, note, send_as_json, issuer, resource, protocol_version,

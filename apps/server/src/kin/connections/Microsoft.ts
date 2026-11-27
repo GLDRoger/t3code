@@ -461,12 +461,14 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     Number.isNaN(receivedAt)
   )
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  const from = field(message, "from");
+  const fromAddress = addressOf(from);
   return {
     messageId,
     threadId,
     receivedAt,
-    from: nameOf(field(message, "from")),
-    fromAddress: addressOf(field(message, "from")),
+    from: fromAddress === null ? null : nameOf(from),
+    fromAddress,
     to: recipients(message, "toRecipients"),
     cc: recipients(message, "ccRecipients"),
     deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],

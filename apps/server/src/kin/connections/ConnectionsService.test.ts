@@ -1676,6 +1676,28 @@ describe("KinConnections", () => {
     ),
   );
 
+  it.effect("disconnecting a company's mailbox pauses its rules without deleting them", () =>
+    withFake(BASE, () =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        const connectionId = KinConnectionId.make("juniper-bills");
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, ${connectionId}, 'google', 'Juniper bills', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 1, 1)`;
+        yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what,
+          agent_id, chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at,
+          updated_at) VALUES (${orgId}, 'rule', ${connectionId}, '{}', 'File the bill.', 'finance',
+            'rhea-finance', 'rhea', 'tap', 'hash', 'on', 30, 1, 1)`;
+        yield* connections.remove(owner, { orgId, connectionId });
+        assert.deepStrictEqual(yield* sql`SELECT state, paused_why FROM kin_mail_rules`, [
+          { state: "paused", paused_why: "mailbox" },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("renames and pauses a connection, refusing agents until resumed", () =>
     withFake(BASE, (_fake, touches) =>
       Effect.gen(function* () {

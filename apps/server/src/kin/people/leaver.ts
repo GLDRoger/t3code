@@ -1,3 +1,4 @@
+import { pauseMailRulesFor } from "../arrivals/ruleLifecycle.ts";
 import {
   KinCardAsker,
   KinChatId,
@@ -397,9 +398,36 @@ export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
       WHERE org_id = ${orgId} AND task_id = ${row.taskId}`;
     paused.push(`"${row.title}" in ${own.name}`);
   }
-  if (paused.length === 0) return;
+  const mailRules = yield* pauseMailRulesFor(orgId, { kind: "left", id: gone.personId }, removedAt);
+  if (paused.length === 0 && mailRules.length === 0) return;
   const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   if (lead === undefined) return;
+  if (mailRules.length > 0) {
+    const mailboxes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_connections
+      WHERE org_id = ${orgId} AND connection_id IN ${sql.in(mailRules.map((row) => row.connectionId))}
+      ORDER BY label`;
+    const message = yield* repo.insertMessage({
+      orgId,
+      chatId: lead.ownerChatId,
+      audience: "owner",
+      messageId: KinMessageId.make(`kin-leaver-mail-rules:${gone.personId}:${removedAt}`),
+      author: { _tag: "system" },
+      kind: "system",
+      body: `${gone.displayName} left, so ${plural(mailRules.length, "mail rule", "mail rules")} ${gone.displayName} set up ${mailRules.length === 1 ? "is" : "are"} paused on ${mailboxes.map(({ label }) => label).join(", ")}. Resume or remove each from its mailbox in Settings → Connections.`,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: at,
+      editedAt: null,
+    });
+    yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId, message }));
+  }
+  if (paused.length === 0) return;
   const message = yield* repo.insertMessage({
     orgId,
     chatId: lead.ownerChatId,

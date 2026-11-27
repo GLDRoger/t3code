@@ -223,6 +223,21 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           assert.strictEqual(kinRpcAccess(method), "owner_level");
           assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
         }
+        for (const method of [
+          "kin.mailRules.create",
+          "kin.mailRules.pause",
+          "kin.mailRules.resume",
+          "kin.mailRules.remove",
+          "kin.mailRules.list",
+          "kin.mailRules.history",
+          "kin.mailRules.preview",
+          "kin.mailRules.runNow",
+        ] as const) {
+          assert.include(table.coOwner, method);
+          assert.notInclude(table.member, method);
+          assert.strictEqual(kinRpcAccess(method), "owner_level");
+          assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
+        }
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
         assert.lengthOf(bills, 6);

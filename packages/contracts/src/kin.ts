@@ -36,6 +36,7 @@ export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";
 export * from "./kinConnections.ts";
+export * from "./kinMailRules.ts";
 export * from "./kinSocial.ts";
 export * from "./kinPictures.ts";
 

@@ -1844,3 +1844,11 @@ unlisted:
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
+  "rpc:kin.mailRules.create": Served; the company mailbox rule form has not shipped.
+  "rpc:kin.mailRules.pause": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.resume": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.remove": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.list": Served; the company mailbox rule list has not shipped.
+  "rpc:kin.mailRules.history": Served; the company mailbox rule history has not shipped.
+  "rpc:kin.mailRules.preview": Served; the company mailbox rule preview has not shipped.
+  "rpc:kin.mailRules.runNow": Served; the company mailbox rule controls and lead wake have not shipped.

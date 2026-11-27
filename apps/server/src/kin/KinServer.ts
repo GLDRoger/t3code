@@ -1,3 +1,4 @@
+import type { KinMailRules } from "./arrivals/KinMailRules.ts";
 import type * as Layer from "effect/Layer";
 import type { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Context from "effect/Context";
@@ -83,6 +84,7 @@ export type Services =
   | KinWorkspace
   | KinDocRenderer
   | KinToolchain
+  | KinMailRules
   | KinConnections
   | KinGitHubLogin
   | KinGitHubApp
