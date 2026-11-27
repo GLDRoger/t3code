@@ -453,6 +453,8 @@ describe("pulse check-ins", () => {
     { name: "stays in the evening's day", expected: 0, activity: "evening" },
     { name: "keeps the usual loose minute in a quiet chat", expected: 0, activity: "quiet" },
     { name: "survives restart once", expected: 7 * MINUTE, activity: "restart" },
+    { name: "holds from the end of quiet hours", expected: 7 * MINUTE, activity: "after-quiet" },
+    { name: "holds late on a long DST evening", expected: 7 * MINUTE, activity: "evening-dst" },
   ])("a scheduled check-in $name", ({ expected, activity }) =>
     Effect.gen(function* () {
       yield* seed;
@@ -463,10 +465,19 @@ describe("pulse check-ins", () => {
         VALUES (${`member-${owner}`}, ${orgId}, ${chat}, 'person', ${owner}, NULL, 'owner', ${stamp}),
           (${`lead-${chief}`}, ${orgId}, ${chat}, 'agent', NULL, ${chief}, 'member', ${stamp}),
           ('member-owner-finance', ${orgId}, ${`chat-${finance}`}, 'person', ${owner}, NULL, 'owner', ${stamp})`;
-      const evening = activity === "evening";
-      if (evening) yield* companyClock("UTC", '{"from":"02:00","to":"03:00"}');
-      const opens = evening ? MONDAY + DAY - 3 * MINUTE : SLOT;
-      const due = evening ? opens + 20_000 : SLOT + looseOffsetMs(afternoon, "2026-11-16");
+      const dst = activity === "evening-dst";
+      const evening = activity === "evening" || dst;
+      if (evening)
+        yield* companyClock(dst ? "America/New_York" : "UTC", '{"from":"02:00","to":"03:00"}');
+      // Quiet hours past the slot's whole hour: the check-in first comes due when they end.
+      if (activity === "after-quiet") yield* companyClock("UTC", '{"from":"14:00","to":"17:00"}');
+      // 23:40 in New York on Sunday 1 November 2026, a 25-hour day: 04:40 UTC the next day.
+      const opens = dst ? Date.UTC(2026, 10, 2, 4, 40) : evening ? MONDAY + DAY - 3 * MINUTE : SLOT;
+      const due = evening
+        ? opens + 20_000
+        : activity === "after-quiet"
+          ? MONDAY + 17 * HOUR
+          : SLOT + looseOffsetMs(afternoon, "2026-11-16");
       const personWrites = (seq: number, at: number) =>
         chatLine({ id: `owner-${seq}`, to: chief, person: owner, seq, at });
       yield* TestClock.setTime(opens);
@@ -495,6 +506,21 @@ describe("pulse check-ins", () => {
           at: due - MINUTE,
           memberId: "member-owner-finance",
         });
+        // Forwarded, deleted or only suggested text, and a co-owner's, is not the owner talking.
+        for (const [seq, id] of [
+          [5, "forwarded"],
+          [6, "deleted"],
+          [7, "suggested"],
+        ] as const)
+          yield* chatLine({ id, to: chief, person: owner, seq, at: due - MINUTE });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${`member-${mate}`}, ${orgId}, ${chat}, 'person', ${mate}, NULL, 'member', ${stamp})`;
+        yield* chatLine({ id: "co-owner", to: chief, person: mate, seq: 8, at: due - MINUTE });
+        yield* sql`UPDATE kin_messages SET origin_json = '{"chatId":"elsewhere"}'
+          WHERE message_id = 'forwarded'`;
+        yield* sql`UPDATE kin_messages SET status = message_id
+          WHERE message_id IN ('deleted', 'suggested')`;
       }
       const enqueue = evening
         ? queueCheckIn({

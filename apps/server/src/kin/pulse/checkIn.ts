@@ -190,12 +190,14 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const company = yield* ownerZone(orgId);
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
-  const slotMinute =
+  const minute =
     input.looseAt !== null && input.manualId === undefined
-      ? looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
-        looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt))
+      ? Math.max(
+          at,
+          looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
+            looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
+        )
       : undefined;
-  const minute = slotMinute === undefined ? undefined : Math.max(at, slotMinute);
   const day = input.manualId === undefined ? dayIn(minute ?? at, company) : undefined;
   const page = day !== undefined && (input.scheduleId === MORNING || input.scheduleId === WEEKLY);
   if (page) {
@@ -368,8 +370,9 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           ...(day === undefined
             ? {}
             : {
+                // From when it first comes due: its minute, or the end of the quiet hours it waits out.
                 checkInPause: {
-                  until: (slotMinute ?? input.dueAt) + CONVERSATION_HOLD_CAP_MS,
+                  until: (notBefore ?? at) + CONVERSATION_HOLD_CAP_MS,
                   ...(input.scheduleId === EVENING ? { dayEndsAt: endOfDay(day, company) } : {}),
                 },
               }),
