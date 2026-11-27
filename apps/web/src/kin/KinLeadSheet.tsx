@@ -75,6 +75,7 @@ export function KinLeadSheet(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly muted: boolean;
+  readonly hasPins?: boolean;
   /** The viewer's pin on this chat; null where none is offered, as on the main agent's chat. */
   readonly pinned: boolean | null;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
@@ -231,7 +232,11 @@ export function KinLeadSheet(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>{KIN_CLEAR_CHAT_TITLE}</AlertDialogTitle>
             <AlertDialogDescription>
-              {kinClearChatBody(about.kind === "own" ? about.lead.name : null, clearPreview.kept)}
+              {kinClearChatBody(
+                about.kind === "own" ? about.lead.name : null,
+                clearPreview.kept,
+                props.hasPins ? "some" : "none",
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

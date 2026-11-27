@@ -71,6 +71,7 @@ import {
   type KinRecordKey,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -96,6 +97,7 @@ import {
   MessageSquareIcon,
   NotebookTextIcon,
   PencilIcon,
+  PinIcon,
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
@@ -160,6 +162,7 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { KinAskRecord } from "./KinAskRecord";
+import { KinPinToChatDialog } from "./KinPinToChatDialog";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { KinWatchLine } from "./KinWatchLine";
@@ -169,6 +172,7 @@ import {
   useKinPageVisible,
 } from "./KinSinceLookedLine";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinPinActions } from "./useKinPins";
 import { KIN_WEB_ONLY } from "./kinWebOnly";
 import {
   useKinPickerSearch,
@@ -720,6 +724,8 @@ function KinWorkItem(
   );
   const [handingBack, setHandingBack] = useState(false);
   const activityRef = useRef<HTMLDivElement>(null);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions({ environmentId, orgId });
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -803,7 +809,8 @@ function KinWorkItem(
     step: step.acts,
   });
   const status = change === null ? null : controls.page.status;
-  const more = Object.values(controls.menu).some(Boolean);
+  const more = Object.values(controls.menu).some(Boolean) || pinActions.canPin;
+  const hasOtherMenu = Object.values(controls.menu).some(Boolean);
   return (
     <>
       <Frame.Header>
@@ -846,6 +853,15 @@ function KinWorkItem(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    {!pinActions.canPin ? null : (
+                      <>
+                        <MenuItem onClick={() => setPinning(true)}>
+                          <PinIcon />
+                          {KIN_PINS_COPY.pinToChat}
+                        </MenuItem>
+                        {hasOtherMenu ? <MenuSeparator /> : null}
+                      </>
+                    )}
                     {!controls.menu.give || give === null || view.assignLabel === null ? null : (
                       <>
                         <MenuSub>
@@ -1373,6 +1389,16 @@ function KinWorkItem(
           />
         </div>
       )}
+      {pinning ? (
+        <KinPinToChatDialog
+          open={pinning}
+          onOpenChange={setPinning}
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.title}
+        />
+      ) : null}
       {view.handBackTo === null || change === null ? null : (
         <KinWorkHandBack
           environmentId={environmentId}

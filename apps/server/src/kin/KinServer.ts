@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import type { KinIdentity } from "./chat/KinIdentity.ts";
 import type { KinChatService } from "./chat/KinChatService.ts";
+import type { KinChatPins } from "./chat/pins.ts";
 import type { KinChatHub } from "./chat/KinChatHub.ts";
 import type { KinGroups } from "./chat/KinGroups.ts";
 import type { KinRefreshHub } from "./chat/KinRefreshHub.ts";
@@ -56,6 +57,7 @@ export type Services =
   | KinIdentity
   | KinDevClock
   | KinChatService
+  | KinChatPins
   | KinGroups
   | KinBudget
   | KinChatRepository

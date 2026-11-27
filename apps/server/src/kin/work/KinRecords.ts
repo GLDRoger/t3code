@@ -765,6 +765,15 @@ const actorIdOf = (writer: Writer) =>
     : writer.actor._tag === "person"
       ? writer.actor.personId
       : null;
+/** A clients-won goal pinned in a chat counts every client, even those outside a member's stream. */
+export const clientsPinned = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql`SELECT 1 FROM kin_chat_pins p JOIN kin_records g
+      ON g.org_id = p.org_id AND g.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND g.register_id = 'goals'
+      AND json_extract(g.fields_json, '$.measure') = 'clients_won' LIMIT 1`.pipe(
+    Effect.map((rows) => rows.length > 0),
+  );
+
 export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
@@ -1037,9 +1046,20 @@ const make = Effect.gen(function* () {
   const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
   const refreshes = yield* KinRefreshObserver;
   let closing: Closing | undefined;
-  /** The clients and projects a task or project can be put under (`workChoices`) changed. */
-  const choicesMoved = (orgId: KinOrgId, list: string) =>
-    list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
+  const recordReadsMoved = Effect.fn("KinRecords.recordReadsMoved")(function* (
+    orgId: KinOrgId,
+    list: string,
+    recordId: string,
+  ) {
+    if (list === "clients" || list === "projects") yield* refreshes.touch(orgId, "workChoices");
+    if (list === "clients" && (yield* clientsPinned(sql, orgId)))
+      yield* refreshes.touch(orgId, "pins");
+    if (list === "goals") {
+      const [pin] = yield* sql`SELECT 1 FROM kin_chat_pins
+        WHERE org_id = ${orgId} AND record_id = ${recordId} LIMIT 1`;
+      if (pin !== undefined) yield* refreshes.touch(orgId, "pins");
+    }
+  });
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   const gstCompany = (orgId: KinOrgId) =>
     companyMoney(orgId).pipe(
@@ -2198,7 +2218,7 @@ const make = Effect.gen(function* () {
         provideSql,
       );
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
-    yield* choicesMoved(orgId, list);
+    yield* recordReadsMoved(orgId, list, recordId);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -3363,7 +3383,7 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* indexRecord(orgId, row.recordId).pipe(provideSql);
-        yield* choicesMoved(orgId, row.registerId);
+        yield* recordReadsMoved(orgId, row.registerId, row.recordId);
         const seq = yield* logChange(
           orgId,
           writer,

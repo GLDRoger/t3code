@@ -474,6 +474,9 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.chats.pin": "not a person action (screens only: screen ordering preference)",
   "kin.chats.clear": "stays in the app: 6 (deleting or archiving)",
   "kin.chat.members": "not a person action (screens only: member list of an open chat)",
+  "kin.chat.pins": "not a person action (screens only: pinned sources in an open chat)",
+  "kin.chat.pin": "stays in the app: 1 (pinning a live card)",
+  "kin.chat.unpin": "stays in the app: 1 (unpinning a live card)",
   "kin.chat.working": "not a person action (screens only: live 'agent is working' line)",
   "kin.chat.subscribe": "not a person action (screens only: live chat stream)",
   "kin.chat.history":

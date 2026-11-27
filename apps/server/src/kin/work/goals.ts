@@ -63,7 +63,8 @@ export const GOAL_INPUTS = ["measure", "target", "current", "unit"] as const;
 
 const isMeasure = (text: string | null): text is KinGoalMeasure =>
   text !== null && (KIN_GOAL_MEASURES as ReadonlyArray<string>).includes(text);
-export const isMoneyMeasure = (measure: KinGoalMeasure) => measure === "revenue_received";
+export const isMoneyMeasure = (measure: KinGoalMeasure): measure is "revenue_received" =>
+  measure === "revenue_received";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
@@ -161,14 +162,16 @@ const paceAt = (target: number, start: number, end: number | null, at: number) =
 export const goalsNow = Effect.fn("KinGoals.now")(function* (
   orgId: KinOrgId,
   at: number,
-  options: { readonly money: boolean },
+  options: { readonly money: boolean; readonly recordIds?: ReadonlyArray<string> },
 ) {
   const sql = yield* SqlClient.SqlClient;
+  if (options.recordIds?.length === 0) return { goals: [], behindPercent: 0 };
   const zone = yield* ownerZone(orgId);
   const rows = yield* sql<GoalRow>`SELECT r.record_id AS "recordId", r.key, r.title, r.rev,
       r.state, r.due_at AS "dueAt", r.created_at AS "createdAt", r.fields_json AS fields
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'goals' AND r.state <> 'dropped'
+    WHERE r.org_id = ${orgId} AND r.register_id = 'goals'
+      AND ${options.recordIds === undefined ? sql`r.state <> 'dropped'` : sql`r.record_id IN ${sql.in(options.recordIds)}`}
     ORDER BY r.state = 'done', r.due_at IS NULL, r.due_at, LENGTH(r.key), r.key`;
   const behindPercent = (yield* playbookThreshold(orgId, "goal_behind_percent")).value;
   const goals: Array<KinGoal> = [];
@@ -186,6 +189,7 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
     const targetField = fields.target;
     const money: KinMoney | undefined =
       targetField !== undefined && isMoney(targetField) ? targetField : undefined;
+    if (options.recordIds !== undefined && !options.money && money !== undefined) continue;
     const target =
       money !== undefined
         ? money.minor
