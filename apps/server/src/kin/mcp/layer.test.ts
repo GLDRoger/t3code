@@ -355,8 +355,8 @@ it.effect.each([true, false])(
         const http = yield* HttpRouter.toHttpEffect(routes);
         // The wake-up runner, the chat wake bridge, the worker tracker, the finished-task watch,
         // the Work import, the issued amounts check, archiving earlier projects, offline notices,
-        // and the document toolchain warm-up.
-        assert.strictEqual(yield* Queue.size(runnerStarts), enabled ? 9 : 0);
+        // the document toolchain warm-up, and the scheduler's tick with its look in Sent.
+        assert.strictEqual(yield* Queue.size(runnerStarts), enabled ? 11 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
