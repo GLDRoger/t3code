@@ -78,6 +78,16 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     "No tool tells an agent to write a marker word: kin_skip ends a turn quietly.",
   );
   assert.deepStrictEqual(
+    kinTools
+      .filter((tool) => {
+        const description = Tool.getDescription(tool) ?? "";
+        return /\b(?:your|in) plain text\b/i.test(description) && !description.includes("kin_send");
+      })
+      .map((tool) => tool.name),
+    [],
+    "Where a trigger started the turn only kin_send reaches anyone: no tool calls plain text the reply without it.",
+  );
+  assert.deepStrictEqual(
     measured,
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",

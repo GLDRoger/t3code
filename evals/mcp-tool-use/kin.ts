@@ -166,6 +166,7 @@ import {
   PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
+  sendHeader,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -236,10 +237,12 @@ import {
 import {
   followUpFor,
   replyNudgePrompt,
+  SEND_REFUSALS,
   sendRescuePrompt,
   isPersonTag,
   startedBy,
   TRIGGER_TAGS,
+  triggerWords,
   voiceFor,
 } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
@@ -892,6 +895,113 @@ const overpaymentCase = () =>
     others: [{ key: "INV-14", owed: 80000 }],
   });
 
+const CHECK_IN_TITLES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^morning\b/i, "checkin-morning"],
+  [/^evening\b/i, "checkin-evening"],
+  [/^weekly\b/i, "checkin-weekly"],
+];
+type Started = Parameters<typeof triggerWords>[0][number];
+type Question = NonNullable<Started["subject"]>;
+/** What started a triggered case, as the product's header names it (`turnVoice.triggerWords`). */
+const startedEvents = (prompt: string, world?: McpToolUseCase["setup"]["world"]) => {
+  const labels = quoteLabels(prompt);
+  const data = [...prompt.matchAll(/^> (\{.*\})$/gm)].flatMap((match) => {
+    try {
+      const value: unknown = JSON.parse(match[1]!);
+      return isRecord(value) && typeof value.type === "string" && eventTag(value.type)
+        ? [value]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const events: Array<Started> = data.map((value) => {
+    const subject = isRecord(value.subject) && typeof value.subject.type === "string";
+    const title = typeof value.checkIn === "string" ? value.checkIn : undefined;
+    return {
+      _tag: value.type as Contracts.KinEvent["_tag"],
+      ...(subject ? { subject: { type: (value.subject as { type: string }).type } } : {}),
+      ...(title === undefined
+        ? {}
+        : {
+            checkIn: {
+              scheduleId: CHECK_IN_TITLES.find(([pattern]) => pattern.test(title))?.[1] ?? title,
+            },
+          }),
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    };
+  });
+  const ids =
+    data.length > 0 ? [] : [...prompt.matchAll(/^> \{"event": ?"([^"]+)"/gm)].map((m) => m[1]!);
+  const question = (flags: Omit<Question, "type"> = {}) =>
+    events.push({ _tag: "deferral.due", subject: { type: "question", ...flags } });
+  if (labels.includes("approved draft (data)")) question({ approved: true });
+  else if (labels.includes("answered question (data)")) question({ answered: true });
+  else if (labels.includes("lapsed question (data)")) question({ lapsed: true });
+  else if (labels.includes("reopened question (data)"))
+    question({ dismissed: true, reopened: true });
+  else if (labels.includes("dismissed question (data)")) question({ dismissed: true });
+  else if (prompt.includes("{{UNDONE_TOLD}}")) question({ undone: true });
+  else if (labels.includes("open question (data)") || ids.some((id) => id.startsWith("question_")))
+    question();
+  if (labels.includes("follow-up (data)") || /^> \{"event":[^}]*"changed":/m.test(prompt))
+    events.push({ _tag: "pulse" });
+  if (labels.includes("routine facts (server-gathered data)")) events.push({ _tag: "routine" });
+  if (labels.some((label) => /^work (?:taken from you|handed back to you)\b/.test(label)))
+    events.push({ _tag: "record.changed" });
+  if (ids.some((id) => id.startsWith("country_")))
+    events.push({ _tag: "deferral.due", subject: { type: "country" } });
+  if (ids.some((id) => id.startsWith("bills-"))) events.push({ _tag: "bills.read" });
+  if (/^> \{"event": ?"run-[^"]*", ?"item":/m.test(prompt))
+    events.push({ _tag: "deferral.due", subject: { type: "scheduled_task" } });
+  if (labels.includes("reminder (data)"))
+    events.push({ _tag: "deferral.due", subject: { type: "reminder" } });
+  if (
+    labels.includes("owner request (scheduled task)") &&
+    !events.some((event) => event.subject?.type === "scheduled_task")
+  )
+    events.push({ _tag: "deferral.due", subject: { type: "scheduled_task" } });
+  if (labels.some((label) => /^work given to you\b/.test(label)))
+    events.push({ _tag: "record.changed", reason: "assigned" });
+  if (labels.some((label) => /^(?:work you hold|work you are helping on)\b/.test(label)))
+    events.push({ _tag: "record.changed" });
+  for (const tag of promptTags(prompt, world))
+    if (!events.some((event) => event._tag === tag)) events.push({ _tag: tag });
+  return events;
+};
+/** The triggered-turn header the product builds for this case's events (`LeadPrompt.sendHeader`). */
+const triggerHeader = (prompt: string, world?: McpToolUseCase["setup"]["world"]) => {
+  const events = startedEvents(prompt, world);
+  const tags = events.map((event) => event._tag);
+  // Bills read in the background are a quiet lane: nothing it writes reaches a chat.
+  if (
+    tags.every((tag) => tag === "bills.read") ||
+    voiceFor({ tags, sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly }) === "text"
+  )
+    return "Nobody is waiting on this turn.";
+  const owed = events.some(
+    (event) =>
+      event._tag === "task.finished" ||
+      (event._tag === "record.changed" && event.reason === "assigned"),
+  );
+  return sendHeader({
+    words: triggerWords(events),
+    asker: !owed
+      ? undefined
+      : /^Your reply goes to chat .*, your direct chat with the owner\.$/m.test(prompt)
+        ? "The owner"
+        : "The person who asked",
+    mustSend: events.some(
+      (event) =>
+        (event._tag === "deferral.due" && event.subject?.type === "reminder") ||
+        (event.checkIn !== undefined &&
+          ["checkin-morning", "checkin-evening", "checkin-weekly"].includes(
+            event.checkIn.scheduleId,
+          )),
+    ),
+  });
+};
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
   fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
@@ -982,7 +1092,10 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
-    .replaceAll("{{REPLY_NUDGE}}", () => replyNudgePrompt(promptTags(prompt, world)))
+    .replaceAll("{{TRIGGER_HEADER}}", () => triggerHeader(fillCardTaps(prompt), world))
+    .replaceAll("{{REPLY_NUDGE}}", () =>
+      replyNudgePrompt(promptTags(prompt, world).map((tag) => ({ _tag: tag }))),
+    )
     .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
     // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
     // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
@@ -2067,8 +2180,7 @@ export const defaultReplyMock = (
       };
     return "Nothing sent; this turn is over.";
   }
-  if (ending?.tool === "kin_skip")
-    return { $error: "Nothing was sent: this turn already ended with kin_skip." };
+  if (ending?.tool === "kin_skip") return { $error: SEND_REFUSALS["already skipped"] };
   if (ending?.tool === "kin_send") {
     if (
       isRecord(ending.input) &&
@@ -2076,18 +2188,17 @@ export const defaultReplyMock = (
       ending.input.level === input.level
     )
       return safeJson(ending.output ?? "");
-    return { $error: "This turn's message is already sent; end the turn" };
+    return { $error: SEND_REFUSALS["already sent"] };
   }
   if (typeof input.text !== "string" || input.text.trim() === "")
     return { $error: "Nothing was sent: pass the text to send." };
   const { prompt } = sample.testCase;
-  if (/^This turn is in the Team room, chat /m.test(prompt))
-    return { $error: "Nothing was sent: use team_say to speak in the Team room." };
+  if (/^This turn is in the Team room, chat /m.test(prompt)) return { $error: SEND_REFUSALS.team };
   const level = sendLevel(input);
   if (level === undefined) return { $error: "Nothing was sent: pass a valid level." };
   if (level === "check_in" && !isDueReminder(prompt)) {
     if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
-      return { $error: "Nothing was sent: check_in is only for the owner's own chat." };
+      return { $error: SEND_REFUSALS["non-owner check-in"] };
     return { held: true, when: "At the next check-in." };
   }
   return { sent: true, messageId: "82136085-9468-4997-82b9-a1c46a81a809" };
@@ -2139,7 +2250,7 @@ export const replyFollowUp = (
   const followUp = followUpFor(state);
   switch (followUp) {
     case "nudge":
-      return { kind: "nudge", prompt: replyNudgePrompt(tags) };
+      return { kind: "nudge", prompt: replyNudgePrompt(tags.map((tag) => ({ _tag: tag }))) };
     case "rescue": {
       if (voice === "text")
         return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };

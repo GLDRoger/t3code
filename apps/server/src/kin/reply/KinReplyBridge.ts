@@ -10,7 +10,7 @@ import {
   KinText,
   KinChatError,
   RunId,
-  type KinEvent,
+  KinEvent,
   kinIsPage,
   KIN_MONEY_SECTION,
   kinPageWithLines,
@@ -80,6 +80,7 @@ import {
   followUpFor,
   PERSON_TAGS,
   replyNudgePrompt,
+  SEND_REFUSALS,
   sendClientMessageId,
   sendRescuePrompt,
 } from "./turnVoice.ts";
@@ -269,19 +270,6 @@ type SendResult =
   | { readonly sent: true; readonly messageId: KinMessageId }
   | { readonly held: true; readonly when: string };
 
-// Words under eval: change them only with the send cases.
-const SEND_REFUSALS = {
-  team: "Nothing was sent: use team_say to speak in the Team room.",
-  quiet: "Nothing was sent: this turn does not post to a chat.",
-  "already skipped": "Nothing was sent: this turn already ended with kin_skip.",
-  "already sent": "This turn's message is already sent; end the turn",
-  "non-owner check-in": "Nothing was sent: check_in is only for the owner's own chat.",
-  "no check-in": "Nothing was sent: no check-in is on. Use now or quiet to send it to the chat.",
-  "not running": "Nothing was sent: this turn is no longer running.",
-  "not posted": "Nothing was sent: Kin could not post this message.",
-  repeat: "Nothing was sent: this turn already posted that message.",
-} as const;
-
 export class KinReplySendError extends Schema.TaggedError<KinReplySendError>()(
   "KinReplySendError",
   {
@@ -304,6 +292,7 @@ export class KinReplySendError extends Schema.TaggedError<KinReplySendError>()(
 }
 
 const decodeCheckInText = Schema.decodeUnknownEffect(KinAgentMessageBody);
+const decodeStoredEvent = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
 const decodeSendText = Schema.decodeUnknownEffect(
   KinText.check(Schema.makeFilter((body) => body.trim() !== "")),
 );
@@ -2153,9 +2142,13 @@ const make = Effect.gen(function* () {
         return endingFor("nudge");
       }
       if (followUp === "nudge") {
-        const tags = yield* sql<{ tag: KinEvent["_tag"] }>`SELECT tag FROM kin_events
+        const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
           WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} ORDER BY event_id`;
-        yield* rescue(wake, input.projectId, replyNudgePrompt(tags.map(({ tag }) => tag)), "nudge");
+        const started = yield* Effect.forEach(rows, (row) =>
+          decodeStoredEvent(row.json).pipe(Effect.option),
+        );
+        const prompt = replyNudgePrompt(started.flatMap((event) => Option.toArray(event)));
+        yield* rescue(wake, input.projectId, prompt, "nudge");
         yield* finish(true);
         yield* settled(stopped);
         return endingFor(followUp);

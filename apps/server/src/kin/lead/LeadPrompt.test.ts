@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 import { expect, it } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
   KinAgentId,
   KinBriefKind,
   KinChatId,
@@ -41,6 +42,8 @@ import * as Memory from "../memory/Memory.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
+import { voiceFor } from "../reply/turnVoice.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { kinInstructions } from "./turn/session.ts";
 import {
   CHECK_IN_PULSE_RULE,
@@ -54,7 +57,7 @@ import { githubTriggerText } from "../github/eventPrompt.ts";
 import { postedResult } from "../github/GitHubWatch.ts";
 import { billTurnText } from "../work/billTurn.ts";
 import { feedTurnText } from "../numbers/words.ts";
-import { WEEKLY_RULE } from "../pulse/weekly.ts";
+import { isEveningCheckIn, isMorningCheckIn, WEEKLY_RULE, wantsWeekly } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import {
   CARRIED_TURN_NOTE,
@@ -64,6 +67,7 @@ import {
   PROMPT_HEADINGS,
   SHARED_TURN_LINE,
   TURN_DIVIDER,
+  sendHeader,
   workForText,
   renderSessionDelta,
 } from "./LeadPrompt.ts";
@@ -123,6 +127,59 @@ import {
 
 // Every prompt this file builds, on every seat and wake kind, tells no agent to write a marker word.
 const noMarker = (built: string) => Effect.sync(() => expect(built).not.toContain("NO_REPLY"));
+// Words that would have a triggered turn's plain text reach someone (only kin_send does).
+const PLAIN_TEXT_POSTS = [
+  "Nobody is waiting on this turn",
+  "post the results as your reply",
+  "Your reply goes to the owner's chat",
+  "Your reply goes to the person who asked",
+  "the reply is one line",
+  "in your reply and leave posting it",
+];
+type BuildInput = Parameters<KinLeadPrompt["Service"]["build"]>[0];
+/** The lane as the runner passes it, with the switch at its default (`replyLane.ts`). */
+const withVoice = (built: BuildInput): BuildInput => {
+  const lane = built.lane;
+  if (lane === undefined || lane.voice !== undefined || built.events.length === 0) return built;
+  const tags = built.events.map((event) => event._tag);
+  return {
+    ...built,
+    lane: {
+      ...lane,
+      voice: voiceFor({ tags, sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly }),
+      owed:
+        lane.mode === "reply" ||
+        built.events.some(
+          (event) =>
+            event._tag === "task.finished" ||
+            (event._tag === "record.changed" && event.reason === "assigned"),
+        ),
+      ...(built.events.length > 0 && tags.every((tag) => tag === "bills.read")
+        ? { quiet: true as const }
+        : {}),
+    },
+  };
+};
+// A turn a trigger started says so and names both endings; a person's turn never does.
+const headerTold = (built: BuildInput) => (text: string) =>
+  Effect.sync(() => {
+    const lane = built.lane;
+    if (lane === undefined || lane.team === true || !text.includes("Your reply goes to chat "))
+      return;
+    if (lane.mode === "reply") return expect(text).not.toContain("This turn was started by ");
+    if (lane.voice !== "send" || lane.quiet === true) return;
+    expect(text).toContain("This turn was started by ");
+    expect(text).toContain("unless you send it with kin_send");
+    const mustSend = built.events.some(
+      (event) =>
+        (event._tag === "deferral.due" && event.subject.type === "reminder") ||
+        isMorningCheckIn(event) ||
+        isEveningCheckIn(event) ||
+        wantsWeekly([event]),
+    );
+    if (lane.owed !== true && !mustSend) expect(text).toContain("end with kin_skip");
+    for (const words of PLAIN_TEXT_POSTS) expect(text).not.toContain(words);
+  });
 const withoutMarker = <A, E, R>(base: Layer.Layer<A | KinLeadPrompt, E, R>) =>
   Layer.effect(
     KinLeadPrompt,
@@ -130,11 +187,17 @@ const withoutMarker = <A, E, R>(base: Layer.Layer<A | KinLeadPrompt, E, R>) =>
       const prompt = yield* KinLeadPrompt;
       return KinLeadPrompt.of({
         ...prompt,
-        build: (built) => prompt.build(built).pipe(Effect.tap(noMarker)),
-        buildSession: (built) =>
-          prompt
-            .buildSession(built)
-            .pipe(Effect.tap((session) => noMarker(JSON.stringify(session)))),
+        build: (input) => {
+          const built = withVoice(input);
+          return prompt.build(built).pipe(Effect.tap(noMarker), Effect.tap(headerTold(built)));
+        },
+        buildSession: (input) => {
+          const built = withVoice(input);
+          return prompt.buildSession({ ...input, ...built }).pipe(
+            Effect.tap((session) => noMarker(JSON.stringify(session))),
+            Effect.tap((session) => headerTold(built)(JSON.stringify(session))),
+          );
+        },
         steer: (built) => prompt.steer(built).pipe(Effect.tap(noMarker)),
       });
     }),
@@ -2908,7 +2971,10 @@ it.effect.each([
       lane: { chatId, mode: "notice" },
       events: [event],
     });
-    expect(built.includes("Nobody is waiting on this turn")).toBe(mayBeSilent);
+    expect(built).toContain(
+      `This turn was started by ${scheduleId === "checkin-afternoon" ? "a check-in" : `the ${scheduleId.slice("checkin-".length)} check-in`}, not by a person.`,
+    );
+    expect(built.includes("With nothing anyone needs, end with kin_skip.")).toBe(mayBeSilent);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -3980,6 +4046,91 @@ it.effect(
     ),
 );
 
+// A triggered turn speaks only through kin_send; the switch off brings back today's line.
+it.effect.each([
+  { voice: "send", owed: true },
+  { voice: "send", owed: false },
+  { voice: "text", owed: true },
+] as const)("a finished task's header in $voice voice (owed: $owed)", ({ voice, owed }) =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const finished = decodeEvent({
+      _tag: "task.finished",
+      orgId,
+      agentId,
+      eventId: "task-finished",
+      receivedAt: timestamp,
+      dedupeKey: "delegated-completion:1",
+      provenance: { _tag: "system" },
+      threadId: "fixture-thread",
+      messageId: "delegated-completion:1",
+      taskIds: ["task-1"],
+      chatId,
+    });
+    yield* stored(input.wakeupId, [finished]);
+    const prompt = yield* KinLeadPrompt;
+    const built = yield* prompt.build({
+      ...input,
+      lane: { chatId, mode: "notice", voice, owed },
+      events: [finished],
+    });
+    const line =
+      voice === "text"
+        ? "Nobody is waiting on this turn."
+        : sendHeader({
+            words: "work you delegated finishing",
+            asker: owed ? "The person who asked" : undefined,
+            mustSend: false,
+          });
+    expect(built).toContain(`\n${line}\n`);
+    expect(built.includes("end with kin_skip")).toBe(voice === "send" && !owed);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { before: "trigger", sendOnly: true, reopened: true },
+  { before: "trigger", sendOnly: false, reopened: false },
+  { before: "person", sendOnly: true, reopened: false },
+] as const)(
+  "a person's message steered in says plain text posts again only after a send-only start ($before, switch $sendOnly)",
+  ({ before, sendOnly, reopened }) =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      const repo = yield* Chat.KinChatRepository;
+      yield* repo.insertMessage({
+        audience: "chat",
+        orgId,
+        chatId,
+        messageId: KinMessageId.make("steered"),
+        author: { _tag: "human", personId, memberId },
+        kind: "text",
+        body: "Is the Tidewater Freight loading slot booked?",
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: timestamp,
+        editedAt: null,
+        clientMessageId: null,
+      });
+      const message = event("steered");
+      yield* stored(input.wakeupId, [
+        before === "trigger" ? routineEvent : event("first"),
+        message,
+      ]);
+      const prompt = yield* KinLeadPrompt;
+      const steered = yield* prompt
+        .steer({ ...input, events: [message], first: true })
+        .pipe(Effect.provide(ServerSettingsService.layerTest({ kinTriggerSendOnly: sendOnly })));
+      expect(steered.includes(", so from here your plain text is posted as your reply:")).toBe(
+        reopened,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "quotes the doc section a message points at, as stored, only in a turn the owner alone reads",
   () =>
@@ -4489,4 +4640,14 @@ it.each([
 
 it("the instructions tell no agent to write a marker word", () => {
   expect(instructions).not.toContain("NO_REPLY");
+});
+
+it("the instructions send a triggered turn's words only through kin_send", () => {
+  expect(instructions).toContain(
+    "Where the turn says a trigger started it, only kin_send posts, and the send ends the turn.",
+  );
+  expect(instructions).toContain("Never send only that you started, checked or found nothing.");
+  expect(instructions).not.toMatch(
+    /Your plain text is posted to the chat on the "Your reply goes to" line;/,
+  );
 });
