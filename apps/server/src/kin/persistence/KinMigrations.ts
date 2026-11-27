@@ -157,6 +157,7 @@ import Looks from "./migrations/K233_Looks.ts";
 import Pins from "./migrations/K234_Pins.ts";
 import MailRuleRuns from "./migrations/K235_MailRuleRuns.ts";
 import BillCrops from "./migrations/K236_BillCrops.ts";
+import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -395,6 +396,7 @@ const migrations = {
   "234_Pins": Pins,
   "235_MailRuleRuns": MailRuleRuns,
   "236_BillCrops": BillCrops,
+  "237_CardTapDeliveries": CardTapDeliveries,
 };
 const loader = Migrator.fromRecord(migrations);
 
