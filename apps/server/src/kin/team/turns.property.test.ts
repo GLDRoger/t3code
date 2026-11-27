@@ -94,7 +94,11 @@ it.prop(
       const refusal = Turns.sayRefusal(d, said);
       const deciderOrChair = ["finance", "chief"].includes(holder.agentId);
       if (said.end === "decide" && !deciderOrChair && refusal === null) return false;
-      if (said.end === "bring" && holder.kind !== "closing" && deciderOrChair !== (refusal === null))
+      if (
+        said.end === "bring" &&
+        holder.kind !== "closing" &&
+        deciderOrChair !== (refusal === null)
+      )
         return false;
       if (said.widen && d.widened && refusal === null) return false;
       d = refusal === null ? Turns.afterSay(d, said) : Turns.afterPass(d, holder.agentId);
