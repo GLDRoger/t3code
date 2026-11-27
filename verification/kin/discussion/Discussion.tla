@@ -227,7 +227,7 @@ Settle(ph, f, t, p, tm) ==
   /\ TellNow(f, ph)
 
 (* KinTeam.say: team_say from the agent whose turn it is; turns.ts afterSay. *)
-Say(who, intent, to, widen, end, touches) ==
+Says(who, intent, to, widen, end, touches) ==
   /\ stage = "talk" /\ Allowed(who, intent, widen, end)
   /\ msgs' = msgs + 1 /\ last' = who /\ widened' = (widened \/ widen)
   /\ objections' = objections + (IF turn.kind = "object" THEN 1 ELSE 0)
@@ -327,10 +327,19 @@ OpensBeside ==
   /\ UNCHANGED <<stage, side, phase, final, turn, pending, msgs, widened, objUsed, afterObj, last,
                  offers, chaired, turnMsgs, pitches, objections, origin, told, checkIns>>
 
+(* Only the agent whose turn it is speaks, and only in the talk (Allowed). An objection turn's
+   message is the objection; elsewhere its intent is unread. Only an ordinary message reads whom
+   it asks, and a park or a bring reads neither that nor whom it touches. Trying only these
+   gives the same steps as trying every value. *)
+Say ==
+  \E who \in {a \in Agents : stage = "talk" /\ ~final /\ a = turn.who}, widen \in BOOLEAN,
+     end \in {"none", "decide", "park", "bring"} :
+    \E to \in IF end = "none" THEN Agents \cup {"none"} ELSE {"none"},
+       touches \in IF end \in {"none", "decide"} THEN SUBSET Touchable ELSE {{}} :
+      Says(who, IF turn.kind = "object" THEN "objection" ELSE "plain", to, widen, end, touches)
+
 Move ==
-  \/ \E who \in Agents, intent \in {"plain", "objection"}, to \in Agents \cup {"none"},
-        widen \in BOOLEAN, end \in {"none", "decide", "park", "bring"}, touches \in SUBSET Touchable :
-       Say(who, intent, to, widen, end, touches)
+  \/ Say
   \/ Pass
 
 Next ==
