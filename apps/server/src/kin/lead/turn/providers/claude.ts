@@ -87,6 +87,19 @@ const kinTools = (options: Options, plan: KinSessionPlan) =>
     ? { search: "false" as const, mcpServers: undefined }
     : { search: "true" as const, mcpServers: options.mcpServers };
 
+const nativeTools = (plan: KinSessionPlan, search: boolean) => {
+  if (plan.seat === "delegated") return undefined;
+  const lookup = search ? ["ToolSearch"] : [];
+  switch (plan.abilities) {
+    case "shellAndFiles":
+      return [...OWNER_SEAT_NATIVE_TOOLS, ...lookup];
+    case "lookup":
+      return [...lookup, CONFINED_SEARCH];
+    case "none":
+      return lookup;
+  }
+};
+
 const ownerContextHooks = (
   hooks: NonNullable<Options["hooks"]>,
   prepared: () => ReturnType<SessionContext.KinSessionContext["Service"]["forThread"]>,
@@ -147,6 +160,7 @@ const apply = (
   const { settings, env } = options;
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
+  const tools = nativeTools(plan, loading.search === "true");
   const confined = plan.seat === "confined";
   const owner = plan.seat === "owner";
   const hooks =
@@ -157,12 +171,9 @@ const apply = (
     ...(plan.instructions === undefined
       ? {}
       : { systemPrompt: { type: "custom" as const, prompt: plan.instructions, snapshot: false } }),
+    ...(tools === undefined ? {} : { tools }),
     ...(confined
       ? {
-          tools: [
-            ...(loading.search === "true" ? ["ToolSearch"] : []),
-            ...(plan.nativeSearch ? [CONFINED_SEARCH] : []),
-          ],
           disallowedTools: [
             ...new Set([
               ...(options.disallowedTools ?? []),
@@ -172,10 +183,6 @@ const apply = (
         }
       : owner
         ? {
-            tools: [
-              ...OWNER_SEAT_NATIVE_TOOLS,
-              ...(loading.search === "true" ? ["ToolSearch"] : []),
-            ],
             disallowedTools: [
               ...new Set([
                 ...(options.disallowedTools ?? []),
@@ -353,8 +360,9 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
   ).pipe(Layer.provide(Layer.merge(base, KinSessions.layer)));
 
 export const claude = {
-  turnContextBeside: true,
   driver: DRIVER,
+  lookup: "provider",
+  turnContextBeside: true,
   capabilities,
   install,
 } satisfies KinProvider<ClaudeAdapterV2.ClaudeAgentSdkQueryRunner>;
