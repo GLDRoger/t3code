@@ -2168,7 +2168,7 @@ it.effect.each([true, false])(
           expect
             .soft(yield* propose(proposal))
             .toContain(
-              "A mail rule proposal needs a message the owner or a co-owner typed this turn in a direct chat with this lead, so ask for the rule there.",
+              "Only the owner or a co-owner can ask for a mail rule, in a message typed this turn in a direct chat with this lead, so nothing was proposed.",
             );
         }
         yield* sql`UPDATE kin_chats SET kind = 'direct', team_id = NULL, direct_key = ${direct!.directKey}
@@ -2203,6 +2203,12 @@ it.effect.each([true, false])(
           });
           expect
             .soft(yield* propose({ ...proposal, sourceEventId: undefined }))
+            .toContain(card.widgetId);
+          // The mailbox by its label, and the lead left out for this one, is the same proposal.
+          expect
+            .soft(
+              yield* propose({ ...proposal, connectionId: "juniper orders", agentId: undefined }),
+            )
             .toContain(card.widgetId);
           expect.soft(yield* cards()).toEqual(drawn);
           // A changed proposal for the same filters is a new card showing the change.

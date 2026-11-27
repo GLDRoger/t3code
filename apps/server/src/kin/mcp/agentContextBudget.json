@@ -2,18 +2,18 @@
   "mcpToolListJsonBytes": 64848,
   "kinToolListJsonBytes": 3125,
   "kinInstructionsBytes": {
-    "owner": 44795,
-    "confined": 44743
+    "owner": 45089,
+    "confined": 45037
   },
-  "kinSharedInstructionsHash": "5fea36c08e6e4df923d71ea4a8ad0b9419ce5e28f04fe0a01f178bf77cd7aa1a",
+  "kinSharedInstructionsHash": "37ab9e37b9de6aac8ce900921b60949d47c7d75826d939a91b735faf13368490",
   "kinLeadToolListJsonBytes": {
-    "engineering": 142220,
-    "engineeringBesideFinanceAndSales": 128411,
-    "finance": 121398,
+    "engineering": 142206,
+    "engineeringBesideFinanceAndSales": 128397,
+    "finance": 121384,
     "shared": 75205,
-    "social": 124127,
-    "socialBesideFinanceAndSales": 110318,
-    "support": 121398
+    "social": 124113,
+    "socialBesideFinanceAndSales": 110304,
+    "support": 121384
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
   "kinLeadAlwaysLoadedToolBytes": 31692,
@@ -247,8 +247,8 @@
       "schema": 2208
     },
     "mail_rule": {
-      "desc": 450,
-      "schema": 937
+      "desc": 446,
+      "schema": 927
     },
     "memory_label": {
       "desc": 380,

@@ -29,11 +29,18 @@ import {
   prepareMailRule,
 } from "./ruleDraft.ts";
 import { mailRuleFilter } from "./ruleMatch.ts";
+import { resolveConnection } from "../connections/ConnectionRows.ts";
 
 export const MailRuleProposal = Schema.Struct({
   sourceEventId: Schema.NonEmptyString.check(Schema.isMaxLength(160)),
-  connectionId: KinMailRuleCreateInput.fields.connectionId,
-  agentId: KinMailRuleCreateInput.fields.agentId,
+  connectionId: KinMailRuleCreateInput.fields.connectionId.annotate({
+    description: "The mailbox, by its label or id.",
+  }),
+  agentId: Schema.optional(
+    KinMailRuleCreateInput.fields.agentId.annotate({
+      description: "Leave out: the rule runs on you.",
+    }),
+  ),
   match: KinMailRuleCreateInput.fields.match,
   what: KinMailRuleCreateInput.fields.what,
   monthlyCap: KinMailRuleCreateInput.fields.monthlyCap,
@@ -44,7 +51,7 @@ const decodeMatch = Schema.decodeUnknownOption(Schema.fromJsonString(KinMailRule
 const ownMessage = new KinChatError({
   reason: "not_allowed",
   message:
-    "A mail rule proposal needs a message the owner or a co-owner typed this turn in a direct chat with this lead, so ask for the rule there.",
+    "Only the owner or a co-owner can ask for a mail rule, in a message typed this turn in a direct chat with this lead, so nothing was proposed.",
 });
 
 const sourceOf = Effect.fn("KinMailRules.proposalSource")(function* (
@@ -84,14 +91,21 @@ const sourceOf = Effect.fn("KinMailRules.proposalSource")(function* (
 
 export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
   turn: Effect.Success<ReturnType<typeof resolveLead>>,
-  input: typeof MailRuleProposal.Type,
+  proposal: typeof MailRuleProposal.Type,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const chat = yield* KinChatService;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const { orgId } = turn;
-      const person = yield* sourceOf(turn, input.sourceEventId);
+      const person = yield* sourceOf(turn, proposal.sourceEventId);
+      // A lead knows a mailbox by the label its turn shows, and never sees an agent id.
+      const named = yield* resolveConnection(orgId, proposal.connectionId);
+      const input = {
+        ...proposal,
+        connectionId: named._tag === "found" ? named.row.connectionId : proposal.connectionId,
+        agentId: proposal.agentId ?? turn.agentId,
+      };
       const { contentSha256, monthlyCap } = yield* prepareMailRule(input);
       const mailbox = yield* companyMailRuleMailbox(orgId, input.connectionId);
       const now = yield* Clock.currentTimeMillis;
