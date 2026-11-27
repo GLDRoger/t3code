@@ -1024,6 +1024,7 @@ export const KinEvent = Schema.Union([
     ...EventBase,
     chatId: KinChatId,
     batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    outside: Schema.optional(Schema.Literal(true)),
     bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(10),

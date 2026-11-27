@@ -7,6 +7,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
+import { billingHint, isBillFile } from "./MailSignals.ts";
 import {
   ACTIVITY_MAIL,
   AGENDA_LIMIT,
@@ -563,7 +564,8 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
   context: MailContext,
   messageId: string,
 ) {
-  const found = yield* api(context, `${GRAPH}/messages/${encodeURIComponent(messageId)}`, {
+  const url = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
+  const found = yield* api(context, url, {
     params: { $select: ARRIVAL_FIELDS },
   }).pipe(
     Effect.map((message) => ({ message, gone: false })),
@@ -584,7 +586,7 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
   const from = field(message, "from");
   const fromAddress = addressOf(from);
-  return {
+  const arrival = {
     messageId,
     threadId,
     receivedAt,
@@ -600,6 +602,17 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     ...automationOf(message),
     hasFile: field(message, "hasAttachments") === true,
   } satisfies MailArrival;
+  const billing = billingHint(arrival);
+  if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
+  const attachments = yield* api(context, `${url}/attachments`, {
+    params: { $select: "name,contentType" },
+  });
+  const hasBillFile = list(field(attachments, "value")).some(
+    (part) =>
+      field(part, "@odata.type") === "#microsoft.graph.fileAttachment" &&
+      isBillFile(text(field(part, "name")), text(field(part, "contentType"))),
+  );
+  return hasBillFile ? { ...arrival, hasBillFile: true as const } : arrival;
 });
 
 const profile = (http: HttpClient.HttpClient, token: string) =>

@@ -50,6 +50,7 @@ import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecom
 import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
 import { KinBillRpcs, KIN_BILL_RPC_SCOPES } from "./kinBills.ts";
+import { KinBillSenderRpcs } from "./kinBillSenders.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -228,6 +229,7 @@ export const KinRpcs = [
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
   ...KinBankSenderRpcs,
+  ...KinBillSenderRpcs,
   ...KinHostRpcs,
   ...KinWatchRpcs,
   ...KinBillRpcs,
@@ -540,6 +542,11 @@ const KIN_RPC_ACCESS = {
   "kin.bankSenders.list": "owner_level",
   "kin.bankSenders.add": "owner_level",
   "kin.bankSenders.remove": "owner_level",
+  "kin.billSenders.list": "owner_level",
+  "kin.billSenders.approve": "owner_level",
+  "kin.billSenders.decline": "owner_level",
+  "kin.billSenders.remove": "owner_level",
+  "kin.billSenders.add": "owner_level",
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
@@ -668,6 +675,11 @@ export const KIN_RPC_AGGREGATES = {
   "kin.bankSenders.list": "kin-work",
   "kin.bankSenders.add": "kin-work",
   "kin.bankSenders.remove": "kin-work",
+  "kin.billSenders.list": "kin-work",
+  "kin.billSenders.approve": "kin-work",
+  "kin.billSenders.decline": "kin-work",
+  "kin.billSenders.remove": "kin-work",
+  "kin.billSenders.add": "kin-work",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
   "kin.host.status": "kin-host",

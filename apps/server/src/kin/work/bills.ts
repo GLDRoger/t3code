@@ -48,11 +48,11 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { shownAsPicture } from "../lead/turn/content.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { countryFirst, homeCurrency } from "./companyProfile.ts";
+import { billReader } from "./billReader.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { currencyDigits, dayIn, farAbove, largestIn } from "./money.ts";
 import { fold } from "./nameMatch.ts";
@@ -67,7 +67,6 @@ import { notAVendor } from "./vendorName.ts";
  * this file's: the duplicate check, one suggested expense per bill read cleanly, the card.
  */
 
-const FINANCE_DOMAIN = "finance";
 /** Bills a quiet turn reads at most, within the turn's image budget (`TURN_FILES`). */
 const BILLS_PER_TURN = 5;
 const GROUP_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -198,14 +197,6 @@ const billRow = Effect.fn("KinBills.billRow")(function* (orgId: KinOrgId, hash: 
   const [row] = yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
     WHERE org_id = ${orgId} AND sha256 = ${hash}`;
   return row;
-});
-
-/** The company's live Finance agent, else its Chief of staff, else its first live agent. */
-const readerOf = Effect.fn("KinBills.readerOf")(function* (orgId: KinOrgId) {
-  const sql = yield* SqlClient.SqlClient;
-  const finance = yield* liveLead(sql, orgId, { prefer: FINANCE_DOMAIN });
-  if (finance === undefined || finance.domain === FINANCE_DOMAIN) return finance;
-  return yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
 });
 
 /** A retried write's first answer, or nothing; the same id asking for something else is refused. */
@@ -404,6 +395,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           provenance: { _tag: "system" },
           chatId: KinChatId.make(first.cardChatId),
           batchId,
+          outside: true,
           bills: hashes,
         })
         .pipe(
@@ -416,7 +408,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
     let reader = KinAgentId.make(first.agentId);
     // A retired reader's bills go to the company's reader now; with none, they can't be read.
     if (!(yield* send(reader))) {
-      const next = yield* readerOf(orgId);
+      const next = yield* billReader(orgId);
       if (next === undefined || next.agentId === reader || !(yield* send(next.agentId))) {
         yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
             read_at = ${now}
@@ -857,7 +849,7 @@ export const add = Effect.fn("KinBills.add")(function* (
   );
   if (stored !== undefined) return yield* decodeAdded(stored);
   yield* countryFirst(input.orgId);
-  const reader = yield* readerOf(input.orgId);
+  const reader = yield* billReader(input.orgId);
   if (reader === undefined) return yield* invalid("This company has no agent to read bills yet.");
   const chatId = yield* cardChat(input.orgId, person.personId, reader.agentId);
   if (chatId === undefined)

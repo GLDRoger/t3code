@@ -64,6 +64,8 @@ const tableNames = [
   "kin_bank_statements",
   "kin_bill_reads",
   "kin_bill_requests",
+  "kin_bill_sender_mail",
+  "kin_bill_senders",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -2390,7 +2392,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'arrival', 'mail', 'message', 1, 'settled')`;
       const rows = sql`SELECT arrival_id, rule_id, rule_state, has_file, sender_check
         FROM kin_arrivals`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",
@@ -2409,7 +2411,7 @@ describe("Kin migrations", () => {
       const invalid = yield* Effect.exit(sql`UPDATE kin_arrivals SET has_file = 2`);
       assert.isTrue(Exit.isFailure(invalid));
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",

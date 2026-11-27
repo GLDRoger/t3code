@@ -116,6 +116,7 @@ const eventSamples = {
     _tag: "bills.read",
     chatId: "chat-1",
     batchId: "batch-1",
+    outside: true,
     bills: ["a".repeat(64)],
   },
   resume: {

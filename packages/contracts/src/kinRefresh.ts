@@ -25,6 +25,7 @@ export const KIN_REFRESH_TOPICS = [
   "workChoices",
   "moneyBudgets",
   "moneyStatements",
+  "billSenders",
   "pulse",
   "budget",
   "workLists",
@@ -54,6 +55,7 @@ export const KinRefreshes = Schema.Struct({
   workChoices: Schema.optional(NonNegativeInt),
   moneyBudgets: Schema.optional(NonNegativeInt),
   moneyStatements: Schema.optional(NonNegativeInt),
+  billSenders: Schema.optional(NonNegativeInt),
   pulse: Schema.optional(NonNegativeInt),
   budget: Schema.optional(NonNegativeInt),
   /** A list's definition: made, renamed, archived, its fields or numbering. Absent from older hosts. */
