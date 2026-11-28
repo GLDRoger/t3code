@@ -49,7 +49,7 @@ export const KinDeferralGithubReader = Context.Reference<KinDeferralGithubReader
 );
 
 // Callers hold the org memory lock, so every GitHub read for one sync shares this budget.
-export const KinDeferralGithubBudget = Context.Reference<Duration.Input>(
+const KinDeferralGithubBudget = Context.Reference<Duration.Input>(
   "t3/kin/triggers/deferralGithub/KinDeferralGithubBudget",
   { defaultValue: () => "10 seconds" },
 );
