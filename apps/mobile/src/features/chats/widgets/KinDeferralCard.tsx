@@ -99,7 +99,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
           <>
             <Text
               textRole="footnote"
-              numberOfLines={titleLines(2)}
+              numberOfLines={titleLines(4)}
               className="font-t3-medium text-foreground-muted"
             >
               {deferral.summary}

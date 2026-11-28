@@ -17,6 +17,7 @@ import {
   kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
+  type KinBillField,
   type KinBillRowView,
   type KinBillTone,
 } from "@t3tools/client-runtime/kin/kinBills";
@@ -589,6 +590,8 @@ const TONE: Record<KinBillTone, string> = {
 };
 // From this text size a field's label goes above its value, so neither breaks mid-word.
 const LARGE_TEXT_SCALE = 1.5;
+const WHOLE_FIELDS: ReadonlySet<KinBillField["key"]> = new Set(["number", "amount"]);
+const wordCount = (text: string | null) => Math.max(1, (text ?? "").trim().split(/\s+/).length);
 
 const CHANGES: ReadonlySet<KinBillAction> = new Set([
   "keep",
@@ -714,7 +717,12 @@ const BillRow = memo(function BillRow(props: {
               </Text>
               <Text
                 textRole="footnote"
-                numberOfLines={stacked ? undefined : 1}
+                {...(!stacked
+                  ? { numberOfLines: 1 }
+                  : WHOLE_FIELDS.has(field.key)
+                    ? // A bill number or amount shrinks to fit rather than breaking mid-number.
+                      { numberOfLines: wordCount(field.value), adjustsFontSizeToFit: true }
+                    : {})}
                 className={stacked ? "text-foreground" : "flex-1 text-foreground"}
               >
                 {field.value ?? ""}
