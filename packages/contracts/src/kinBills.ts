@@ -11,8 +11,9 @@ import {
   KinPersonId,
   KinWidgetId,
 } from "./kinChat.ts";
+import { KIN_BILL_SENDER_RPC_SCOPES } from "./kinBillSenders.ts";
 import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
-import { KinRecordKey } from "./kinWork.ts";
+import { KinRecordKey, KinRecordState } from "./kinWork.ts";
 
 /**
  * Bills in bulk: an owner-level person's bill photos and PDFs, each read once in a quiet turn and
@@ -81,6 +82,7 @@ export const KinBillBatchCard = Schema.Struct({
   /** The card's fixed words: what older clients show, and all its push carries. */
   text: Text,
   batchId: KinBillBatchId,
+  from: Schema.optional(Schema.Literal("mail")),
   status: Schema.Literals(["reading", "done"]),
   /** Every image or PDF the add took, the already-added ones included. */
   total: NonNegativeInt,
@@ -181,6 +183,12 @@ export const KinBillRow = Schema.Struct({
   batchId: KinBillBatchId,
   /** Opened with `assets.createUrl`, as any file on an entry. */
   file: KinFileRef,
+  mail: Schema.optional(
+    Schema.Struct({
+      from: TrimmedNonEmptyString.check(Schema.isMaxLength(254)),
+      receivedAt: IsoDateTime,
+    }),
+  ),
   state: KinBillState,
   read: KinBillRead,
   /** In plain words, what could not be read. */
@@ -200,6 +208,7 @@ export const KinBillRow = Schema.Struct({
       key: KinRecordKey,
       rev: NonNegativeInt,
       title: Schema.String,
+      state: Schema.optional(KinRecordState),
       /** Its own figures, which a kept or dropped bill shows in place of what was read. */
       vendor: Schema.optional(Label),
       date: Schema.optional(KinDay),
@@ -310,6 +319,7 @@ export const KinBillRpcs = [
 ] as const;
 
 export const KIN_BILL_RPC_SCOPES = {
+  ...KIN_BILL_SENDER_RPC_SCOPES,
   [KIN_BILL_WS_METHODS.add]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.list]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.keepRead]: AuthKinChatScope,

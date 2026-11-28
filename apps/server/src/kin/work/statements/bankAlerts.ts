@@ -1,3 +1,4 @@
+import { normalizeAddress } from "../../connections/MailSignals.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import { type KinOrgId, KinPersonId } from "@t3tools/contracts";
@@ -25,7 +26,6 @@ import {
   companyAlertMailbox,
   encodeAccounts,
   HELD_ALERT_WINDOW,
-  normalizeAddress,
   noteCandidate,
   sendersOf,
   type ApprovedSender,

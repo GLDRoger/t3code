@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 
+import { isReplyOrForward } from "../../connections/MailSignals.ts";
 import { dmarcPassedFor } from "../../connections/MailText.ts";
 import type { AlertMail, AlertReading, AlertRejection } from "./bankAlerts.ts";
 import type * as BankAlertReader from "./BankAlertReader.ts";
@@ -15,7 +16,7 @@ export const authenticationRejection = (
   mail: AlertMail,
   address: string,
 ): "sender" | "unverified" | undefined =>
-  /^\s*(?:re|fwd?)\s*:/i.test(mail.subject)
+  isReplyOrForward(mail.subject)
     ? "sender"
     : senderDmarcPassed(mail.authResults, address)
       ? undefined

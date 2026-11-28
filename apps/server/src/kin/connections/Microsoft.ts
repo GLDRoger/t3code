@@ -7,6 +7,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
+import { billingHint, isBillFile } from "./MailSignals.ts";
 import {
   ACTIVITY_MAIL,
   AGENDA_LIMIT,
@@ -394,6 +395,27 @@ const conversation = (context: MailContext, threadId: string, files: boolean) =>
     ),
   );
 
+const singleMessage: MailVendor["message"] = Effect.fn("KinMicrosoft.message")(
+  function* (context, messageId) {
+    const url = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
+    const message = yield* api(context, url, {
+      params: { $select: FULL },
+      prefer: 'outlook.body-content-type="html"',
+    });
+    const files =
+      field(message, "hasAttachments") === true
+        ? yield* api(context, `${url}/attachments`, {
+            params: { $select: "id,name,contentType,size" },
+          })
+        : undefined;
+    return messageOf(message, files);
+  },
+  Effect.catchIf(
+    (error) => answeredWith(error, 404),
+    () => Effect.succeed(null),
+  ),
+);
+
 /**
  * Changed, cancelled and deleted events, each occurrence of a series on its own: Graph's delta of
  * the calendar view. Only a later round names deletions, so the cursor keeps the round's link and
@@ -562,8 +584,10 @@ const inboxChanges = Effect.fn("KinMicrosoft.inboxChanges")(function* (
 const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
   context: MailContext,
   messageId: string,
+  partHints: (arrival: MailArrival) => boolean = () => true,
 ) {
-  const found = yield* api(context, `${GRAPH}/messages/${encodeURIComponent(messageId)}`, {
+  const url = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
+  const found = yield* api(context, url, {
     params: { $select: ARRIVAL_FIELDS },
   }).pipe(
     Effect.map((message) => ({ message, gone: false })),
@@ -584,7 +608,7 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
   const from = field(message, "from");
   const fromAddress = addressOf(from);
-  return {
+  const arrival = {
     messageId,
     threadId,
     receivedAt,
@@ -600,6 +624,18 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     ...automationOf(message),
     hasFile: field(message, "hasAttachments") === true,
   } satisfies MailArrival;
+  if (!partHints(arrival)) return arrival;
+  const billing = billingHint(arrival);
+  if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
+  const attachments = yield* api(context, `${url}/attachments`, {
+    params: { $select: "name,contentType" },
+  });
+  const hasBillFile = list(field(attachments, "value")).some(
+    (part) =>
+      field(part, "@odata.type") === "#microsoft.graph.fileAttachment" &&
+      isBillFile(text(field(part, "name")), text(field(part, "contentType"))),
+  );
+  return hasBillFile ? { ...arrival, hasBillFile: true as const } : arrival;
 });
 
 const profile = (http: HttpClient.HttpClient, token: string) =>
@@ -796,7 +832,7 @@ const microsoft: MailVendor = {
     return api(context, at.url, {
       params: at.first
         ? {
-            $select: SUMMARY,
+            $select: page.headersOnly ? "id,conversationId,from,receivedDateTime" : SUMMARY,
             // Several messages can share a conversation, so a page reads more than it shows.
             $top: String(Math.min(page.max * 3, 75)),
             ...(page.query === null
@@ -812,6 +848,7 @@ const microsoft: MailVendor = {
     );
   },
   attachment: attachmentOf,
+  message: singleMessage,
   thread: conversation,
   agenda: (context, { from, to }) =>
     agendaPages((next) =>

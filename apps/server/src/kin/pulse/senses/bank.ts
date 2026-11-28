@@ -234,8 +234,10 @@ export const overpaymentConsequence = (input: {
   const others = input.others.map((one) => `${one.key} (${amount(one.owed)})`);
   return fitted(
     (shown) =>
-      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Once confirmed, it pays this invoice in full and keeps ${amount(received - owed)} as ${client}'s credit.${
-        others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
+      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. ${
+        others.length === 0
+          ? `Once confirmed, it pays this invoice in full and keeps ${amount(received - owed)} as ${client}'s credit.`
+          : `${client}'s other open invoices: ${listed(others, shown)}. One card can pay this invoice in full, then those in turn, and keep what is left as ${client}'s credit, so name them on it after this invoice.`
       } It isn't recorded until it is confirmed on a card.`,
     Math.min(4, others.length),
   );

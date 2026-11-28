@@ -2518,6 +2518,36 @@ describe("receipts", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  const paymentWarning =
+    "No bank statement or alert shows this money yet. This rests on what Kin was told.";
+  it.effect.each([paymentWarning, "The bank shows this payment."] as const)(
+    "keeps the payment warning separate from the note: %s",
+    (note) =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        yield* issuedInvoice(asked, "INV-1");
+        const paid = yield* turn(4, "Invented Acme says it paid 500");
+        const claim = yield* LeadMoney.payment(scope, {
+          sourceEventId: paid,
+          key: "INV-1",
+          amount: "500",
+          paidOn: "2026-11-05",
+          note,
+        });
+        if (!("status" in claim) || claim.status !== "proposed")
+          return assert.fail("expected a card");
+        const sql = yield* SqlClient.SqlClient;
+        const [card] = yield* sql<{
+          detail: string;
+        }>`SELECT json_extract(state_json, '$.detail') AS detail
+          FROM kin_widgets WHERE widget_id = ${`choice:card-kin-receipt:${claim.proposal}`}`;
+        assert.deepStrictEqual(card?.detail.split("\n").slice(-2), [
+          paymentWarning,
+          `Agent's note: ${note}`,
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "record money an agent asks for only on the owner's Confirm, and never stand on money taken back",
     () =>

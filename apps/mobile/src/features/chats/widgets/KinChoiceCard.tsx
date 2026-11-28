@@ -20,6 +20,7 @@ import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { KinAddressSentence } from "../components/KinSenderAddress";
 import { kinClient } from "../state/kinClient";
 import {
   kinAddressPieces,
@@ -752,9 +753,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
             {choice.askedBy}
           </Text>
         )}
-        <Text textRole="headline" className="font-t3-bold text-foreground">
-          {choice.question}
-        </Text>
+        <KinAddressSentence
+          text={choice.question}
+          textRole="headline"
+          className="font-t3-bold text-foreground"
+        />
         {choice.send !== null && shownEdit !== null ? (
           <SendEditor
             send={choice.send}

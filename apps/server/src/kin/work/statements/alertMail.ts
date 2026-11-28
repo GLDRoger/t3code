@@ -1,3 +1,4 @@
+import { normalizeAddress } from "../../connections/MailSignals.ts";
 import { KinConnectionId, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
@@ -20,13 +21,7 @@ import {
   takeAlerts,
   threadSeen,
 } from "./bankAlerts.ts";
-import {
-  HELD_ALERT_WINDOW,
-  list,
-  normalizeAddress,
-  sendersOf,
-  type ApprovedSender,
-} from "./bankSenderRows.ts";
+import { HELD_ALERT_WINDOW, list, sendersOf, type ApprovedSender } from "./bankSenderRows.ts";
 import { candidateGate, type CandidateHint } from "./bankAlertCandidates.ts";
 import { senderDmarcPassed } from "./bankAlertMailReading.ts";
 

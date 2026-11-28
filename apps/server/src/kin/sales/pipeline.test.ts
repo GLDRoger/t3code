@@ -822,6 +822,16 @@ it.effect(
       assert.deepStrictEqual([worded.total, worded.withoutText], [1, all.total]);
       assert.isAbove(all.total, 1);
       assert.notProperty(all, "withoutText");
+      // A client's name finds none of its work, whose own words don't carry it: the answer says so.
+      const byName = yield* LeadWork.query(scope, { text: "Invented Harbourline" });
+      assert.deepStrictEqual(
+        [byName.total, byName.textNote],
+        [
+          0,
+          "text matches only an entry's own title and notes, never its client's or project's name: ask by client or project for theirs.",
+        ],
+      );
+      assert.notProperty(worded, "textNote");
       // "Sent the quote, next step call her Monday": the step still open is in the answer.
       const stepped = yield* LeadWork.update(scope, {
         key: KinRecordKey.make(deal!),

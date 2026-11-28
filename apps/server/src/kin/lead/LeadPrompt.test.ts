@@ -86,6 +86,7 @@ import {
   snapshotSource,
   stampEvent,
   stampReads,
+  storedStamp,
 } from "./OutsideContent.ts";
 import { ownerLevelAsked } from "../people/KinAccess.ts";
 import { recordedAudience } from "./Audience.ts";
@@ -2421,7 +2422,12 @@ it.effect("a reader handed another lead's bills builds their turn in a chat it i
       events: [bills],
       lane: { chatId: cardChat, mode: "notice" },
     });
-    expect(built).toContain("Bills someone added to read in the background: B1 is image 1.");
+    expect(yield* outsideRead({ orgId, wakeupId: input.wakeupId })).toBe(true);
+    const stamp = yield* storedStamp(orgId, `${input.wakeupId}:${bills.eventId}`);
+    expect(stamp === undefined ? [] : stampReads(stamp)).toEqual([
+      { k: "service", id: "bills.read" },
+    ]);
+    expect(built).toContain("Bills to read in the background: B1 is image 1.");
     expect(built).toContain("Record nothing else, then end with kin_skip.");
   }).pipe(Effect.provide(layer)),
 );

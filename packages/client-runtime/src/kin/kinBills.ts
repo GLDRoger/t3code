@@ -3,6 +3,7 @@ import {
   KIN_BILL_BATCH_CARD,
   KinBillBatchCard,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  formatKinWhen,
   kinWhenFormat,
   parseKinMoney,
   type KinAttachment,
@@ -70,6 +71,7 @@ export const KIN_BILLS = {
     reading: "Reading…",
     read: "Read",
     kept: "Kept",
+    keptToPay: "Kept · to pay",
     dropped: "Dropped",
     unreadable: "Couldn't read this one",
     /** Read cleanly, but its amount or date is the owner's to check. */
@@ -118,6 +120,9 @@ export const KIN_BILLS = {
     detail: "Only the owner or a co-owner adds and keeps bills.",
   },
   more: "Show more",
+  /** The host's own words on the expense a mailed bill becomes. */
+  fromMail: (address: string, date: string) =>
+    `Read by Kin from a mail from ${address}, received ${date}.`,
 } as const;
 
 const dayOfYear = kinWhenFormat("dateYear", { zone: "UTC" });
@@ -184,6 +189,10 @@ export interface KinBillRowView {
   readonly row: KinBillRow;
   readonly file: KinFileRef;
   readonly pdf: boolean;
+  /** Any file that is not a picture (a PDF, a mailed bill's text) shows as a file, never drawn. */
+  readonly asFile: boolean;
+  /** What its taps call it: vendor and amount once read, else its number in the batch. */
+  readonly name: string;
   readonly label: string;
   readonly tone: KinBillTone;
   readonly fields: ReadonlyArray<KinBillField>;
@@ -194,6 +203,8 @@ export interface KinBillRowView {
   readonly duplicateOf: KinRecordKey | null;
   /** Why "Keep all" left it, in the host's words, until the list reads again. */
   readonly skipped: string | null;
+  /** Who mailed it and when, for a bill that came by mail; never its subject or body. */
+  readonly mailLine: string | null;
   readonly accessibilityLabel: string;
 }
 
@@ -215,6 +226,9 @@ function kinBillAmountText(amount: string | undefined, currency: string | undefi
     ? kinMoneyText(read.money, true)
     : `${amount.trim()} ${currency}`;
 }
+
+// The host's own problem when it has no more to say: the label already says it.
+const COULD_NOT_READ = "Kin could not read this one";
 
 const blank = (value: string | undefined) =>
   value === undefined || value.trim() === "" ? null : value.trim();
@@ -270,6 +284,8 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
 }
 
 function kinBillStateLabel(row: KinBillRow) {
+  if (row.state === "kept" && row.mail !== undefined && row.expense?.state === "open")
+    return KIN_BILLS.state.keptToPay;
   if (row.state === "duplicate")
     return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
   if (row.state !== "unreadable" || row.readClean !== true) return KIN_BILLS.state[row.state];
@@ -290,6 +306,9 @@ function kinBillExpenseFields(
   if (expense.amount === undefined && expense.date === undefined && expense.vendor === undefined)
     return null;
   const category = blank(expense.category);
+  const day =
+    expense.date ??
+    (row.mail !== undefined && expense.state === "open" ? row.read.date : undefined);
   const money = (value: KinSignedMoney | undefined) =>
     value === undefined ? null : kinMoneyText(value, true);
   return [
@@ -297,8 +316,7 @@ function kinBillExpenseFields(
     {
       key: "date",
       label: KIN_BILLS.field.date,
-      value:
-        expense.date === undefined ? null : dayOfYear.format(new Date(`${expense.date}T00:00:00Z`)),
+      value: day === undefined ? null : dayOfYear.format(new Date(`${day}T00:00:00Z`)),
     },
     { key: "amount", label: KIN_BILLS.field.amount, value: money(expense.amount) },
     { key: "tax", label: KIN_BILLS.field.tax, value: money(expense.tax) },
@@ -316,21 +334,46 @@ export function kinBillRowView(
   options: {
     readonly categoryLabel?: (category: string) => string;
     readonly skipped?: ReadonlyMap<string, string>;
+    /** The reader's zone and locale; the device's when absent. */
+    readonly zone?: string;
+    readonly locale?: string;
+    /** Its place in the batch from 1, which names a bill nothing was read off. */
+    readonly position?: number;
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
   const fields =
     kinBillExpenseFields(row, options.categoryLabel) ??
     kinBillFields(row.read, options.categoryLabel);
-  const problem = row.state === "unreadable" ? (row.problem ?? null) : null;
+  const problem =
+    row.state === "unreadable" && row.problem !== COULD_NOT_READ ? (row.problem ?? null) : null;
+  const vendor = fields.find((field) => field.key === "vendor")?.value ?? null;
+  const amount = fields.find((field) => field.key === "amount")?.value ?? null;
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],
   );
+  const mailLine =
+    row.mail === undefined
+      ? null
+      : KIN_BILLS.fromMail(
+          row.mail.from,
+          formatKinWhen(new Date(row.mail.receivedAt), "date", {
+            zone: options.zone,
+            locale: options.locale,
+          }),
+        );
   return {
     key: row.sha256,
     row,
     file: row.file,
     pdf: kinBillIsPdf(row.file),
+    asFile: kinBillIsPdf(row.file) || !row.file.mimeType.toLowerCase().startsWith("image/"),
+    name:
+      vendor !== null && amount !== null
+        ? `${vendor}, ${amount}`
+        : options.position === undefined
+          ? row.file.name
+          : `Bill ${options.position}`,
     label,
     tone: TONE[row.state],
     fields,
@@ -339,13 +382,28 @@ export function kinBillRowView(
     expense: row.expense === undefined ? null : { key: row.expense.key, rev: row.expense.rev },
     duplicateOf: row.duplicateOf?.key ?? null,
     skipped: options.skipped?.get(row.sha256) ?? null,
+    mailLine,
     accessibilityLabel: [
       row.file.name,
       label,
       ...read,
       ...(problem === null ? [] : [problem]),
+      ...(mailLine === null ? [] : [mailLine.slice(0, -1)]),
     ].join(". "),
   };
+}
+
+/** A batch's rows in order, each named apart from the others for its taps. */
+export function kinBillRowViews(
+  rows: ReadonlyArray<KinBillRow>,
+  options: Omit<NonNullable<Parameters<typeof kinBillRowView>[1]>, "position"> = {},
+): ReadonlyArray<KinBillRowView> {
+  const views = rows.map((row, index) => kinBillRowView(row, { ...options, position: index + 1 }));
+  const named = new Map<string, number>();
+  for (const view of views) named.set(view.name, (named.get(view.name) ?? 0) + 1);
+  return views.map((view, index) =>
+    (named.get(view.name) ?? 0) > 1 ? { ...view, name: `${view.name}, bill ${index + 1}` } : view,
+  );
 }
 
 // A batch: its counts, its sentence, and the way to it from Expenses

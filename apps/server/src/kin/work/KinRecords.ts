@@ -109,6 +109,7 @@ import {
   byKey,
   CODING_AGENT_NAME,
   countedEntry,
+  endOfDay,
   effectivelySensitive,
   OWN_LABEL_LISTS,
   encodeRepeat,
@@ -195,6 +196,7 @@ import {
   personSees,
   legacySeenBy,
   listMoneySeenBy,
+  notesSeenBy,
   viewerOfPeople,
   ROOM_LISTS,
   teamSeesField,
@@ -2466,7 +2468,21 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const now = yield* Clock.currentTimeMillis;
+        const datesPayment =
+          row.registerId === "expenses" &&
+          writer.actor._tag === "person" &&
+          row.state === "open" &&
+          row.dateAt === null &&
+          asked.state === "done" &&
+          asked.dateAt === undefined;
+        const zone = datesPayment ? yield* ownerZone(orgId).pipe(provideSql) : undefined;
+        const given =
+          zone !== undefined
+            ? { ...asked, dateAt: endOfDay(dayIn(now, zone), zone), dateAllDay: true }
+            : contact === undefined
+              ? asked
+              : { ...asked, fields: contact };
         const patch =
           given.fields === undefined
             ? given
@@ -2505,7 +2521,6 @@ const make = Effect.gen(function* () {
         if (writer.teammate === true && writer.actor._tag === "person")
           yield* teamGuard(orgId, writer.actor.personId, write).pipe(provideSql);
         if (writer.view !== undefined) yield* viewGuard(orgId, writer.view, write).pipe(provideSql);
-        const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
         const list = def.id;
@@ -4220,7 +4235,9 @@ const make = Effect.gen(function* () {
     const text = input.text?.trim().toLowerCase();
     if (text !== undefined && text !== "") {
       const keys = keysOfSearch(text);
-      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0
+      const viewer = queryViewer(input);
+      const notes = viewer === undefined ? sql`r.notes` : notesSeenBy(sql, viewer);
+      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(${notes}), ${text}) > 0
         ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`);
     }
     return sql.and(where);

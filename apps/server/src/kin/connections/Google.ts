@@ -18,6 +18,7 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
+import { billingHint, isBillFile, normalizeAddress } from "./MailSignals.ts";
 import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
 import {
   agendaPages,
@@ -189,6 +190,7 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     readonly labelIds?: string;
     readonly max: number;
     readonly pageToken?: string;
+    readonly headersOnly?: true;
   },
 ) {
   const page = yield* api(context, `${GMAIL}/threads`, {
@@ -196,27 +198,43 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     labelIds: params.labelIds,
     maxResults: String(params.max),
     pageToken: params.pageToken,
+    // Gmail's thread list carries each thread's snippet unless told otherwise.
+    fields: params.headersOnly ? "threads(id),nextPageToken" : undefined,
   });
   const threads = yield* threadsById(
     context,
     list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []),
+    false,
+    params.headersOnly,
   );
   return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
 });
 
-const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = false) =>
+const threadsById = (
+  context: MailContext,
+  ids: ReadonlyArray<string>,
+  watch = false,
+  headersOnly = false,
+) =>
   Effect.forEach(
     ids,
     (id) =>
       api(context, `${GMAIL}/threads/${encodeURIComponent(id)}`, {
         format: "metadata",
-        metadataHeaders: [
-          "From",
-          "Subject",
-          "Date",
-          ...RECIPIENT_HEADERS,
-          ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
-        ],
+        ...(headersOnly
+          ? {
+              fields: "messages(id,threadId,internalDate,payload(headers))",
+              metadataHeaders: ["From"],
+            }
+          : {
+              metadataHeaders: [
+                "From",
+                "Subject",
+                "Date",
+                ...RECIPIENT_HEADERS,
+                ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
+              ],
+            }),
       }).pipe(
         Effect.map((thread) =>
           list(field(thread, "messages")).map(messageOf(context.mailbox.account, false, watch)),
@@ -393,11 +411,30 @@ const inboxChanges = Effect.fn("KinGoogle.inboxChanges")(function* (
   } as const;
 });
 
+const fromForArrival = (message: unknown) => {
+  const [from, ...others] = headerValues(message, "From");
+  if (from === undefined || others.length > 0) return null;
+  const angled = /^\s*[^<>]*<([^<>]+)>\s*$/.exec(from);
+  return normalizeAddress(angled?.[1] ?? from) ?? null;
+};
+
+// The metadata format omits MIME parts. A partial response supplies their names and types only.
+const PART_FIELDS = "filename,mimeType";
+const ARRIVAL_PARTS = `payload(${Array.from({ length: 6 }).reduce<string>(
+  (fields) => `${PART_FIELDS},parts(${fields})`,
+  PART_FIELDS,
+)})`;
+const hasBillPart = (part: unknown): boolean =>
+  isBillFile(text(field(part, "filename")), text(field(part, "mimeType"))) ||
+  list(field(part, "parts")).some(hasBillPart);
+
 const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
   context: MailContext,
   messageId: string,
+  partHints: (arrival: MailArrival) => boolean = () => true,
 ) {
-  const found = yield* api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, {
+  const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
+  const found = yield* api(context, url, {
     format: "metadata",
     metadataHeaders: FEED_HEADERS,
   }).pipe(
@@ -417,12 +454,12 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     !Number.isSafeInteger(receivedAt)
   )
     return yield* failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`);
-  return {
+  const arrival = {
     messageId,
     threadId,
     receivedAt,
     from: header(message, "From"),
-    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+    fromAddress: fromForArrival(message),
     to: addressesIn(header(message, "To")),
     cc: addressesIn(header(message, "Cc")),
     deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
@@ -435,6 +472,13 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     ...automationOf(message),
     hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
   } satisfies MailArrival;
+  if (!partHints(arrival)) return arrival;
+  const billing = billingHint(arrival);
+  if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
+  const parts = yield* api(context, url, { format: "full", fields: ARRIVAL_PARTS });
+  return hasBillPart(field(parts, "payload"))
+    ? { ...arrival, hasBillFile: true as const }
+    : arrival;
 });
 
 /**
@@ -624,9 +668,18 @@ const google: MailVendor = {
     threadsOf(context, {
       ...(page.query === null ? { labelIds: "INBOX" } : { q: page.query }),
       max: page.max,
+      ...(page.headersOnly === true ? { headersOnly: true } : {}),
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
   attachment: attachmentOf,
+  message: (context, messageId) =>
+    api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, { format: "full" }).pipe(
+      Effect.map(messageOf(context.mailbox.account, true)),
+      Effect.catchIf(
+        (error) => answeredWith(error, 404),
+        () => Effect.succeed(null),
+      ),
+    ),
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
       Effect.map((thread) =>

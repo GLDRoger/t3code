@@ -754,19 +754,39 @@ type SplitWsRpc = Extract<
 >;
 const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-// Kin's methods get groups of their own (Work's apart): one group is too deep to type.
+// Kin's methods get groups of their own (Work's and the outside's apart): one is too deep to type.
+const KIN_OUTSIDE_WS_RPC_PREFIXES = [
+  "connections",
+  "mailRules",
+  "github",
+  "social",
+  "docs",
+  "bankSenders",
+  "billSenders",
+  "bills",
+] as const;
 type KinWorkWsRpc = Extract<ServerWsRpc, { readonly _tag: `kin.work.${string}` }>;
-type KinWsRpc = Exclude<Extract<ServerWsRpc, { readonly _tag: `kin.${string}` }>, KinWorkWsRpc>;
-type OtherWsRpc = Exclude<ServerWsRpc, SplitWsRpc | KinWsRpc | KinWorkWsRpc>;
+type KinOutsideWsRpc = Extract<
+  ServerWsRpc,
+  { readonly _tag: `kin.${(typeof KIN_OUTSIDE_WS_RPC_PREFIXES)[number]}.${string}` }
+>;
+type KinWsRpc = Exclude<
+  Extract<ServerWsRpc, { readonly _tag: `kin.${string}` }>,
+  KinWorkWsRpc | KinOutsideWsRpc
+>;
+type OtherWsRpc = Exclude<ServerWsRpc, SplitWsRpc | KinWsRpc | KinWorkWsRpc | KinOutsideWsRpc>;
 const isKinWorkWsRpc = (rpc: ServerWsRpc): rpc is KinWorkWsRpc => rpc._tag.startsWith("kin.work.");
+const isKinOutsideWsRpc = (rpc: ServerWsRpc): rpc is KinOutsideWsRpc =>
+  KIN_OUTSIDE_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`kin.${prefix}.`));
 const isKinWsRpc = (rpc: ServerWsRpc): rpc is KinWsRpc =>
-  rpc._tag.startsWith("kin.") && !isKinWorkWsRpc(rpc);
+  rpc._tag.startsWith("kin.") && !isKinWorkWsRpc(rpc) && !isKinOutsideWsRpc(rpc);
 const isOtherWsRpc = (rpc: ServerWsRpc): rpc is OtherWsRpc =>
-  !isSplitWsRpc(rpc) && !isKinWsRpc(rpc) && !isKinWorkWsRpc(rpc);
+  !isSplitWsRpc(rpc) && !isKinWsRpc(rpc) && !isKinWorkWsRpc(rpc) && !isKinOutsideWsRpc(rpc);
 const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
 const KinWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWsRpc));
 const KinWorkWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWorkWsRpc));
+const KinOutsideWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinOutsideWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 function toAuthAccessStreamEvent(
   change: Exclude<
@@ -3751,11 +3771,13 @@ export const layerWsRpc = (
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
       const kinHandlers: Pick<typeof handlers, KinWsRpc["_tag"]> = handlers;
       const kinWorkHandlers: Pick<typeof handlers, KinWorkWsRpc["_tag"]> = handlers;
+      const kinOutsideHandlers: Pick<typeof handlers, KinOutsideWsRpc["_tag"]> = handlers;
       const otherHandlers: Pick<typeof handlers, OtherWsRpc["_tag"]> = handlers;
       return Context.mergeAll(
         yield* SplitWsRpcGroup.toHandlers(splitHandlers),
         yield* KinWsRpcGroup.toHandlers(kinHandlers),
         yield* KinWorkWsRpcGroup.toHandlers(kinWorkHandlers),
+        yield* KinOutsideWsRpcGroup.toHandlers(kinOutsideHandlers),
         yield* OtherWsRpcGroup.toHandlers(otherHandlers),
       );
     }),

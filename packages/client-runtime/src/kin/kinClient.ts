@@ -123,6 +123,7 @@ import {
 import { KIN_PERSON_TASKS, kinPersonTasksCount, kinTasksMostUrgent } from "./kinTasksList.ts";
 import { makeKinBankSenders } from "./kinBankSenders.ts";
 import { makeKinMailRules } from "./kinMailRules.ts";
+import { makeKinBillSenders } from "./kinBillSenders.ts";
 import { makeKinWatches } from "./kinWatches.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
@@ -633,6 +634,7 @@ export function makeKinClient<R, ER>(
   const kinClient = {
     ...makeKinBankSenders(runtime, kinGuardedRead),
     ...makeKinMailRules(runtime, kinGuardedRead),
+    ...makeKinBillSenders(runtime, kinGuardedRead),
     ...makeKinWatches(runtime, kinGuardedRead),
     orgs: createKinQueryAtomFamily(runtime, {
       label: "kin:orgs",

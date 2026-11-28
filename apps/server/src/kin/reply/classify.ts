@@ -216,6 +216,7 @@ export const PHASE_LABELS = {
   writing: "Writing a reply",
   tool: "Working",
   attachments: "Looking at what you sent",
+  bills: "Reading bills",
 } as const;
 // Null leaves the line as it was: the call is bookkeeping, not work the owner waits on.
 const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
@@ -276,8 +277,10 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)(?:doc_read|doc_history)$/, "Reading a doc"],
   [/(?:^|__|\.)docs_search$/, "Searching docs"],
   [/(?:^|__|\.)doc_\w+$/, "Editing a doc"],
+  [/(?:^|__|\.)mail_rule$/, "Suggesting a mail rule"],
   [/(?:^|__|\.)bills_add$/, "Adding a bill"],
   [/(?:^|__|\.)bill_read$/, "Reading bills"],
+  [/(?:^|__|\.)bill_cut$/, "Splitting a page of bills"],
   [/(?:^|__|\.)statement_\w+$/, "Reading a statement"],
   [/(?:^|__|\.)kin_recipes$/, "Checking how files are made"],
   [/(?:^|__|\.)kin_recipe_undo$/, "Undoing a change"],

@@ -1,4 +1,5 @@
 import type { MailArrival, MailAutomation } from "../connections/MailProvider.ts";
+import { automationOf } from "../connections/MailSignals.ts";
 import { looksLikeSignInMail, senderVerdictForAddress } from "../connections/MailText.ts";
 import { recordName } from "../work/recordRows.ts";
 
@@ -87,13 +88,9 @@ const addressOf = (who: string | null) => {
 };
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const AUTOMATED_SENDER =
-  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?|receipts|billing|invoices?|payments|orders|statements)(?:[+._-]|@)/i;
 // Allow up to two words between the code label and digits, but don't split IDs like PIN-2041.
 const CODE_SUBJECT =
   /(?<![\p{L}\p{M}\p{N}_./-])\d{4,8}(?:\s+[\p{L}\p{M}'’-]+){0,2}(?:\s*[:=]\s*|\s+)(?:code|passcode|pin)(?![\p{L}\p{M}\p{N}_])|(?<![\p{L}\p{M}\p{N}_])(?:code|passcode|pin)(?:\s+[\p{L}\p{M}'’-]+){0,2}(?:\s*[:=]\s*|\s+)\d{4,8}(?![\p{L}\p{M}\p{N}_/-]|\.[\p{L}\p{N}])/iu;
-const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply)(?:[+._-]|@)/i;
-const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
 
 // A hint from the subject alone that reads no words from the body.
@@ -110,19 +107,6 @@ const keyIn = (key: string, subject: string) =>
   new RegExp(`(^|[^a-z0-9-])${escaped(key.toLowerCase())}($|[^a-z0-9])`).test(
     subject.toLowerCase(),
   );
-
-const automationOf = (mail: MailAutomation, from: string) => {
-  const autoSubmitted = mail.autoSubmitted?.split(";", 1)[0]?.trim().toLowerCase();
-  if (autoSubmitted === "no") return undefined;
-  if (
-    autoSubmitted ||
-    /^\s*(?:bulk|junk)\s*$/i.test(mail.precedence ?? "") ||
-    (mail.listUnsubscribe && NO_REPLY_SENDER.test(from))
-  )
-    return "notice";
-  if (mail.bulk || AUTOMATED_SENDER.test(from) || BULK_DOMAIN.test(from)) return "automated";
-  return undefined;
-};
 
 export const isAutomatedNotice = (
   subject: string,

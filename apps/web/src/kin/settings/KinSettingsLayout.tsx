@@ -43,6 +43,8 @@ export function KinSettingsSection(props: {
   readonly action?: ReactNode;
   /** The last change's failure, said under the card until the next change. */
   readonly problem?: string | null;
+  /** What the last change did, when the host says more than the rows show. */
+  readonly said?: string | null;
   /** `useSearchableSetting(...).id`, so a settings search lands here. */
   readonly searchId?: string;
   readonly plain?: boolean;
@@ -76,6 +78,11 @@ export function KinSettingsSection(props: {
         {props.children}
       </SettingsGroup>
       {props.problem == null ? null : <KinSettingsProblem>{props.problem}</KinSettingsProblem>}
+      {props.said == null ? null : (
+        <p role="status" className="px-1 text-xs text-muted-foreground">
+          {props.said}
+        </p>
+      )}
     </section>
   );
 }

@@ -531,7 +531,7 @@ export const KIN_SECTION_SWITCHES: Readonly<Record<KinSwitchableSection, KinSect
   },
   money: sectionWords(
     "money",
-    "Turning this off hides Money for everyone in the company: its place, money on client and project pages, and Kin's money nudges and morning money lines. Bank alerts are still recorded, without notices. Invoices and quotes go with it.",
+    "Turning this off hides Money for everyone in the company: its place, money on client and project pages, and Kin's money nudges and morning money lines. Bank alerts are still recorded, without notices, and Kin reads no bills from mail. Invoices and quotes go with it.",
   ),
   invoices: sectionWords(
     "invoices",

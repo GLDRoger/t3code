@@ -1,4 +1,5 @@
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as AcpError from "./errors.ts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -1345,6 +1346,41 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       assert.equal(defect.message, "ACP protocol terminated.");
       assert.instanceOf(defect.cause, AcpError.AcpProcessExitedError);
       assert.equal((defect.cause as AcpError.AcpProcessExitedError).code, 7);
+    }),
+  );
+
+  it.effect("reports the process exit when a write fails before the input stream ends", () =>
+    Effect.gen(function* () {
+      const termination = yield* Deferred.make<AcpError.AcpError>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio: Stdio.make({
+          args: Effect.succeed([]),
+          stdin: Stream.never,
+          stdout: () =>
+            Sink.forEach(() =>
+              Effect.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "Stdio",
+                  method: "write",
+                  description: "write EPIPE",
+                }),
+              ),
+            ),
+          stderr: () => Sink.drain,
+        }),
+        terminationError: Effect.succeed(new AcpError.AcpProcessExitedError({ code: 134 })),
+        serverRequestMethods: new Set(),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      const failed = yield* transport
+        .request("x/test", { hello: "world" })
+        .pipe(Effect.flip, Effect.orDie);
+      const error = yield* Deferred.await(termination);
+      assert.instanceOf(error, AcpError.AcpProcessExitedError);
+      assert.equal((error as AcpError.AcpProcessExitedError).code, 134);
+      assert.strictEqual(failed, error);
     }),
   );
 

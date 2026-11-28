@@ -1650,12 +1650,35 @@ const TEAM_FIELDS = new Set([
 export const teamSeesField = (field: string, includesNotes = true) =>
   TEAM_FIELDS.has(field) && (includesNotes || field !== "notes");
 /** `r` is a project every one of `viewer`'s people leads (`seesProjectTerms`). */
-const leadsProject = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+export const leadsProject = (sql: SqlClient.SqlClient, viewer: KinViewer, alias = "r") =>
   viewer._tag === "ownerLevel"
     ? sql`1 = 1`
     : sql.and(
-        viewer.people.map((person) => sql`(r.owner_kind = 'person' AND r.owner_id = ${person})`),
+        viewer.people.map(
+          (person) =>
+            sql`(${sql(alias)}.owner_kind = 'person' AND ${sql(alias)}.owner_id = ${person})`,
+        ),
       );
+/** The project of this entry is led by each reader. */
+export const leadsEntryProject = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  sql`EXISTS (SELECT 1 FROM kin_records p WHERE p.org_id = r.org_id
+    AND p.record_id = r.project_id AND p.register_id = 'projects' AND ${leadsProject(sql, viewer, "p")})`;
+
+export const clientsPlaceSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql.and(viewer.people.map((person) => placeOn(sql, person, "sees_clients")));
+
+/** `r`'s notes as its page shows them: a project's to its lead, a client's with Clients on. */
+export const notesSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`r.notes`
+    : sql`CASE
+        WHEN r.register_id = 'projects' AND NOT ${leadsProject(sql, viewer)} THEN ''
+        WHEN r.register_id = 'clients' AND NOT ${clientsPlaceSeenBy(sql, viewer)} THEN ''
+        ELSE r.notes
+      END`;
+
 /**
  * A field of `c` (`f`) a teammate reads: a list's private one stays out without Money
  * (`listEntryFor`), and a project's notes unless they lead it (`projectDetail`).

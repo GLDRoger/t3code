@@ -101,7 +101,7 @@ import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/rece
 import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
 import {
   alreadyRecordedNext,
-  PAYMENT_PROPOSED_NEXT,
+  paymentProposedNext,
   TAKE_BACK_PROPOSED_NEXT,
 } from "../../apps/server/src/kin/work/leadMoney.ts";
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
@@ -1054,15 +1054,17 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
     .replaceAll("{{OUTSIDE_NOT_LISTED_LINE}}", OUTSIDE_NOT_LISTED_LINE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
-    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
-    .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
+    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`);
+    // `{{BILLS_TURN:mail:<names>}}` when some came by mail.
+    .replace(/\{\{BILLS_TURN:(mail:)?([^}]+)\}\}/g, (_, mail: string | undefined, names: string) =>
       billTurnText(
         names.split(",").map((name) => ({
           id: name.split(".")[0]!,
-          image: !name.endsWith(".pdf"),
+          image: /\.(?:jpe?g|png|webp)$/i.test(name),
           name,
         })),
         PRESETS.expenses.categories,
+        mail !== undefined,
       ),
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
@@ -1370,6 +1372,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     amount: string | null;
     withheld: string | null;
     paidOn: string | null;
+    note?: string | null;
+    noBankEvidence?: true;
   }) => {
     const money = (text: string | null) => {
       if (text === null) return undefined;
@@ -1397,6 +1401,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       paidOn,
       ...(amount === undefined ? {} : { amount }),
       ...(withheld === undefined ? {} : { withheld }),
+      ...(input.note == null ? {} : { note: input.note }),
     };
     const snapshot: Snapshot = {
       entry: null,
@@ -1411,8 +1416,12 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       status: "proposed",
       key: input.invoice.key,
       proposal: input.proposal,
-      shown: cardLines(snapshot, { received, version: 2 }),
-      next: PAYMENT_PROPOSED_NEXT,
+      shown: cardLines(snapshot, {
+        received,
+        version: 2,
+        ...(input.noBankEvidence === true ? { noBankEvidence: true } : {}),
+      }),
+      next: paymentProposedNext(input.noBankEvidence === true),
       sensitive: true,
     };
   },

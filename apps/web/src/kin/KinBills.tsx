@@ -4,7 +4,7 @@ import {
   kinBillCounts,
   kinBillExpenseStart,
   kinBillIsPdf,
-  kinBillRowView,
+  kinBillRowViews,
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsEntry,
@@ -449,12 +449,10 @@ function KinBillBatchReview(
   const now = new Date(useNowMinuteMs());
   const [byHand, setByHand] = useState<KinBillRow | null>(null);
   const skipped = actions.kept?.skipped;
-  const views = rows.map((row) =>
-    kinBillRowView(row, {
-      categoryLabel: (category) => kinCategoryLabel(category, expenses),
-      ...(skipped === undefined ? {} : { skipped }),
-    }),
-  );
+  const views = kinBillRowViews(rows, {
+    categoryLabel: (category) => kinCategoryLabel(category, expenses),
+    ...(skipped === undefined ? {} : { skipped }),
+  });
   const urls = useAssetUrls(
     environmentId,
     views.map((view) => ({
@@ -604,7 +602,7 @@ const BillRow = memo(function BillRow(props: {
   const note = view.problem ?? view.skipped;
   return (
     <li aria-label={view.accessibilityLabel} className="flex gap-3 py-3">
-      {view.pdf ? (
+      {view.asFile ? (
         <a
           {...(src === null ? {} : { href: src, download: file.name })}
           aria-label={`Open ${file.name}`}
@@ -652,6 +650,9 @@ const BillRow = memo(function BillRow(props: {
             </div>
           ))}
         </dl>
+        {view.mailLine === null ? null : (
+          <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{view.mailLine}</p>
+        )}
         <p className="min-h-4 text-xs text-muted-foreground">{note}</p>
         {props.problem === null ? null : (
           <p role="alert" className="text-xs text-destructive-foreground">
@@ -665,7 +666,7 @@ const BillRow = memo(function BillRow(props: {
               size="xs"
               variant={action === "keep" || action === "addAnyway" ? "outline" : "ghost"}
               disabled={props.busy && CHANGES.has(action)}
-              aria-label={`${LABEL(view, action)}: ${file.name}`}
+              aria-label={`${LABEL(view, action)}: ${view.name}`}
               onClick={() => props.onAction(view, action)}
             >
               {LABEL(view, action)}

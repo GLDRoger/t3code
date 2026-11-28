@@ -443,7 +443,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore(), now = Date.no
   const matches = (message: FakeMailMessage, words: string) =>
     words
       .split(/\s+/)
-      .filter((word) => word !== "" && !/^(?:in|after|before):/.test(word))
+      .filter((word) => word !== "" && !/^(?:(?:in|after|before):|received>=)/.test(word))
       .every((word) => {
         const from = /^from:(.+)$/.exec(word)?.[1];
         return from !== undefined
@@ -670,7 +670,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore(), now = Date.no
         const failed = unreadable.get(one.id);
         if (failed !== undefined) return json({ error: { code: failed } }, failed);
         const full = gmailMessage(one);
-        if (url.searchParams.get("format") === "full") return json(full);
+        if (url.searchParams.get("format") === "full") {
+          const fields = url.searchParams.get("fields");
+          if (fields === null || !fields.startsWith("payload(filename,mimeType")) return json(full);
+          return json({
+            payload: {
+              mimeType: full.payload.mimeType,
+              parts:
+                "parts" in full.payload
+                  ? full.payload.parts.map(({ filename, mimeType }) => ({ filename, mimeType }))
+                  : undefined,
+            },
+          });
+        }
         const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
         const headers = [
           ...full.payload.headers,
@@ -890,14 +902,22 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore(), now = Date.no
         const conversation = odata(filter, "conversationId");
         const internet = odata(filter, "internetMessageId");
         const search = url.searchParams.get("$search")?.replace(/^"|"$/g, "");
+        if (search !== undefined) {
+          const found = mine.filter((one) => matches(one, search)).toSorted((a, b) => b.at - a.at);
+          const page = pageOf(found, url.searchParams.get("$top"), url.searchParams.get("$skip"));
+          const nextLink = new URL(url);
+          nextLink.searchParams.set("$skip", page.next ?? "");
+          return json({
+            value: page.items.map(graphMessage),
+            ...(page.next === undefined ? {} : { "@odata.nextLink": nextLink.href }),
+          });
+        }
         return json({
           value: mine
             .filter((one) =>
               conversation !== undefined
                 ? one.threadId === conversation
-                : internet !== undefined
-                  ? one.messageId === internet
-                  : search === undefined || matches(one, search),
+                : internet === undefined || one.messageId === internet,
             )
             .map(graphMessage),
         });

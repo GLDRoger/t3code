@@ -17,6 +17,7 @@ import {
   kinBillExpenseStart,
   kinBillFileRefusal,
   kinBillRowView,
+  kinBillRowViews,
   kinBillsAddingStart,
   kinBillsButton,
   kinBillsEntry,
@@ -201,6 +202,84 @@ describe("a bill on the review list", () => {
     const skipped = new Map([[SHA(1), "Already kept."]]);
     expect(kinBillRowView(row(), { skipped }).skipped).toBe("Already kept.");
     expect(kinBillRowView(row({ sha256: SHA(2) }), { skipped }).skipped).toBeNull();
+  });
+
+  it("shows To pay on the kept mail row only while the expense is open", () => {
+    const mail = { from: "billing@inkspot.example", receivedAt: "2026-11-24T22:30:00.000Z" };
+    const expense = row().expense!;
+    expect(
+      kinBillRowView(row({ state: "kept", mail, expense: { ...expense, state: "open" } })).label,
+    ).toBe("Kept · to pay");
+    expect(
+      kinBillRowView(row({ state: "kept", mail, expense: { ...expense, state: "done" } })).label,
+    ).toBe("Kept");
+    expect(kinBillRowView(row({ state: "kept", mail })).label).toBe("Kept");
+  });
+
+  it("says who mailed it and the day it arrived, in the reader's own zone", () => {
+    const mail = { from: "billing@inkspot.example", receivedAt: "2026-11-24T22:30:00.000Z" };
+    const line = (zone: string) =>
+      kinBillRowView(row({ mail }), { zone, locale: "en-GB" }).mailLine;
+    expect(line("UTC")).toBe(
+      "Read by Kin from a mail from billing@inkspot.example, received 24 Nov.",
+    );
+    expect(line("Asia/Kolkata")).toBe(
+      "Read by Kin from a mail from billing@inkspot.example, received 25 Nov.",
+    );
+    expect(kinBillRowView(row({ mail }), { zone: "UTC" }).accessibilityLabel).toContain(
+      "Read by Kin from a mail from billing@inkspot.example",
+    );
+    expect(kinBillRowView(row()).mailLine).toBeNull();
+  });
+});
+
+describe("telling bills on one review apart", () => {
+  const mailed = (n: number, read: KinBillRow["read"]) =>
+    row({
+      sha256: SHA(n),
+      file: {
+        ...row().file,
+        attachmentId: `kin-mail-${n}`,
+        name: "Mail from billing@inkspot.example, 27 Nov.txt",
+        mimeType: "text/plain",
+      },
+      read,
+      mail: { from: "billing@inkspot.example", receivedAt: "2026-11-27T08:00:00.000Z" },
+    });
+
+  it("names each by vendor and amount once read, else by its number in the batch", () => {
+    const names = kinBillRowViews([
+      mailed(1, { vendor: "Inkspot Cloud", amount: "49", currency: "USD" }),
+      mailed(2, { vendor: "Inkspot Cloud", amount: "120", currency: "USD" }),
+      mailed(3, {}),
+      mailed(4, { vendor: "Inkspot Cloud" }),
+    ]).map((view) => view.name);
+    expect(names).toEqual(["Inkspot Cloud, $49.00", "Inkspot Cloud, $120.00", "Bill 3", "Bill 4"]);
+  });
+
+  it("adds the number when two read the same", () => {
+    const same = { vendor: "Inkspot Cloud", amount: "49", currency: "USD" };
+    expect(kinBillRowViews([mailed(1, same), mailed(2, same)]).map((view) => view.name)).toEqual([
+      "Inkspot Cloud, $49.00, bill 1",
+      "Inkspot Cloud, $49.00, bill 2",
+    ]);
+  });
+
+  it("shows a mailed bill's text as a file, and only a picture as a picture", () => {
+    expect(kinBillRowViews([mailed(1, {})])[0]!.asFile).toBe(true);
+    expect(kinBillRowView(row()).asFile).toBe(false);
+    const pdf = { ...row().file, name: "bill.pdf", mimeType: "application/pdf" };
+    expect(kinBillRowView(row({ file: pdf })).asFile).toBe(true);
+  });
+
+  it("says once that Kin couldn't read a bill", () => {
+    const generic = kinBillRowView(
+      row({ state: "unreadable", problem: "Kin could not read this one" }),
+    );
+    expect([generic.label, generic.problem]).toEqual(["Couldn't read this one", null]);
+    expect(generic.accessibilityLabel).not.toContain("could not read");
+    const why = kinBillRowView(row({ state: "unreadable", problem: "It is for 0" }));
+    expect(why.problem).toBe("It is for 0");
   });
 });
 
