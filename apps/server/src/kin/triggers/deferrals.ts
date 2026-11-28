@@ -332,7 +332,10 @@ export const makeDeferralCards = Effect.gen(function* () {
           LEFT JOIN kin_leads l ON l.org_id = c.org_id AND l.owner_chat_id = c.chat_id
           LEFT JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
           WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} ORDER BY l.agent_id`;
-        if (chat?.personId !== asker.personId) state = { ...state, askedBy: asker };
+        // Only a direct chat has its own person. A group's card names no one here: `askedBy` makes
+        // a card the room's own when the group is shared (`ChatSharing.settleCards`).
+        const own = chat?.personId ?? null;
+        if (own !== null && own !== asker.personId) state = { ...state, askedBy: asker };
       }
     }
     const at = iso(input.now);
