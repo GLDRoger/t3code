@@ -243,7 +243,9 @@ describe("kinDeferralCardView", () => {
     expect(open.phase).toBe("started");
     expect(open.summary).toBe("Started · Rate limiting · Asked Lead to start it.");
     expect(open.lines).toEqual([]);
-    expect(open.accessibilityLabel).toBe("Scheduled: Rate limiting. Asked Lead to start it.");
+    expect(open.accessibilityLabel).toBe(
+      "Scheduled: Rate limiting. Started. Asked Lead to start it.",
+    );
     // An older host, and a later close that names no reason, still say it was started.
     expect(view(deferral({ phase: "started", text: "" })).summary).toBe(
       "Started · Rate limiting · Asked your agent to start it.",

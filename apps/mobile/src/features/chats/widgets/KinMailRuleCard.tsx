@@ -98,7 +98,7 @@ export const KinMailRuleCard = memo(function KinMailRuleCard(props: {
         </Text>
         {card.facts.map((fact) => (
           <Text key={fact.label} textRole="footnote" className="text-foreground-secondary">
-            {`${fact.label}: ${fact.value}`}
+            {kinPhoneBreakable(`${fact.label}: ${fact.value}`)}
           </Text>
         ))}
         <Text textRole="footnote" className="text-foreground-muted">
