@@ -442,11 +442,15 @@ export const QueryResult = Schema.Struct({
     ),
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
+  /** A text search that found nothing outside clients and contacts: what text matches. */
+  textNote: Schema.optional(Schema.String),
   withoutText: Schema.optional(Schema.Number).annotate({
     description:
       "Clients or contacts: how many the same query finds without text, which matches only their own words, never what kind of business they are.",
   }),
 });
+const TEXT_NOTE =
+  "text matches only an entry's own title and notes, never its client's or project's name: ask by client or project for theirs.";
 const NOT_BANK_WORD =
   "An agent wrote or changed this entry, so it isn't the bank's word that this money moved: it may be only what someone's mail said. Kin offers no card from it; until a bank statement or alert shows the money, say the bank doesn't show it yet.";
 /** An invoice's or quote's issued number, in whatever shape its company's series gives. */
@@ -2460,6 +2464,13 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
         })).total;
   const withoutText =
     unfiltered === undefined || unfiltered <= page.total ? {} : { withoutText: unfiltered };
+  const textNote =
+    input.text !== undefined &&
+    page.total === 0 &&
+    list?.id !== "clients" &&
+    list?.id !== "contacts"
+      ? { textNote: TEXT_NOTE }
+      : {};
   const shownTo = (input.offset ?? 0) + page.rows.length;
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
@@ -2480,6 +2491,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
       records,
       ...next,
       ...withoutText,
+      ...textNote,
     };
     return shown;
   }
@@ -2506,6 +2518,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...keys,
     ...next,
     ...withoutText,
+    ...textNote,
     ...(totals === undefined || totals.total.length === 0
       ? {}
       : { ...amountsOf(totals), sensitive: true as const }),
