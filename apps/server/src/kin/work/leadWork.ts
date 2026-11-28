@@ -4841,35 +4841,41 @@ export const ListFieldsResult = Schema.Struct({
   note: Schema.optional(Schema.String),
 });
 const answered = (answer: typeof ListFieldsResult.Type) => answer;
-const runListFields = Effect.fnUntraced(function* (lead: Lead, input: typeof ListFieldsInput.Type) {
-  if (input.list === "deals")
+/** list_fields' answer for a built-in list or deals, which no company changes. */
+export const builtInListFields = (list: string) => {
+  if (list === "deals")
     return answered({
       list: "deals",
       fields: DEAL_FIELDS.map((key) => ({ key })),
       note: "record_create and record_update say what a deal's fields take.",
     });
-  if (isFieldList(input.list)) {
-    const list = input.list;
-    return answered({
-      list,
-      fields: recordFields[list].map((key) => ({
-        key: taxName(key),
-        ...takesOf(rowProperty(key)),
-        ...(list === "clients" && (CLIENT_OWNERS_FIELDS as ReadonlyArray<string>).includes(key)
-          ? { ownerOnly: true as const }
-          : {}),
-      })),
-    });
-  }
-  if ((yield* viewOf(lead)) !== undefined && !(yield* teamLists(lead.orgId)).has(input.list))
-    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
-  const def = yield* listDef(lead.orgId, input.list);
-  if (def === undefined || def.builtIn !== null) return yield* unknownList(input.list);
+  if (!isFieldList(list)) return undefined;
   return answered({
+    list,
+    fields: recordFields[list].map((key) => ({
+      key: taxName(key),
+      ...takesOf(rowProperty(key)),
+      ...(list === "clients" && (CLIENT_OWNERS_FIELDS as ReadonlyArray<string>).includes(key)
+        ? { ownerOnly: true as const }
+        : {}),
+    })),
+  });
+};
+/** list_fields' answer for a list defined with list_define. */
+export const definedListFields = (def: Pick<ListDef, "id" | "fields">) =>
+  answered({
     list: def.id,
     fields: def.fields
       .filter((field) => field.retired !== true)
       .map((field) => ({ key: field.key, label: field.label, takes: describe(field) })),
   });
+const runListFields = Effect.fnUntraced(function* (lead: Lead, input: typeof ListFieldsInput.Type) {
+  const builtIn = builtInListFields(input.list);
+  if (builtIn !== undefined) return builtIn;
+  if ((yield* viewOf(lead)) !== undefined && !(yield* teamLists(lead.orgId)).has(input.list))
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  const def = yield* listDef(lead.orgId, input.list);
+  if (def === undefined || def.builtIn !== null) return yield* unknownList(input.list);
+  return definedListFields(def);
 });
 export const listFields = leadTool("KinWorkTools.listFields", runListFields);

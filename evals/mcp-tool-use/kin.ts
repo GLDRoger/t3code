@@ -48,6 +48,8 @@ import {
   noticeConsequence,
 } from "../../apps/server/src/kin/pulse/senses/money.ts";
 import {
+  builtInListFields,
+  definedListFields,
   dueShows,
   madeIn,
   repeatedPromise,
@@ -131,7 +133,12 @@ import { KinBillToolkit } from "../../apps/server/src/kin/work/mcp/billTools.ts"
 import { readAnswer } from "../../apps/server/src/kin/work/bills.ts";
 import { billTurnText } from "../../apps/server/src/kin/work/billTurn.ts";
 import { addAnswer } from "../../apps/server/src/kin/work/leadBills.ts";
-import { PRESETS } from "../../apps/server/src/kin/work/registers.ts";
+import {
+  PRESET_IDS,
+  PRESETS,
+  presetDefinition,
+  unknownList,
+} from "../../apps/server/src/kin/work/registers.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
@@ -1362,7 +1369,21 @@ const repoReadAnswer = (input: {
   };
 };
 
+const isPresetId = (list: string): list is (typeof PRESET_IDS)[number] =>
+  (PRESET_IDS as ReadonlyArray<string>).includes(list);
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // list_fields as Kin answers it: a built-in list's, a template's in the home currency, else none.
+  listFields: (input: { list: string; currency: string }) =>
+    builtInListFields(input.list) ??
+    (isPresetId(input.list)
+      ? definedListFields({ id: input.list, ...presetDefinition(input.list, input.currency) })
+      : {
+          $error: {
+            _tag: "KinChatError",
+            reason: "not_found",
+            message: unknownList(input.list).message,
+          },
+        }),
   stillSuggestion: (input: { key: string }) => ({
     $error: { _tag: "KinChatError", reason: "invalid_state", message: stillSuggestion(input.key) },
   }),

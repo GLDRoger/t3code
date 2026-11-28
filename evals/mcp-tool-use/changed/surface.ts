@@ -23,7 +23,9 @@ import { PreviewControlsToolkit } from "../../../apps/server/src/mcp/toolkits/pr
 import { PreviewToolkit } from "../../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { TURN_EVENT_TOOLS } from "../../../apps/server/src/kin/lead/eventIds.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../../apps/server/src/kin/reply/classify.ts";
+import { PRESET_IDS } from "../../../apps/server/src/kin/work/registers.ts";
 import {
+  fillKinMock,
   fillKinRules,
   KIN_CALL_REFUSAL,
   kinBillsOf,
@@ -72,7 +74,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "ce614a0494695af4";
+export const REVIEWED_RUNNER = "fa56eb403f3d756d";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -171,6 +173,16 @@ const mockResults = (given: unknown): ReadonlyArray<unknown> => {
   );
 };
 
+const LIST_FIELDS_LISTS = [
+  "work",
+  "clients",
+  "contacts",
+  "projects",
+  "milestones",
+  "goals",
+  "deals",
+];
+
 /**
  * Checkout text a case can receive after its first request, and why it can receive checkout output
  * no hash here covers. `tools` are the names of every tool it starts with or can load, as graded.
@@ -187,6 +199,15 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   // A Kin mock's answer is filled in by Kin's own builders, so it moves when they do.
   const kinMocks = filledKinMocks(setup);
   if (kinMocks.length > 0) later.kinMocks = hashJson(kinMocks);
+  // list_fields' rendered answer turns on the list asked for, which the echoed fill can't stand for.
+  if (setup.mocks?.list_fields !== undefined)
+    later.listFields = hashJson(
+      [...LIST_FIELDS_LISTS, ...PRESET_IDS].map((list) =>
+        mockResults(setup.mocks?.list_fields).map((mock) =>
+          fillKinMock(mock, { list }, setup.world),
+        ),
+      ),
+    );
   if (setup.world?.kinLead === true) {
     later["contracts/kinPage.ts"] = BUBBLES_SOURCE;
     later["kin/reply/turnVoice.ts"] = TURN_VOICE_SOURCE;
