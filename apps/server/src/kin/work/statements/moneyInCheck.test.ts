@@ -550,7 +550,7 @@ it.effect.each([
     const failure = yield* Effect.flip(moneyInCheck(scope, range));
     assert.strictEqual(
       failure.message,
-      "Only the owner or a co-owner can check money received against the bank.",
+      "Only the owner or a co-owner can check money received against the bank, in their own chat with you.",
     );
     assert.isEmpty(yield* sql`SELECT 1 FROM kin_widgets`);
   }).pipe(Effect.provide(layer)),

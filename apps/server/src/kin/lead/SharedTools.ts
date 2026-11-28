@@ -126,7 +126,7 @@ const t3ToolsRefused = Object.fromEntries(
 ) as Record<(typeof LEAD_T3_TOOLS)[number], "refused">;
 
 export const MONEY_IN_CHECK_REFUSAL =
-  "Only the owner or a co-owner can check money received against the bank.";
+  "Only the owner or a co-owner can check money received against the bank, in their own chat with you.";
 
 export const SHARED_TOOLS = {
   kin_chat_post: inTurnChat,
