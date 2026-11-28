@@ -7,6 +7,7 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { chatShared } from "../../chat/sharing.ts";
 import { isOrgPaused } from "../../lead/orgState.ts";
 import { isOwnerHimself } from "../../people/KinAccess.ts";
+import { sectionOnFor } from "../../shell/KinShell.ts";
 import { type BillSenderPlan, sealPlans } from "../../widgets/cardPlans.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
@@ -19,7 +20,9 @@ const DAILY_CARDS = 3;
 export const offer = Effect.fn("KinBillSenders.offerCards")(function* (
   orgId: KinOrgId,
   now: number,
+  moneyOn?: boolean,
 ) {
+  if (!(moneyOn ?? (yield* sectionOnFor(orgId, "money")))) return;
   const sql = yield* SqlClient.SqlClient;
   const chat = yield* KinChatService;
   yield* sql.withTransaction(
