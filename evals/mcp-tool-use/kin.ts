@@ -1177,10 +1177,10 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
     })
-    // repaid_seen's line for a partner debit that may not match their oldest owed expenses,
-    // rendered by the server's own `repaidShortLine` (`pulse/senses/bank.ts`).
+    // repaid_seen's line for a partner debit that may not match what is still owed, rendered by
+    // the server's own `repaidShortLine` (`pulse/senses/bank.ts`); the owed keys comma-separated.
     .replace(
-      /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
+      /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|([^|}]+)\}\}/g,
       (
         _,
         key: string,
@@ -1189,7 +1189,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         day: string,
         partner: string,
         owed: string,
-        count: string,
+        keys: string,
       ) =>
         repaidShortLine({
           key,
@@ -1198,7 +1198,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
           date: day,
           partner,
           owedMinor: Number(owed),
-          owedCount: Number(count),
+          owedKeys: keys.split(","),
         }),
     );
 
