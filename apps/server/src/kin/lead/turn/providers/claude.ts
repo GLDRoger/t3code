@@ -423,13 +423,12 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
         if (resolved === undefined) return [];
         const bin = path.dirname(resolved);
         const packages = path.join(path.dirname(bin), "lib", "node_modules");
+        // The folder, not its entries: the sandbox binds a granted link as its target file, so
+        // bin/npm (a link to ../lib/node_modules/npm/bin/npm-cli.js) would lose its ../lib.
         return [
           node,
           resolved,
-          path.join(bin, "npm"),
-          path.join(bin, "npx"),
-          path.join(bin, "corepack"),
-          path.join(bin, "pnpm"),
+          bin,
           path.join(packages, "npm"),
           path.join(packages, "corepack"),
           path.join(packages, "pnpm"),

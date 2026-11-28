@@ -17,6 +17,7 @@ export const FIXTURE_NODE = `${FIXTURE_NODE_BIN}/node`;
 export const captureClaudeOptions = (
   { thread, cwd, model, environment }: Parameters<ProviderFake["open"]>[0],
   toolLookup = true,
+  node = FIXTURE_NODE,
 ) =>
   Effect.gen(function* () {
     const original = ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -59,7 +60,7 @@ export const captureClaudeOptions = (
     }).pipe(
       Effect.provide(claude.install(base)),
       Effect.provideService(HostProcess.Environment, environment),
-      Effect.provideService(HostProcess.ExecutablePath, FIXTURE_NODE),
+      Effect.provideService(HostProcess.ExecutablePath, node),
       Effect.orDie,
     );
     const [options] = opened;

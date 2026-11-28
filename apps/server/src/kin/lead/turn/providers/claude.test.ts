@@ -316,6 +316,62 @@ it.effect("an unavailable sandbox opens a Claude session with Bash withheld", ()
   ),
 );
 
+it.effect(
+  "a shell seat reads its Node install's bin folder whole, so npm's link still resolves",
+  () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = `${config.stateDir}/kin/demo/memory-read`;
+      yield* fs.makeDirectory(cwd, { recursive: true });
+      const install = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      yield* fs.makeDirectory(`${install}/lib/node_modules/npm/bin`, { recursive: true });
+      yield* fs.makeDirectory(`${install}/bin`);
+      yield* fs.writeFileString(`${install}/bin/node`, "");
+      yield* fs.writeFileString(`${install}/lib/node_modules/npm/bin/npm-cli.js`, "");
+      yield* fs.symlink("../lib/node_modules/npm/bin/npm-cli.js", `${install}/bin/npm`);
+      const services = Context.make(KinAgentSessionPolicy, {
+        refusal: () => Effect.undefined,
+        webSearch: () => Effect.undefined,
+        delegated: () => Effect.succeed(false),
+        toolDirectories: ["/fixtures/gh"],
+        agentName: () => Effect.succeed("Lead"),
+      }) as Context.Context<KinServices>;
+      const { options } = yield* captureClaudeOptions(
+        {
+          thread: "kin:tech",
+          cwd,
+          model: "claude-sonnet-4-6",
+          environment: { PATH: "/usr/bin", HOME: "/home/kin" },
+        },
+        true,
+        `${install}/bin/node`,
+      ).pipe(
+        Effect.provideService(KinServer, {
+          taskCardUpdater: Layer.empty,
+          services: Option.some(services),
+          subscribeForViewer: Option.none(),
+        }),
+      );
+      const allowRead =
+        (typeof options.settings === "object" && options.settings.sandbox?.filesystem?.allowRead) ||
+        [];
+      // The sandbox binds a granted link as its target file: bin/npm would lose ../lib.
+      assert.includeMembers(allowRead, [`${install}/bin`, `${install}/lib/node_modules/npm`]);
+      assert.notInclude(allowRead, `${install}/bin/npm`);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "kin-claude-node-install-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+          ),
+        ),
+      ),
+    ),
+);
+
 it.effect("SessionStart adds the standing context only on startup and compact", () =>
   withPreparedContext((options) =>
     Effect.gen(function* () {
