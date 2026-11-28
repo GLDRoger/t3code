@@ -10,7 +10,7 @@ import {
   normaliseIntent,
   raiseAt,
   repeats,
-  safeDefault,
+  plainDefaultReason,
 } from "./rules.ts";
 
 const IST = "Asia/Kolkata";
@@ -122,33 +122,44 @@ it("the same intent about a shared record repeats; anything Kin can't tell is le
   assert.isFalse(repeats({ intent: "", about: ["INV-8"] }, finance));
 });
 
-it("a default that sends or moves money is never safe to take alone", () => {
-  assert.isTrue(safeDefault("Draft it", "Shall I draft VIOM's payment reminder?"));
-  assert.isTrue(safeDefault("Call it finished", "Is P-3 finished?"));
-  assert.isFalse(safeDefault(null, "Anything?"));
-  assert.isFalse(safeDefault("Send it Wednesday", "Shall I send VIOM the reminder?"));
+it("plain default notes use wording to name money or outside actions", () => {
+  assert.isUndefined(plainDefaultReason("Draft it", "Shall I draft the payment reminder?"));
+  assert.isUndefined(plainDefaultReason("Call it finished", "Is P-3 finished?"));
+  assert.strictEqual(plainDefaultReason("Send it Wednesday", "Send the reminder?"), "leaves");
   // A bare yes reads its question.
-  assert.isFalse(safeDefault("Yes", "Shall I send VIOM the reminder?"));
-  assert.isFalse(safeDefault("Yes", "Mark INV-8 paid?"));
-  // A field named for money is no act of moving it.
+  assert.strictEqual(plainDefaultReason("Yes", "Send the reminder?"), "leaves");
+  assert.strictEqual(plainDefaultReason("Yes", "Mark INV-8 paid?"), "leaves");
   const ways = ["Paid-by + statement match, ~3 days (my pick)", "Full build, ~2 weeks"];
-  assert.isTrue(safeDefault(ways[0]!, "Which way for partner reimbursements?", { labels: ways }));
-  assert.isFalse(safeDefault("Pay it today", "Shall I settle INV-8?"));
-  // Money terms are the owner's: a rate or an amount in any option, or a money record, in any currency.
-  const terms = ["40% advance now, rest on milestones", "Full amount on delivery"];
-  assert.isFalse(safeDefault(terms[0]!, "How should Orbit pay for P-3?", { labels: terms }));
-  assert.isFalse(safeDefault(terms[1]!, "How should Orbit pay for P-3?", { labels: terms }));
-  assert.isFalse(safeDefault("Includes GST", "How should Q-4 read?", { aboutMoney: true }));
-  assert.isFalse(safeDefault("Hold at ₹40,000", "Orbit's renewal?"));
-  assert.isFalse(
-    safeDefault("Quote it", "Orbit's renewal?", { labels: ["Quote it", "AED 1,200"] }),
+  assert.isUndefined(
+    plainDefaultReason(ways[0]!, "Which way for reimbursements?", { labels: ways }),
   );
-  assert.isFalse(safeDefault("Ja", "Mit 1.500 € abschließen?"));
-  assert.isFalse(safeDefault("Yes", "Offer 15 ٪ off?"));
-  // Numbers that aren't money, and words that only look like codes, stay safe.
+  assert.strictEqual(plainDefaultReason("Pay it today", "Shall I settle INV-8?"), "leaves");
+  const terms = ["40% advance now, rest on milestones", "Full amount on delivery"];
+  for (const label of terms)
+    assert.strictEqual(
+      plainDefaultReason(label, "How should P-3 be paid?", { labels: terms }),
+      "money",
+    );
+  assert.strictEqual(
+    plainDefaultReason("Includes GST", "How should Q-4 read?", { aboutMoney: true }),
+    "money",
+  );
+  assert.strictEqual(plainDefaultReason("Hold at ₹40,000", "Tidewater Freight renewal?"), "money");
+  assert.strictEqual(
+    plainDefaultReason("Quote it", "Tidewater Freight renewal?", {
+      labels: ["Quote it", "AED 1,200"],
+    }),
+    "money",
+  );
+  assert.strictEqual(plainDefaultReason("Ja", "Mit 1.500 € abschließen?"), "money");
+  assert.strictEqual(plainDefaultReason("Yes", "Offer 15 ٪ off?"), "money");
   const plain = ["Draft it for 3 people", "Keep the top 5", "Skip it"];
-  assert.isTrue(safeDefault(plain[0]!, "Shall I draft the onboarding notes?", { labels: plain }));
-  assert.isTrue(safeDefault("Move it to week 2", "When does P-3 start?", { aboutMoney: false }));
+  assert.isUndefined(
+    plainDefaultReason(plain[0]!, "Shall I draft the onboarding notes?", { labels: plain }),
+  );
+  assert.isUndefined(
+    plainDefaultReason("Move it to week 2", "When does P-3 start?", { aboutMoney: false }),
+  );
 });
 
 it("a reply that ends on a question gives that sentence; others give none", () => {
