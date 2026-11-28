@@ -214,6 +214,29 @@ const groups = [
   },
   { label: "unexplained credit with no payment", group: "bankOnly", setup: bank(1) },
   {
+    label: "bank-only credit has one ranked invoice",
+    group: "bankOnly",
+    words: "looks like INV-1's payment from Juniper Cold Chain",
+    setup: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* payment(1, { voided: true });
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'inv-1'`;
+      yield* bank(1, { printed: "Juniper Cold Chain JUN-2026-1" });
+    }),
+  },
+  {
+    label: "bank-only credit has several of one client's open invoices",
+    group: "bankOnly",
+    words: "Kin can't tell which of Juniper Cold Chain's open invoices it pays",
+    setup: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* payment(1, { minor: 7_000, voided: true });
+      yield* payment(2, { minor: 9_000, voided: true });
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE register_id = 'invoices'`;
+      yield* bank(1);
+    }),
+  },
+  {
     label: "unpaired payment on a confirmed day",
     group: "kinOnly",
     setup: Effect.gen(function* () {
@@ -278,6 +301,7 @@ it.effect.each(groups)("$label", (example) =>
       ...("reason" in example ? { difference: example.reason } : {}),
     });
     assert.strictEqual(counts[example.group], 1);
+    if ("words" in example) assert.include(lines[0]?.text, example.words);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -339,6 +363,10 @@ it.effect(
         "Kin is holding 3 mails from candidate@harborbank.example until you say whether it is Harbor Bank's alert address.",
         "2 Bank transactions entries that an agent wrote or changed are not counted as the bank's word.",
       ]);
+      yield* alert("earlier-held-replay", 2, "duplicate", "7310");
+      const replay = yield* checkMoneyIn(org, range, now);
+      assert.include(replay.covered.join("\n"), "Alert mails from 2 Nov to 28 Nov are checked");
+      assert.notInclude(replay.covered.join("\n"), "earlier days are not checked");
     }).pipe(Effect.provide(layer)),
 );
 

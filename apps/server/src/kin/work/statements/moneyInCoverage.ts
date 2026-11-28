@@ -166,9 +166,13 @@ export const coverageOf = Effect.fn("KinMoneyInCheck.coverage")(function* (
     approved.set(sender.bankName, Math.min(sender.decidedAt, prior ?? sender.decidedAt));
   }
   for (const [bank, at] of approved) {
-    if (dayIn(at, zone) > input.from)
+    const approvedOn = dayIn(at, zone);
+    const replayedEarlier = alertRows.some(
+      (row) => row.read === 1 && row.bank === bank && dayIn(row.first, zone) < approvedOn,
+    );
+    if (approvedOn > input.from && !replayedEarlier)
       covered.push(
-        `Kin reads ${bank}'s alerts only from ${shortDay(dayIn(at, zone))}, when they were approved; earlier days are not checked.`,
+        `Kin reads ${bank}'s alerts only from ${shortDay(approvedOn)}, when they were approved; earlier days are not checked.`,
       );
   }
   for (const [bank, one] of unread)
