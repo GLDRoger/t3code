@@ -123,6 +123,27 @@ describe("statement matching", () => {
   );
 
   it.each([
+    [8_250_000, "82.500000", 65],
+    [8_250_001, "82.500010", undefined],
+    [6_750_000, "67.500000", 65],
+    [6_749_999, "67.499990", undefined],
+  ] as const)(
+    "bands a cited credit of %i paise, a rate of %s, at 75.000000",
+    (amountMinor, rate, score) => {
+      const credit = row({ description: "Tidewater Freight INV-12", amountMinor });
+      const owed = invoice({
+        currency: "USD",
+        amountMinor: 100_000,
+        number: "INV-12",
+        client: "Tidewater Freight",
+      });
+      const offer = rateOffer(credit, owed, "INR", "75.000000");
+      assert.strictEqual(offer?.candidate.score, score);
+      assert.strictEqual(offer?.rate, score === undefined ? undefined : rate);
+    },
+  );
+
+  it.each([
     {
       name: "a credit matching a signed refund, not the same positive expense",
       rows: [row({ description: "Ambermill Hosting refund", amountMinor: 500 })],

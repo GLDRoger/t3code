@@ -388,8 +388,21 @@ export const overOffer = (row: StatementRow, invoice: InvoiceCandidate, currency
   };
 };
 
-/** How far a named credit's rate may sit from a rate the company was paid at and still be offered. */
-const RATE_BAND = 0.1;
+/** A named credit's rate is offered within a tenth of a rate the company was paid at. */
+const RATE_BAND_PARTS = 10n;
+const RATE = /^(\d+)(?:\.(\d{1,6}))?$/u;
+const rateMicros = (rate: string) => {
+  const found = RATE.exec(rate);
+  return found === null
+    ? undefined
+    : BigInt(found[1]!) * 1_000_000n + BigInt((found[2] ?? "").padEnd(6, "0"));
+};
+// In whole millionths, so exactly 10% above and below are alike; an unreadable rate is outside.
+const inBand = (rate: string, recorded: string) => {
+  const [offered, base] = [rateMicros(rate), rateMicros(recorded)];
+  if (offered === undefined || base === undefined || base === 0n) return false;
+  return (offered > base ? offered - base : base - offered) * RATE_BAND_PARTS <= base;
+};
 
 export const rateCandidate = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
   const balance = invoice.amountMinor - invoice.paidMinor;
@@ -438,9 +451,7 @@ export const rateOffer = (
   const offer = rateCandidate(row, invoice, currency);
   if (
     offer === undefined ||
-    (recorded === undefined
-      ? offer.cited === undefined
-      : Math.abs(Number(offer.rate) / Number(recorded) - 1) > RATE_BAND)
+    (recorded === undefined ? offer.cited === undefined : !inBand(offer.rate, recorded))
   )
     return undefined;
   return offer;
