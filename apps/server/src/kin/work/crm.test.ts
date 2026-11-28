@@ -373,7 +373,7 @@ it.effect.each(
     const rows = sql`SELECT key, category, fields_json, state, rev, due_at, date_at, owner_id,
       party_id, project_id FROM kin_records WHERE org_id = ${orgId} ORDER BY key`;
     const initial = yield* rows;
-    const probe = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+    const probe = <E, R>(write: Effect.Effect<unknown, E, R>) =>
       sql
         .withTransaction(
           Effect.gen(function* () {

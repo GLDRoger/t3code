@@ -864,7 +864,7 @@ const fieldsOmittingNull = (row: Schema.Struct.Fields) =>
   new Set(
     Object.entries(row).flatMap(([key, field]) => {
       const codec = Schema.toCodecJson(Schema.Struct({ value: Schema.toEncoded(field) }));
-      const result = Schema.decodeUnknownResult(codec)({ value: null });
+      const result = Schema.decodeResult(codec)({ value: null });
       return result._tag === "Success" && result.success.value === undefined ? [key] : [];
     }),
   );
