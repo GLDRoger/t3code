@@ -1,3 +1,4 @@
+import { McpThreadListAccess } from "../kin/mcp/toolPolicy.ts";
 import {
   CommandId,
   type RunId,
@@ -3567,7 +3568,9 @@ const make = Effect.gen(function* () {
               ),
             )
           : null;
+      const allowedThreads = yield* McpThreadListAccess;
       const candidates = projectThreads
+        .filter((thread) => allowedThreads === undefined || allowedThreads.has(thread.id))
         .filter((thread) => mayBeLiveIds === null || mayBeLiveIds.has(thread.id))
         .filter(
           (thread) =>

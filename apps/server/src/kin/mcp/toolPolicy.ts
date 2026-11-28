@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
-import type { ServerProvider, ServerSettings } from "@t3tools/contracts";
+import type { ServerProvider, ServerSettings, ThreadId } from "@t3tools/contracts";
 
 /** A tool call a gate refused before its handler ran; the message is what the caller reads. */
 export class ToolCallRefused extends Schema.Error<ToolCallRefused>("t3/mcp/ToolCallRefused")({
@@ -112,6 +112,11 @@ export const toolCallPrepare = <R>(
     { global: true },
   );
 
+export const McpThreadListAccess = Context.Reference<ReadonlySet<ThreadId> | undefined>(
+  "t3/mcp/McpThreadListAccess",
+  { defaultValue: () => undefined },
+);
+
 /**
  * What a host narrows on `layer`: the tools a request lists, finds and may call, and a call's
  * refusal, if any. The default narrows nothing; a host provides its own to `layer`.
@@ -120,6 +125,7 @@ export const McpToolPolicy = Context.Reference<{
   readonly visible: (name: string) => Effect.Effect<boolean>;
   readonly refusal: (name: string, args: unknown) => Effect.Effect<string | undefined>;
   readonly offered: ProvidersOffered;
+  readonly listableThreads?: Effect.Effect<ReadonlySet<ThreadId> | undefined>;
 }>("t3/mcp/McpToolPolicy", {
   defaultValue: () => ({
     visible: () => Effect.succeed(true),
@@ -139,8 +145,18 @@ export const layerToolPolicy = Layer.mergeAll(
   McpServer.middleware()(
     Effect.map(Effect.service(McpToolPolicy), (policy) => {
       const gate = toolCallGateFn(policy.refusal);
-      return (effect: Parameters<typeof gate>[0], options: Parameters<typeof gate>[1]) =>
-        gate(Effect.provideService(effect, McpProvidersOffered, policy.offered), options);
+      return (effect: Parameters<typeof gate>[0], options: Parameters<typeof gate>[1]) => {
+        const withProviders = Effect.provideService(effect, McpProvidersOffered, policy.offered);
+        const listable = policy.listableThreads;
+        return gate(
+          options.target === "t3_thread_list" && listable !== undefined
+            ? Effect.flatMap(listable, (ids) =>
+                Effect.provideService(withProviders, McpThreadListAccess, ids),
+              )
+            : withProviders,
+          options,
+        );
+      };
     }),
     { global: true },
   ),

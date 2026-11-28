@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { OrchestratorMcpTarget } from "@t3tools/contracts";
+import { OrchestratorMcpTarget, ThreadId } from "@t3tools/contracts";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolPolicy from "./toolPolicy.ts";
@@ -64,12 +64,61 @@ export const WORKER_REFUSAL = "That tool isn't part of this work.";
 export const REMOTE_REFUSAL =
   "Kin's work stays on this server, so this call can't go to another machine; leave out environmentId to delegate or do it here.";
 
+/** Include the caller for tools that act on their own thread, and only its local app-owned tasks. */
+const reachableThreads = Effect.fn("KinToolGate.reachableThreads")(
+  function* (thread: ThreadId) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ threadId: ThreadId }>`
+    WITH RECURSIVE local_tasks(thread_id) AS (
+      SELECT ${thread}
+      UNION
+      SELECT tasks.child_thread_id
+      FROM orchestration_v2_projection_subagents tasks
+      JOIN local_tasks parents ON parents.thread_id = tasks.thread_id
+      WHERE tasks.origin = 'app_owned' AND tasks.child_thread_id IS NOT NULL
+    )
+    SELECT thread_id AS "threadId" FROM local_tasks`;
+    return new Set(rows.map(({ threadId }) => threadId));
+  },
+  Effect.orElseSucceed(() => new Set<ThreadId>()),
+);
+
+const threadRefusal = Effect.fn("KinToolGate.threadRefusal")(function* (
+  caller: McpThreadCaller | undefined,
+  args: unknown,
+) {
+  const target = Predicate.hasProperty(args, "threadId") ? args.threadId : undefined;
+  if (typeof target !== "string" || caller === undefined || target === caller.threadId)
+    return undefined;
+  const reachable = yield* reachableThreads(caller.threadId);
+  return reachable.has(ThreadId.make(target))
+    ? undefined
+    : "No task with that thread id was found.";
+});
+
+const restrictLeadThreads = McpHttpServer.toolCallAround((effect, { target }) => {
+  if (target !== "t3_thread_list") return effect;
+  return Effect.gen(function* () {
+    const { thread } = yield* McpInvocationContext;
+    const kin = Option.flatMap(yield* Effect.serviceOption(KinServer), (server) => server.services);
+    const allowed =
+      thread === undefined || Option.isNone(kin)
+        ? new Set<ThreadId>()
+        : yield* reachableThreads(thread.threadId).pipe(
+            Effect.provideService(SqlClient.SqlClient, Context.get(kin.value, SqlClient.SqlClient)),
+          );
+    return yield* effect.pipe(Effect.provideService(McpToolPolicy.McpThreadListAccess, allowed));
+  });
+});
+
 /** Whether a call names another machine: its `environmentId`, or `delegate_task`'s `target.environmentId`. */
 const namesOtherMachine = Effect.fnUntraced(function* (args: unknown) {
   const here = Option.getOrUndefined(
     yield* Effect.serviceOption(McpInvocationContext),
   )?.environmentId;
-  const target = Predicate.hasProperty(args, "target") ? args.target : undefined;
+  const rawTarget = Predicate.hasProperty(args, "target") ? args.target : undefined;
+  const target =
+    typeof rawTarget === "string" ? Option.getOrUndefined(decodeTarget(rawTarget)) : rawTarget;
   return [
     Predicate.hasProperty(args, "environmentId") ? args.environmentId : undefined,
     Predicate.hasProperty(target, "environmentId") ? target.environmentId : undefined,
@@ -480,6 +529,13 @@ export const workerPolicy = (services: Context.Context<Services>, host: HelperMo
   return {
     visible: (name: string) =>
       workerMayReach(name) ? Effect.succeed(true) : Effect.map(isWorker, (worker) => !worker),
+    listableThreads: Effect.gen(function* () {
+      const invocation = yield* caller;
+      if (invocation?.thread === undefined || !(yield* isWorker)) return undefined;
+      return yield* reachableThreads(invocation.thread.threadId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    }),
     offered: (
       settings: Parameters<typeof kinHelperProviders>[0],
       providers: Parameters<typeof kinHelperProviders>[1],
@@ -489,7 +545,8 @@ export const workerPolicy = (services: Context.Context<Services>, host: HelperMo
       ),
     refusal: Effect.fn("KinToolGate.workerRefusal")(
       function* (tool: string, args: unknown) {
-        const { delegated, turn } = yield* lineage((yield* caller)?.thread);
+        const invocation = yield* caller;
+        const { delegated, turn } = yield* lineage(invocation?.thread);
         if (!delegated) return undefined;
         if (!workerMayReach(tool)) return WORKER_REFUSAL;
         if (yield* namesOtherMachine(args)) return REMOTE_REFUSAL;
@@ -499,6 +556,10 @@ export const workerPolicy = (services: Context.Context<Services>, host: HelperMo
         for (const [check, refusal] of kinChecks)
           if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
             return refusal;
+        const outsideLineage = yield* threadRefusal(invocation?.thread, args).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        if (outsideLineage !== undefined) return outsideLineage;
         return yield* helperModelRefused(tool, args, host);
       },
       Effect.catchCause((cause) =>
@@ -543,6 +604,27 @@ export const layer = ReadTools.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       callCounts,
+      restrictLeadThreads,
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed((_tool, args) =>
+          Effect.gen(function* () {
+            if (!Predicate.hasProperty(args, "threadId") || (yield* namesOtherMachine(args)))
+              return undefined;
+            const { thread } = yield* McpInvocationContext;
+            const kin = Option.flatMap(
+              yield* Effect.serviceOption(KinServer),
+              (server) => server.services,
+            );
+            if (Option.isNone(kin)) return "No task with that thread id was found.";
+            return yield* threadRefusal(thread, args).pipe(
+              Effect.provideService(
+                SqlClient.SqlClient,
+                Context.get(kin.value, SqlClient.SqlClient),
+              ),
+            );
+          }),
+        ),
+      ),
       turnEvents,
       McpToolPolicy.toolCallGate(
         (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),

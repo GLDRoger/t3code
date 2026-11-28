@@ -1456,6 +1456,21 @@ it.effect.each([true, false])(
           assert.includeMembers([...LEAD_T3_TOOLS], names);
         }
         const worker = yield* open("/mcp", workerIssued.config.authorizationHeader);
+        const confinementFailures: Array<{ tool: string; expected: string; actual: string }> = [];
+        const expectRefusal = (tool: string, expected: string, actual: string) => {
+          if (!actual.includes(expected)) confinementFailures.push({ tool, expected, actual });
+        };
+        for (const name of ["t3_thread_read", "t3_thread_send", "t3_thread_wait"])
+          expectRefusal(
+            name,
+            "No task with that thread id was found.",
+            yield* worker.call(name, { threadId: "ordinary-thread", message: "Sample" }),
+          );
+        assert.deepStrictEqual(confinementFailures, []);
+        assert.notInclude(
+          yield* worker.call("t3_thread_read", { threadId: "nested-thread" }),
+          "No task with that thread id was found.",
+        );
         for (const [name, args] of [
           ["schedule_task", { title: "Invented nightly check", prompt: "Check the build." }],
           ["list_scheduled_tasks", {}],
