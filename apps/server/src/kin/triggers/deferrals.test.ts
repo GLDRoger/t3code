@@ -2338,6 +2338,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'fire-wake'`;
     yield* leadWakeup({ orgId, eventId, chatId: "group-a", body: "Time to send the report." });
     yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    assert.deepStrictEqual((yield* cardOf("def-s")).actions, []);
     const fired = yield* reminderCard("def-s", dueAt);
     assert.equal(fired.chatId, "group-a");
     assert.deepInclude(fired.state, { askedBy: { personId: "teammate", name: "Teammate" } });

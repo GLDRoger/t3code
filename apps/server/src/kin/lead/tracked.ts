@@ -8,6 +8,7 @@ import {
   KinRecordState,
   MemoryItemEvery,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -15,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { historyFloor } from "../chat/sharing.ts";
 import { inOwnerTime } from "../pulse/checkInSeeds.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
@@ -131,8 +133,7 @@ type SetInChat =
 /**
  * A shared chat's own live reminders and routines, in due order, reminders first: the same list
  * the leads' tracking reads (`tracked`), kept to this chat, each routine in the owner's own time.
- * A title is the card's, which is blank while someone there now couldn't read where it was set
- * (`wordsReadable`).
+ * A title is omitted when its card is below the room’s history floor.
  */
 export const setInChat = Effect.fn("KinTracked.setInChat")(function* (
   orgId: KinOrgId,
@@ -140,7 +141,17 @@ export const setInChat = Effect.fn("KinTracked.setInChat")(function* (
 ) {
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
-  return (yield* tracked(orgId)).flatMap((item): ReadonlyArray<SetInChat> => {
+  const sql = yield* SqlClient.SqlClient;
+  const { floor, items } = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const [row] = yield* sql<{ floor: number | null }>`
+      SELECT ${historyFloor(sql, orgId, chatId)} AS floor`;
+        return { floor: row?.floor ?? 0, items: yield* tracked(orgId) };
+      }),
+    )
+    .pipe(NodeSqliteClient.readOnly);
+  return items.flatMap((item): ReadonlyArray<SetInChat> => {
     if (item.chatId !== chatId || item.itemId === null || item.askedBy === null) return [];
     const asker = Option.getOrUndefined(decodeAsker(item.askedBy));
     if (asker === undefined) return [];
@@ -149,7 +160,7 @@ export const setInChat = Effect.fn("KinTracked.setInChat")(function* (
         {
           kind: "reminder" as const,
           itemId: item.itemId,
-          title: item.title,
+          title: (item.anchorSeq ?? 0) < floor ? "" : item.title,
           dueAt: item.dueAt,
           asker,
         },

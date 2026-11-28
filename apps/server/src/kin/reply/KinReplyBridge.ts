@@ -221,6 +221,8 @@ const couldnt = (lead: string, cause: KinTroubleCause | undefined) =>
   cause === undefined
     ? `${lead} couldn't start`
     : `${lead} couldn't start: ${KIN_TROUBLE_WHY[cause]}`;
+const RETRY_SOON = "Trying again in a moment.";
+const RETRY_LATER = `Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
 const failedNotices: Record<
   Exclude<FailedOutcome, SetupFailure | "replied" | "held">,
@@ -235,13 +237,12 @@ const failedNotices: Record<
   },
   retrying: {
     prefix: "kin-retrying",
-    body: (lead, cause) => `${couldnt(lead, cause)}. Trying again in a moment.`,
+    body: (lead, cause) => `${couldnt(lead, cause)}. ${RETRY_SOON}`,
   },
   // Before the long wait: the same kind of line for clients, now saying when.
   retrying_later: {
     prefix: "kin-retrying",
-    body: (lead, cause) =>
-      `${couldnt(lead, cause)}. Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`,
+    body: (lead, cause) => `${couldnt(lead, cause)}. ${RETRY_LATER}`,
   },
   gave_up: {
     prefix: "kin-failed",
@@ -2339,6 +2340,7 @@ const make = Effect.gen(function* () {
         AND substr(n.message_id, instr(n.message_id, ':') + 1) = w.wakeup_id
         AND substr(n.message_id, 1, instr(n.message_id, ':') - 1) IN ${sql.in(prefixes)}
       WHERE n.org_id = ${input.orgId} AND n.chat_id = ${input.lane.chatId} AND w.agent_id = ${agentId}
+        AND n.edited_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM kin_messages h WHERE h.org_id = n.org_id
           AND h.chat_id = n.chat_id AND h.author_kind = 'human' AND h.seq > n.seq)
       LIMIT 1`;
@@ -2578,6 +2580,54 @@ const make = Effect.gen(function* () {
     yield* setup(ownerOnly).pipe(Effect.catchIf(isPrivateWriteRefused, () => setup(false)));
   });
 
+  const settleRetries = Effect.fn("KinReplyBridge.settleRetries")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+    }) {
+      const { orgId, agentId, wakeupId } = input;
+      const retried = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+      AND wakeup_id = ${wakeupId} AND state = 'done'
+      AND (attempts > 0 OR json_extract(json, '$._heldFrom') IS NOT NULL
+        OR json_extract(json, '$._retryAlone') IS 1) LIMIT 1`;
+      if (retried.length === 0) return;
+      const rows = yield* sql<{ messageId: KinMessageId; body: string }>`
+      SELECT n.message_id AS "messageId", n.body FROM kin_wakeups ran
+      JOIN kin_wakeups earlier ON earlier.org_id = ran.org_id AND earlier.agent_id = ran.agent_id
+      JOIN kin_messages n ON n.org_id = earlier.org_id
+        AND n.message_id = 'kin-retrying:' || earlier.wakeup_id
+      WHERE ran.org_id = ${orgId} AND ran.agent_id = ${agentId} AND ran.wakeup_id = ${wakeupId}
+        AND ran.aborted_at IS NULL AND earlier.started_at <= ran.started_at
+        AND earlier.wakeup_id <> ran.wakeup_id AND n.edited_at IS NULL
+        AND EXISTS (SELECT 1 FROM json_each(earlier.event_ids) j
+          JOIN kin_events e ON e.org_id = earlier.org_id AND e.event_id = j.value
+          WHERE json_extract(e.json, '$.chatId') = n.chat_id
+            AND e.wakeup_id = ran.wakeup_id AND e.state = 'done'
+            AND (ran.status = 'completed' OR e.replied_at IS NOT NULL))
+        AND NOT EXISTS (SELECT 1 FROM json_each(earlier.event_ids) j
+          JOIN kin_events e ON e.org_id = earlier.org_id AND e.event_id = j.value
+          WHERE json_extract(e.json, '$.chatId') = n.chat_id AND NOT (
+            e.state = 'done' AND (e.replied_at IS NOT NULL OR EXISTS (
+              SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+                AND w.status = 'completed' AND w.aborted_at IS NULL))))`;
+      if (rows.length === 0) return;
+      const at = iso(yield* Clock.currentTimeMillis);
+      for (const { messageId, body } of rows) {
+        const suffix = [RETRY_SOON, RETRY_LATER].find((text) => body.endsWith(text));
+        if (suffix === undefined) continue;
+        yield* chat.replaceSystemNotice({
+          orgId,
+          messageId,
+          before: body,
+          at,
+          body: body.slice(0, -suffix.length) + "Tried again and it worked.",
+        });
+      }
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin couldn't settle retry notices", { cause })),
+  );
+
   const end = Effect.fn("KinReplyBridge.end")(function* (input: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -2596,6 +2646,7 @@ const make = Effect.gen(function* () {
       if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
       yield* settleLine(wake);
     }
+    yield* settleRetries(input);
     yield* chat
       .discardFigures(input)
       .pipe(Effect.catchCause(() => Effect.logWarning("Kin could not discard unplaced figures")));
