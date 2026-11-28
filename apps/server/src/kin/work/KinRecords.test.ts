@@ -6042,6 +6042,167 @@ it.effect("a teammate's list and record_query words match only what the page sho
   }).pipe(Effect.provide(bookingLayer)),
 );
 
+it.effect("a member who leads one project learns nothing of another's notes from Search", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    const client = yield* ownerTask("Juniper Cold Chain", { list: "clients" });
+    const members = { members: [`person:${mateId}`] };
+    const annex = yield* ownerTask("Tidewater Annex", {
+      list: "projects",
+      notes: "Tidewater Tidewater Tidewater beta",
+      fields: members,
+    });
+    const led = yield* ownerTask("Juniper depot", {
+      list: "projects",
+      notes: "Quillfern alpha",
+      owner: { _tag: "person", personId: mateId },
+      fields: members,
+    });
+    const freight = yield* ownerTask("Tidewater Freight", {
+      list: "projects",
+      partyId: client.recordId,
+      notes: "Quillfern beta at 18,500 per run",
+      fields: members,
+    });
+    const task = yield* ownerTask("Depot review", {
+      projectId: freight.recordId,
+      notes: "Pallet ledger",
+      owner: { _tag: "person", personId: mateId },
+      steps: [{ title: "Inspect the forklift", done: false }],
+    });
+    const { row: deal } = yield* (yield* KinRecords.KinRecords).create(
+      orgId,
+      { ...ownerWrites, deal: true },
+      {
+        list: "deals",
+        title: "Freight renewal",
+        originKey: "freight-renewal",
+        owner: ownerWrites.actor,
+        partyId: client.recordId,
+        notes: "Transfer meeting",
+        fields: { concerns: ["loading dock: narrow gate"] },
+      },
+    );
+    const booking = yield* book("Harbour slot", {
+      fields: { note: "Front desk", privateNote: "Invented confidential berth" },
+    });
+    yield* turn("mate", "shared");
+    const keys = (result: { hits: ReadonlyArray<{ key: string }> }) =>
+      result.hits.map((hit) => hit.key);
+    const asMember = (text: string, closed = false) =>
+      OwnerDocs.search([mate], { orgId, text, closed });
+    const agent = (text: string) => LeadDocs.searchTool(scopeOf(lead), { text });
+
+    for (const closed of [false, true]) {
+      assert.deepStrictEqual(keys(yield* asMember("Quillfern", closed)), [led.key]);
+      assert.deepStrictEqual(keys(yield* asMember("Quill", closed)), [led.key]);
+      for (const term of ["beta", "bet", "18500", "18,500", "18 500", '"beta at"'])
+        assert.deepStrictEqual(keys(yield* asMember(term, closed)), [], term);
+    }
+    // Newest first, as a title match ranks whatever the notes say.
+    const titled = yield* asMember("Tidewater");
+    assert.deepStrictEqual(keys(titled), [freight.key, annex.key]);
+    assert.deepStrictEqual(
+      titled.hits.map((hit) => hit.snippet),
+      [freight.title, annex.title],
+    );
+    // The any-word pass answers a notes word as it answers a word that is nowhere.
+    const widened = yield* agent("Tidewater beta");
+    assert.deepStrictEqual(widened, yield* agent("Tidewater zzqx"));
+    assert.deepStrictEqual(
+      widened.hits.map((hit) => hit.key),
+      [freight.key, annex.key],
+    );
+    assert.deepStrictEqual(keys(yield* agent("Quillfern")), [led.key]);
+    // What the member reads still matches.
+    assert.deepStrictEqual(keys(yield* asMember("ledger")), [task.key]);
+    assert.deepStrictEqual(keys(yield* asMember("forklift")), [task.key]);
+    assert.deepStrictEqual(keys(yield* asMember("Front desk")), [booking.key]);
+    assert.deepStrictEqual(keys(yield* asMember("confidential berth")), []);
+    assert.deepStrictEqual(keys(yield* asMember("narrow gate")), [deal.key]);
+    yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    assert.deepStrictEqual(keys(yield* asMember("narrow gate")), []);
+    assert.deepStrictEqual(keys(yield* asMember("Freight renewal")), []);
+    // The owner still finds every word, with its snippet.
+    for (const [term, key] of [
+      ["beta", freight.key],
+      ["narrow gate", deal.key],
+    ] as const)
+      assert.include(keys(yield* OwnerDocs.search([owner], { orgId, text: term })), key, term);
+    // Taken off the project, then gone from the company: nothing of it is found.
+    yield* sql`UPDATE kin_records SET fields_json = '{}', owner_id = ${ownerId}
+      WHERE record_id = ${led.recordId}`;
+    assert.deepStrictEqual(keys(yield* asMember("Juniper depot", true)), []);
+    assert.deepStrictEqual(keys(yield* asMember("Quillfern", true)), []);
+    yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    // A leaver's session resolves to no one (`KinIdentity`); a turn they woke finds no notes.
+    assert.isTrue(
+      Exit.isFailure(yield* Effect.exit(OwnerDocs.search([], { orgId, text: "Tidewater" }))),
+    );
+    for (const term of ["beta", "Quillfern"]) assert.deepStrictEqual(keys(yield* agent(term)), []);
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
+it.effect("a member writes no list field they cannot read, by any route", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const secret = "Invented confidential berth";
+    const row = yield* book("Harbour slot", {
+      fields: { note: "Front desk", privateNote: secret },
+    });
+    const scope = scopeOf(lead);
+    const read = OwnerWork.get([owner], { orgId, key: row.key });
+    const refusals = [
+      yield* Effect.flip(
+        OwnerWork.create([mate], {
+          ...bookings,
+          title: "Invented berth two",
+          clientRequestId: "berth-two",
+          fields: { privateNote: "Mine" },
+        }),
+      ),
+      yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [
+            { list: "bookings", title: "Invented berth three", fields: { privateNote: "x" } },
+          ],
+        }),
+      ),
+      yield* Effect.flip(
+        LeadWork.updateMany(scope, {
+          sourceEventId: "ask-event",
+          keys: [row.key],
+          fields: { privateNote: "Different berth" },
+        }),
+      ),
+    ];
+    for (const refusal of refusals) {
+      assert.include(refusal, { reason: "not_allowed" }, JSON.stringify(refusal));
+      assert.notInclude(JSON.stringify(refusal), secret);
+    }
+    assert.deepStrictEqual((yield* read).fields, { note: "Front desk", privateNote: secret });
+    const sql = yield* SqlClient.SqlClient;
+    const [made] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'bookings'`;
+    assert.strictEqual(made?.count, 1);
+    // A field they read is still theirs to change.
+    yield* OwnerWork.update([mate], {
+      orgId,
+      key: row.key,
+      rev: row.rev,
+      fields: { note: "Back desk" },
+    });
+    assert.deepStrictEqual((yield* read).fields, { note: "Back desk", privateNote: secret });
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
 it.effect("refuses a shared list's unreadable field on the screen and in a teammate turn", () =>
   Effect.gen(function* () {
     yield* bookingList();
