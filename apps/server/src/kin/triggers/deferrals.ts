@@ -396,6 +396,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     readonly itemId: KinMemoryItemId;
     readonly now: number;
     readonly closed: KinDeferralCard["closed"];
+    readonly fired?: true;
   }) {
     const { orgId, itemId } = input;
     const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
@@ -405,7 +406,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     const previous = existing.value.state;
     const state =
       typeof previous === "object" && previous !== null
-        ? { ...previous, closed: input.closed }
+        ? { ...previous, closed: input.closed, ...(input.fired ? { actions: [] } : {}) }
         : previous;
     const widget = yield* repo.updateWidget({
       ...existing.value,
