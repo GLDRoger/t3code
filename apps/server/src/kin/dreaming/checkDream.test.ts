@@ -492,8 +492,17 @@ it.effect.each([
     failures: [],
   },
   {
-    name: "refuses a body that adds a sentence to the typed quote",
+    name: "leaves out a fact whose body adds a sentence to the typed quote",
     path: "claims/rate.md",
+    item: fromEdit({ quote: "from 1 January" }, "from 1 January. Invoices are due within 30 days."),
+    failures: [],
+    leftOut: ["claims/rate.md"],
+    reason: "an item from an edit uses only its quote as the body",
+  },
+  {
+    name: "refuses the night when the item whose body adds a sentence was in memory before",
+    path: "claims/rate.md",
+    before: fromEdit({ source: agentRef, said_by: "fixture-lead", trust: "agent" }),
     item: fromEdit({ quote: "from 1 January" }, "from 1 January. Invoices are due within 30 days."),
     failures: ["claims/rate.md body: an item from an edit uses only its quote as the body"],
   },
@@ -636,7 +645,8 @@ it.effect.each([
     assert.deepStrictEqual(
       result.leftOut,
       leftOut.map(
-        (path) => `Left out ${path}: an item from an edit quotes only what the person typed in it`,
+        (path) =>
+          `Left out ${path}: ${"reason" in row ? row.reason : "an item from an edit quotes only what the person typed in it"}`,
       ),
     );
     for (const path of leftOut) {

@@ -43,6 +43,7 @@ export const DreamJson = Schema.Struct({
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
 const EDIT_QUOTE = "an item from an edit quotes only what the person typed in it";
+const EDIT_BODY = "an item from an edit uses only its quote as the body";
 export const DREAM_LEFT_OUT_PREFIX = "Left out ";
 const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
@@ -80,8 +81,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     input.material.flatMap((entry) => (entry.trust === "agent" ? [] : [entry.saidBy])),
   );
   const listed = new Map(report?.changes.map((change) => [change.path, change.sources]));
-  /** New items refused only for their edit quote, by id: candidates to leave out. */
-  const untyped = new Map<string, string>();
+  /** New items refused only for their edit quote or body, by path: candidates to leave out. */
+  const untyped = new Map<string, { readonly id: string; readonly reason: string }>();
 
   for (const [path, text] of changes) {
     if (path === "rules.md") {
@@ -197,10 +198,11 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
           : (author.changed ?? []).some((part) => quoteRefusal(quote, part.now) === undefined);
       if (!typed) {
         failures.push(`${path} quote: ${EDIT_QUOTE}`);
-        untyped.set(path, fm.id);
+        untyped.set(path, { id: fm.id, reason: EDIT_QUOTE });
       } else if (sameAuthor && quote !== undefined) {
         if (parsed.success.body.trim() !== quote.trim()) {
-          failures.push(`${path} body: an item from an edit uses only its quote as the body`);
+          failures.push(`${path} body: ${EDIT_BODY}`);
+          untyped.set(path, { id: fm.id, reason: EDIT_BODY });
           continue;
         }
         const dated = withRecordedAt(text, author.at);
@@ -267,15 +269,15 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         if (!contradiction.resolution && !contradiction.question)
           failures.push(`contradiction ${index + 1} has no resolution or question`);
   }
-  // A new item whose only fault is its edit quote costs that item, not the night, when
+  // A new item whose only fault is its edit quote or body costs that item, not the night, when
   // nothing else in the night names it. Anything else still fails the night.
   const named = new Set([
     ...(report?.merges.flatMap((entry) => [entry.into, ...entry.from]) ?? []),
     ...(report?.supersessions.flatMap((entry) => [entry.id, entry.superseded_by ?? ""]) ?? []),
     ...(report?.contradictions.flatMap((entry) => entry.items) ?? []),
   ]);
-  const dropped = new Set<string>();
-  for (const [path, id] of untyped) {
+  const dropped = new Map<string, string>();
+  for (const [path, { id, reason }] of untyped) {
     const own = failures.filter((line) => line.startsWith(`${path} `));
     if (
       input.base.has(path) ||
@@ -287,7 +289,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       continue;
     failures.splice(failures.indexOf(own[0]!), 1);
     changes.delete(path);
-    dropped.add(path);
+    dropped.set(path, reason);
   }
   const committed = new Map(
     [...input.tree.keys()]
@@ -298,6 +300,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     report === undefined
       ? undefined
       : { ...report, changes: report.changes.filter((change) => !dropped.has(change.path)) };
-  const leftOut = [...dropped].map((path) => `${DREAM_LEFT_OUT_PREFIX}${path}: ${EDIT_QUOTE}`);
+  const leftOut = [...dropped].map(
+    ([path, reason]) => `${DREAM_LEFT_OUT_PREFIX}${path}: ${reason}`,
+  );
   return { failures, changes, committed, dream: reported, leftOut };
 });

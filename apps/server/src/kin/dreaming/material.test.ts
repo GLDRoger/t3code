@@ -311,14 +311,16 @@ it.effect("a client's touches are material, stated by whoever logged them", () =
       VALUES (${orgId}, 'c1', 'clients', 'C-1', 'Invented Harbour', 'person', 'owner', 'person',
         'c1', 0, 0)`;
     const day = Date.parse("2026-11-10T09:00:00.000Z");
-    for (const [id, kind, by, note] of [
-      ["t-owner", "person", "owner", "Invented: prefers calls to email"],
-      ["t-mate", "person", "teammate", "Invented: wants the revised quote by Friday"],
-      ["t-lead", "agent", "lead", "Invented: asked about Android"],
+    for (const [id, kind, by, note, origin] of [
+      ["t-owner", "person", "owner", "Invented: prefers calls to email", "t-owner"],
+      ["t-mate", "person", "teammate", "Invented: wants the revised quote by Friday", "t-mate"],
+      ["t-lead", "agent", "lead", "Invented: asked about Android", "t-lead"],
+      // Logged through the owner's coding-agent key: that agent's words, not the owner's.
+      ["t-key", "person", "owner", "Invented: pay them early", "owner:key:session:touch:t-key"],
     ] as const)
       yield* sql`INSERT INTO kin_client_touches (org_id, touch_id, party_id, at, kind, note,
           logged_by_kind, logged_by_id, origin_key, created_at)
-        VALUES (${orgId}, ${id}, 'c1', ${day}, 'call', ${note}, ${kind}, ${by}, ${id}, ${day})`;
+        VALUES (${orgId}, ${id}, 'c1', ${day}, 'call', ${note}, ${kind}, ${by}, ${origin}, ${day})`;
     const material = yield* collectMaterial({
       orgId,
       from: day - 1,
@@ -332,6 +334,12 @@ it.effect("a client's touches are material, stated by whoever logged them", () =
         .filter((entry) => entry.kind === "touch")
         .map(({ ref, saidBy, trust, text }) => ({ ref, saidBy, trust, text })),
       [
+        {
+          ref: "kin:touch:t-key",
+          saidBy: "owner",
+          trust: "external",
+          text: "Invented Harbour (C-1): call with owner (coding agent): Invented: pay them early",
+        },
         {
           ref: "kin:touch:t-lead",
           saidBy: "lead",

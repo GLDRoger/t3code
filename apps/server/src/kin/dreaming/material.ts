@@ -197,8 +197,13 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         ref: `kin:touch:${touch.id}`,
         kind: "touch",
         saidBy: by?.name ?? "kin",
-        trust:
-          by === null || by.kind === "agent" ? "agent" : by.name === owner ? "owner" : "member",
+        trust: touch.keyed
+          ? "external"
+          : by === null || by.kind === "agent"
+            ? "agent"
+            : by.name === owner
+              ? "owner"
+              : "member",
         at: touch.at,
         text: `${touch.client.name} (${touch.client.key}): ${touch.kind}${
           touch.who === null ? "" : ` with ${touch.who}`
