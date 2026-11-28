@@ -41,6 +41,7 @@ import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { kinMigrations, runKinMigrations } from "../persistence/KinMigrations.ts";
 import RemovedRuleCards from "../persistence/migrations/K240_RemovedRuleCards.ts";
+import RemovedRuleLimits from "../persistence/migrations/K242_RemovedRuleLimits.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { sealPlans } from "../widgets/cardPlans.ts";
 import { mailRuleTap } from "./mailRuleTap.ts";
@@ -462,10 +463,15 @@ it.effect("marks the answered rule card removed in open chats only once", () =>
     yield* rules.resume([identity], { ...ref, chatId, agentId, tapId: "rhea-resume" });
     assert.deepStrictEqual(yield* getCard, answered);
     yield* TestClock.adjust("1 second");
+    yield* rules.setLimit([identity], { ...ref, monthlyCap: 40 });
     const removedAt = iso(yield* Clock.currentTimeMillis);
     const removed = yield* rules.remove([identity], ref);
     const updated = yield* getCard;
-    assert.deepStrictEqual(updated.state, { ...state, decision: { ...state.decision, removedAt } });
+    assert.deepStrictEqual(updated.state, {
+      ...state,
+      monthlyCap: 40,
+      decision: { ...state.decision, removedAt },
+    });
     assert.strictEqual(updated.revision, answered.revision + 1);
     assert.deepStrictEqual(yield* Queue.take(updates), {
       type: "widget.updated",
@@ -573,27 +579,31 @@ it.effect("tells the card of a rule removed before cards learnt it when that was
     ];
     // As the earlier remove left it: the rule removed, its card still saying it was turned on.
     const removedAt = Date.parse("2026-11-21T10:30:00.250Z");
-    yield* sql`UPDATE kin_mail_rules SET state = 'removed', updated_at = ${removedAt}
+    yield* sql`UPDATE kin_mail_rules SET state = 'removed', monthly_cap = 40, updated_at = ${removedAt}
       WHERE rule_id = ${gone.ruleId}`;
     const stored = sql`SELECT widget_id, revision, state_json, updated_at FROM kin_widgets
       ORDER BY widget_id`;
     const before = yield* stored;
     yield* TestClock.setTime(Date.parse("2026-11-28T00:00:00Z"));
     yield* RemovedRuleCards;
+    yield* RemovedRuleLimits;
     const cards = yield* Effect.forEach(widgets, (widget) =>
       repo.getWidget(widget).pipe(Effect.map(Option.getOrThrow)),
     );
     assert.deepStrictEqual(cards[0]!.state, {
       ...(yield* decodeCard(widgets[0]!.state)),
+      monthlyCap: 40,
       decision: { status: "on", ruleId: gone.ruleId, by, removedAt: "2026-11-21T10:30:00.250Z" },
     });
-    assert.strictEqual(cards[0]!.revision, widgets[0]!.revision + 1);
+    assert.strictEqual(cards[0]!.revision, widgets[0]!.revision + 2);
     assert.deepStrictEqual(cards.slice(1), widgets.slice(1));
     const after = yield* stored;
     yield* RemovedRuleCards;
+    yield* RemovedRuleLimits;
     assert.deepStrictEqual(yield* stored, after);
     assert.notDeepEqual(after, before);
     assert.deepInclude(kinMigrations, [240, "RemovedRuleCards"]);
+    assert.deepInclude(kinMigrations, [242, "RemovedRuleLimits"]);
 
     // Removing one rule now tells its own card and no other.
     yield* rules.remove(owners, { orgId, ruleId: kept.ruleId });
