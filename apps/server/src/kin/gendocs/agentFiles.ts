@@ -1,3 +1,5 @@
+import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { KinSessionFolders, sessionFolderKey } from "../lead/turn/sessionFolders.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous content hash; Digest would add a service to every caller.
 import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWorkerId } from "@t3tools/contracts";
@@ -144,8 +146,9 @@ const fileTaken = Effect.fn("KinAgentFiles.file")(function* (
   }));
 });
 
-/** `kin_document` with `file`: the agent's own file, checked for what it is, filed as it is. */
-export const fileDocument = leadTool("KinAgentFiles.document", (lead, input: DocumentInput) =>
+type SessionFile = { readonly input: DocumentInput; readonly roots: ReadonlyArray<string> };
+
+const fileInSession = leadTool("KinAgentFiles.document", (lead, { input, roots }: SessionFile) =>
   Effect.gen(function* () {
     yield* admitted(lead, "kin_document", input);
     if (yield* isOrgPaused(lead.orgId)) return yield* denied(PAUSED);
@@ -171,7 +174,7 @@ export const fileDocument = leadTool("KinAgentFiles.document", (lead, input: Doc
         reason: "not_found",
         message: `No entry ${input.entry}. Nothing was filed.`,
       });
-    const taken = yield* takeFile(input.file);
+    const taken = yield* takeFile(input.file, roots);
     if (!("bytes" in taken))
       return yield* invalid(
         `Nothing was filed: ${taken.name} ${taken.reason}.${taken.retry === undefined ? "" : ` ${taken.retry}`}`,
@@ -198,6 +201,17 @@ export const fileDocument = leadTool("KinAgentFiles.document", (lead, input: Doc
     });
   }),
 );
+
+/** `kin_document` with `file`: the agent's own file, checked for what it is, filed as it is. */
+export const fileDocument = Effect.fn("KinAgentFiles.fileDocument")(function* (
+  scope: McpInvocationScope,
+  input: DocumentInput,
+) {
+  const sessions = yield* KinSessionFolders;
+  const roots =
+    scope.thread === undefined ? undefined : sessions.get(sessionFolderKey(scope.thread));
+  return yield* fileInSession(scope, { input, roots: roots ?? [] });
+});
 
 const decodeReferences = Schema.decodeUnknownOption(ReferencesJson);
 const encodeReferences = Schema.encodeEffect(ReferencesJson);

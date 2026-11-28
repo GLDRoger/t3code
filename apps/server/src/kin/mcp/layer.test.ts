@@ -1460,6 +1460,21 @@ it.effect.each([true, false])(
         const expectRefusal = (tool: string, expected: string, actual: string) => {
           if (!actual.includes(expected)) confinementFailures.push({ tool, expected, actual });
         };
+        for (const name of ["html_preview", "html_render"])
+          expectRefusal(
+            name,
+            "The HTML tools are unavailable in this session.",
+            yield* worker.call(name, { html: "<p>sample</p>", title: "Sample", height: 200 }),
+          );
+        for (const [name, args] of [
+          ["t3_project_create", { workspaceRoot: "/fixture", title: "Sample", scripts: [] }],
+          ["t3_project_update", { projectId: "fixture", scripts: [] }],
+        ] as const)
+          expectRefusal(
+            name,
+            "Kin agents cannot set project scripts.",
+            yield* worker.call(name, args),
+          );
         for (const name of ["t3_thread_read", "t3_thread_send", "t3_thread_wait"])
           expectRefusal(
             name,

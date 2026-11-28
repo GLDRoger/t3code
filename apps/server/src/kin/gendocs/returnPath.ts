@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { withArticle } from "../article.ts";
 import { officeProblem } from "./officeCheck.ts";
@@ -244,11 +245,15 @@ const readOne = (
   anchor: Pick<Anchor, "base"> & { readonly dev: number | undefined },
   name: string,
   budget: number,
+  directoryFlags = 0,
 ): Promise<Read> =>
   NodeFS.promises
     .open(
       NodePath.join(anchor.base, name),
-      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+      NodeFS.constants.O_RDONLY |
+        NodeFS.constants.O_NOFOLLOW |
+        NodeFS.constants.O_NONBLOCK |
+        directoryFlags,
     )
     .then(
       async (handle) => {
@@ -409,21 +414,66 @@ export const takeOutputs = Effect.fn("KinGenDocs.takeOutputs")(function* (input:
   return { taken, refused } satisfies Returned;
 }, Effect.scoped);
 
+const NO_DIRECTORY_LINK = { refused: "its path doesn't stay inside a plain folder" } as const;
+
+const readSessionFile = async (
+  platform: NodeJS.Platform,
+  file: string,
+  budget: number,
+): Promise<Read> => {
+  const directory = NodePath.dirname(file);
+  const name = NodePath.basename(file);
+  if (platform === "darwin")
+    // Darwin's O_NOFOLLOW_ANY rejects links in intermediate components too.
+    return readOne({ base: directory, dev: undefined }, name, budget, 0x20000000);
+  if (platform !== "linux") return NO_DIRECTORY_LINK;
+  const flags =
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY | NodeFS.constants.O_NOFOLLOW;
+  let parent = await NodeFS.promises.open("/", flags);
+  try {
+    for (const segment of directory.split("/").filter(Boolean)) {
+      const child = await NodeFS.promises.open(`/proc/self/fd/${parent.fd}/${segment}`, flags);
+      await parent.close();
+      parent = child;
+    }
+    const info = await parent.stat();
+    return await readOne({ base: `/proc/self/fd/${parent.fd}`, dev: info.dev }, name, budget);
+  } catch {
+    return NO_DIRECTORY_LINK;
+  } finally {
+    await parent.close();
+  }
+};
+
 /**
  * A file an agent made in its own session, by its path: a regular file, not a link, within the
  * cap, with a plain name, whose leading bytes are its named type. `refused` says why in plain words.
  */
 export const takeFile = Effect.fn("KinGenDocs.takeFile")(function* (
   file: string,
+  roots: ReadonlyArray<string>,
   fileBytes: number = RETURN_CAPS.fileBytes,
 ) {
-  const name = NodePath.basename(file.trim());
+  const requested = file.trim();
+  const name = NodePath.basename(requested);
   const refuse = (reason: string, retry?: string): Refused => ({
     name: name.slice(0, 120),
     reason,
     ...(retry === undefined ? {} : { retry }),
   });
-  if (!NodePath.isAbsolute(file.trim())) return refuse("give its full path, from /");
+  if (!NodePath.isAbsolute(requested)) return refuse("give its full path, from /");
+  if (
+    requested.split(NodePath.sep).some((part) => part === "..") ||
+    !roots.some((root) => {
+      const relative = NodePath.relative(root, requested);
+      return (
+        relative !== "" &&
+        !NodePath.isAbsolute(relative) &&
+        relative.split(NodePath.sep)[0] !== ".."
+      );
+    })
+  )
+    return refuse("give a file from your own working folder or temporary folder");
   if (!plainName.test(name))
     return refuse(
       "its name isn't plain: letters, digits, spaces, . _ - and brackets",
@@ -437,9 +487,9 @@ export const takeFile = Effect.fn("KinGenDocs.takeFile")(function* (
     );
   if (!isExtension(extension))
     return refuse(`.${extension || "(none)"} isn't a file type Kin keeps`);
-  const directory = NodePath.dirname(file.trim());
+  const platform = yield* HostProcess.Platform;
   const read = yield* Effect.promise(() =>
-    readOne({ base: directory, dev: undefined }, name, fileBytes),
+    readSessionFile(platform, NodePath.normalize(requested), fileBytes),
   );
   if ("refused" in read) return refuse(read.refused);
   const mismatch = yield* Effect.promise(() => typeMismatch(extension, read.bytes));

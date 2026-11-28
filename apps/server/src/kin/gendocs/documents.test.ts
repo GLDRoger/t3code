@@ -37,6 +37,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
+import { KinSessionFolders, sessionFolderKey } from "../lead/turn/sessionFolders.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { countryFirstMessage, newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import * as Docs from "../work/docs.ts";
@@ -3541,7 +3542,13 @@ describe("files the agent makes", () => {
       yield* seed;
       const fs = yield* FileSystem.FileSystem;
       const config = yield* ServerConfig;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "kin-agent-file-" });
+      const dir = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "kin-agent-file-" }),
+      );
+      const sessions = yield* KinSessionFolders;
+      const session = sessionFolderKey(scope.thread!);
+      sessions.set(session, [dir]);
+      yield* Effect.addFinalizer(() => Effect.sync(() => sessions.delete(session)));
       const pdf = `${dir}/Welcome note.pdf`;
       yield* fs.writeFileString(pdf, "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n");
       const note = {
@@ -3596,11 +3603,18 @@ describe("files the agent makes", () => {
       }).pipe(Effect.flip);
       assert.match(bare.message, /give its full path in file/);
       assert.sameMembers([...new Set(shownCards)], ["D-1"]);
-      // A screenshot a delegated run left in its Scratch folder is filed as an image with its card.
-      const shots = `${config.baseDir}/scratch/review-run/shots`;
-      yield* fs.makeDirectory(shots, { recursive: true });
+      const shots = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "kin-agent-shots-" }),
+      );
       const png = `${shots}/phone-390-save-alert.png`;
       yield* fs.writeFile(png, Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0));
+      const otherSession = yield* AgentFiles.fileDocument(scope, {
+        title: "A screenshot from another session",
+        file: png,
+        sourceEventId: "event-3",
+      }).pipe(Effect.flip);
+      assert.include(otherSession.message, "your own working folder or temporary folder");
+      sessions.set(session, [dir, shots]);
       const shot = yield* AgentFiles.fileDocument(scope, {
         title: "Save alert on a phone",
         file: png,

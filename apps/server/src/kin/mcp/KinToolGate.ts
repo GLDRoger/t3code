@@ -64,6 +64,41 @@ export const WORKER_REFUSAL = "That tool isn't part of this work.";
 export const REMOTE_REFUSAL =
   "Kin's work stays on this server, so this call can't go to another machine; leave out environmentId to delegate or do it here.";
 
+const serverFileRefusal = (tool: string, args: unknown) => {
+  switch (tool) {
+    case "html_preview":
+    case "html_render":
+      return "The HTML tools are unavailable in this session.";
+    case "t3_project_clone":
+      return "Use your shell to clone a repository into your working folder.";
+    case "t3_project_create":
+    case "t3_project_update":
+      if (
+        !Predicate.hasProperty(args, "scripts") &&
+        ["workspaceRoot", "trackedFolders", "faviconPath", "projectIcon"].some((field) =>
+          Predicate.hasProperty(args, field),
+        )
+      )
+        return "A Kin agent cannot set local paths for a project.";
+      break;
+    case "preview_act":
+    case "preview_evaluate":
+    case "preview_open":
+    case "preview_navigate":
+    case "preview_dialog":
+      return "This session cannot control a browser on the host.";
+    case "write_pull_request_guides":
+      return "Use delegate_task to ask a helper for a pull request guide.";
+  }
+  return undefined;
+};
+
+const projectScriptRefusal = (tool: string, args: unknown) =>
+  (tool === "t3_project_create" || tool === "t3_project_update") &&
+  Predicate.hasProperty(args, "scripts")
+    ? "Kin agents cannot set project scripts."
+    : undefined;
+
 /** Include the caller for tools that act on their own thread, and only its local app-owned tasks. */
 const reachableThreads = Effect.fn("KinToolGate.reachableThreads")(
   function* (thread: ThreadId) {
@@ -556,6 +591,8 @@ export const workerPolicy = (services: Context.Context<Services>, host: HelperMo
         for (const [check, refusal] of kinChecks)
           if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
             return refusal;
+        const localFile = serverFileRefusal(tool, args) ?? projectScriptRefusal(tool, args);
+        if (localFile !== undefined) return localFile;
         const outsideLineage = yield* threadRefusal(invocation?.thread, args).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
@@ -605,6 +642,11 @@ export const layer = ReadTools.layer.pipe(
     Layer.mergeAll(
       callCounts,
       restrictLeadThreads,
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed((tool, args) =>
+          Effect.succeed(serverFileRefusal(tool, args) ?? projectScriptRefusal(tool, args)),
+        ),
+      ),
       McpToolPolicy.toolCallRefusal(
         Effect.succeed((_tool, args) =>
           Effect.gen(function* () {

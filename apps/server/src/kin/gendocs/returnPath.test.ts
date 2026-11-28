@@ -3,11 +3,13 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 
-import { takeOutputs, typeMismatch } from "./returnPath.ts";
+import { takeFile, takeOutputs, typeMismatch } from "./returnPath.ts";
 import { types, zip } from "./zip.testkit.ts";
 
 const pdf = Buffer.from(
@@ -321,3 +323,23 @@ it("takes an SVG only when it parses as a drawing made of listed parts", async (
     "its bytes aren't an SVG file",
   );
 });
+
+it.effect("takes a document only from its own folders without following directory links", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const checkout = `${base}/checkout`;
+    const temp = `${base}/temp`;
+    const other = `${base}/other`;
+    for (const dir of [checkout, temp, other]) {
+      yield* fs.makeDirectory(`${dir}/out`, { recursive: true });
+      yield* fs.writeFileString(`${dir}/out/report.txt`, "sample");
+    }
+    yield* fs.symlink(`${checkout}/out`, `${checkout}/linked`);
+    const roots = [checkout, temp];
+    for (const dir of [checkout, temp])
+      expect(yield* takeFile(`${dir}/out/report.txt`, roots)).toHaveProperty("bytes");
+    expect(yield* takeFile(`${other}/out/report.txt`, roots)).toHaveProperty("reason");
+    expect(yield* takeFile(`${checkout}/linked/report.txt`, roots)).toHaveProperty("reason");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
