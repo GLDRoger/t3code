@@ -78,7 +78,6 @@ import {
   placesOf,
   teamClients,
   teamRecordIn,
-  teamSeesField,
   teamSeq,
   teamVisible,
   viewerOfPeople,
@@ -441,18 +440,6 @@ export const history = Effect.fn("KinWork.history")(function* (
   };
 });
 
-/** What a member reads of a client's history besides what a task says (`teamSeesField`). */
-const CLIENT_LINES = new Set([
-  "address",
-  "source",
-  "tags",
-  "role",
-  "email",
-  "phone",
-  "emails",
-  "phones",
-]);
-
 /**
  * A client's history for a member with the Clients switch on: what they see of it, without terms,
  * tax, labels or money. Projects' histories stay the owner level's.
@@ -480,16 +467,15 @@ const memberHistory = Effect.fn("KinWork.crm.memberHistory")(function* (
         row,
         { ...(before === null ? {} : { beforeSeq: before }), limit: limit + 1 },
         viewer,
-        crmSeenBy,
+        (sql, scope) => crmSeenBy(sql, scope, { includeSharedLists: true }),
       ),
     );
     for (const item of items) {
       if (item.kind === "linked") continue;
-      const fields = item.fields.filter((field) =>
+      const fields =
         item.record.listName === "deals"
-          ? dealSeesField(field.field)
-          : teamSeesField(field.field) || CLIENT_LINES.has(field.field),
-      );
+          ? item.fields.filter((field) => dealSeesField(field.field))
+          : item.fields;
       if (item.kind !== "updated" || fields.length > 0) kept.push({ ...item, fields });
     }
     more = items.length > limit;

@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
-import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
+import { inheritedSensitive, isSuggestion, keptEntry, sensitiveNow } from "./recordRows.ts";
 import {
   docKindWords,
   keysOfSearch,
@@ -46,6 +46,8 @@ type Row = {
   readonly key: string;
   readonly title: string;
   readonly state: string;
+  readonly confirmed: number;
+  readonly archivedAt: number | null;
   readonly updatedAt: number;
   readonly sensitive: number;
   readonly clientKey: string | null;
@@ -153,20 +155,24 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const where = [
     ...visible,
     sql`r.register_id IN ${sql.in(wordRegisters)}`,
-    ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
+    ...(input.closed === true
+      ? []
+      : [sql`NOT (r.state = 'dropped' OR (r.state = 'done' AND ${keptEntry(sql)}))`]),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
-    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
+    r.state, r.confirmed, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
       THEN (SELECT p.key FROM kin_records p WHERE p.org_id = r.org_id
         AND p.record_id = r.party_id AND EXISTS (SELECT 1 FROM kin_records r
           WHERE r.org_id = p.org_id AND r.record_id = p.record_id
             AND ${seenBy(sql, input.scope)})) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
+  const wordColumns = sql`${columns}, (SELECT g.archived_at FROM kin_registers g
+    WHERE g.org_id = r.org_id AND g.register_id = r.register_id) AS "archivedAt"`;
   const find = (any: boolean) => {
     const regular = [...where, sql`NOT (${onTeamList})`];
     return Effect.gen(function* () {
       const found = indexed
-        ? yield* sql<Row>`SELECT ${columns}, m.part,
+        ? yield* sql<Row>`SELECT ${wordColumns}, m.part,
             snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
           FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
           JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
@@ -174,7 +180,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
             AND ${sql.and([...regular, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
           ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
           LIMIT ${input.limit * 2}`
-        : yield* scan(sql, words, any, regular, columns, input.viewer, input.limit * 2);
+        : yield* scan(sql, words, any, regular, wordColumns, input.viewer, input.limit * 2);
       if (shared.length === 0) return found;
       // Match and show the same allowed text even if the FTS row predates the list's definition.
       const opened = yield* scan(
@@ -182,7 +188,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
         words,
         any,
         [...where, onTeamList],
-        columns,
+        wordColumns,
         input.viewer,
         input.limit * 2,
         teamListSearchText(sql),
@@ -193,11 +199,9 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const keyed =
     keys.length === 0 || (!allKeys && keyRegisters.length === 0)
       ? []
-      : (yield* sql<
-          Row & Parameters<typeof sectionOfRegister>[0] & { readonly archivedAt: number | null }
-        >`
-          SELECT ${columns}, 'public' AS part, r.title AS snippet, ${registerSectionColumns(sql)},
-            g.archived_at AS "archivedAt"
+      : (yield* sql<Row & Parameters<typeof sectionOfRegister>[0]>`
+          SELECT ${columns}, g.archived_at AS "archivedAt", 'public' AS part, r.title AS snippet,
+            ${registerSectionColumns(sql)}
           FROM kin_records r JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
           WHERE ${sql.and([...visible, sql`r.key IN ${sql.in(keys)}`])}
           ORDER BY r.key`).filter((row) => {
@@ -212,7 +216,6 @@ export const search = Effect.fn("KinSearch.search")(function* (
           const section = sectionOfRegister(row) ?? sectionOfList(row.id);
           return section === null || KinShell.sectionOn(shell, section);
         });
-  const exact = new Map(keyed.map((row) => [row.recordId, row]));
   const every = wordRegisters.length === 0 || keyed.length >= input.limit ? [] : yield* find(false);
   const widened =
     wordRegisters.length > 0 &&
@@ -265,9 +268,9 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ...(row.clientKey === null ? {} : { client: row.clientKey }),
       sensitive: row.sensitive === 1 || row.part === "sensitive",
       closed:
-        row.state === "done" ||
         row.state === "dropped" ||
-        (exact.get(row.recordId)?.archivedAt ?? null) !== null,
+        (row.state === "done" && !isSuggestion(row)) ||
+        row.archivedAt !== null,
       updatedAt: row.updatedAt,
     };
   });
