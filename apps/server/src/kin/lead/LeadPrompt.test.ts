@@ -2428,7 +2428,9 @@ it.effect("a reader handed another lead's bills builds their turn in a chat it i
       { k: "service", id: "bills.read" },
     ]);
     expect(built).toContain("Bills to read in the background: B1 is image 1.");
-    expect(built).toContain("Record nothing else, then end with kin_skip.");
+    expect(built).toContain(
+      "Record nothing else, and write no text, since no one reads this turn: end with kin_skip right after the last bill_read or bill_cut.",
+    );
   }).pipe(Effect.provide(layer)),
 );
 

@@ -31,7 +31,10 @@ import {
   instructions as kinLeadInstructions,
   teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
-import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
+import {
+  BILLS_SEAT_INSTRUCTIONS,
+  kinInstructions,
+} from "../../apps/server/src/kin/lead/turn/session.ts";
 import { CODING_T3_TOOLS, LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
@@ -437,7 +440,7 @@ export const kinLeadBase = <M, E>(input: {
         outsideTriage
           ? TRIAGE_SEAT_INSTRUCTIONS
           : options.kinBills === true
-            ? kinInstructions("confined", "claudeAgent", false)
+            ? BILLS_SEAT_INSTRUCTIONS
             : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
       ),
     ],
