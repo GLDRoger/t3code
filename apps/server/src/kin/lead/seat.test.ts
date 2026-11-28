@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { parseFrontMatter } from "../memory/frontMatter.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import { buildSeat, positionsLine } from "./seat.ts";
 
@@ -24,6 +26,41 @@ describe("positionsLine", () => {
 });
 
 describe("buildSeat", () => {
+  it.effect("lists only owner-trust decisions as standing permissions from the owner", () =>
+    Effect.gen(function* () {
+      const orgId = KinOrgId.make("org-tidewater");
+      const memory = yield* Effect.forEach(
+        [
+          { trust: "owner", title: "Send the Friday dispatch summary" },
+          { trust: "agent", title: "Send the draft report" },
+          { trust: "member", title: "Share the dispatch archive" },
+        ] as const,
+        ({ trust, title }) =>
+          Effect.gen(function* () {
+            const id = `dec-${trust}`;
+            const path = `decisions/${id}.md`;
+            const { frontMatter } = yield* parseFrontMatter(
+              orgId,
+              path,
+              fixtureItem({ id, kind: "decision", title, trust, links: ["permission:all"] }),
+            );
+            return { ...frontMatter, orgId, path };
+          }),
+      );
+      const { seat } = yield* buildSeat({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        ownerOnly: true,
+        now: 0,
+        memory,
+      });
+      assert.deepStrictEqual(
+        seat.filter((line) => line.startsWith("- Standing permissions from the owner:")),
+        ['- Standing permissions from the owner: "Send the Friday dispatch summary".'],
+      );
+    }).pipe(Effect.provide(Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+  );
+
   it.effect("says how many people the People list leaves out, and where to read them", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
