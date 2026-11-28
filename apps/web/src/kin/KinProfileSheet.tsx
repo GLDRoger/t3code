@@ -367,6 +367,7 @@ export function KinProfileBody(props: KinProfileTarget & { readonly afterProfile
         holding={holding}
         mine={mine}
         mayEdit={mayEdit}
+        ownerLevel={ownerLevel === true}
         onEdit={setEditing}
       />
       {editing === null ? null : (
@@ -422,6 +423,7 @@ function KinProfileRows(props: {
   readonly profile: KinPersonProfile;
   readonly holding: KinProfileHolding;
   readonly mayEdit: boolean;
+  readonly ownerLevel: boolean;
   readonly onEdit: (focus: KinProfileFocus) => void;
 }) {
   const { profile, mine, mayEdit } = props;
@@ -504,6 +506,7 @@ function KinProfileRows(props: {
           orgId={props.orgId}
           profile={profile}
           mine={mine}
+          editable={props.ownerLevel}
           {...found("kin-github-username")}
         />
       )}
