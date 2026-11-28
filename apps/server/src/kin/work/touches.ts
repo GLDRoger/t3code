@@ -431,9 +431,11 @@ export const touchesBetween = Effect.fn("KinTouches.between")(function* (
   until: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<TouchSql & { clientKey: string; clientName: string }>`
+  const rows = yield* sql<TouchSql & { clientKey: string; clientName: string; keyed: number }>`
     SELECT u."partyId", u.id, u.at, u.kind, u.note, u.who, u.logged, u."byKind", u."byName",
-      u."recordId", u.key, u.title, c.key AS "clientKey", c.title AS "clientName"
+      u."recordId", u.key, u.title, c.key AS "clientKey", c.title AS "clientName",
+      EXISTS (SELECT 1 FROM kin_client_touches t WHERE t.org_id = ${orgId} AND t.touch_id = u.id
+        AND ${sql.literal(keyRequestSql("t.origin_key"))}) AS keyed
     FROM (${touchUnion(sql, orgId, "all", until, KIN_OWNER_LEVEL)}) u
     JOIN kin_records c ON c.org_id = ${orgId} AND c.record_id = u."partyId"
     WHERE (u.at > ${from} OR u.recorded > ${from}) AND u.recorded <= ${until}
@@ -442,5 +444,7 @@ export const touchesBetween = Effect.fn("KinTouches.between")(function* (
     ...toTouch(row),
     client: { key: row.clientKey, name: row.clientName },
     by: row.byKind === null ? null : { kind: row.byKind, name: row.byName ?? "someone" },
+    /** Logged through a person's coding-agent key: that agent's words, not the person's. */
+    keyed: row.keyed === 1,
   }));
 });
