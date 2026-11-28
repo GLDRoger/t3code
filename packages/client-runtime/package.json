@@ -706,7 +706,6 @@
   "devDependencies": {
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
-    "@napi-rs/canvas": "1.0.13",
     "@types/mdast": "^4.0.4",
     "@types/react": "catalog:",
     "@types/three": "0.180.0",
