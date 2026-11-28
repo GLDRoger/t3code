@@ -11,11 +11,16 @@ const files = new Map<
 >();
 
 const manipulator = vi.hoisted(() => {
-  const state = { sourceSize: { width: 0, height: 0 }, renderedBase64: "cmVuZGVyZWQ=" };
+  const state = {
+    sourceSize: { width: 0, height: 0 },
+    renderedBase64: "cmVuZGVyZWQ=",
+    resized: [] as Array<{ width: number; height: number }>,
+  };
   const manipulate = vi.fn((source: string | { width: number; height: number }) => {
     let size = typeof source === "string" ? state.sourceSize : source;
     const context = {
       resize: vi.fn((next: { width: number; height: number }) => {
+        state.resized.push(next);
         size = next;
         return context;
       }),
@@ -125,6 +130,7 @@ vi.mock("./uuid", () => ({
   uuidv4: () => "attachment-id",
 }));
 
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import { convertPastedImagesToAttachments, persistComposerAttachmentFile } from "./composerImages";
 
 const STORED = "file:///documents/t3-composer-attachments/attachment-id";
@@ -138,10 +144,73 @@ function oversizedPng(): string {
   return png.toString("base64");
 }
 
+/** A JPEG's start, enough for its size to be read: SOI, then a baseline frame header. */
+function jpegStart(width: number, height: number): string {
+  const jpeg = Buffer.alloc(2048);
+  Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08]).copy(jpeg);
+  jpeg.writeUInt16BE(height, 7);
+  jpeg.writeUInt16BE(width, 9);
+  return jpeg.toString("base64");
+}
+
 describe("native pasted image cleanup", () => {
   beforeEach(() => {
     files.clear();
     manipulator.state.renderedBase64 = "cmVuZGVyZWQ=";
+    manipulator.state.resized = [];
+  });
+
+  it.each([
+    ["a thread's 2000 px", "image/heic", 4032, undefined, [{ width: 2000, height: 1500 }]],
+    [
+      "a Kin chat's 3200 px",
+      "image/heic",
+      4032,
+      KIN_CHAT_PHOTO_MAX_EDGE,
+      [{ width: 3200, height: 2400 }],
+    ],
+    ["a Kin chat's 3200 px", "image/heic", 3000, KIN_CHAT_PHOTO_MAX_EDGE, []],
+    ["a thread's 2000 px", "image/jpeg", 4032, undefined, [{ width: 2000, height: 1500 }]],
+    [
+      "a Kin chat's 3200 px",
+      "image/jpeg",
+      4032,
+      KIN_CHAT_PHOTO_MAX_EDGE,
+      [{ width: 3200, height: 2400 }],
+    ],
+  ] as const)(
+    "fits a pasted photo to %s (%s, %i px wide)",
+    async (_, mimeType, width, maxEdge, resized) => {
+      const uri = "content://media/external/images/media/44";
+      const height = (width * 3) / 4;
+      files.set(uri, { base64: jpegStart(width, height), deleted: false, mimeType });
+      manipulator.state.sourceSize = { width, height };
+
+      const { attachments } = await convertPastedImagesToAttachments({
+        uris: [uri],
+        existingCount: 0,
+        ...(maxEdge === undefined ? {} : { maxEdge }),
+      });
+
+      expect(attachments).toHaveLength(1);
+      expect(manipulator.state.resized).toEqual(resized);
+    },
+  );
+
+  it("keeps a pasted JPEG's own bytes in a Kin chat when it is within 3,200 px", async () => {
+    const uri = "content://media/external/images/media/45";
+    const original = jpegStart(3000, 2250);
+    files.set(uri, { base64: original, deleted: false, mimeType: "image/jpeg" });
+
+    const { attachments } = await convertPastedImagesToAttachments({
+      uris: [uri],
+      existingCount: 0,
+      maxEdge: KIN_CHAT_PHOTO_MAX_EDGE,
+    });
+
+    expect(attachments).toEqual([expect.objectContaining({ mimeType: "image/jpeg" })]);
+    expect(files.get(attachments[0]!.fileUri!)?.base64).toBe(original);
+    expect(manipulator.manipulate).not.toHaveBeenCalledWith(uri);
   });
 
   it("preserves the reported image type of extensionless Android content URIs", async () => {

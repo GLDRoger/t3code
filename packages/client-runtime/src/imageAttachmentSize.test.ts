@@ -6,6 +6,7 @@ import {
   fitImageAttachmentSize,
 } from "./imageAttachmentSize.ts";
 import { fitBillPhotoSize } from "./kin/billPhotoSize.ts";
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "./kin/kinPhotoFit.ts";
 
 describe("downscalableImageMimeType", () => {
   it.each([
@@ -42,6 +43,29 @@ describe("fitImageAttachmentSize", () => {
       height: 1500,
     });
   });
+
+  it.each([
+    [
+      "a 12 MP photo",
+      { width: 4032, height: 3024 },
+      { width: 2000, height: 1500 },
+      { width: 3200, height: 2400 },
+    ],
+    [
+      "a 48 MP portrait",
+      { width: 6048, height: 8064 },
+      { width: 1500, height: 2000 },
+      { width: 2400, height: 3200 },
+    ],
+    ["a 3,000 px scan", { width: 3000, height: 2000 }, { width: 2000, height: 1333 }, null],
+    ["a 3,200 px photo", { width: 3200, height: 1800 }, { width: 2000, height: 1125 }, null],
+  ] as const)(
+    "fits %s to 2,000 px in a thread and 3,200 px in a Kin chat",
+    (_, size, thread, kin) => {
+      expect(fitImageAttachmentSize(size)).toEqual(thread);
+      expect(fitImageAttachmentSize(size, KIN_CHAT_PHOTO_MAX_EDGE)).toEqual(kin);
+    },
+  );
 
   it("returns null when the image already fits", () => {
     expect(fitImageAttachmentSize({ width: 800, height: 600 })).toBeNull();

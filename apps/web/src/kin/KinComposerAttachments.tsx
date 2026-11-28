@@ -50,7 +50,11 @@ import {
   startAttachmentUpload,
   useAttachmentUploadStore,
 } from "../lib/attachmentUploadQueue";
-import { inheritComposerImageThumbnail, prepareImageForAttachment } from "../lib/imageCompression";
+import {
+  inheritComposerImageThumbnail,
+  isHeicImageFile,
+  prepareImageForAttachment,
+} from "../lib/imageCompression";
 import { kinPhotoReencode } from "./kinPhotoReencode";
 import { KIN_PHOTO_FIT, kinPhotosFit } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import { randomUUID } from "../lib/utils";
@@ -79,8 +83,10 @@ export type KinDraftAttachments =
 export function useKinComposerAttachments(input: {
   readonly environmentId: EnvironmentId;
   readonly draftKey: string;
+  /** A chat's photos keep more pixels (`KIN_CHAT_PHOTO_MAX_EDGE`); unset keeps a thread's edge. */
+  readonly photoMaxEdge?: number;
 }) {
-  const { environmentId, draftKey } = input;
+  const { environmentId, draftKey, photoMaxEdge } = input;
   const target = kinAttachmentTarget(draftKey);
   const draft = useComposerThreadDraft(target);
   const preparing = usePreparingComposerImages(target);
@@ -234,13 +240,19 @@ export function useKinComposerAttachments(input: {
       file,
       hidden: false,
     }));
+    const prepare = (file: File) =>
+      prepareImageForAttachment(file, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES, photoMaxEdge).catch(
+        () => ({ ok: false, reason: "unreadable" }) as const,
+      );
+    // A HEIC tile's thumbnail starts its one conversion, so this edge must ask first. HEIC
+    // conversions run one at a time; other photos stay one at a time in the loop below.
+    const heic = new Map(
+      acceptedImages.filter((file) => isHeicImageFile(file)).map((file) => [file, prepare(file)]),
+    );
     addPreparingComposerImages(target, placeholders);
     const prepared: ComposerImageAttachment[] = [];
     for (const { id, file } of placeholders) {
-      const result = await prepareImageForAttachment(
-        file,
-        PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-      ).catch(() => ({ ok: false, reason: "unreadable" }) as const);
+      const result = await (heic.get(file) ?? prepare(file));
       if (!result.ok) {
         setError(
           result.reason === "unreadable"

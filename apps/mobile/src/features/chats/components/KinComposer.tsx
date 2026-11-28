@@ -76,6 +76,7 @@ import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
 import { fitKinChatPhotos } from "../kinChatPhotoFit";
 import { kinPickPhotosAtom } from "@t3tools/client-runtime/kin/kinDraft";
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "@t3tools/client-runtime/kin/kinPhotoFit";
 
 // The native editor has no intrinsic height: it grows with its text from one line to four.
 // iOS reports at most four lines of content, so a taller cap would never turn scrolling on.
@@ -216,6 +217,7 @@ export function KinComposer({
     serverConfig,
     locked: sending,
     inlineReferences: false,
+    photoMaxEdge: KIN_CHAT_PHOTO_MAX_EDGE,
   });
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
   const hasAttachments = draft.attachments.length > 0;

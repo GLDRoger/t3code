@@ -11,6 +11,7 @@ import {
   readComposerImageThumbnail,
 } from "./imageCompression";
 
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import type { SnapShotSource } from "@t3tools/contracts";
 import { hydrateImagesFromPersisted } from "../composerDraftStore";
 import { resizeSnapShotSource } from "./snapShotSource";
@@ -268,41 +269,47 @@ describe("composer image thumbnails", () => {
 });
 
 describe("HEIC attachment preparation", () => {
-  it("shares the native decode and shows its thumbnail before JPEG encoding finishes", async () => {
-    const { close } = stubCanvasPipeline(() => 3);
-    let finishEncoding!: (blob: Blob) => void;
-    const jpeg = new Promise<Blob>((resolve) => {
-      finishEncoding = resolve;
-    });
-    const Canvas = globalThis.OffscreenCanvas;
-    vi.stubGlobal(
-      "OffscreenCanvas",
-      class extends Canvas {
-        override convertToBlob(options?: ImageEncodeOptions) {
-          return options?.type === "image/jpeg" ? jpeg : super.convertToBlob(options);
-        }
-      },
-    );
-    const original = makeHeicFile();
-    const preparation = prepareImageForAttachment(original, 1024);
-    const queued = prepareImageForAttachment(makeHeicFile({ name: "next.heic" }), 1024);
-    const results = Promise.all([preparation, queued]);
-    try {
-      const thumbnail = await createComposerImageThumbnail(original);
-      expect(thumbnail).toMatch(/^data:image\/png;base64,/);
-      expect(mocks.heicTo).not.toHaveBeenCalled();
-      expect(createImageBitmap).toHaveBeenCalledTimes(1);
-      expect(close).not.toHaveBeenCalled();
-    } finally {
-      finishEncoding(new Blob([new Uint8Array(4)], { type: "image/jpeg" }));
-      await results;
-    }
-    const [result, next] = await results;
-    expect(result.ok && result.file.type).toBe("image/jpeg");
-    expect(result.ok && result.file.size).toBe(4);
-    expect(next.ok).toBe(true);
-    expect(close).toHaveBeenCalledTimes(2);
-  });
+  it.each([
+    ["a thread", undefined],
+    ["a Kin chat", KIN_CHAT_PHOTO_MAX_EDGE],
+  ])(
+    "shares the native decode with its thumbnail in %s, before JPEG encoding finishes",
+    async (_, edge) => {
+      const { close } = stubCanvasPipeline(() => 3);
+      let finishEncoding!: (blob: Blob) => void;
+      const jpeg = new Promise<Blob>((resolve) => {
+        finishEncoding = resolve;
+      });
+      const Canvas = globalThis.OffscreenCanvas;
+      vi.stubGlobal(
+        "OffscreenCanvas",
+        class extends Canvas {
+          override convertToBlob(options?: ImageEncodeOptions) {
+            return options?.type === "image/jpeg" ? jpeg : super.convertToBlob(options);
+          }
+        },
+      );
+      const original = makeHeicFile();
+      const preparation = prepareImageForAttachment(original, 1024, edge);
+      const queued = prepareImageForAttachment(makeHeicFile({ name: "next.heic" }), 1024, edge);
+      const results = Promise.all([preparation, queued]);
+      try {
+        const thumbnail = await createComposerImageThumbnail(original);
+        expect(thumbnail).toMatch(/^data:image\/png;base64,/);
+        expect(mocks.heicTo).not.toHaveBeenCalled();
+        expect(createImageBitmap).toHaveBeenCalledTimes(1);
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        finishEncoding(new Blob([new Uint8Array(4)], { type: "image/jpeg" }));
+        await results;
+      }
+      const [result, next] = await results;
+      expect(result.ok && result.file.type).toBe("image/jpeg");
+      expect(result.ok && result.file.size).toBe(4);
+      expect(next.ok).toBe(true);
+      expect(close).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("converts a HEIC photo with a missing MIME type into a named JPEG", async () => {
     const original = makeHeicFile({
@@ -327,7 +334,10 @@ describe("HEIC attachment preparation", () => {
     expect(result.ok && result.recompressed).toBe(true);
   });
 
-  it("resizes decoded HEIC pixels before encoding the JPEG", async () => {
+  it.each([
+    ["a thread's 2000px", undefined, { width: 2000, height: 1500 }],
+    ["a Kin chat's 3200px", KIN_CHAT_PHOTO_MAX_EDGE, { width: 3200, height: 2400 }],
+  ])("resizes decoded HEIC pixels to %s before encoding the JPEG", async (_, edge, size) => {
     const original = makeHeicFile({
       name: "large.heic",
       type: "image/heic",
@@ -336,17 +346,14 @@ describe("HEIC attachment preparation", () => {
     vi.mocked(createImageBitmap).mockRejectedValue(new Error("HEIC is not supported natively"));
     mocks.heicTo.mockResolvedValueOnce({ width: 4000, height: 3000, close });
 
-    const result = await prepareImageForAttachment(original, 1_000_000);
+    const result = await prepareImageForAttachment(original, 1_000_000, edge);
 
     expect(result.ok && result.file.name).toBe("large.jpg");
     expect(result.ok && result.file.type).toBe("image/jpeg");
     expect(result.ok && result.file.size).toBeLessThanOrEqual(1_000_000);
     expect(close).toHaveBeenCalledTimes(1);
     expect(createImageBitmap).toHaveBeenCalledTimes(1);
-    expect(canvasSizes).toEqual([
-      { width: 2000, height: 1500 },
-      { width: 256, height: 256 },
-    ]);
+    expect(canvasSizes).toEqual([size, { width: 256, height: 256 }]);
   });
 
   it("rejects oversized HEIC dimensions before loading the decoder", async () => {
@@ -449,30 +456,43 @@ describe("attachment max edge", () => {
     expect(result.ok && result.file.type).toBe("image/png");
   });
 
-  it("scales a rotated JPEG by its displayed size and keeps it a JPEG", async () => {
-    const { canvases, encodes } = stubDecoder({ width: 3024, height: 4032 });
-    const original = image(jpegHeader(4032, 3024), "photo.jpg", "image/jpeg");
+  it.each([
+    ["a thread's 2000px", undefined, { width: 1500, height: 2000 }],
+    ["a Kin chat's 3200px", KIN_CHAT_PHOTO_MAX_EDGE, { width: 2400, height: 3200 }],
+  ])(
+    "scales a rotated JPEG by its displayed size to %s and keeps it a JPEG",
+    async (_, edge, size) => {
+      const { canvases, encodes } = stubDecoder({ width: 3024, height: 4032 });
+      const original = image(jpegHeader(4032, 3024), "photo.jpg", "image/jpeg");
 
-    const result = await prepareImageForAttachment(original, 10 * 1024 * 1024);
+      const result = await prepareImageForAttachment(original, 10 * 1024 * 1024, edge);
 
-    expect(canvases).toEqual([{ width: 1500, height: 2000 }]);
-    expect(encodes).toEqual([{ type: "image/jpeg", quality: 0.92 }]);
-    expect(result.ok && result.file.type).toBe("image/jpeg");
-    expect(result.ok && result.imageSize).toEqual({ width: 1500, height: 2000 });
-  });
+      expect(canvases).toEqual([size]);
+      expect(encodes).toEqual([{ type: "image/jpeg", quality: 0.92 }]);
+      expect(result.ok && result.file.type).toBe("image/jpeg");
+      expect(result.ok && result.imageSize).toEqual(size);
+    },
+  );
 
   it.each([
-    { label: "a 2000px PNG", header: pngHeader(2000, 1200), type: "image/png" },
+    { label: "a 2000px PNG", header: pngHeader(2000, 1200), type: "image/png", edge: undefined },
     {
       label: "a 3000px GIF",
       header: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0xb8, 0x0b, 0x10, 0x04],
       type: "image/gif",
+      edge: undefined,
     },
-  ])("passes $label through without decoding it", async ({ header, type }) => {
+    {
+      label: "a 3000px JPEG in a Kin chat",
+      header: jpegHeader(3000, 2250),
+      type: "image/jpeg",
+      edge: KIN_CHAT_PHOTO_MAX_EDGE,
+    },
+  ])("passes $label through without decoding it", async ({ header, type, edge }) => {
     const { decode } = stubDecoder({ width: 3000, height: 1040 });
     const original = image(header, "image", type);
 
-    const result = await prepareImageForAttachment(original, 10 * 1024 * 1024);
+    const result = await prepareImageForAttachment(original, 10 * 1024 * 1024, edge);
 
     expect(result.ok && result.file).toBe(original);
     expect(result.ok && result.recompressed).toBe(false);

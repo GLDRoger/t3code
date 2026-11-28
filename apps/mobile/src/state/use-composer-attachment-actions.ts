@@ -30,7 +30,10 @@ export function useComposerAttachmentActions(props: {
   readonly locked?: boolean;
   /** False keeps attachments out of the text, for a composer whose message has no context chips. */
   readonly inlineReferences?: boolean;
+  /** A photo's long edge at most; unset keeps a thread's. */
+  readonly photoMaxEdge?: number;
 }) {
+  const maxEdge = props.photoMaxEdge === undefined ? {} : { maxEdge: props.photoMaxEdge };
   const inline = props.inlineReferences ?? true;
   const existingCount = (key: string, insertion: ComposerDraftInsertion) =>
     inline
@@ -83,6 +86,7 @@ export function useComposerAttachmentActions(props: {
     await withDraftOperation(key, async (signal) => {
       const result = await pickComposerMedia({
         existingCount: existingCount(key, insertion),
+        ...maxEdge,
         maxVideoBytes: capabilities?.fileAttachments?.maxUploadBytes,
       });
       report(
@@ -107,6 +111,7 @@ export function useComposerAttachmentActions(props: {
     await withDraftOperation(key, async (signal) => {
       const result = await pickComposerFiles({
         existingCount: existingCount(key, insertion),
+        ...maxEdge,
         maxBytes,
       });
       report(
@@ -122,7 +127,7 @@ export function useComposerAttachmentActions(props: {
     const insertion = captureComposerDraftInsertion(key);
     return withDraftOperation(key, async (signal) => {
       try {
-        const result = await convertPastedImagesToAttachments({ uris });
+        const result = await convertPastedImagesToAttachments({ uris, ...maxEdge });
         const rejected = await append(key, signal, result.attachments, insertion);
         report(m(msg("Could not paste images")), result.error, rejected);
         if (signal.aborted) return false;

@@ -22,6 +22,7 @@ import {
   type KinBillTone,
 } from "@t3tools/client-runtime/kin/kinBills";
 import { kinCategoryLabel } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import {
   EnvironmentId,
   KIN_DEFAULT_HOME_CURRENCY,
@@ -118,7 +119,10 @@ async function sharedAttachment(shared: KinSharedFile) {
     const refused = kinBillFileRefusal(shared);
     if (refused !== null) return { attachment: null, error: refused };
     if (shared.mimeType.startsWith("image/")) {
-      const { attachments, error } = await convertPastedImagesToAttachments({ uris: [shared.uri] });
+      const { attachments, error } = await convertPastedImagesToAttachments({
+        uris: [shared.uri],
+        maxEdge: KIN_CHAT_PHOTO_MAX_EDGE,
+      });
       const [photo] = attachments;
       return photo === undefined
         ? { attachment: null, error: error ?? KIN_BILLS.uploadFailed }

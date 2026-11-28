@@ -2,6 +2,7 @@ import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import {
   downscalableImageMimeType,
   fitImageAttachmentSize,
+  IMAGE_ATTACHMENT_MAX_EDGE,
 } from "@t3tools/client-runtime/image-attachment-size";
 import {
   IMAGE_DIMENSIONS_HEADER_BYTES,
@@ -29,11 +30,12 @@ function shrinkToByteLimit(
 export async function renderPhoto(
   uri: string,
   format: "jpeg" | "png" = "jpeg",
+  maxEdge: number = IMAGE_ATTACHMENT_MAX_EDGE,
 ): Promise<{ base64: string; uri: string }> {
   const { ImageManipulator, SaveFormat } = await import("expo-image-manipulator");
   let image = await ImageManipulator.manipulate(uri).renderAsync();
   try {
-    let size = fitImageAttachmentSize(image);
+    let size = fitImageAttachmentSize(image, maxEdge);
     for (let shrinks = 0; ; shrinks += 1) {
       if (size !== null) {
         const resized = await ImageManipulator.manipulate(image).resize(size).renderAsync();
@@ -72,7 +74,9 @@ export async function fitComposerImage(image: {
   readonly uri: string;
   readonly mimeType: string;
   readonly base64: string;
+  readonly maxEdge?: number;
 }): Promise<{ base64: string; uri: string } | null> {
+  const maxEdge = image.maxEdge ?? IMAGE_ATTACHMENT_MAX_EDGE;
   const mimeType = downscalableImageMimeType(image.mimeType);
   if (mimeType === null) return null;
   try {
@@ -80,8 +84,8 @@ export async function fitComposerImage(image: {
     const bytes = new Uint8Array(header.length);
     for (let index = 0; index < header.length; index += 1) bytes[index] = header.charCodeAt(index);
     const dimensions = readImageDimensions(bytes);
-    if (dimensions === null || fitImageAttachmentSize(dimensions) === null) return null;
-    return await renderPhoto(image.uri, mimeType === "image/png" ? "png" : "jpeg");
+    if (dimensions === null || fitImageAttachmentSize(dimensions, maxEdge) === null) return null;
+    return await renderPhoto(image.uri, mimeType === "image/png" ? "png" : "jpeg", maxEdge);
   } catch (error) {
     console.warn("[composer-images] could not scale an oversized image", error);
     return null;

@@ -1,4 +1,11 @@
 /**
+ * A photo sent in a Kin chat keeps its pixels up to this long edge, so a receipt that is a third
+ * of a collage can still be read; a T3 thread's stay at `IMAGE_ATTACHMENT_MAX_EDGE`. Not 4,032:
+ * the web chat draws each message photo from the stored file, with no smaller copy.
+ */
+export const KIN_CHAT_PHOTO_MAX_EDGE = 3200;
+
+/**
  * Photos sent together in one message, fitted under the message's image cap before they upload.
  * Bills are cut out of these photos, so pixels go last: the JPEG quality falls first, then the
  * long edge, and never past either floor. A PDF is never one of these.

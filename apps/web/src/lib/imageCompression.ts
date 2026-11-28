@@ -404,7 +404,10 @@ export async function inheritComposerImageThumbnail(source: File, target: File):
 }
 
 async function renderComposerImageThumbnail(file: File): Promise<string | null> {
-  if (isHeicImageFile(file)) return prepareHeicImage(file).thumbnail;
+  if (isHeicImageFile(file)) {
+    const [first] = heicPreparations.get(file)?.values() ?? [];
+    return (first ?? prepareHeicImage(file, MAX_DIMENSION)).thumbnail;
+  }
   // Placeholders thumbnail the uncompressed source, which can be big enough to OOM the decode.
   if (!canRecompress() || file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) return null;
   let bitmap: ImageBitmap | undefined;
@@ -497,6 +500,7 @@ async function reencodeWithinBudget(
   file: File,
   budgetChars: number,
   preferredMimeType?: "image/jpeg",
+  maxEdge: number = MAX_DIMENSION,
 ): Promise<ReencodeResult> {
   if (!canRecompress()) {
     return { ok: false, reason: "too-large" };
@@ -512,8 +516,8 @@ async function reencodeWithinBudget(
   }
 
   try {
-    // Shrink the previous target; using MAX_DIMENSION leaves smaller images unchanged.
-    const baseDimension = Math.min(MAX_DIMENSION, Math.max(bitmap.width, bitmap.height));
+    // Shrink the previous target; using the max edge leaves smaller images unchanged.
+    const baseDimension = Math.min(maxEdge, Math.max(bitmap.width, bitmap.height));
     let encodeFailed = false;
     for (const dimensionScale of [1, ...FALLBACK_SCALE_STEPS]) {
       const targetDimension = Math.max(1, Math.round(baseDimension * dimensionScale));
@@ -581,7 +585,10 @@ export async function compressImageForStash(
   }
 }
 
-async function fitImageToMaxEdge(file: File): Promise<{ file: File; imageSize: ImageSize } | null> {
+async function fitImageToMaxEdge(
+  file: File,
+  maxEdge: number,
+): Promise<{ file: File; imageSize: ImageSize } | null> {
   const mimeType = downscalableImageMimeType(file.type);
   if (!mimeType || !canRecompress() || file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) return null;
   let bitmap: ImageBitmap | undefined;
@@ -589,9 +596,9 @@ async function fitImageToMaxEdge(file: File): Promise<{ file: File; imageSize: I
     const header = readImageDimensions(
       new Uint8Array(await file.slice(0, IMAGE_DIMENSIONS_HEADER_BYTES).arrayBuffer()),
     );
-    if (!header || !fitImageAttachmentSize(header)) return null;
+    if (!header || !fitImageAttachmentSize(header, maxEdge)) return null;
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-    const imageSize = fitImageAttachmentSize(bitmap);
+    const imageSize = fitImageAttachmentSize(bitmap, maxEdge);
     if (!imageSize) return null;
     const target = createCanvas(imageSize.width, imageSize.height, await readImageColorSpace(file));
     if (!target) return null;
@@ -613,9 +620,10 @@ async function fitImageToMaxEdge(file: File): Promise<{ file: File; imageSize: I
 export async function compressImageToByteLimit(
   file: File,
   maxBytes: number,
-  options?: { preferredMimeType?: "image/jpeg"; sourceSizeBytes?: number },
+  options?: { preferredMimeType?: "image/jpeg"; sourceSizeBytes?: number; maxEdge?: number },
 ): Promise<CompressImageFileResult> {
-  const fitted = await fitImageToMaxEdge(file);
+  const maxEdge = options?.maxEdge ?? MAX_DIMENSION;
+  const fitted = await fitImageToMaxEdge(file, maxEdge);
   if (fitted && fitted.file.size <= maxBytes) {
     return { ok: true, file: fitted.file, recompressed: true, imageSize: fitted.imageSize };
   }
@@ -630,6 +638,7 @@ export async function compressImageToByteLimit(
     fitted?.file ?? file,
     budgetChars,
     options?.preferredMimeType,
+    maxEdge,
   );
   if (!reencoded.ok) {
     return reencoded;
@@ -646,10 +655,12 @@ export async function compressImageToByteLimit(
   };
 }
 
-const heicPreparations = new WeakMap<
-  File,
-  { image: Promise<CompressImageFileResult>; thumbnail: Promise<string | null> }
->();
+type HeicPreparation = {
+  image: Promise<CompressImageFileResult>;
+  thumbnail: Promise<string | null>;
+};
+/** By max edge: a thumbnail takes whichever preparation of the file came first. */
+const heicPreparations = new WeakMap<File, Map<number, HeicPreparation>>();
 // Preparing tiles share full-size decodes, so keep only one HEIC bitmap alive at a time.
 let heicPreparationQueue = Promise.resolve();
 
@@ -662,18 +673,20 @@ function queueHeicImage(convert: () => Promise<CompressImageFileResult>) {
   return image;
 }
 
-function prepareHeicImage(file: File) {
-  const cached = heicPreparations.get(file);
+function prepareHeicImage(file: File, maxEdge: number) {
+  const byEdge = heicPreparations.get(file) ?? new Map<number, HeicPreparation>();
+  heicPreparations.set(file, byEdge);
+  const cached = byEdge.get(maxEdge);
   if (cached) return cached;
   let resolveThumbnail!: (src: string | null) => void;
   const thumbnail = new Promise<string | null>((resolve) => {
     resolveThumbnail = resolve;
   });
-  const image = queueHeicImage(() => convertHeicImage(file, resolveThumbnail)).finally(() =>
-    resolveThumbnail(null),
-  );
+  const image = queueHeicImage(() =>
+    convertHeicImage(file, resolveThumbnail, false, maxEdge),
+  ).finally(() => resolveThumbnail(null));
   const preparation = { image, thumbnail };
-  heicPreparations.set(file, preparation);
+  byEdge.set(maxEdge, preparation);
   return preparation;
 }
 
@@ -692,6 +705,7 @@ async function convertHeicImage(
   file: File,
   onThumbnail: (src: string | null) => void,
   forBill = false,
+  maxEdge: number = MAX_DIMENSION,
 ): Promise<CompressImageFileResult> {
   if (file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) {
     return { ok: false, reason: "too-large" };
@@ -718,7 +732,7 @@ async function convertHeicImage(
         !decodedNatively && metadata.displayP3,
       );
     }
-    const imageSize = fitImageAttachmentSize(bitmap) ?? {
+    const imageSize = fitImageAttachmentSize(bitmap, maxEdge) ?? {
       width: bitmap.width,
       height: bitmap.height,
     };
@@ -819,16 +833,19 @@ export async function prepareImageForBill(file: File): Promise<CompressImageFile
   }
 }
 
+/** `maxEdge` stays at the default for a thread; a Kin chat passes its own. */
 export async function prepareImageForAttachment(
   file: File,
   maxBytes: number,
+  maxEdge: number = MAX_DIMENSION,
 ): Promise<CompressImageFileResult> {
-  if (!isHeicImageFile(file)) return compressImageToByteLimit(file, maxBytes);
-  const prepared = await prepareHeicImage(file).image;
+  if (!isHeicImageFile(file)) return compressImageToByteLimit(file, maxBytes, { maxEdge });
+  const prepared = await prepareHeicImage(file, maxEdge).image;
   if (!prepared.ok || prepared.file.size <= maxBytes) return prepared;
   const result = await compressImageToByteLimit(prepared.file, maxBytes, {
     preferredMimeType: "image/jpeg",
     sourceSizeBytes: file.size,
+    maxEdge,
   });
 
   return result.ok ? { ...result, recompressed: true } : result;

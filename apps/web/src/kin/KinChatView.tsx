@@ -188,6 +188,7 @@ import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 import { kinPickPhotosAtom } from "@t3tools/client-runtime/kin/kinDraft";
+import { KIN_CHAT_PHOTO_MAX_EDGE } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import { Skeleton } from "../components/ui/skeleton";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -1519,7 +1520,11 @@ function KinComposer(props: {
   const pendingAtom = kinPendingRefAtom(props.pendingRefKey);
   const pending = useAtomValue(pendingAtom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
-  const files = useKinComposerAttachments({ environmentId, draftKey });
+  const files = useKinComposerAttachments({
+    environmentId,
+    draftKey,
+    photoMaxEdge: KIN_CHAT_PHOTO_MAX_EDGE,
+  });
   const pickPhotos = useAtomValue(kinPickPhotosAtom(draftKey));
   const pickedOnArrival = () => appAtomRegistry.set(kinPickPhotosAtom(draftKey), false);
   const [sending, setSending] = useState(false);

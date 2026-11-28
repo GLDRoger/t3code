@@ -11,15 +11,15 @@ export function downscalableImageMimeType(mimeType: string): DownscalableImageMi
   return null;
 }
 
-export function fitImageAttachmentSize(size: {
-  readonly width: number;
-  readonly height: number;
-}): { width: number; height: number } | null {
+export function fitImageAttachmentSize(
+  size: { readonly width: number; readonly height: number },
+  maxEdge: number = IMAGE_ATTACHMENT_MAX_EDGE,
+): { width: number; height: number } | null {
   const longestEdge = Math.max(size.width, size.height);
-  if (longestEdge <= IMAGE_ATTACHMENT_MAX_EDGE) return null;
-  const scale = IMAGE_ATTACHMENT_MAX_EDGE / longestEdge;
+  if (longestEdge <= maxEdge) return null;
+  const scale = maxEdge / longestEdge;
   return {
-    width: Math.max(1, Math.min(IMAGE_ATTACHMENT_MAX_EDGE, Math.round(size.width * scale))),
-    height: Math.max(1, Math.min(IMAGE_ATTACHMENT_MAX_EDGE, Math.round(size.height * scale))),
+    width: Math.max(1, Math.min(maxEdge, Math.round(size.width * scale))),
+    height: Math.max(1, Math.min(maxEdge, Math.round(size.height * scale))),
   };
 }
