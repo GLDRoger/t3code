@@ -1,6 +1,8 @@
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { createCanvas } from "@napi-rs/canvas";
+import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 import { type ChatAttachment, KinEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -79,12 +81,13 @@ it.effect(
   "every attachment reaches the provider as text and pictures: a picture stays one, one no provider reads is named, a text PDF is its text and its pages, a scanned one its pages, a compressed one too, and a spreadsheet its extracted text",
   () =>
     Effect.gen(function* () {
+      const png = yield* Effect.promise(() => createCanvas(16, 12).encode("png"));
       const photo: ChatAttachment = {
         type: "image",
         id: "kin-chat-photo",
         name: "chart.png",
         mimeType: "image/png",
-        sizeBytes: 8,
+        sizeBytes: png.byteLength,
       };
       // Claude's adapter fails a whole turn on an image type it can't read.
       const heic: ChatAttachment = {
@@ -107,7 +110,7 @@ it.effect(
         NodeURL.fileURLToPath(new URL("./fixtures/object-streams.pdf", import.meta.url)),
       );
       const dir = yield* stored([
-        [photo, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+        [photo, png],
         [heic, "heic bytes"],
         [contract, pdf([[[{ x: 72, text: "Retainer: 40 hours a month" }]]])],
         [lease, scanned()],
@@ -131,6 +134,11 @@ it.effect(
           "image:Pantry.pdf, page 1 of 1.jpg",
         ],
       );
+      assert.strictEqual(attachments[0]?.mimeType, "image/jpeg");
+      const small = yield* fs.readFile(
+        resolveAttachmentPath({ attachmentsDir: dir, attachment: attachments[0]! })!,
+      );
+      assert.deepStrictEqual(readImageDimensions(small), { width: 16, height: 12 });
       assert.strictEqual(attachments[1]?.id, pageImageId(contract.id, 1));
       assert.match(
         text,
@@ -262,64 +270,117 @@ it.effect(
 );
 
 it.effect(
-  "a turn takes its newest 20 files and 20 MB of images, and says how many it left out",
+  "a turn shows its newest twenty 4 MiB photos within the copy budget and says how many it left out",
   () =>
     Effect.gen(function* () {
-      const photo = (n: number, sizeBytes = 8): ChatAttachment => ({
+      const jpeg = yield* Effect.promise(() => createCanvas(4000, 3000).encode("jpeg"));
+      const original = Buffer.concat([jpeg, Buffer.alloc(4 * 1024 * 1024 - jpeg.byteLength)]);
+      const photos = Array.from({ length: 22 }, (_, index): ChatAttachment => ({
         type: "image",
-        id: `kin-chat-photo-${n}`,
-        name: `IMG_${n}.png`,
-        mimeType: "image/png",
-        sizeBytes,
-      });
+        id: `kin-chat-photo-${index}`,
+        name: `IMG_${index}.jpg`,
+        mimeType: "image/jpeg",
+        sizeBytes: original.byteLength,
+      }));
+      yield* stored(photos.map((photo) => [photo, original]));
       const content = yield* KinTurnContent;
-      // An owner-only turn of a lead that lists bills_add is told it reads the rest.
       const many = yield* content.prepare({
         text: "These are this month's bills",
-        attachments: Array.from({ length: 22 }, (_, index) => photo(index)),
+        attachments: photos,
         offersBillsAdd: true,
       });
       assert.deepStrictEqual(
         many.attachments.map((file) => file.name),
-        Array.from({ length: 20 }, (_, index) => `IMG_${index + 2}.png`),
+        photos.slice(2).map((file) => file.name),
+      );
+      assert.isAtMost(
+        many.attachments.reduce((sum, one) => sum + one.sizeBytes, 0),
+        PDF_PAGE_IMAGES.bytesPerTurn,
       );
       assert.strictEqual(
         many.text,
         "These are this month's bills\n\n[2 of the attached files aren't shown: too many for one turn. bills_add reads bills and receipts among them in the background.]",
       );
-      const large = yield* content.prepare({
-        text: "Big ones",
-        attachments: [1, 2, 3].map((n) => photo(n, 8 * 1024 * 1024)),
+    }).pipe(Effect.provide(layer("kin-turn-content-budget-"))),
+);
+
+it.effect(
+  "a chat copy is capped, deterministic even when re-encoded, and deleted with its original",
+  () =>
+    Effect.gen(function* () {
+      const png = yield* Effect.promise(() => createCanvas(4000, 3000).encode("png"));
+      const photo: ChatAttachment = {
+        type: "image",
+        id: "kin-chat-0b1e1c2a-1111-4222-8333-444455556667",
+        name: "Harbor Cafe.png",
+        mimeType: "image/png",
+        sizeBytes: png.byteLength,
+      };
+      const dir = yield* stored([[photo, png]]);
+      const fs = yield* FileSystem.FileSystem;
+      const original = resolveAttachmentPath({ attachmentsDir: dir, attachment: photo })!;
+      const content = yield* KinTurnContent;
+      const show = () => content.prepare({ text: "Look", attachments: [photo] });
+      const {
+        attachments: [first],
+      } = yield* show();
+      assert.isDefined(first);
+      assert.strictEqual(first!.mimeType, "image/jpeg");
+      const copyPath = resolveAttachmentPath({ attachmentsDir: dir, attachment: first! })!;
+      const copy = yield* fs.readFile(copyPath);
+      assert.deepStrictEqual(readImageDimensions(copy), { width: 1568, height: 1176 });
+      assert.notStrictEqual(copyPath, original);
+      assert.deepStrictEqual(yield* fs.readFile(original), Uint8Array.from(png));
+      yield* fs.remove(copyPath);
+      const {
+        attachments: [second],
+      } = yield* show();
+      assert.deepStrictEqual(second, first);
+      assert.deepStrictEqual(yield* fs.readFile(copyPath), copy);
+      yield* (yield* KinAttachmentStore.KinAttachmentStore).remove([photo.id]);
+      assert.isFalse(yield* fs.exists(copyPath));
+    }).pipe(Effect.provide(layer("kin-turn-content-photo-"))),
+);
+
+it.effect(
+  "an unshowable photo and an unreadable document never send stored images to a provider",
+  () =>
+    Effect.gen(function* () {
+      const corrupt: ChatAttachment = {
+        type: "image",
+        id: "kin-chat-corrupt-jpg",
+        name: "Corrupt.jpg",
+        mimeType: "image/jpeg",
+        sizeBytes: 3,
+      };
+      const png = yield* Effect.promise(() => createCanvas(30, 20).encode("png"));
+      const good = {
+        ...corrupt,
+        id: "kin-chat-good",
+        name: "Good.png",
+        mimeType: "image/png",
+        sizeBytes: png.byteLength,
+      };
+      const dir = yield* stored([
+        [corrupt, "bad"],
+        [good, png],
+      ]);
+      const content = yield* KinTurnContent;
+      const single = yield* content.prepare({ text: "Bills", attachments: [corrupt] });
+      assert.deepStrictEqual(single, {
+        text: 'Bills\n\n[Attached image "Corrupt.jpg" is unavailable.]',
+        attachments: [],
       });
-      assert.deepStrictEqual(
-        large.attachments.map((file) => file.name),
-        ["IMG_2.png", "IMG_3.png"],
-      );
-      // Any other turn: how many, and no tool it can't call.
-      assert.strictEqual(
-        large.text,
-        "Big ones\n\n[1 of the attached files isn't shown: too many for one turn.]",
-      );
-      // Files that fit are the turn's own, with nothing said.
-      const few = yield* content.prepare({ text: "Two", attachments: [photo(1), photo(2)] });
-      assert.deepStrictEqual(few, { text: "Two", attachments: [photo(1), photo(2)] });
-      // A file that can't be prepared (here a folder where a PDF should be) still leaves the cut.
-      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
       const fs = yield* FileSystem.FileSystem;
       const broken = file("kin-chat-broken-pdf", "Broken.pdf", "application/pdf");
-      yield* fs.makeDirectory(resolveAttachmentPath({ attachmentsDir, attachment: broken })!, {
-        recursive: true,
-      });
-      const failed = yield* content.prepare({
-        text: "Bills",
-        attachments: [...Array.from({ length: 22 }, (_, index) => photo(index)), broken],
-      });
+      yield* fs.makeDirectory(resolveAttachmentPath({ attachmentsDir: dir, attachment: broken })!);
+      const failed = yield* content.prepare({ text: "Bills", attachments: [good, broken] });
       assert.strictEqual(failed.text, "Bills");
       assert.deepStrictEqual(
-        failed.attachments.map((one) => one.name),
-        [...Array.from({ length: 19 }, (_, index) => `IMG_${index + 3}.png`), "Broken.pdf"],
+        failed.attachments.map(({ name, mimeType }) => [name, mimeType]),
+        [["Good.png", "image/jpeg"]],
       );
-    }).pipe(Effect.provide(layer("kin-turn-content-budget-"))),
+    }).pipe(Effect.provide(layer("kin-turn-content-unshowable-"))),
 );
 
 it.effect("a stored PDF that Kin deletes takes the page images a turn drew of it along", () =>

@@ -22,16 +22,20 @@ import { BILL_MODEL_IMAGE_BYTES } from "./billCutterProtocol.ts";
 
 const previews = Semaphore.makeUnsafe(1);
 
-export const billPhotoPreviewId = (sourceId: string) => {
+export const billPhotoPreviewId = (sourceId: string, kind: "bill" | "chat" = "bill") => {
   const id = createDeterministicAttachmentId(
     KIN_ATTACHMENT_ID_PREFIX.slice(0, -1),
-    `${sourceId}#bill-preview-v1`,
+    `${sourceId}#${kind}-preview-v1`,
   );
   return id === null ? null : `${id}-jpg`;
 };
 
-export const billPhotoPreviewPath = (attachmentsDir: string, sourceId: string) => {
-  const id = billPhotoPreviewId(sourceId);
+export const billPhotoPreviewPath = (
+  attachmentsDir: string,
+  sourceId: string,
+  kind: "bill" | "chat" = "bill",
+) => {
+  const id = billPhotoPreviewId(sourceId, kind);
   return id === null
     ? null
     : resolveAttachmentRelativePath({ attachmentsDir, relativePath: `${id}.jpg` });
@@ -45,11 +49,17 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
   function* (
     attachmentsDir: string,
     attachment: ChatAttachment,
-    { cachedOnly = false }: { readonly cachedOnly?: boolean } = {},
+    {
+      cachedOnly = false,
+      kind = "bill",
+    }: {
+      readonly cachedOnly?: boolean;
+      readonly kind?: "bill" | "chat";
+    } = {},
   ) {
     const fs = yield* FileSystem.FileSystem;
     const source = resolveAttachmentPath({ attachmentsDir, attachment });
-    const id = billPhotoPreviewId(attachment.id);
+    const id = billPhotoPreviewId(attachment.id, kind);
     if (source === null || id === null) return undefined;
     const image: ChatImageAttachment = {
       type: "image",
@@ -66,10 +76,10 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
       ),
       Effect.orElseSucceed(() => undefined),
     );
-    if (cachedOnly) {
+    if (cachedOnly || kind === "chat") {
       const cached = yield* readCached;
       if (cached !== undefined) return (yield* fs.exists(source)) ? cached : undefined;
-      if (attachment.sizeBytes > BILL_MODEL_IMAGE_BYTES) return undefined;
+      if (cachedOnly && attachment.sizeBytes > BILL_MODEL_IMAGE_BYTES) return undefined;
     }
     const readHeader = fs.open(source, { flag: "r" }).pipe(
       Effect.flatMap((file) => file.readAlloc(IMAGE_DIMENSIONS_HEADER_BYTES)),
@@ -79,9 +89,9 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
     if (Option.isNone(header)) return undefined;
     const size = readImageDimensions(header.value);
     if (size === null || size.width * size.height > BILL_PHOTO_MAX_PIXELS) return undefined;
-    // Only an unrotated JPEG is sure to look the same to the provider as to the cutter's decoder,
-    // which also turns a WebP's EXIF upright; any other picture is shown as the cutter draws it.
+    // Only the bill reader may reuse a small unrotated JPEG. Chat always validates by decoding.
     if (
+      kind === "bill" &&
       Math.max(size.width, size.height) <= IMAGE_ATTACHMENT_MAX_EDGE &&
       attachment.sizeBytes <= BILL_MODEL_IMAGE_BYTES &&
       header.value[0] === 0xff &&
@@ -98,7 +108,12 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
         const cached = yield* readCached;
         if (cached !== undefined) return cached;
         const bytes = yield* fs.readFile(source);
-        const { outcome } = yield* cutBillPage({ kind: "photo", bytes, boxes: [] });
+        const { outcome } = yield* cutBillPage({
+          kind: "photo",
+          bytes,
+          boxes: [],
+          ...(kind === "chat" ? { preview: "chat" } : {}),
+        });
         if (outcome._tag !== "cut" || outcome.preview === undefined) return undefined;
         const jpeg = outcome.preview;
         const partial = `${path}.part`;

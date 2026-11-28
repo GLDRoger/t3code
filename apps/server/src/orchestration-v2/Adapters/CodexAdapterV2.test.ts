@@ -46,7 +46,9 @@ import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
-import { resolveAttachmentPathById } from "../../attachmentStore.ts";
+import { prepareChatPhoto } from "../../kin/lead/turn/photo.testkit.ts";
+import { readImageDimensions } from "@t3tools/shared/imageDimensions";
+import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -1724,7 +1726,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   });
 
   const makeCodexReplayHarness = (
-    transcript: CodexReplay.CodexAppServerReplayTranscript,
+    fixture:
+      | CodexReplay.CodexAppServerReplayTranscript
+      | {
+          readonly scenario: string;
+          readonly build: (attachmentsDir: string) => CodexReplay.CodexAppServerReplayTranscript;
+        },
     onEvent: (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.Effect<unknown> = () =>
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
@@ -1739,8 +1746,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig(
-        transcript.scenario,
+        fixture.scenario,
       ).pipe(Effect.orDie);
+      const transcript = "build" in fixture ? fixture.build(serverConfig.attachmentsDir) : fixture;
       const changes = yield* makeChangeSignal;
       const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
         [];
@@ -2087,6 +2095,106 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ["completed"],
         );
       }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("Codex receives a small JPEG, not the stored Kin chat photo", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const attachmentsDir = yield* fs.makeTempDirectoryScoped();
+      const { original, prepared } = yield* prepareChatPhoto(attachmentsDir);
+      const [image] = prepared.attachments;
+      assert.isDefined(image);
+      const path = resolveAttachmentPath({ attachmentsDir, attachment: image! })!;
+      const jpeg = Buffer.from(yield* fs.readFile(path));
+      const nativeThreadId = "kin-photo-thread";
+      const nativeTurnId = "kin-photo-turn";
+      const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: prepared.text });
+      const harness = yield* makeCodexReplayHarness({
+        scenario: "kin-chat-photo",
+        build: (attachmentsDir) =>
+          makeCodexReplayTranscript({
+            scenario: "kin-chat-photo",
+            entries: [
+              ...preamble.map((entry) =>
+                entry.type === "expect_outbound" &&
+                Predicate.isObject(entry.frame) &&
+                Predicate.isObject(entry.frame.params) &&
+                entry.frame.method === "turn/start"
+                  ? {
+                      ...entry,
+                      frame: {
+                        ...entry.frame,
+                        params: {
+                          ...entry.frame.params,
+                          approvalPolicy: {
+                            granular: {
+                              mcp_elicitations: true,
+                              request_permissions: false,
+                              rules: false,
+                              sandbox_approval: false,
+                              skill_approval: false,
+                            },
+                          },
+                          input: [
+                            {
+                              type: "text",
+                              text: `${prepared.text}\n\n[Attached image "${image!.name}" is saved at: ${resolveAttachmentPath({ attachmentsDir, attachment: image! })}]`,
+                            },
+                            {
+                              type: "image",
+                              url: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+                            },
+                          ],
+                        },
+                      },
+                    }
+                  : entry,
+              ),
+              {
+                type: "emit_inbound",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          }),
+      });
+      const destination = resolveAttachmentPath({
+        attachmentsDir: harness.serverConfig.attachmentsDir,
+        attachment: image!,
+      })!;
+      yield* fs.makeDirectory(harness.serverConfig.attachmentsDir, { recursive: true });
+      yield* fs.copyFile(path, destination);
+      const input = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("kin-photo"),
+        text: prepared.text,
+      });
+      yield* harness.runtime.startTurn({
+        ...input,
+        message: { ...input.message, attachments: prepared.attachments },
+      });
+      yield* harness.firstTerminal;
+      assert.strictEqual(harness.terminalEvents()[0]?.status, "completed");
+      assert.deepStrictEqual(readImageDimensions(jpeg), { width: 1568, height: 1176 });
+      assert.isFalse(jpeg.equals(original));
     }).pipe(
       Effect.scoped,
       Effect.provide(

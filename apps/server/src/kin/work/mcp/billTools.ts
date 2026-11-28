@@ -53,7 +53,7 @@ export const KinBillToolkit = turnEventToolkit(
   Tool.make("bills_add", {
     ...shared,
     description:
-      "Have Kin read every photo or PDF on a message in the background, one by one, each becoming a suggested expense with its file for the owner to keep. Call it when the person's words say these are bills or receipts to enter and this turn didn't show you all of them. Read the ones a turn shows in this same turn, or hand them all here: an entry you say you'll make later is never made. Never from the files alone. An owner's or co-owner's message only.",
+      "Have Kin read every photo or PDF on a message in the background, one by one, each becoming a suggested expense with its file for the owner to keep. Call it for any bill or receipt photo or PDF sent to be entered, shown or not. Use the person's words or a file plainly sent as a bill to enter, not just the presence of files. Never read bill figures yourself. An owner's or co-owner's message only.",
     parameters: Bills.AddInput,
     success: Bills.AddResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

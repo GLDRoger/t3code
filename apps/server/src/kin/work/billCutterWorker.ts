@@ -15,6 +15,7 @@ import { openPdfPageDocument, PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages
 import {
   BILL_CUTTER_OUTPUT_BYTES,
   BILL_MODEL_IMAGE_BYTES,
+  CHAT_MODEL_IMAGE_BYTES,
   MAX_BILL_BOXES,
   refuseBillPage,
   type BillBox,
@@ -87,6 +88,7 @@ const cut = async (
   source: Canvas | Image,
   boxes: ReadonlyArray<BillBox>,
   pdfCropLongEdge?: number,
+  previewKind?: "chat",
 ): Promise<BillPageOutcome> => {
   const { width, height } = source;
   const photo = pdfCropLongEdge === undefined;
@@ -120,9 +122,9 @@ const cut = async (
           0,
           width,
           height,
-          IMAGE_ATTACHMENT_MAX_EDGE,
+          previewKind === "chat" ? PDF_PAGE_IMAGES.longEdge : IMAGE_ATTACHMENT_MAX_EDGE,
           PDF_PAGE_IMAGES.jpegQuality,
-          BILL_MODEL_IMAGE_BYTES,
+          previewKind === "chat" ? CHAT_MODEL_IMAGE_BYTES : BILL_MODEL_IMAGE_BYTES,
         )
       : undefined;
   return {
@@ -133,7 +135,7 @@ const cut = async (
   };
 };
 
-const cutPhoto = async (bytes: NodeBuffer.Buffer, boxes: ReadonlyArray<BillBox>) => {
+const cutPhoto = async (bytes: NodeBuffer.Buffer, page: Extract<BillPage, { kind: "photo" }>) => {
   const header = bytes.subarray(0, IMAGE_DIMENSIONS_HEADER_BYTES);
   if (isHeic(header)) return refuseBillPage("heic");
   const dimensions = readImageDimensions(header);
@@ -144,7 +146,7 @@ const cutPhoto = async (bytes: NodeBuffer.Buffer, boxes: ReadonlyArray<BillBox>)
   // Canvas applies JPEG EXIF during decode, so both outputs can sample the same bitmap directly.
   const photo = await loadImage(bytes);
   if (photo.width * photo.height > BILL_PHOTO_MAX_PIXELS) return refuseBillPage("photo_pixels");
-  return cut(photo, boxes);
+  return cut(photo, page.boxes, undefined, page.preview);
 };
 
 const cutPdf = async (bytes: Uint8Array, input: Extract<BillPage, { kind: "pdf" }>) => {
@@ -194,8 +196,7 @@ export const runBillCutterWorker = async (request: string) => {
       const chunks: Array<NodeBuffer.Buffer> = [];
       for await (const chunk of process.stdin) chunks.push(chunk as NodeBuffer.Buffer);
       const bytes = NodeBuffer.Buffer.concat(chunks);
-      outcome =
-        page.kind === "photo" ? await cutPhoto(bytes, page.boxes) : await cutPdf(bytes, page);
+      outcome = page.kind === "photo" ? await cutPhoto(bytes, page) : await cutPdf(bytes, page);
     }
   } catch {
     outcome = refuseBillPage("damaged");

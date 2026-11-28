@@ -180,8 +180,12 @@ export const layer = Layer.effect(
             const originals = [attachmentId, ...pagesOf(attachmentId)]
               .map((id) => resolveAttachmentPathById({ attachmentsDir, attachmentId: id }))
               .filter((path) => path !== null);
-            const preview = billPhotoPreviewPath(attachmentsDir, attachmentId);
-            return preview === null ? originals : [...originals, preview];
+            return [
+              ...originals,
+              ...(["bill", "chat"] as const).flatMap(
+                (kind) => billPhotoPreviewPath(attachmentsDir, attachmentId, kind) ?? [],
+              ),
+            ];
           }),
         ).pipe(Effect.provideContext(context)),
       ),

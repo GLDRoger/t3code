@@ -56,6 +56,7 @@ import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../../assets/Attachmen
 import {
   attachmentRelativePath,
   createPendingAttachmentId,
+  resolveAttachmentPath,
   resolveAttachmentPathById,
 } from "../../attachmentStore.ts";
 import { billPhoto, scannedBillPdf } from "../../../scripts/kin-bill-cutter-benchmark.ts";
@@ -1718,8 +1719,9 @@ describe("bills in bulk", () => {
           });
         const kept = (files: ReadonlyArray<KinAttachment>) =>
           store.claim(files, TEST_UPLOAD_OWNER).pipe(Effect.map((claimed) => claimed.attachments));
+        const photo = yield* Effect.promise(() => billPhoto(4000, 3000));
         const bills = yield* kept([
-          yield* upload("IMG_0101.png", "sample cloud"),
+          yield* upload("IMG_0101.jpg", photo, "image/jpeg"),
           yield* upload("rent.pdf", "%PDF-1.4 rent", "application/pdf"),
           yield* upload("notes.txt", "not a bill", "text/plain"),
         ]);
@@ -1755,6 +1757,19 @@ describe("bills in bulk", () => {
           });
         yield* message("rhea-event", "rhea-bills", "rhea-finance", rhea);
         yield* claimTurn(1);
+        const model = yield* (yield* KinTurnContent).prepare({
+          text: "Enter these",
+          attachments: bills,
+        });
+        assert.notStrictEqual(model.attachments[0]?.id, bills[0]!.id);
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const original = NodeFS.readFileSync(
+          resolveAttachmentPath({
+            attachmentsDir,
+            attachment: bills[0]!,
+          })!,
+        );
+        assert.isTrue(original.equals(Buffer.from(photo)));
         const scope: McpInvocationScope = {
           environmentId: EnvironmentId.make("fixture"),
           requestNamespace: "fixture",
@@ -2816,7 +2831,14 @@ describe("bill_cut", () => {
         );
         assert.strictEqual(NodeFS.statSync(previewPath).mtimeMs, 10_000_000);
         const ordinary = yield* prepare(turn);
-        assert.deepStrictEqual(ordinary.attachments, turn.attachments);
+        assert.notStrictEqual(ordinary.attachments[0]?.id, turn.attachments[0]?.id);
+        const chatJpeg = stored(ordinary.attachments[0]!.id);
+        assert.deepStrictEqual(
+          readImageDimensions(chatJpeg),
+          rotated ? { width: 1176, height: 1568 } : { width: 1568, height: 1176 },
+        );
+        assert.strictEqual(readJpegOrientation(chatJpeg), 1);
+        assert.isTrue(stored(turn.attachments[0]!.id).equals(original));
 
         const modelImage = yield* Effect.promise(() => loadImage(jpeg));
         const uprightOriginal = yield* Effect.promise(async () =>

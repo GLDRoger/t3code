@@ -2490,6 +2490,7 @@ export const kinTurnFiles = Effect.fn("evaluateMcpToolUse.kinTurnFiles")(functio
     const prepared = yield* (yield* KinTurnContent).prepare({
       text: PROMPT_MARK,
       attachments: stored,
+      billPhotos: kinBillsOf(testCase) ? "legacy" : false,
       // As the runner decides it (`WakeupRunner` `offersBillsAdd`): a lead's owner-only turn.
       offersBillsAdd: testCase.setup.world?.kinLead === true && kinSessionOf(testCase),
     });

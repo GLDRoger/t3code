@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { assert, it } from "@effect/vitest";
+import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 
 import {
   OrchestratorMcpCapabilitiesResult,
@@ -1007,10 +1008,19 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
       });
     const photo = NodeFS.readFileSync(new URL("./cases/files/receipt-taxi.jpg", import.meta.url));
     const [image, prompt] = (yield* turn(kinCase(attached))).slice(-2);
-    // Claude: the picture itself, ahead of the text, as ClaudeAdapterV2 sends it.
+    // Claude gets the chat copy ahead of the text.
+    const files = yield* kinTurnFiles(kinCase(attached));
+    const [jpeg] = files?.images ?? [];
+    assert.isDefined(jpeg);
+    assert.strictEqual(jpeg!.mimeType, "image/jpeg");
+    assert.notStrictEqual(jpeg!.data, photo.toString("base64"));
+    assert.deepEqual(readImageDimensions(Buffer.from(jpeg!.data, "base64")), {
+      width: 480,
+      height: 640,
+    });
     assert.deepEqual(image, {
       type: "image",
-      source: { type: "base64", media_type: "image/jpeg", data: photo.toString("base64") },
+      source: { type: "base64", media_type: "image/jpeg", data: jpeg!.data },
     });
     const text = String(prompt?.text);
     assert.isTrue(text.startsWith(kinCase().prompt));
@@ -1025,11 +1035,16 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
       /\[Attached file "remittance\.txt" is saved at: \/home\/user\/[^\]]+\.txt\]/,
     );
     // Codex gets the same text; its picture goes as an input item (kinAppServer), not a block.
-    const files = yield* kinTurnFiles(kinCase(attached));
     assert.deepEqual(kinTurnBlocks(files, "Hi", true), [
       { type: "text", text: `Hi${files?.text}` },
     ]);
-    assert.deepEqual(files?.images, [{ mimeType: "image/jpeg", data: photo.toString("base64") }]);
+    const billsFiles = yield* kinTurnFiles({
+      ...kinCase(attached),
+      prompt: "{{BILLS_TURN:B1.jpg}}",
+    });
+    assert.deepEqual(billsFiles?.images, [
+      { mimeType: "image/jpeg", data: photo.toString("base64") },
+    ]);
     // A case without files, Kin's or T3's, builds the message it always did.
     const plain = yield* turn(kinCase());
     assert.deepEqual(plain.at(-1), { type: "text", text: kinCase().prompt });

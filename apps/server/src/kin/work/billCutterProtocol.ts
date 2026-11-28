@@ -1,12 +1,13 @@
 import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 
 export const BILLS_PER_TURN = 5;
+export const CHAT_MODEL_IMAGE_BYTES = 1024 * 1024;
 export const BILL_MODEL_IMAGE_BYTES = Math.floor(PDF_PAGE_IMAGES.bytesPerTurn / BILLS_PER_TURN);
 
 export type BillBox = readonly [x: number, y: number, width: number, height: number];
 
 export type BillPage = (
-  | { readonly kind: "photo" }
+  | { readonly kind: "photo"; readonly preview?: "chat" }
   | { readonly kind: "pdf"; readonly page: number }
 ) & { readonly boxes: ReadonlyArray<BillBox> };
 

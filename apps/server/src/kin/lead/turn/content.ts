@@ -32,22 +32,6 @@ const FRAME_MARKER =
  */
 const TURN_FILES = { count: 20, imageBytes: PDF_PAGE_IMAGES.bytesPerTurn };
 
-/** The files of `files` a turn takes, newest kept, in the order they were sent; and how many not. */
-const turnFiles = <A extends Pick<ChatAttachment, "type" | "mimeType" | "sizeBytes">>(
-  files: ReadonlyArray<A>,
-) => {
-  const newest: Array<A> = [];
-  let bytes = 0;
-  for (const file of files.toReversed()) {
-    const image = file.type === "image" || isProviderSendTurnSupportedImageMimeType(file.mimeType);
-    if (newest.length + 1 > TURN_FILES.count) break;
-    if (image && bytes + file.sizeBytes > TURN_FILES.imageBytes) break;
-    if (image) bytes += file.sizeBytes;
-    newest.push(file);
-  }
-  return { kept: newest.toReversed(), left: files.length - newest.length };
-};
-
 /** Whether a turn shows `file` to the model as a picture; any other file goes as text or a path. */
 export const shownAsPicture = (file: Pick<ChatAttachment, "type" | "mimeType">) =>
   file.type === "image" && isProviderSendTurnSupportedImageMimeType(file.mimeType);
@@ -88,7 +72,7 @@ type TurnContentInput = {
   readonly attachments: ReadonlyArray<ChatAttachment>;
   /** The turn offers `bills_add`, so the files left out are named to it. */
   readonly offersBillsAdd?: boolean;
-  /** Only an isolated bills.read lane; ordinary chat pictures are unchanged. */
+  /** The isolated bills.read lane keeps its separately prepared photos. */
   readonly billPhotos?: boolean | "legacy";
 };
 
@@ -142,13 +126,14 @@ export class KinTurnContent extends Context.Service<
         return image;
       });
 
-      // Shares the prepare span with bill-photo normalization.
+      // Shares the prepare span with document extraction.
       const prepareFiles = Effect.fnUntraced(
-        function* (input: TurnContentInput) {
-          if (input.attachments.length === 0)
-            return { text: input.text, attachments: input.attachments };
-          const { kept, left } = turnFiles(input.attachments);
-          const own = kept.filter(shownAsPicture);
+        function* (
+          input: TurnContentInput,
+          kept: ReadonlyArray<{ file: ChatAttachment; unavailable: boolean }>,
+          own: ReadonlyArray<ChatAttachment>,
+          left: number,
+        ) {
           // Claude's adapter carries 28 MB of base64 a request: the turn's own pictures come first.
           const budget: PageBudget = {
             pages: PDF_PAGE_IMAGES.pagesPerTurn,
@@ -173,11 +158,11 @@ export class KinTurnContent extends Context.Service<
                   `[${left} of the attached files ${left === 1 ? "isn't" : "aren't"} shown: too many for one turn.${input.offersBillsAdd === true ? " bills_add reads bills and receipts among them in the background." : ""}]`,
                 ];
           const pages: Array<ChatAttachment> = [];
-          for (const attachment of kept) {
-            if (shownAsPicture(attachment)) continue;
+          for (const { file: attachment, unavailable } of kept) {
+            if (!unavailable && shownAsPicture(attachment)) continue;
             const file = resolveAttachmentPath({ attachmentsDir, attachment });
             const named = `[Attached ${attachment.type} "${attachment.name}"`;
-            if (file === null || !(yield* fs.exists(file))) {
+            if (unavailable || file === null || !(yield* fs.exists(file))) {
               lines.push(`${named} is unavailable.]`);
               continue;
             }
@@ -253,32 +238,63 @@ export class KinTurnContent extends Context.Service<
           };
         },
         // A file Kin can't prepare leaves the turn its text and the files that fit, never stops it.
-        (effect, input) =>
+        (effect, input, kept, own) =>
           effect.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Kin couldn't prepare a turn's attachments", { cause }).pipe(
-                Effect.as({ text: input.text, attachments: turnFiles(input.attachments).kept }),
+                Effect.as({
+                  text: input.text,
+                  attachments: input.billPhotos ? kept.map(({ file }) => file) : own,
+                }),
               ),
             ),
           ),
       );
       const prepare = Effect.fn("KinTurnContent.prepare")(function* (input: TurnContentInput) {
-        if (!input.billPhotos) return yield* prepareFiles(input);
-        const attachments = yield* Effect.forEach(input.attachments, (file) =>
-          shownAsPicture(file) && !isPdf(file)
-            ? billPhotoForModel(attachmentsDir, file, {
-                cachedOnly: input.billPhotos !== "legacy",
-              }).pipe(Effect.provideService(FileSystem.FileSystem, fs))
-            : Effect.succeed(file),
-        );
-        // Skipping just one image would point the prompt's B-numbers at the wrong photos.
-        if (!attachments.every((file) => file !== undefined)) {
-          yield* Effect.logWarning(
-            "Kin couldn't prepare a bill photo; leaving the turn without attachments",
+        if (input.attachments.length === 0) return { text: input.text, attachments: [] };
+        let files = input.attachments;
+        if (input.billPhotos) {
+          const attachments = yield* Effect.forEach(files, (file) =>
+            shownAsPicture(file) && !isPdf(file)
+              ? billPhotoForModel(attachmentsDir, file, {
+                  cachedOnly: input.billPhotos !== "legacy",
+                }).pipe(Effect.provideService(FileSystem.FileSystem, fs))
+              : Effect.succeed(file),
           );
-          return { text: input.text, attachments: [] };
+          // Skipping just one image would point the prompt's B-numbers at the wrong photos.
+          if (!attachments.every((file) => file !== undefined)) {
+            yield* Effect.logWarning(
+              "Kin couldn't prepare a bill photo; leaving the turn without attachments",
+            );
+            return { text: input.text, attachments: [] };
+          }
+          files = attachments;
         }
-        return yield* prepareFiles({ ...input, attachments });
+
+        const kept: Array<{ file: ChatAttachment; unavailable: boolean }> = [];
+        let bytes = 0;
+        for (const source of files.toReversed()) {
+          if (kept.length === TURN_FILES.count) break;
+          const file =
+            !input.billPhotos && shownAsPicture(source)
+              ? yield* billPhotoForModel(attachmentsDir, source, { kind: "chat" }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                )
+              : source;
+          const image =
+            file !== undefined &&
+            (input.billPhotos
+              ? file.type === "image" || isProviderSendTurnSupportedImageMimeType(file.mimeType)
+              : shownAsPicture(file));
+          if (image && bytes + file.sizeBytes > TURN_FILES.imageBytes) break;
+          if (image) bytes += file.sizeBytes;
+          kept.push({ file: file ?? source, unavailable: file === undefined });
+        }
+        kept.reverse();
+        const own = kept.flatMap(({ file, unavailable }) =>
+          !unavailable && shownAsPicture(file) ? [file] : [],
+        );
+        return yield* prepareFiles(input, kept, own, files.length - kept.length);
       });
       return KinTurnContent.of({ prepare });
     }),
