@@ -809,6 +809,8 @@ export const KinGithubTrigger = Schema.Struct({
         title: Schema.String,
         kind: Schema.Literals(["issue", "pull"]),
         state: Schema.String,
+        /** How its text begins, so a report in other words can be seen as the same. */
+        opening: Schema.optional(Schema.String),
       }),
     ),
   ),
