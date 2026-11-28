@@ -19,7 +19,7 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText } from "./MailText.ts";
+import { htmlToText, withoutGmailVerdicts } from "./MailText.ts";
 import {
   agendaPages,
   agendaTime,
@@ -159,6 +159,10 @@ const internetHeader = (message: unknown, name: string) =>
   list(field(message, "internetMessageHeaders"))
     .filter((one) => text(field(one, "name"))?.toLowerCase() === name.toLowerCase())
     .flatMap((one) => text(field(one, "value")) ?? []);
+// Microsoft 365 names no receiver in its results, so they can count against a sender but never
+// vouch for one, and a header claiming Gmail's name was written by someone else.
+const authResultsOf = (message: unknown) =>
+  withoutGmailVerdicts(internetHeader(message, "Authentication-Results"));
 
 const bodyText = (message: unknown) => {
   const content = text(field(message, "body", "content")) ?? "";
@@ -251,8 +255,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   unread: field(message, "isRead") === false,
   messageId: text(field(message, "internetMessageId")) ?? null,
   references: internetHeader(message, "References")[0] ?? null,
-  // Microsoft 365's Authentication-Results has no receiver name to establish provenance.
-  authResults: [],
+  authResults: authResultsOf(message),
   body:
     field(message, "body") === undefined
       ? null
@@ -619,7 +622,7 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     subject: text(field(message, "subject")) ?? "",
     date: text(field(message, "receivedDateTime")) ?? null,
     internetId: text(field(message, "internetMessageId")) ?? null,
-    authResults: [],
+    authResults: authResultsOf(message),
     ...automationOf(message),
     hasFile: field(message, "hasAttachments") === true,
   } satisfies MailArrival;

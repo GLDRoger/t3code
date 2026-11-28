@@ -187,7 +187,9 @@ describe("Microsoft mail", () => {
       const genuine = yield* microsoftMail.arrival(http, TOKEN, "m1");
       assert.strictEqual(genuine?.fromAddress, "ana@client.example");
       assert.strictEqual(genuine?.from, "Ana <ana@client.example>");
-      assert.deepStrictEqual(genuine?.authResults, []);
+      assert.deepStrictEqual(genuine?.authResults, [
+        "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
+      ]);
       const display = yield* microsoftMail.arrival(http, TOKEN, "display-name-only");
       assert.strictEqual(display?.fromAddress, null);
       assert.strictEqual(display?.from, null);

@@ -76,6 +76,20 @@ describe("MailText", () => {
       ],
       "not checked",
     ],
+    [
+      "a Microsoft 365 DMARC fail",
+      [
+        "spf=fail (sender IP is 192.0.2.1) smtp.mailfrom=harborbank.example; dkim=none (message not signed) header.d=none;dmarc=fail action=none header.from=harborbank.example;compauth=fail reason=000",
+      ],
+      "failed",
+    ],
+    [
+      "a forwarded Microsoft 365 DMARC pass with an SPF soft fail",
+      [
+        "spf=softfail (sender IP is 192.0.2.1) smtp.mailfrom=lists.example; dkim=pass (signature was verified) header.d=harborbank.example;dmarc=pass action=none header.from=harborbank.example;compauth=pass reason=100",
+      ],
+      "not checked",
+    ],
     ["no header", [], "not checked"],
   ])("reads the receiving server's verdict for %s", (_name, results, verdict) => {
     expect(senderVerdict(results, "harborbank.example")).toBe(verdict);

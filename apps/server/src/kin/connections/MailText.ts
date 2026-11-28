@@ -118,30 +118,38 @@ const segments = (header: string) => {
 
 const PROPERTY = /^\s*([a-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s"]+)/;
 
+const GMAIL = /^\s*mx\.google\.com\s*;/i;
+
+/** Drops results that claim to be Gmail's, for a mailbox that isn't Gmail. */
+export const withoutGmailVerdicts = (results: ReadonlyArray<string>) =>
+  results.filter((header) => !GMAIL.test(header));
+
 /**
- * Gmail puts its own `Authentication-Results` above any results carried with the message.
- * Require its receiver name on that first header before reading the RFC 8601 results.
+ * Gmail puts its own `Authentication-Results` above any results carried with the message, naming
+ * itself first. Only that header can vouch for a sender; a first header without it still counts
+ * against one, since a failure can only make Kin stricter. Read as RFC 8601, never as loose text.
  */
 const receiverVerdicts = (results: ReadonlyArray<string>) => {
   const header = (results[0] ?? "").toLowerCase();
-  const receiver = /^\s*mx\.google\.com\s*;/.exec(header);
-  if (receiver === null) return [];
-
-  return segments(header.slice(receiver[0].length)).flatMap((segment): Array<Verdict> => {
-    const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
-    if (head === null) return [];
-    const props = new Map<string, string>();
-    let rest = segment.slice(head[0].length);
-    for (let found = PROPERTY.exec(rest); found !== null; found = PROPERTY.exec(rest)) {
-      const value = found[2]!;
-      props.set(
-        found[1]!,
-        value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/g, "$1") : value,
-      );
-      rest = rest.slice(found[0].length);
-    }
-    return [{ method: head[1]!, result: head[2]!, props }];
-  });
+  const receiver = GMAIL.exec(header);
+  const verdicts = segments(receiver === null ? header : header.slice(receiver[0].length)).flatMap(
+    (segment): Array<Verdict> => {
+      const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
+      if (head === null) return [];
+      const props = new Map<string, string>();
+      let rest = segment.slice(head[0].length);
+      for (let found = PROPERTY.exec(rest); found !== null; found = PROPERTY.exec(rest)) {
+        const value = found[2]!;
+        props.set(
+          found[1]!,
+          value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/g, "$1") : value,
+        );
+        rest = rest.slice(found[0].length);
+      }
+      return [{ method: head[1]!, result: head[2]!, props }];
+    },
+  );
+  return { vouches: receiver !== null, verdicts };
 };
 
 const domainIn = (value: string | undefined) =>
@@ -151,26 +159,26 @@ const aligned = (domain: string | undefined, from: string) =>
   domain !== "" &&
   (domain === from || from.endsWith(`.${domain}`) || domain.endsWith(`.${from}`));
 
-/** The receiving server's DMARC pass for exactly this From domain. */
-export const dmarcPassedFor = (results: ReadonlyArray<string>, domain: string) =>
-  receiverVerdicts(results).some(
+const dmarcPass = (verdicts: ReadonlyArray<Verdict>, domain: string) =>
+  verdicts.some(
     ({ method, result, props }) =>
       method === "dmarc" && result === "pass" && domainIn(props.get("header.from")) === domain,
   );
 
-/**
- * Whether the receiving server vouched for a From domain (ASCII, lower case): DMARC passed for it,
- * or DKIM and SPF both passed for it or a domain it shares an owner with.
- */
-export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string | null) => {
-  const verdicts = receiverVerdicts(results);
+/** The receiving server's DMARC pass for exactly this From domain. */
+export const dmarcPassedFor = (results: ReadonlyArray<string>, domain: string) => {
+  const { vouches, verdicts } = receiverVerdicts(results);
+  return vouches && dmarcPass(verdicts, domain);
+};
+
+const verdictOf = (verdicts: ReadonlyArray<Verdict>, fromDomain: string | null) => {
   const passes = (method: string, domain: (props: Map<string, string>) => string | undefined) =>
     fromDomain !== null &&
     verdicts.some(
       (one) =>
         one.method === method && one.result === "pass" && aligned(domain(one.props), fromDomain),
     );
-  if (fromDomain !== null && dmarcPassedFor(results, fromDomain)) return "passed" as const;
+  if (fromDomain !== null && dmarcPass(verdicts, fromDomain)) return "passed" as const;
   if (verdicts.some(({ method, result }) => method === "dmarc" && result === "fail"))
     return "failed" as const;
   if (
@@ -184,6 +192,16 @@ export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string
   )
     ? ("failed" as const)
     : ("not checked" as const);
+};
+
+/**
+ * Whether the receiving server vouched for a From domain (ASCII, lower case): DMARC passed for it,
+ * or DKIM and SPF both passed for it or a domain it shares an owner with.
+ */
+export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string | null) => {
+  const { vouches, verdicts } = receiverVerdicts(results);
+  const verdict = verdictOf(verdicts, fromDomain);
+  return verdict === "passed" && !vouches ? ("not checked" as const) : verdict;
 };
 
 type Part = {
