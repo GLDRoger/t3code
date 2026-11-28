@@ -11,6 +11,7 @@ import {
   type KinDesktopNotice,
   type KinDesktopNoticesInput,
   type KinChatMembersInput,
+  type KinChatPinsInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
   type KinCashInput,
@@ -120,6 +121,8 @@ import {
   kinWorkLiveStream,
 } from "./kinWorkStream.ts";
 import { KIN_PERSON_TASKS, kinPersonTasksCount, kinTasksMostUrgent } from "./kinTasksList.ts";
+import { makeKinBankSenders } from "./kinBankSenders.ts";
+import { makeKinMailRules } from "./kinMailRules.ts";
 import { makeKinWatches } from "./kinWatches.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
@@ -261,6 +264,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_CHAT_WS_METHODS.chatMembers,
   });
   const readMembers = kinGuardedRead(membersRead);
+  const pinsRead = createKinRpcCommand(runtime, {
+    label: "kin:chat-pins:read",
+    tag: KIN_CHAT_WS_METHODS.chatPins,
+  });
+  const readPins = kinGuardedRead(pinsRead);
   const workingRead = createKinRpcCommand(runtime, {
     label: "kin:chat-working:read",
     tag: KIN_CHAT_WS_METHODS.chatWorking,
@@ -623,6 +631,8 @@ export function makeKinClient<R, ER>(
 
   /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
   const kinClient = {
+    ...makeKinBankSenders(runtime, kinGuardedRead),
+    ...makeKinMailRules(runtime, kinGuardedRead),
     ...makeKinWatches(runtime, kinGuardedRead),
     orgs: createKinQueryAtomFamily(runtime, {
       label: "kin:orgs",
@@ -1188,6 +1198,30 @@ export function makeKinClient<R, ER>(
     pin: createKinRpcCommand(runtime, {
       label: "kin:pin",
       tag: KIN_CHAT_WS_METHODS.chatsPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
+    chatPinsSupported: kinRefreshOn.hasTopic("pins"),
+    chatPins: createKinQueryAtomFamily(runtime, {
+      label: "kin:chat-pins",
+      execute: Effect.fn("KinClient.chatPins")(function* (input: KinChatPinsInput) {
+        return yield* readPins(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn("any", (target) => {
+        const pins = kinRefreshOn("pins")(target);
+        const people = kinRefreshOn("people")(target);
+        const timeZone = kinRefreshOn("timeZone")(target);
+        return Atom.make((get) => `${get(pins)}|${get(people)}|${get(timeZone)}`);
+      }),
+    }),
+    chatPin: createKinRpcCommand(runtime, {
+      label: "kin:chat-pin",
+      tag: KIN_CHAT_WS_METHODS.chatPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
+    chatUnpin: createKinRpcCommand(runtime, {
+      label: "kin:chat-unpin",
+      tag: KIN_CHAT_WS_METHODS.chatUnpin,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
     }),
     /** Empties this chat for everyone in it, for good; one in flight per chat. */
@@ -1933,6 +1967,15 @@ export function makeKinClient<R, ER>(
       label: "kin:work:update",
       tag: "kin.work.update",
     }),
+    /** Records that this person saw the current version of a task, doc or project. */
+    workLooked: createKinRpcCommand(runtime, {
+      label: "kin:work:looked",
+      tag: "kin.work.looked",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => `${input.orgId}:${input.recordId}:${input.upTo}`,
+      },
+    }),
     /** Ticks one of a task's steps, by whoever may change the task. */
     workTickStep: createKinRpcCommand(runtime, {
       label: "kin:work:tickStep",
@@ -2141,6 +2184,11 @@ export function makeKinClient<R, ER>(
     }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,
+    /** The viewer's calendar events in a window, beside Dates; read live, never kept. */
+    myCalendar: createKinRpcCommand(runtime, {
+      label: "kin:my-calendar:read",
+      tag: "kin.connections.mineCalendar",
+    }),
     workListUpdate: createKinRpcCommand(runtime, {
       label: "kin:work:list:update",
       tag: "kin.work.updateList",

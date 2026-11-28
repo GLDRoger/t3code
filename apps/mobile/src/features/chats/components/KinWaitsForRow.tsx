@@ -23,7 +23,7 @@ export function KinWaitsForRow(props: {
     <View className="bg-grouped-card">
       <RowPressable
         accessibilityRole="button"
-        accessibilityLabel={[label, row.text, row.waitsFor].filter(Boolean).join(", ")}
+        accessibilityLabel={[label, row.text, row.asking, row.waitsFor].filter(Boolean).join(", ")}
         accessibilityState={{ expanded: open }}
         onPress={() => setOpen(!open)}
         className="bg-grouped-card"
@@ -36,7 +36,7 @@ export function KinWaitsForRow(props: {
           meta={
             row.waitsFor === null ? undefined : (
               <Text textRole="footnote" className="text-foreground-muted">
-                {row.waitsFor}
+                {row.asking === null ? row.waitsFor : `${row.asking} ${row.waitsFor}`}
               </Text>
             )
           }

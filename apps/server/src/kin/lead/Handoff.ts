@@ -43,7 +43,7 @@ import {
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
-import { messageBodyLimit } from "./quote.ts";
+import { encoded, messageBodyLimit } from "./quote.ts";
 import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
@@ -246,10 +246,11 @@ const fromOwnerAlone = (event: KinEvent, self: Colleague) => {
   }
 };
 const fold = (value: string) => value.trim().toLowerCase();
-const describe = (leads: ReadonlyArray<{ readonly name: string; readonly domain: string }>) =>
-  leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
+export const describeAgents = (
+  leads: ReadonlyArray<{ readonly name: string; readonly domain: string }>,
+) => leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
 /** The agents a name picks: by name, else by domain. */
-const matching = <T extends { readonly name: string; readonly domain: string }>(
+export const agentsNamed = <T extends { readonly name: string; readonly domain: string }>(
   agents: ReadonlyArray<T>,
   to: string,
 ) => {
@@ -485,7 +486,7 @@ const make = Effect.gen(function* () {
 
   /**
    * A teammate's own request goes to the agent that owns it, among the owner's leads they may
-   * message (`Reach`); one they may not is refused. Their stored words only, once per message.
+   * message (`Reach`); one they may not is refused. Their stored words stay separate from agent context.
    * Cards an earlier build drew to let them talk keep answering retries until they close.
    */
   /**
@@ -541,8 +542,8 @@ const make = Effect.gen(function* () {
         : restricted
       ).push(entry);
     // Names are looked up among the reachable first, so a miss never lists the others.
-    const reached = matching(reachable, input.to);
-    const unreached = reached.length === 0 ? matching(restricted, input.to) : [];
+    const reached = agentsNamed(reachable, input.to);
+    const unreached = reached.length === 0 ? agentsNamed(restricted, input.to) : [];
     const target = reached.length === 1 ? reached[0] : undefined;
     const asked = unreached.length === 1 ? unreached[0] : undefined;
     const dest = target ?? asked;
@@ -736,6 +737,27 @@ const make = Effect.gen(function* () {
       ON CONFLICT (org_id, message_id) DO NOTHING RETURNING message_id`;
     if (claimed.length === 0) return (yield* recorded()) ?? (yield* unavailable());
     const outside = yield* outsideStamp(ctx).pipe(access);
+    const note = input.request.trim().replace(/\s+/g, " ");
+    if (
+      note !== "" &&
+      fold(note) !== fold(ask.message.body.replace(/\s+/g, " ")) &&
+      (yield* unreadableBy(ctx.orgId, ask.personId, note).pipe(access)) === undefined
+    ) {
+      const direct = yield* chat.createDirect(
+        { _tag: "person", orgId: ctx.orgId, personId: ask.personId },
+        { orgId: ctx.orgId, agentId: target.agentId },
+      );
+      // The forwarded-notice prefix lets the receiving prompt quote this as recent chat data.
+      yield* chat.notice({
+        orgId: ctx.orgId,
+        chatId: direct.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`kin-forwarded-context-${forwardEventId(messageId)}`),
+        body: `Context from ${self.name}: ${encoded(note)}`,
+        relay: { kind: "sent_by", agentId: ctx.agentId },
+        silent: true,
+      });
+    }
     yield* forward({ ask, from: self, to: target, outside }).pipe(
       Effect.provideService(KinChatService, chat),
       Effect.provideService(KinEventQueue, queue),
@@ -805,7 +827,7 @@ const make = Effect.gen(function* () {
     return Effect.fail(
       new KinChatError({
         reason: matches.length === 0 ? "not_found" : "invalid_state",
-        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(agents)}. ${NOTHING} Call again with one of those names.`,
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describeAgents(agents)}. ${NOTHING} Call again with one of those names.`,
       }),
     );
   };
@@ -1340,7 +1362,7 @@ const make = Effect.gen(function* () {
     if (matches.length !== 1 || target === undefined)
       return yield* new KinChatError({
         reason: matches.length === 0 ? "not_found" : "invalid_state",
-        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describeAgents(others)}. ${NOTHING} Call again with one of those names.`,
       });
     return target;
   });

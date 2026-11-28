@@ -49,6 +49,7 @@ import {
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
 import { KinWorkToggleRow } from "../components/KinWorkPieces";
+import { KinMailRulesSection } from "./KinMailRules";
 
 /** One connection as its record: how it stands, its tools inline, recent use, and its controls. */
 export function KinConnectionScreen({ route }: StaticScreenProps<KinConnectionParams>) {
@@ -224,6 +225,14 @@ function ConnectionRecord(props: {
                 </View>
               ))}
             </ListSection>
+          ) : null}
+
+          {kinIsMailConnection(connection) ? (
+            <KinMailRulesSection
+              environmentId={environmentId}
+              orgId={orgId}
+              connectionId={props.connectionId}
+            />
           ) : null}
 
           <ListSection title={COPY.toolsTitle} footer={COPY.toolsDetail}>

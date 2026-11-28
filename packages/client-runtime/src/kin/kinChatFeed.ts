@@ -34,7 +34,7 @@ import {
 } from "./kinInboxModel.ts";
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
-import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinAskTurnKey, kinPostedReplyWakeup, kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinReplyButtons, type KinReplyButton } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
@@ -554,7 +554,39 @@ function replyBeforeCards(
     }
   }
   ordered.push(...cards);
-  return { ordered, teamCardRuns };
+  return { ordered: placeDeferredAsks(ordered), teamCardRuns };
+}
+
+// An unrelated row can break the ordinary grouping; only these asks still belong below their words.
+function placeDeferredAsks(entries: ReadonlyArray<FeedEntry>): ReadonlyArray<FeedEntry> {
+  const asks: Array<{ entry: KinMessage; index: number }> = [];
+  for (const [index, entry] of entries.entries()) {
+    if (!("draftId" in entry) && entry.ordinaryTurnAsk === true && isStandaloneCard(entry))
+      asks.push({ entry, index });
+  }
+  if (asks.length === 0) return entries;
+  const lastReply = new Map<string, number>();
+  for (const [index, entry] of entries.entries()) {
+    if ("draftId" in entry || kinPostedReplyWakeup(entry) === undefined) continue;
+    const turn = kinAskTurnKey(entry);
+    if (turn !== null) lastReply.set(turn, index);
+  }
+  const moved = new Set<number>();
+  const after = new Map<number, KinMessage[]>();
+  for (const { entry, index } of asks) {
+    const turn = kinAskTurnKey(entry);
+    const at = turn === null ? undefined : lastReply.get(turn);
+    if (at === undefined || at <= index) continue;
+    moved.add(index);
+    const group = after.get(at);
+    if (group === undefined) after.set(at, [entry]);
+    else group.push(entry);
+  }
+  return moved.size === 0
+    ? entries
+    : entries.flatMap((entry, index) =>
+        moved.has(index) ? [] : [entry, ...(after.get(index) ?? [])],
+      );
 }
 
 type ReplyFooterRow = Extract<KinFeedRow, { type: "footer" }>;
@@ -586,6 +618,8 @@ const REPLY_KEY_PREFIX = /^(?:send:)?(?:reply:|kin-send:)/;
 function continuesReply(previous: KinMessage, next: KinMessage) {
   if (
     next.seq !== previous.seq + 1 ||
+    previous.progress === true ||
+    next.progress === true ||
     previous.author._tag !== "agent" ||
     previous.status !== "posted" ||
     previous.kind !== "text" ||
@@ -704,6 +738,16 @@ function placeReplyFooters(rows: ReadonlyArray<KinFeedRow>) {
   }
 }
 
+// Only a posted reply clears a turn's updates: a turn that failed, was stopped or skipped keeps them.
+function repliedTurns(messages: ReadonlyArray<KinMessage>) {
+  const turns = new Set<string>();
+  for (const message of messages) {
+    const wakeupId = kinPostedReplyWakeup(message);
+    if (wakeupId !== undefined) turns.add(wakeupId);
+  }
+  return turns;
+}
+
 /**
  * A floor run of two or more consecutive messages from more than one agent folds into one line;
  * an expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
@@ -719,11 +763,19 @@ export function buildKinFeedRows(
    * `expandedRuns` lists the ones the viewer closed.
    */
   openRuns = false,
+  /** The host's `clearUpdates`: a turn's progress updates go once its reply is posted. */
+  clearUpdates = false,
 ): ReadonlyArray<KinFeedRow> {
+  const replied = clearUpdates ? repliedTurns(messages) : null;
   const visible = messages
     .filter(
       (message) =>
         message.status !== "dismissed" &&
+        !(
+          message.progress === true &&
+          message.sourceWakeupId !== undefined &&
+          replied?.has(message.sourceWakeupId) === true
+        ) &&
         !isAgentHandoff(message) &&
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
@@ -1069,7 +1121,11 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   const deleted = message.status === "deleted";
   const withdrawn = kinWithdrawnLine(row);
   if (withdrawn !== null) return kinSentences([withdrawn, time]);
-  const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
+  const parts = [
+    row.own
+      ? "You"
+      : `${row.authorLabel}, ${row.authorKind}${message.progress === true ? ", update" : ""}`,
+  ];
   if (deleted) parts.push("Message deleted");
   else {
     parts.push(kinPlainText(kinMessageText(message, (title) => title)));
@@ -1127,7 +1183,9 @@ export function kinUnseenCount(
     const message = messages[index]!;
     if (message.seq <= seenSeq) break;
     const own = message.author._tag === "human" && message.author.personId === viewerPersonId;
-    if (!own && message.status !== "dismissed" && !isSystem(message)) count += 1;
+    // An update is shown without a notification, so it is never news to catch up on.
+    if (!own && message.status !== "dismissed" && !isSystem(message) && message.progress !== true)
+      count += 1;
   }
   return count;
 }

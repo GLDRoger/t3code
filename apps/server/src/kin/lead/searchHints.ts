@@ -3,6 +3,7 @@
 export const KIN_SEARCH_HINTS: Readonly<Record<string, string>> = {
   agent_update: "switch model effort setting",
   away_set: "holiday leave out of office return",
+  bill_cut: "crop split separate receipts collage page scan",
   bill_read: "vendor invoice printed details scan",
   bills_add: "many receipts photos expenses at once",
   budget_set: "monthly spending limit category",
@@ -47,6 +48,7 @@ export const KIN_SEARCH_HINTS: Readonly<Record<string, string>> = {
   kin_schedule: "recurring every day weekly routine",
   kin_take_private: "direct message group sensitive answer",
   kin_visual: "dashboard sankey diagram html page figures",
+  mail_rule: "incoming email recurring instructions",
   kin_widget_upsert: "task card revision state",
   list_define: "track new fields template columns",
   memory_label: "sensitive private team can know",

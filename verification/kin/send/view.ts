@@ -8,13 +8,14 @@ const cards = (vars: Vars) => list(vars["card"]).map((_, index) => index);
 export const title = "A mail card that leaves the company";
 
 export const guide =
-  "Each box is what the newest card for one mail says, such as an invoice an agent wants to send a client for you. Each arrow is something that happens: you tap, the agent corrects itself, the mail account's sign-in expires, it is signed in again as someone else, the mail service fails, or Kin restarts. A tap that changes nothing draws no arrow: a member's tap, a second tap, a tap on a closed card, or a tap while the sign-in has expired (the card stays open for after you sign in again). Red boxes are where a rule below breaks. The model allows two cards from the agent (a draft and its correction) and at most two of these, once each: the invoice is re-made, the sign-in expires, the mail service fails, Kin restarts.";
+  "Each box is what the newest card for one mail says, such as an invoice an agent wants to send a client for you. Each arrow is something that happens: you tap, the agent corrects itself, the mail account's sign-in expires, it is signed in again as someone else, the mail service fails, Kin looks once in the mailbox's Sent after an unclear answer, or Kin restarts. A tap that changes nothing draws no arrow: a member's tap, a second tap, a tap on a closed card, or a tap while the sign-in has expired (the card stays open for after you sign in again). Red boxes are where a rule below breaks. The model allows two cards from the agent (a draft and its correction) and at most two of these, once each: the invoice is re-made, the sign-in expires, the mail service fails, Kin restarts.";
 
 export const rules: Record<string, string> = {
   RetryNeedsSentCheck:
-    "When an earlier try may have gone, Confirm requires a sent-mail check for that try.",
+    "When an earlier try may have gone, Confirm requires a sent-mail check for that try, unless Kin looked in that mailbox's Sent and found nothing for it.",
   SentAtMostOnce: "A mail you confirmed goes out at most once.",
-  MemberNeverSends: "Only the owner's or a co-owner's Confirm sends; a member's tap never does.",
+  MemberNeverSends:
+    "Only the owner's or a co-owner's Confirm sends; a member's tap, or Kin's look in Sent, never does.",
   SentAsShown: "What goes out is exactly the file the card showed when you tapped.",
   OutdatedNeverSends:
     "An invoice re-made after its card was drawn never goes out in its old version.",
@@ -88,6 +89,21 @@ export const variants = [
     name: "no-account-bind",
     breaks: "SentFromShownAccount",
     what: "a sign-in Kin can't name moves the connection's generation, but Confirm and the send no longer check it",
+  },
+  {
+    name: "no-persisted-miss",
+    breaks: "RetryNeedsSentCheck",
+    what: "Confirm skips the sent-mail check when Kin has not looked in Sent yet, or could not read it",
+  },
+  {
+    name: "newest-miss-wins",
+    breaks: "RetryNeedsSentCheck",
+    what: "a newer try Kin found nothing for in Sent hides an older one it found or could not read (the code before this change)",
+  },
+  {
+    name: "look-sends",
+    breaks: "MemberNeverSends",
+    what: "Kin's look in Sent, finding nothing, confirms the mail's new card itself",
   },
   {
     name: "no-resume",
@@ -178,6 +194,15 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The same mail comes back on a new card";
     case "Restart":
       return "Kin restarts";
+    case "LookInSent": {
+      const [c] = changed(from, to, "look");
+      const seen = c === undefined ? undefined : at(to, "look", c);
+      return seen === "found"
+        ? "Kin looks in the mailbox's Sent and finds the mail"
+        : seen === "missing"
+          ? "Kin looks in the mailbox's Sent and finds nothing"
+          : "Kin can't read the mailbox's Sent";
+    }
     case "SignInExpires":
       return "The mail account's sign-in expires";
     case "SignInAgain":

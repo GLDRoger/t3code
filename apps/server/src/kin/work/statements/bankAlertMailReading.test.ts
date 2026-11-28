@@ -537,6 +537,24 @@ ${UPI_DEBIT}`),
       "unverified",
     ],
     [
+      "a pass spelt in the sender's own bounce address",
+      mail(UPI_DEBIT, {
+        authResults: [
+          "mx.google.com; spf=pass (google.com: domain of dmarc=pass+header.from=harborbank.example@else.example designates 192.0.2.9 as permitted sender) smtp.mailfrom=dmarc=pass+header.from=harborbank.example@else.example; dmarc=fail (p=NONE) header.from=harborbank.example",
+        ],
+      }),
+      "unverified",
+    ],
+    [
+      "a pass inside a quoted property",
+      mail(UPI_DEBIT, {
+        authResults: [
+          'mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=harborbank.example"; dmarc=fail header.from=harborbank.example',
+        ],
+      }),
+      "unverified",
+    ],
+    [
       "wrong domain",
       mail(UPI_DEBIT, {
         authResults: [
@@ -547,7 +565,7 @@ ${UPI_DEBIT}`),
     ],
     [
       "forged lower header",
-      mail(UPI_DEBIT, { authResults: ["mx.google.com; dmarc=fail", VOUCHED[0]!] }),
+      mail(UPI_DEBIT, { authResults: ["mx.google.com; none", VOUCHED[0]!] }),
       "unverified",
     ],
   ] satisfies ReadonlyArray<readonly [string, AlertMail, AlertRejection]>)(

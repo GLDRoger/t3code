@@ -20,19 +20,24 @@ import { describe, type ListDef, typedText } from "./registers.ts";
  * names this turn's own messages carry. Types are checked again where the entry is written.
  */
 
+const fieldKey = Schema.String.check(Schema.isMaxLength(40));
+const fieldDescription =
+  "The list's own fields by key: text, a choice, a day, a person as owner is named, a client or project, an amount as said, or file names from this turn. null clears one.";
+
 export const FieldInputs = Schema.Record(
-  Schema.String.check(Schema.isMaxLength(40)),
+  fieldKey,
   Schema.NullOr(
     Schema.Union([
       Schema.String.check(Schema.isMaxLength(500)),
       Schema.Array(Schema.String.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(10)),
     ]),
   ),
-).annotate({
-  description:
-    "The list's own fields by key: text, a choice, a day, a person as owner is named, a client or project, an amount as said, or file names from this turn. null clears one.",
-});
+).annotate({ description: fieldDescription });
 export type FieldInputs = typeof FieldInputs.Type;
+
+export const RawRecordFields = Schema.Record(fieldKey, Schema.Unknown).annotate({
+  description: fieldDescription,
+});
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const decodeAttachments = Schema.decodeUnknownOption(

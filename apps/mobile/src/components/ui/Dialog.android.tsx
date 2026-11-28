@@ -146,6 +146,7 @@ export function Host() {
         presented.kind === "text-input" ? presented.request.initialValue : undefined
       }
       inputPlaceholder={presented.kind === "text-input" ? presented.request.placeholder : undefined}
+      inputKeyboard={presented.kind === "text-input" ? presented.request.keyboard : undefined}
       onCancel={handleCancel}
       onConfirm={handleConfirm}
     />
@@ -239,7 +240,10 @@ function DialogPresentation(props: DialogPresentationProps) {
                 value={inputState}
                 selection={inputSelection}
                 textStyle={inputTypography}
-                keyboardOptions={{ imeAction: "done" }}
+                keyboardOptions={{
+                  imeAction: "done",
+                  ...(props.inputKeyboard === "number" ? { keyboardType: "number" } : {}),
+                }}
                 keyboardActions={{
                   onDone: confirm,
                 }}
@@ -294,6 +298,7 @@ interface DialogPresentationProps {
   >;
   readonly inputInitialValue?: string;
   readonly inputPlaceholder?: string;
+  readonly inputKeyboard?: TextInputDialogRequest["keyboard"];
   readonly onCancel: () => void;
   readonly onConfirm: (inputValue?: string) => void;
 }

@@ -12,7 +12,7 @@
 #   `?history` open as sheets), `sheet:` or `dialog:` <title>, or inline `menu:`, `card:`,
 #   `section:`, `button:` <label>, which add no depth.
 # phone steps: `tab:<dock tab>` or a first screen, then KIN_SCREENS names, plus the same inline steps.
-#   Settings paths start at `SettingsKin`: the owner's dock is five tabs, and Settings is the gear
+#   Settings paths start at `SettingsKin`: the owner's dock is up to five tabs, and Settings is the gear
 #   on Chats, so it starts its own paths as a tab does (dock tab → list → record → sheet).
 # roles: owner, co_owner, lead (a member who leads a project), member; each `both`, `web`,
 #   `phone` or `none`. A role's reach follows what the host allows, not only what the client shows.
@@ -351,8 +351,8 @@ features:
     web: [chat, card:Bills added]
     phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    tools: [bills_add, bill_read]
-    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list.
+    tools: [bills_add, bill_read, bill_cut]
+    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list. A photo or page holding several bills is cut into pieces, and each piece is read as its own bill.
     proof:
       - apps/server/src/kin/work/bills.test.ts
       - packages/client-runtime/src/kin/kinBills.test.ts
@@ -1037,7 +1037,8 @@ features:
       One row per section with its switch; a section another holds off says why and cannot be
       switched there. Clients takes the company's own name and singular, and Use Kin's name puts it
       back. Every place, picker, fold, search box and palette row follows the same shell for
-      everyone; a record of an off section still opens, with one line.
+      everyone; a record of an off section still opens, with one line. Money, Clients and Docs each
+      have a phone-dock switch; a place out of the dock is a row on the phone's Chats.
     proof:
       - packages/client-runtime/src/kin/kinShell.test.ts
       - packages/client-runtime/src/kin/kinNavigation.test.ts
@@ -1116,6 +1117,17 @@ features:
     proof:
       - apps/server/src/kin/work/docs.test.ts
       - packages/client-runtime/src/kin/kinDocs.test.ts
+
+  - id: docs-map
+    name: See what is being worked on as a map, grouped by project, and read a card in place
+    tab: docs
+    web: [docs, "?view"]
+    phone: [tab:docs, button:Map]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Read only, from the viewer's own Work and Docs reads: tasks in progress (or all open) and
+      docs, up to 300 tasks and 400 docs, saying where it stops.
+    proof: [packages/client-runtime/src/kin/kinCanvas.test.ts]
 
   - id: doc
     name: Read and write a doc
@@ -1243,6 +1255,23 @@ features:
       - packages/client-runtime/src/kin/kinBrand.test.ts
       - packages/client-runtime/src/kin/kinTemplates.test.ts
 
+  - id: bank-alert-addresses
+    name: Bank alert addresses
+    tab: settings
+    web: [settings, section:Company details, dialog:Add bank alert address]
+    phone: [SettingsKin, KinCompany, KinBankSenderAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Lists every bank alert address Kin counts, is waiting on the owner for in chat, or declined,
+      with its bank, approved account endings, recorded and held counts, and who decided and when.
+      The owner or a co-owner can add an address by hand or remove a counted one; waiting rows are
+      answered only on the owner's card in chat. Teammates do not see the section.
+    proof:
+      - packages/client-runtime/src/kin/kinBankSenders.test.ts
+      - apps/server/src/kin/work/statements/bankSenders.test.ts
+      - apps/web/src/kin/KinSettingsMoved.browser.test.tsx
+
   - id: kins-computer
     name: Kin's computer, its space and backups, what stops agents now, and the fixes
     tab: settings
@@ -1309,9 +1338,10 @@ features:
       When the same hold-up keeps happening and a setting would end it, Kin puts one silent card in
       the owner's chat with Chief of staff (so it waits in Needs you); Do it makes the same change
       the setting's own control makes: a teammate's access to an agent, the daily limit one step up,
-      or resuming a paused connection or agent. Settings lists each suggestion and what came of it;
-      a done one opens where that setting lives, and a put-off one can Ask again. The list is on
-      web only; on the phone the cards still come in Needs you.
+      resuming a paused connection or agent, or counting a bank alert address's mail. Settings lists
+      each suggestion and what came of it; a done one opens where that setting lives, and a put-off
+      one can Ask again, except a bank alert address, whose No is undone by adding it again. The
+      list is on web only; on the phone the cards still come in Needs you.
     proof:
       - apps/server/src/kin/recommend/KinRecommend.test.ts
       - apps/web/src/kin/KinRecommendations.browser.test.tsx
@@ -1382,6 +1412,24 @@ features:
     proof:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
       - packages/client-runtime/src/kin/kinConnections.test.ts
+
+  - id: mail-rules
+    name: Mail rules, a lead acting when mail like this arrives in a company mailbox
+    tab: settings
+    web: [settings, section:Connections, section:Connection, section:Rules, section:Mail rule]
+    phone: [SettingsKin, KinMailRules, KinMailRule]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [mail_rule]
+    note: >-
+      A lead proposes a rule as a card in the asker's direct chat; only that person's Turn on makes
+      it. Its runs post in that chat, and Settings lists each rule under its mailbox with Pause,
+      Resume, Remove, Preview, Run now, Change limit and its last 30 days, and rules removed in the
+      last 30 days read-only. A teammate sees none of it.
+    proof:
+      - apps/server/src/kin/arrivals/KinMailRules.test.ts
+      - apps/server/src/kin/connections/MailEndToEnd.test.ts
+      - packages/client-runtime/src/kin/kinMailRules.test.ts
+      - apps/mobile/src/features/chats/connections/kinMailRuleText.test.ts
 
   - id: own-mailbox
     name: Your mailbox, each person's own
@@ -1844,3 +1892,4 @@ unlisted:
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
+  "rpc:kin.mailRules.create": Served; a rule is made only from its card in chat, by the tap, so no Settings form calls it.

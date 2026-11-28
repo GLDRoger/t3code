@@ -4,6 +4,7 @@ import {
   KIN_CHOICE_CARD_ACTION,
   KIN_CHOICE_DISMISS_ACTION,
   KIN_CHOICE_UNDISMISS_ACTION,
+  KIN_CHOICE_UNDO_ACTION,
   KinChatError,
   type EnvironmentId,
   type KinConnectionSaveEdited,
@@ -77,6 +78,8 @@ export interface KinChoiceCardView {
   } | null;
   /** Who settled it, by name then; null from a host that doesn't say. */
   readonly decidedBy: { readonly personId: KinPersonId; readonly name: string } | null;
+  /** What the answer did that its tapper or an owner can reverse, in the host's words. */
+  readonly undo: { readonly label: string; readonly line: string } | null;
   /** Who undid what a default Kin took, by name then, and when; null on any other card. */
   readonly undone: {
     readonly personId: KinPersonId;
@@ -244,14 +247,23 @@ export const KIN_SEND_COPY = {
 /** The tick a card for a mail that may already have gone needs before its Confirm. */
 export const KIN_SEND_CHECKED = "I've checked the sent mail";
 
-/** "An earlier try at this mail at 9:52 AM may already have gone…", or on another day. */
-export function kinMayHaveGoneLine(at: string, now: Date = new Date()): string {
-  const tried = new Date(at);
-  const when =
-    tried.toDateString() === now.toDateString()
-      ? `at ${formatKinWhen(tried, "time")}`
-      : `on ${formatKinWhen(tried, "dayTime")}`;
-  return `An earlier try at this mail ${when} may already have gone. Check the account's sent mail before you confirm.`;
+/**
+ * "An earlier try at this mail at 9:52 AM may already have gone…"; once Kin found the mail in the
+ * account's sent mail (`seenInSentAt`), when it went and that the tick sends a second copy.
+ */
+export function kinMayHaveGoneLine(
+  sendTry: Pick<KinSendTry, "at" | "seenInSentAt">,
+  now: Date = new Date(),
+): string {
+  const when = (at: string) => {
+    const date = new Date(at);
+    return date.toDateString() === now.toDateString()
+      ? `at ${formatKinWhen(date, "time")}`
+      : `on ${formatKinWhen(date, "dayTime")}`;
+  };
+  return sendTry.seenInSentAt === undefined
+    ? `An earlier try at this mail ${when(sendTry.at)} may already have gone. Check the account's sent mail before you confirm.`
+    : `This mail went ${when(sendTry.seenInSentAt)} and is in the account's sent mail; ticking and confirming sends a second copy.`;
 }
 
 /** An open editor: the words as typed, bound to the card revision it was opened on. */
@@ -407,7 +419,7 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
       send.mayHaveGone === undefined || send.outcome !== null
         ? null
         : {
-            line: kinMayHaveGoneLine(send.mayHaveGone.at, now),
+            line: kinMayHaveGoneLine(send.mayHaveGone, now),
             tryId: send.mayHaveGone.tryId,
             at: send.mayHaveGone.at,
             confirmId,
@@ -504,6 +516,10 @@ export function kinChoiceCardView(
             open: card.outcome.open ?? null,
             refused: card.outcome.refused === true,
           },
+    undo:
+      card.answer === null || card.outcome?.undo === undefined || card.outcome.undone !== undefined
+        ? null
+        : { label: line(card.outcome.undo.label), line: line(card.outcome.undo.line) },
     undone:
       card.outcome?.undone === undefined
         ? null
@@ -754,6 +770,46 @@ export function kinChoiceUndoneLine(
 }
 
 /**
+ * A settled card's Undo for this viewer: shown to a current owner or co-owner only (unknown kind
+ * offers it; the host decides), held while a tap is on its way, with the host's refusal under it.
+ */
+export function kinChoiceUndoOffer(
+  view: Pick<KinChoiceCardView, "undo" | "answer">,
+  viewer: { readonly ownerLevel: boolean | undefined; readonly canAct: boolean },
+  tap: { readonly pending: string | null; readonly status: KinChoiceCardStatus },
+): {
+  readonly label: string;
+  readonly line: string;
+  readonly busy: boolean;
+  readonly disabled: boolean;
+  readonly notice: KinCardNotice | null;
+} | null {
+  const { undo, answer } = view;
+  if (undo === null || answer === null || !viewer.canAct) return null;
+  if (viewer.ownerLevel === false) return null;
+  const status = tap.status?.optionId === KIN_CHOICE_UNDO_ACTION ? tap.status : null;
+  return {
+    ...undo,
+    busy: tap.pending === KIN_CHOICE_UNDO_ACTION || status?.holding === true,
+    disabled: tap.pending !== null || status?.holding === true || status?.behind === true,
+    notice: status?.notice ?? null,
+  };
+}
+
+/** A settled card's Undo: no value, against the revision on screen. */
+export function kinChoiceUndoInput(
+  view: Pick<KinChoiceCardView, "widgetId" | "revision">,
+  clientActionId: string,
+): KinWidgetsActInput {
+  return {
+    widgetId: view.widgetId,
+    revision: view.revision,
+    actionId: KIN_CHOICE_UNDO_ACTION,
+    clientActionId,
+  };
+}
+
+/**
  * A card's spoken label. Where the group it labels hides its children from the screen reader
  * (the phone), `message` says a send card's words and the quote under them too.
  */
@@ -801,6 +857,9 @@ export function kinChoiceDismissInput(
 
 const isDismissAction = (actionId: string) =>
   actionId === KIN_CHOICE_DISMISS_ACTION || actionId === KIN_CHOICE_UNDISMISS_ACTION;
+/** Taps whose refusal the host words for the person: why it is settled, not theirs, or changed. */
+const saysOwnRefusal = (actionId: string) =>
+  isDismissAction(actionId) || actionId === KIN_CHOICE_UNDO_ACTION;
 
 /** `checkedSent`: the try the person's sent-mail tick is for (`kinSendTicked`). */
 export function kinChoiceActInput(
@@ -853,7 +912,7 @@ export function kinSendEditWarned<V extends Pick<KinChoiceCardView, "send">>(
     send: {
       ...view.send,
       mayHaveGone: {
-        line: kinMayHaveGoneLine(gone.at, now),
+        line: kinMayHaveGoneLine(gone, now),
         tryId: gone.tryId,
         at: gone.at,
         confirmId: view.send.mayHaveGone?.confirmId ?? null,
@@ -886,7 +945,7 @@ export function kinSendCheckPending(
 export function kinChoiceFailureNotice(cause: KinChatError, actionId?: string): KinCardNotice {
   const said = cause.message.trim();
   // A refused Dismiss or Undo says why in the host's words: settled since, or not theirs.
-  if (actionId !== undefined && isDismissAction(actionId) && kinPersonWords(said))
+  if (actionId !== undefined && saysOwnRefusal(actionId) && kinPersonWords(said))
     return { kind: cause.reason === "widget_changed" ? "stale" : "error", text: said };
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
@@ -1235,10 +1294,14 @@ export function kinChoiceCardActions(options: {
     if (taps.queue === null)
       taps.queue = createKinCardActions<KinChoiceCardView, string>({
         newId: options.newId,
+        // Undo is only on an answered card, where no option takes a tap: an open card's option
+        // of that id is sent as itself.
         toInput: (view, optionId, id) =>
           isDismissAction(optionId)
             ? kinChoiceDismissInput(view, optionId === KIN_CHOICE_UNDISMISS_ACTION, id)
-            : kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
+            : optionId === KIN_CHOICE_UNDO_ACTION && view.answer !== null
+              ? kinChoiceUndoInput(view, id)
+              : kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
         failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await commands.post({ environmentId, input });
@@ -1259,7 +1322,10 @@ export function kinChoiceCardActions(options: {
       return set.lastStatus({
         revision,
         optionId,
-        notice: { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
+        notice:
+          optionId === KIN_CHOICE_UNDO_ACTION
+            ? outcome.notice
+            : { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
         holding: false,
         behind: true,
       });
@@ -1346,7 +1412,9 @@ export function kinChoiceCardActions(options: {
   /** Dismiss posts nothing in the chat; its Undo opens the card again (`kinChoiceDismissedLine`). */
   const dismiss = (undo = false) =>
     press(undo ? KIN_CHOICE_UNDISMISS_ACTION : KIN_CHOICE_DISMISS_ACTION);
-  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss };
+  /** A settled card's Undo (`kinChoiceUndoOffer`). */
+  const undo = () => press(KIN_CHOICE_UNDO_ACTION);
+  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss, undo };
 }
 
 /** A mail card's Cancel asks first, then waits a few seconds for Undo before it is sent. */

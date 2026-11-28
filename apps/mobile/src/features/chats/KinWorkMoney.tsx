@@ -407,14 +407,21 @@ export function KinDateRowLine(props: {
 }) {
   const grows = useKinTextGrows();
   const { row } = props;
+  const detail = [props.dated ? row.when : null, row.time, row.line]
+    .filter((part) => part !== null)
+    .join(" · ");
+  const hasTrailing = row.amount !== null || row.late;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={row.accessibilityLabel}
       onPress={props.onPress}
-      className="min-h-14 flex-row items-center gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
+      className={cn(
+        "min-h-14 bg-grouped-card px-4 py-2.5 active:opacity-60",
+        grows ? "gap-1.5" : "flex-row items-center gap-3",
+      )}
     >
-      <View className="min-w-0 flex-1 gap-0.5">
+      <View className={cn("gap-0.5", !grows && "min-w-0 flex-1")}>
         <Text
           textRole="body"
           numberOfLines={kinLines(2, grows)}
@@ -427,23 +434,27 @@ export function KinDateRowLine(props: {
           numberOfLines={kinLines(1, grows)}
           className="text-foreground-muted"
         >
-          {[props.dated ? row.when : null, row.time, row.line]
-            .filter((part) => part !== null)
-            .join(" · ")}
+          {detail}
         </Text>
       </View>
-      <View className="items-end gap-0.5">
-        {row.amount === null ? null : (
-          <Text textRole="body" className="tabular-nums text-foreground">
-            {row.amount}
-          </Text>
-        )}
-        {row.late ? (
-          <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
-            {KIN_DATES.overdue}
-          </Text>
-        ) : null}
-      </View>
+      {hasTrailing ? (
+        <View
+          className={cn(
+            grows ? "flex-row flex-wrap items-center gap-x-3 gap-y-0.5" : "items-end gap-0.5",
+          )}
+        >
+          {row.amount === null ? null : (
+            <Text textRole="body" className="tabular-nums text-foreground">
+              {row.amount}
+            </Text>
+          )}
+          {row.late ? (
+            <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
+              {KIN_DATES.overdue}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -647,6 +658,7 @@ export function KinMoneyArea(props: Shared) {
     ],
     rates,
   );
+  const { expenses } = view;
   const blocks: Record<KinMoneyBlock, React.ReactNode> = {
     owed: (
       <View className="gap-4">
@@ -759,6 +771,13 @@ export function KinMoneyArea(props: Shared) {
           <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
         ) : null}
         <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        {expenses === null ? null : (
+          <KinFoldSection
+            title={expenses.label}
+            summary={expenses.summary}
+            onOpen={() => openList(expenses.open)}
+          />
+        )}
         <KinSubscriptionsSection
           {...target}
           lists={kinListsOf(lists)}

@@ -13,6 +13,7 @@ export type TextInputDialogRequest = {
   readonly message?: string;
   readonly placeholder?: string;
   readonly initialValue: string;
+  readonly keyboard?: "number";
   readonly cancelText?: string;
   readonly confirmText: string;
   readonly onConfirm: (value: string) => void;

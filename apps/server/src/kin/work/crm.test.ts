@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -37,6 +38,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as ShellMcp from "../shell/mcp.ts";
 import * as NumbersWatch from "../numbers/watch.ts";
@@ -74,8 +76,8 @@ const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
 const isChatError = Schema.is(KinChatError);
-const decodeCreate = Schema.decodeUnknownEffect(LeadWork.CreateInput);
-const decodeUpdate = Schema.decodeUnknownEffect(LeadWork.UpdateInput);
+const decodeCreate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.CreateInput));
+const decodeUpdate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.UpdateInput));
 type Services =
   | KinIdentity
   | KinLevelGate
@@ -212,6 +214,538 @@ const setup = (sourceEventId: string) =>
       { title: "Invented launch checklist", project: "Invented site", due: "1970-01-04" },
     ],
   });
+
+const FIELDS_SAID =
+  "Juniper Cold Chain is 27ABCDE1234F1Z5 in Maharashtra; now 29ABCDE1234F1Z5 in Karnataka, Net 45, 2 Harbour Road.";
+const recordWriteShapes = [
+  { list: "work", title: "Tidewater dispatch", before: { size: "S" }, after: { size: "M" } },
+  {
+    list: "clients",
+    title: "Juniper Cold Chain",
+    before: { kind: "prospect", gstin: "27ABCDE1234F1Z5", placeOfSupply: "Maharashtra" },
+    nested: { taxNumber: "27ABCDE1234F1Z5", taxPlace: "Maharashtra" },
+    category: "prospect",
+    after: { kind: "vendor", gstin: "29ABCDE1234F1Z5", placeOfSupply: "Karnataka" },
+    nestedAfter: { taxNumber: "29ABCDE1234F1Z5" },
+    topAfter: { category: "vendor", taxPlace: "Karnataka" },
+  },
+  {
+    list: "contacts",
+    title: "Zoya",
+    columns: { client: "C-1" },
+    before: { emails: ["zoya@juniper.invalid", "zoya@tidewater.invalid"] },
+    after: { role: "Dispatch" },
+  },
+  {
+    list: "projects",
+    title: "Tidewater Freight",
+    before: { repos: ["tidewater/dispatch"] },
+    after: { billing: "fixed", value: "4200" },
+  },
+  {
+    list: "milestones",
+    title: "Juniper handover",
+    columns: { project: "P-1", due: "2026-12-01" },
+    before: {},
+    after: {},
+    change: { due: "2026-12-02" },
+  },
+  {
+    list: "goals",
+    title: "Tidewater shipments",
+    columns: { due: "2026-12-01" },
+    before: { measure: "manual", target: "12", current: 4 },
+    after: { current: 6 },
+  },
+] as const;
+
+it.effect.each(recordWriteShapes)("record writes accept nested fields on $list", (row) =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* setup("ask-event");
+    if (row.list === "clients") {
+      const sql = yield* SqlClient.SqlClient;
+      const said = "Record 27ABCDE1234F1Z5 in Maharashtra, then 29ABCDE1234F1Z5 in Karnataka.";
+      yield* sql`UPDATE kin_messages SET body = ${said} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+    }
+    const records = yield* KinRecords.KinRecords;
+    const create = (input: object) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeCreate({ sourceEventId: "again-event", records: [input] });
+        const made = yield* LeadWork.create(scope, decoded);
+        return made.records[0]!.key;
+      });
+    const stored = (key: string) =>
+      records.get(orgId, key).pipe(
+        Effect.map((value) => {
+          assert.isDefined(value);
+          return {
+            category: value!.category,
+            dueAt: value!.dueAt,
+            fields: JSON.parse(value!.fieldsJson),
+            partyId: value!.partyId,
+            projectId: value!.projectId,
+          };
+        }),
+      );
+    const columns = { list: row.list, ...("columns" in row ? row.columns : {}) };
+    const oldKey = yield* create({ ...columns, title: row.title, ...row.before });
+    const newKey = yield* create({
+      ...columns,
+      title: `${row.title} North`,
+      ...("category" in row ? { category: row.category } : {}),
+      fields: "nested" in row ? row.nested : row.before,
+    });
+    const initial = yield* stored(oldKey);
+    assert.deepStrictEqual(yield* stored(newKey), initial);
+    if (row.list === "clients")
+      assert.deepStrictEqual(initial.fields, {
+        gstin: row.before.gstin,
+        placeOfSupply: row.before.placeOfSupply,
+      });
+
+    const change = "change" in row ? row.change : {};
+    const update = (key: string, fields: object) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeUpdate({
+          sourceEventId: "third-event",
+          key,
+          ...change,
+          ...fields,
+        });
+        return yield* LeadWork.update(scope, { ...decoded, key });
+      });
+    yield* update(oldKey, row.after);
+    yield* update(newKey, {
+      ...("topAfter" in row ? row.topAfter : {}),
+      fields: "nestedAfter" in row ? row.nestedAfter : row.after,
+    });
+    const changed = yield* stored(oldKey);
+    assert.notDeepEqual(changed, initial);
+    assert.deepStrictEqual(yield* stored(newKey), changed);
+    if (row.list === "clients")
+      assert.deepStrictEqual(changed.fields, {
+        gstin: row.after.gstin,
+        placeOfSupply: row.after.placeOfSupply,
+      });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("record writes refuse conflicting names for a field", () =>
+  Effect.gen(function* () {
+    const row = { list: "clients", title: "Juniper Cold Chain", gstin: "27ABCDE1234F1Z5" };
+    for (const [refusal, name] of [
+      [
+        Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ ...row, fields: { taxNumber: "29ABCDE1234F1Z5" } }],
+          }),
+        ),
+        "taxNumber",
+      ],
+      [
+        Effect.flip(
+          decodeUpdate({
+            key: "C-1",
+            sourceEventId: "ask-event",
+            gstin: row.gstin,
+            taxNumber: "29ABCDE1234F1Z5",
+          }),
+        ),
+        "taxNumber",
+      ],
+      [
+        Effect.flip(
+          decodeUpdate({
+            key: "CT-1",
+            sourceEventId: "ask-event",
+            emails: ["zoya@juniper.invalid"],
+            fields: { emails: ["zoya@tidewater.invalid"] },
+          }),
+        ),
+        "emails",
+      ],
+      [
+        Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ ...row, kind: "client", category: " prospect " }],
+          }),
+        ),
+        "kind",
+      ],
+    ] as const)
+      assert.include((yield* refusal).message, `${name} given twice`);
+
+    const { records } = yield* decodeCreate({
+      sourceEventId: "ask-event",
+      records: [{ ...row, fields: { taxNumber: row.gstin } }],
+    });
+    assert.deepStrictEqual(Object.fromEntries(Object.entries(records[0]!)), row);
+  }),
+);
+
+it.effect("nested fields cannot supply shared record columns", () =>
+  Effect.gen(function* () {
+    const refused = yield* Effect.flip(
+      decodeUpdate({ key: "W-1", sourceEventId: "ask-event", fields: { owner: "Zoya" } }),
+    );
+    assert.include(refused.message, "owner");
+    const columns = ["id", "key", "holder", "visibility", "client", "title", "sensitive", "list"];
+    for (const name of [...columns, "kind", "category", "accountsForTax"])
+      for (const refused of [
+        yield* Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } }],
+          }),
+        ),
+        yield* Effect.flip(
+          decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
+        ),
+      ])
+        assert.include(refused.message, `"${name}" is not a field for this record write.`);
+  }),
+);
+
+it.effect(
+  "one call writes a built-in row's fields as its own and a defined list's as its list's",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const made = yield* decodeCreate({
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Juniper Cold Chain", fields: { terms: "Net 45" } },
+          {
+            list: "expenses",
+            title: "Juniper pallets",
+            amount: "1,200",
+            date: "2026-11-20",
+            fields: { vendor: "Tidewater Freight" },
+          },
+        ],
+      }).pipe(Effect.flatMap((input) => LeadWork.create(scope, input)));
+      const records = yield* KinRecords.KinRecords;
+      const stored = () =>
+        Effect.forEach(made.records, (row) =>
+          records.get(orgId, row.key).pipe(Effect.map((one) => JSON.parse(one!.fieldsJson))),
+        );
+      const [client, expense] = yield* stored();
+      assert.deepInclude(client, { terms: "Net 45" });
+      assert.deepInclude(expense, { vendor: "Tidewater Freight" });
+      // One change for both reads fields as the defined list's, which a client has none of.
+      const refused = yield* decodeUpdate({
+        sourceEventId: "again-event",
+        keys: made.records.map((row) => row.key),
+        fields: { terms: "Net 30" },
+      }).pipe(
+        Effect.flatMap((input) => LeadWork.updateMany(scope, input)),
+        Effect.flip,
+      );
+      assert.include(
+        refused.message,
+        "A client's details are named fields of their own, not fields.",
+      );
+      assert.deepStrictEqual(yield* stored(), [client, expense]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("client tax number aliases go through the India check in both record write shapes", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const org = yield* SqlClient.SqlClient;
+    yield* org`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+      updated_by_kind, updated_by_id)
+      VALUES (${orgId}, '{"country":"IN"}', 1, 0, 'person', ${ownerId})`;
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ list: "clients", title: "Juniper Cold Chain" }],
+    });
+    const key = made.records[0]!.key;
+    const taxRefusal = yield* Clients.updateParty([owner], {
+      orgId,
+      key,
+      rev: 1,
+      taxNumber: "GB123",
+    }).pipe(Effect.flip);
+    assert.include(taxRefusal.message, "taxNumber is not a GSTIN");
+    for (const args of [{ taxNumber: "GB123" }, { fields: { taxNumber: "GB123" } }]) {
+      const input = yield* decodeCreate({
+        sourceEventId: "again-event",
+        records: [{ list: "clients", title: "Tidewater Freight", ...args }],
+      });
+      assert.include(
+        (yield* LeadWork.create(scope, input).pipe(Effect.flip)).message,
+        taxRefusal.message,
+      );
+      const change = yield* decodeUpdate({ sourceEventId: "third-event", key, ...args });
+      assert.include(
+        (yield* LeadWork.update(scope, { ...change, key }).pipe(Effect.flip)).message,
+        taxRefusal.message,
+      );
+    }
+    const records = yield* KinRecords.KinRecords;
+    assert.deepStrictEqual(JSON.parse((yield* records.get(orgId, key))!.fieldsJson), {});
+    const [other] = yield* org`SELECT key FROM kin_records WHERE title = 'Tidewater Freight'`;
+    assert.isUndefined(other);
+  }).pipe(Effect.provide(layer)),
+);
+
+const fieldTurns = ["the owner", "a co-owner", "a teammate", "two teammates together"] as const;
+const OK = "ok";
+const HOLDS = "refused: Only whoever holds <key>, or gave it to them, can change it.";
+const OWNERS = "refused: Only the owner or a co-owner changes that.";
+const CRM =
+  "refused: Only the owner or a co-owner sets a client's terms, tax details, address, Keep private or who looks after it, closes it, or makes it a vendor.";
+const UNSEEN = "refused: No entry <key> in Work.";
+const PRINTED =
+  "refused: Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed.";
+/**
+ * Each value is sent once at the top level and once under fields, to a twin of its target or as a
+ * new row on its list; both must end the same way: [the owner, a co-owner, a teammate, two].
+ */
+const fieldCells = [
+  ["update", "client", { terms: "Net 45" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { address: "2 Harbour Road" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { tags: ["cold-chain"] }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { gstin: "29ABCDE1234F1Z5" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { taxNumber: "29ABCDE1234F1Z5" }, [OK, OK, HOLDS, OWNERS]],
+  ["update", "client", { gstin: null }, [PRINTED, PRINTED, HOLDS, OWNERS]],
+  ["update", "client", { taxNumber: null }, [PRINTED, PRINTED, HOLDS, OWNERS]],
+  ["update", "their client", { terms: "Net 45" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { address: "2 Harbour Road" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { taxNumber: "29ABCDE1234F1Z5" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "their client", { taxPlace: "Karnataka" }, [OK, OK, OWNERS, OWNERS]],
+  ["update", "contact", { email: "zoya@tidewater.invalid" }, [OK, OK, OK, OWNERS]],
+  ["update", "contact", { role: "Dispatch" }, [OK, OK, OK, OWNERS]],
+  ["update", "task", { size: "M" }, [OK, OK, OK, UNSEEN]],
+  ["update", "project", { billing: "fixed" }, [OK, OK, UNSEEN, UNSEEN]],
+  ["update", "goal", { current: 6 }, [OK, OK, UNSEEN, UNSEEN]],
+  ["create", "clients", { terms: "Net 45" }, [OK, OK, OWNERS, OWNERS]],
+  [
+    "create",
+    "clients",
+    { category: "prospect", cameFrom: "a referral from Meera" },
+    [OK, OK, OK, OWNERS],
+  ],
+  [
+    "create",
+    "clients",
+    { category: "prospect", taxNumber: "29ABCDE1234F1Z5" },
+    [OK, OK, CRM, OWNERS],
+  ],
+  [
+    "create",
+    "contacts",
+    { client: "Tidewater Freight", email: "arjun@tidewater.invalid" },
+    [OK, OK, OK, OWNERS],
+  ],
+  ["create", "work", { size: "S" }, [OK, OK, OK, OK]],
+  ["create", "projects", { repos: ["tidewater/dispatch"] }, [OK, OK, OWNERS, OWNERS]],
+  [
+    "create",
+    "goals",
+    { due: "2026-12-31", measure: "manual", target: "12" },
+    [OK, OK, OWNERS, OWNERS],
+  ],
+] as const;
+const SHARED_COLUMNS = new Set(["client", "category", "due"]);
+/** The cell's value split into what stays a column and what goes under fields. */
+const nestedOf = (value: Readonly<Record<string, unknown>>) => {
+  const columns = Object.fromEntries(
+    Object.entries(value).filter(([key]) => SHARED_COLUMNS.has(key)),
+  );
+  const fields = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !SHARED_COLUMNS.has(key)),
+  );
+  return { ...columns, fields };
+};
+
+it.effect.each(fieldTurns)(
+  "a record value under fields meets the same gate as at the top level in a turn of %s",
+  (name) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const column = fieldTurns.indexOf(name);
+      const turn = (["owner", "co-owner", "teammate", "shared"] as const)[column]!;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      const records = yield* KinRecords.KinRecords;
+      const created = (eventId: string, rows: ReadonlyArray<object>) =>
+        decodeCreate({ sourceEventId: eventId, records: rows }).pipe(
+          Effect.flatMap((input) => LeadWork.create(scope, input)),
+        );
+      // Twins the owner set up: each shape changes its own copy.
+      const twins = new Map<string, string>();
+      for (const shape of ["top", "nested"]) {
+        const made = yield* created("again-event", [
+          {
+            list: "clients",
+            title: `Juniper Cold Chain (${shape})`,
+            gstin: "27ABCDE1234F1Z5",
+            placeOfSupply: "Maharashtra",
+          },
+          { list: "clients", title: `Tidewater Freight (${shape})`, owner: "mate" },
+          {
+            list: "contacts",
+            title: `Zoya (${shape})`,
+            client: `Tidewater Freight (${shape})`,
+            role: "Planning",
+          },
+          { title: `Dispatch check (${shape})`, owner: "mate", size: "S" },
+          { list: "projects", title: `Tidewater site (${shape})`, billing: "hourly" },
+          {
+            list: "goals",
+            title: `Tidewater shipments (${shape})`,
+            due: "2026-12-31",
+            measure: "manual",
+            target: "12",
+            current: 4,
+          },
+        ]);
+        for (const [index, target] of [
+          "client",
+          "their client",
+          "contact",
+          "task",
+          "project",
+          "goal",
+        ].entries())
+          twins.set(`${target} ${shape}`, made.records[index]!.key);
+        const client = (yield* records.get(orgId, twins.get(`client ${shape}`)!))!;
+        yield* Clients.updateParty([owner], {
+          orgId,
+          key: client.key,
+          rev: client.rev,
+          accountsForTax: true,
+        });
+      }
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, sees_clients, sees_money)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner', 1, 1),
+          ('arjun', ${orgId}, 'arjun', 'Arjun', ${at}, 'member', 1, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const eventId = turn === "owner" ? "third-event" : `${turn}-event`;
+      if (turn !== "owner") {
+        const asker = turn === "co-owner" ? "meera" : mateId;
+        const people = turn === "shared" ? [mateId, "arjun"] : [asker];
+        const chat = `${turn}-chat`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES (${chat}, ${orgId}, ${turn === "shared" ? "team_group" : "direct"},
+            ${turn === "shared" ? null : `${asker}:lead`}, 1, ${at})`;
+        for (const person of people) {
+          yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+            VALUES (${`s-${person}`}, ${orgId}, ${person}, 0)`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${`${chat}-${person}`}, ${orgId}, ${chat}, 'person', ${person}, 'member', ${at})`;
+        }
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+            role, joined_at)
+          VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at)
+          VALUES (${`${turn}-ask`}, ${orgId}, ${chat}, 1, 'human', ${asker}, ${`${chat}-${asker}`},
+            'member', 'text', ${FIELDS_SAID}, '[]', 'posted', ${at})`;
+        const event = {
+          _tag: "chat.message",
+          orgId,
+          agentId: lead,
+          eventId,
+          receivedAt: at,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: asker, memberId: `${chat}-${asker}` },
+          chatId: chat,
+          messageId: `${turn}-ask`,
+        };
+        yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done'`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+            0, 0, 'claimed', 'wake')`;
+        yield* sql`UPDATE kin_wakeups SET event_ids = ${JSON.stringify([eventId])},
+            audience = ${turn === "co-owner" ? "owner_only" : "shared"} WHERE wakeup_id = 'wake'`;
+      }
+      const snapshot = (key: string) =>
+        records.get(orgId, key).pipe(
+          Effect.map((row) => {
+            assert.isDefined(row, key);
+            return {
+              state: row!.state,
+              category: row!.category,
+              owner: `${row!.ownerKind}:${row!.ownerId}`,
+              dueAt: row!.dueAt,
+              fields: JSON.parse(row!.fieldsJson),
+              partyId: row!.partyId,
+              projectId: row!.projectId,
+            };
+          }),
+        );
+      const outcome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.match({
+            onFailure: (error) =>
+              `refused: ${String(Predicate.hasProperty(error, "message") ? error.message : error)
+                .replaceAll(/ \((top|nested)\)/g, "")
+                .replaceAll(/\b(C|CT|W|P|G)-\d+\b/g, "<key>")}`,
+            onSuccess: () => "ok",
+          }),
+        );
+      const cells: Array<string> = [];
+      const expected: Array<string> = [];
+      for (const [op, target, value, outcomes] of fieldCells) {
+        const sent = { top: value, nested: nestedOf(value) };
+        const seen: Record<string, string> = {};
+        const after: Record<string, unknown> = {};
+        for (const shape of ["top", "nested"] as const) {
+          if (op === "update") {
+            const key = twins.get(`${target} ${shape}`)!;
+            const before = yield* snapshot(key);
+            seen[shape] = yield* outcome(
+              decodeUpdate({ sourceEventId: eventId, key, ...sent[shape] }).pipe(
+                Effect.flatMap((input) => LeadWork.update(scope, { ...input, key })),
+              ),
+            );
+            after[shape] = yield* snapshot(key);
+            if (seen[shape] !== "ok") assert.deepStrictEqual(after[shape], before, key);
+          } else {
+            const title = `${target} ${Object.keys(value).join(" ")} (${shape})`;
+            const row = {
+              list: target,
+              title,
+              ...sent[shape],
+              ...("client" in value ? { client: `${value.client} (${shape})` } : {}),
+            };
+            seen[shape] = yield* outcome(created(eventId, [row]));
+            const [made] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+              WHERE org_id = ${orgId} AND title = ${title}`;
+            if (seen[shape] !== "ok") assert.isUndefined(made, title);
+            else after[shape] = yield* snapshot(made!.key);
+          }
+        }
+        const cell = `${op} ${target} ${JSON.stringify(value)}`;
+        assert.strictEqual(seen.nested, seen.top, cell);
+        if (seen.top === OK) {
+          // Each twin has a client of its own.
+          const { partyId: _top, ...top } = after.top as Record<string, unknown>;
+          const { partyId: _nested, ...nested } = after.nested as Record<string, unknown>;
+          assert.deepStrictEqual(nested, top, cell);
+        }
+        cells.push(`${cell}: ${seen.top}`);
+        expected.push(`${cell}: ${outcomes[column]}`);
+      }
+      assert.deepStrictEqual(cells, expected);
+    }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "a lead sets up a client, its contacts and both-way obligations in one idempotent call",
@@ -740,6 +1274,160 @@ it.effect("project health moves on read as entries go late or wait, with no turn
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("project task rows keep their amounts only for readers with Money", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    const arjun = { ...mate, personId: KinPersonId.make("arjun") };
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${rhea.personId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya', sees_money = 0
+      WHERE person_id = ${zoya.personId}`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
+      VALUES (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', ${at}, 1)`;
+    const project = yield* Clients.createProject([rhea], {
+      orgId,
+      name: "Tidewater Freight dispatch",
+      members: [zoya, arjun],
+      clientRequestId: "dispatch",
+    });
+    const dueAt = "1970-01-03T00:00:00.000Z";
+    const amount = { minor: 123_456, currency: "INR" };
+    for (const [title, category, state] of [
+      ["Confirm dispatch", "task", "open"],
+      ["Approve collection", "task", "waiting"],
+      ["Dispatch review", "meeting", "open"],
+    ] as const) {
+      const row = yield* OwnerWork.create([rhea], {
+        orgId,
+        project: project.key,
+        title,
+        category,
+        clientRequestId: title,
+        ...(title === "Confirm dispatch" ? { dueAt } : {}),
+      });
+      yield* OwnerWork.update([rhea], {
+        orgId,
+        key: row.key,
+        rev: row.rev,
+        amount,
+        ...(state === "waiting" ? { state, waitingOn: rhea } : {}),
+      });
+    }
+
+    assert.include(yield* Effect.flip(OwnerMoney.money([zoya], { orgId })), {
+      reason: "not_allowed",
+    });
+    const rowsOf = (page: Effect.Success<ReturnType<typeof Clients.project>>) => ({
+      nextDue: page.nextDue,
+      blocked: page.blocked[0]?.record,
+      meeting: page.meetings?.[0],
+    });
+    const before = yield* Clients.project([rhea], { orgId, key: project.key });
+    const allowed = yield* Clients.project([arjun], { orgId, key: project.key });
+    assert.strictEqual(JSON.stringify(rowsOf(allowed)), JSON.stringify(rowsOf(before)));
+    for (const row of Object.values(rowsOf(before)))
+      assert.strictEqual(JSON.stringify(row?.amount), JSON.stringify(amount));
+
+    const withheld = yield* Clients.project([zoya], { orgId, key: project.key });
+    const serialized = JSON.stringify(withheld);
+    assert.deepStrictEqual(
+      Object.fromEntries(
+        Object.entries(rowsOf(withheld)).map(([name, row]) => [
+          name,
+          JSON.stringify(row)?.includes('"amount":'),
+        ]),
+      ),
+      { nextDue: false, blocked: false, meeting: false },
+    );
+    assert.notInclude(serialized, '"amount":');
+    assert.notInclude(serialized, String(amount.minor));
+    const withoutAmount = Object.values(rowsOf(before)).map((value) => {
+      const { amount: _amount, ...row } = value!;
+      return row;
+    });
+    assert.deepStrictEqual(Object.values(rowsOf(withheld)), withoutAmount);
+    assert.include(withheld.nextDue, { title: "Confirm dispatch", dueAt });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the generic project sheet keeps private notes and value history from members", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    const arjun = { ...mate, personId: KinPersonId.make("arjun") };
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${rhea.personId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya', sees_clients = 1, sees_money = 0
+      WHERE person_id = ${zoya.personId}`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', ${at})`;
+    const project = yield* Clients.createProject([rhea], {
+      orgId,
+      name: "Tidewater Freight dispatch",
+      owner: arjun,
+      members: [zoya],
+      notes: "Private terms for Juniper Cold Chain",
+      value: { minor: 123_456, currency: "USD" },
+      clientRequestId: "dispatch",
+    });
+    const revised = yield* Clients.updateProject([rhea], {
+      orgId,
+      key: project.key,
+      rev: project.rev,
+      name: "Dispatch to Juniper Cold Chain",
+      notes: "Revised private terms for Juniper Cold Chain",
+      value: { minor: 234_567, currency: "USD" },
+    });
+    yield* Clients.updateProject([rhea], {
+      orgId,
+      key: project.key,
+      rev: revised.rev,
+      value: { minor: 345_678, currency: "USD" },
+    });
+
+    const input = { orgId, key: project.key };
+    const snapshot = (sheet: Effect.Success<ReturnType<typeof OwnerWork.get>>) => ({
+      notes: sheet.notes,
+      history: sheet.changes.map(({ kind, fields }) =>
+        [kind, ...fields.map(({ field, from, to }) => `${field}: ${from} → ${to}`)].join(" | "),
+      ),
+    });
+    const before = {
+      notes: "Revised private terms for Juniper Cold Chain",
+      history: [
+        "updated | value: $2,345.67 → $3,456.78",
+        "updated | title: Tidewater Freight dispatch → Dispatch to Juniper Cold Chain | value: $1,234.56 → $2,345.67 | notes: Private terms for Juniper Cold Chain → Revised private terms for Juniper Cold Chain",
+        "created | title: null → Tidewater Freight dispatch | state: null → open | owner: null → person:arjun | value: null → $1,234.56 | members: null → person:mate",
+      ],
+    };
+    for (const reader of [rhea, arjun])
+      assert.deepStrictEqual(snapshot(yield* OwnerWork.get([reader], input)), before);
+
+    assert.strictEqual((yield* Clients.project([zoya], input)).project.notes, "");
+    const sheet = yield* OwnerWork.get([zoya], input);
+    const serialized = JSON.stringify(sheet);
+    assert.deepStrictEqual(
+      { notes: /private terms/i.test(serialized), amount: /[123],\d{3}\.\d{2}/u.test(serialized) },
+      { notes: false, amount: false },
+    );
+    assert.strictEqual(sheet.notes, "");
+    assert.deepStrictEqual(
+      sheet.changes.map(({ kind, fields }) => [kind, fields.map((field) => field.field)]),
+      [
+        ["updated", ["title"]],
+        ["created", ["title", "state", "owner"]],
+      ],
+    );
+    yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya.personId}`;
+    const withMoney = JSON.stringify(yield* OwnerWork.get([zoya], input));
+    assert.notInclude(withMoney, "private terms");
+    assert.include(withMoney, "$3,456.78");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("an overdue invoice or a long silence with the client puts a project at risk", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -990,7 +1678,9 @@ it.effect(
       yield* setup("ask-event");
       const sql = yield* SqlClient.SqlClient;
       const make = (sourceEventId: string, records: typeof LeadWork.CreateInput.Type.records) =>
-        LeadWork.create(scope, { sourceEventId, records });
+        decodeCreate({ sourceEventId, records }).pipe(
+          Effect.flatMap((input) => LeadWork.create(scope, input)),
+        );
       const shown = (result: typeof LeadWork.CreateResult.Type) =>
         result.records.map((row) => [row.key, row.created, row.alsoOpen]);
       // V28: the same title, client and due day in a later turn is the entry already there.
@@ -3481,6 +4171,41 @@ it.effect(
           phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
         },
       );
+      const contactKey = ingridRow!.key;
+      for (const [index, change] of [
+        { email: "zoya@juniper.invalid" },
+        { fields: { email: "zoya@tidewater.invalid" } },
+      ].entries()) {
+        const input = yield* decodeUpdate({
+          key: contactKey,
+          sourceEventId: "mate-event",
+          ...change,
+        });
+        yield* LeadWork.update(scope, { ...input, key: contactKey });
+        assert.strictEqual(
+          (yield* Clients.party([mate], { orgId, key: prospect!.key })).contacts[0]?.email,
+          ["zoya@juniper.invalid", "zoya@tidewater.invalid"][index],
+        );
+      }
+      for (const change of [{ terms: "Net 30" }, { fields: { terms: "Net 30" } }]) {
+        const record = {
+          list: "clients",
+          title: "Juniper Cold Chain",
+          kind: "prospect",
+          ...change,
+        };
+        const decoded = yield* decodeCreate({ sourceEventId: "mate-event", records: [record] });
+        assert.include(
+          (yield* refused(decoded.records)).message,
+          "Only the owner or a co-owner sets a client's terms",
+        );
+        const key = prospect!.key;
+        const input = yield* decodeUpdate({ key, sourceEventId: "mate-event", ...change });
+        assert.include(
+          (yield* LeadWork.update(scope, { ...input, key }).pipe(Effect.flip)).message,
+          "Only the owner or a co-owner",
+        );
+      }
       // Not its client or label, and not a contact on a client someone else looks after.
       const acme = (yield* Clients.parties([owner], { orgId })).parties.find(
         (one) => one.name === "Invented Acme",
@@ -3985,6 +4710,109 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a project summary counts visible changes by others before limiting the lines", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const project = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Tidewater Freight",
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DC",
+    });
+    const task = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Check the packing list",
+      owner: { _tag: "person", personId: mateId },
+      project: project.key,
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DD",
+    });
+    // A list shared with the team whose private field shares a name with a task's field.
+    const sql = yield* SqlClient.SqlClient;
+    const def = presetDefinition("expenses", "INR");
+    const confirmed = { ...def.fields[0]!, key: "confirmed", label: "Confirmed", sensitive: true };
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'payouts', 'Payouts', 'PAY', 0, 0, ${JSON.stringify({
+        ...def,
+        fields: [...def.fields, confirmed],
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+    yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+    const records = yield* KinRecords.KinRecords;
+    const rhea = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+    const { row: payout } = yield* records.create(orgId, rhea, {
+      list: "payouts",
+      originKey: "payout:juniper",
+      title: "Juniper Cold Chain payout",
+      owner: { _tag: "person", personId: mateId },
+      projectId: project.recordId,
+    });
+    const input = { orgId, key: project.key };
+    const page = Clients.project([mate], input);
+    const first = yield* page;
+    assert.isNull(first.lookedAt);
+    assert.notProperty(first, "sinceLooked");
+    yield* OwnerWork.looked([mate], { orgId, recordId: project.recordId, upTo: first.asOf });
+    const current = yield* page;
+    assert.strictEqual(current.lookedAt, first.asOf);
+    assert.notProperty(current, "sinceLooked");
+
+    const edit = Effect.fn("test.editProjectTask")(function* (
+      writer: KinRecords.Writer,
+      patch: KinRecords.Patch,
+      key: string = task.key,
+    ) {
+      yield* TestClock.adjust(1);
+      yield* records.update(orgId, writer, key, patch);
+    });
+    yield* edit(rhea, { notes: "Check the crate labels." });
+    yield* edit(rhea, { state: "doing" });
+    yield* edit(rhea, { fields: { confirmed: "Paid to Arjun in cash" } }, payout.key);
+    const theirs = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Renegotiate the Juniper Cold Chain rate",
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DE",
+    });
+    yield* records.link(orgId, rhea, task.recordId, {
+      kind: "record",
+      target: theirs.recordId,
+      relation: "relates",
+    });
+    yield* edit(
+      { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: mateId },
+      { dueAt: 60_000 },
+    );
+    yield* edit(rhea, {
+      notes: "Call Juniper Cold Chain.",
+      amount: { minor: 120_000, currency: "INR" },
+    });
+    yield* edit(
+      { actor: { _tag: "person", personId: mateId }, via: "owner" },
+      {
+        notes: "Check the loading schedule.",
+      },
+    );
+    const after = yield* page;
+    for (const hidden of ["Paid to Arjun", theirs.recordId])
+      assert.notInclude(JSON.stringify(after.changedThisWeek), hidden);
+    const since = after.sinceLooked;
+    assert.strictEqual(since?.total, 4);
+    assert.deepStrictEqual(
+      since?.items.map((item) => item.fields.map((field) => field.field)),
+      [["notes"], ["due"], ["state"]],
+    );
+    assert.deepInclude(since?.items[1], { by: { _tag: "agent", agentId: lead }, askedBy: mateId });
+    for (const keyed of [
+      yield* Clients.project([mate], input, { keyed: true }),
+      yield* page.pipe(Effect.provideService(CodingAgentCall, "01KAK0XMVCXC4FF969979K33DC")),
+    ]) {
+      assert.notProperty(keyed, "lookedAt");
+      assert.notProperty(keyed, "sinceLooked");
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a project's plan: milestones, tasks from spec sections that flag when the section changes",
   () =>
@@ -4169,8 +4997,44 @@ it.effect(
       yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
         WHERE key = 'P-1'`;
       yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
+      yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+      const firstLook = yield* Clients.project([mate], { orgId, key: "P-1" });
+      yield* OwnerWork.looked([mate], {
+        orgId,
+        recordId: firstLook.project.recordId,
+        upTo: firstLook.asOf,
+      });
+      yield* TestClock.adjust(1);
+      const privateTask = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: privateTask.key,
+        rev: privateTask.rev,
+        notes: "Check the packing list.",
+      });
+      const privateOnly = yield* Clients.project([mate], { orgId, key: "P-1" });
+      assert.strictEqual(privateOnly.lookedAt, firstLook.asOf);
+      assert.notProperty(privateOnly, "sinceLooked");
+      yield* TestClock.adjust(1);
+      const task = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: task.key,
+        rev: task.rev,
+        amount: { minor: 120_000, currency: "INR" },
+      });
       const theirs = yield* Clients.project([mate], { orgId, key: "P-1" });
       const ours = yield* Clients.project([owner], { orgId, key: "P-1" });
+      const amountChange = ours.changedThisWeek.items.find(
+        (one) =>
+          one.record.key === task.key && one.fields.some((field) => field.field === "amount"),
+      );
+      assert.isDefined(amountChange);
+      assert.notInclude(
+        theirs.changedThisWeek.items.map((one) => one.seq),
+        amountChange!.seq,
+      );
+      assert.notProperty(theirs, "sinceLooked");
       assert.deepStrictEqual(
         ours.blocked.map((one) => one.record.key),
         ["W-2"],
@@ -4350,20 +5214,23 @@ it.effect(
           ),
           "invalid_state",
         );
-      const made = yield* LeadWork.create(scope, {
-        sourceEventId: "ask-event",
-        records: [
-          {
-            list: "deals",
-            title: "Invented pilot",
-            client: prospect.key,
-            fields: { stage: "in-talks" },
-            amount: "18000",
-            currency: "EUR",
-            due: "2026-12-18",
-          },
-        ],
-      });
+      const made = yield* LeadWork.create(
+        scope,
+        yield* decodeCreate({
+          sourceEventId: "ask-event",
+          records: [
+            {
+              list: "deals",
+              title: "Invented pilot",
+              client: prospect.key,
+              fields: { stage: "in-talks" },
+              amount: "18000",
+              currency: "EUR",
+              due: "2026-12-18",
+            },
+          ],
+        }),
+      );
       const key = made.records[0]!.key;
       // The same row from the same event is a retry.
       const again = yield* LeadWork.create(scope, {
@@ -4398,12 +5265,13 @@ it.effect(
       assert.isUndefined(
         (yield* Clients.party([owner], { orgId, key: prospect.key })).party.prospect,
       );
-      const reopened = yield* LeadWork.update(scope, {
-        key: KinRecordKey.make(key),
+      const reopening = yield* decodeUpdate({
+        key,
         sourceEventId: "ask-event",
         state: "open",
         fields: { stage: "deciding" },
       });
+      const reopened = yield* LeadWork.update(scope, { ...reopening, key });
       assert.strictEqual(reopened.state, "open");
       assert.strictEqual((yield* Deals.page([owner], { orgId, key })).deal.stage, "deciding");
     }).pipe(Effect.provide(layer)),
@@ -4772,7 +5640,7 @@ it.effect(
           value: { minor, currency: currency as never },
           clientRequestId: title,
         });
-      yield* deal(tallmoor.key, "Invented pilot", 1_000_000, "EUR");
+      const pilotDeal = yield* deal(tallmoor.key, "Invented pilot", 1_000_000, "EUR");
       yield* deal(tallmoor.key, "Invented support", 500_000, "USD");
       yield* deal(hidden.key, "Invented quiet deal", 5_000_000, "EUR");
       yield* deal(other.key, "Invented other deal", 100, "EUR");
@@ -4827,11 +5695,28 @@ it.effect(
         won: { count: 1, values: [{ minor: 900_000, currency: "EUR" }] },
         audience: 4,
       });
-      // A teammate on the campaign without Clients sees the project but none of its results.
+      // Deal values and campaign totals belong to Clients, not Money.
+      const pilotInput = { orgId, key: pilotDeal.deal.key };
+      yield* sql`UPDATE kin_people SET sees_clients = 0, sees_money = 0 WHERE person_id = ${mateId}`;
       const mateOff = yield* Clients.project([mate], { orgId, key: fair.key });
       assert.notProperty(mateOff, "results");
-      // With Clients on, the private prospect, its deal and its contact are in no count.
+      assert.include(yield* OwnerWork.get([mate], pilotInput).pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.include(yield* Deals.deals([mate], { orgId, campaign: fair.key }).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // With Clients on and Money still off, a visible deal keeps its value even in history.
       yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const pilotSheet = yield* OwnerWork.get([mate], pilotInput);
+      assert.deepInclude(
+        pilotSheet.changes.flatMap((change) => change.fields),
+        {
+          field: "value",
+          from: null,
+          to: "€10,000.00",
+        },
+      );
       const matePage = yield* Clients.project([mate], { orgId, key: fair.key });
       assert.deepStrictEqual(matePage.results, {
         prospects: 1,
@@ -4870,6 +5755,11 @@ it.effect(
         ["Invented pilot", "Invented support"],
       );
       assert.deepStrictEqual(mateOpen.open, matePage.results!.open);
+      const mateWon = yield* listed(mate, "won");
+      assert.deepStrictEqual(
+        mateWon.deals.map((one) => one.value),
+        matePage.results!.won.values,
+      );
       // Results move with the rows: winning makes a prospect a client.
       const pilot = (yield* Deals.deals([owner], { orgId, party: tallmoor.key })).deals.find(
         (one) => one.title === "Invented pilot",

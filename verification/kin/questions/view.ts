@@ -146,7 +146,7 @@ const one = (vars: Vars, q: number) => {
   const raised = ofQ(vars["raised"], q) === true;
   const done = Number(ofQ(vars["done"], q) ?? 0);
   const other = ofQ(vars["other"], q) === true;
-  const held = other && ofQ(vars["posted"], q) !== true;
+  const held = other && st === "open" && ofQ(vars["posted"], q) !== true;
   const back = Number(ofQ(vars["back"], q) ?? 0);
   return `${who}'s ${safe ? "" : "no-default "}question${other ? " for another chat" : ""} ${
     WORDS[st] ?? st

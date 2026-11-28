@@ -1,5 +1,6 @@
 import {
   KIN_LIST_SECTIONS,
+  KIN_PLACE_DOCK,
   KIN_SECTION_SWITCHES,
   KIN_SECTIONS_PAGE,
   KIN_SWITCHABLE_SECTIONS,
@@ -13,9 +14,12 @@ import {
   kinSectionSwitchOn,
   kinDockRoom,
   kinListSectionDocked,
+  kinPlaceDockDetail,
+  kinPlaceDockSwitch,
   kinListCanBeSection,
   kinListSectionId,
   kinListSections,
+  type KinDockPlace,
   type KinListSection,
   type KinSectionChange,
   type KinSwitchableSection,
@@ -112,6 +116,13 @@ function KinSectionRow(props: {
       // Its own page says nothing is deleted; Sections says it once, above every row.
       (props.titled === "sentence" ? `${words.detail} ${words.kept}` : words.detail),
   );
+  const send = async (change: KinSectionChange) => {
+    setBusy(true);
+    setProblem(null);
+    setProblem(await props.held.change(props.shell, change));
+    setBusy(false);
+  };
+  const id = props.id;
   return (
     <KinSettingsSection problem={problem}>
       <KinSettingsRow
@@ -135,16 +146,65 @@ function KinSectionRow(props: {
             checked={on}
             // Held off by another section: the line says which; nothing to send from here.
             disabled={busy || heldOff !== null}
-            onCheckedChange={async (next) => {
-              setBusy(true);
-              setProblem(null);
-              setProblem(await props.held.change(props.shell, { id: props.id, on: next }));
-              setBusy(false);
-            }}
+            onCheckedChange={(next) => void send({ id: props.id, on: next })}
           />
         }
       />
+      {/* Its place in the phone's dock, on Sections only. */}
+      {props.titled === "name" && (id === "money" || id === "clients") ? (
+        <KinPlaceDockRow id={id} shell={props.shell} busy={busy} onChange={send} />
+      ) : null}
       {props.children}
+    </KinSettingsSection>
+  );
+}
+
+/** The dock switch of Money, Clients or Docs: off while the section is, or while the dock is full. */
+function KinPlaceDockRow(props: {
+  readonly id: KinDockPlace;
+  readonly shell: KinShell;
+  readonly busy: boolean;
+  readonly onChange: (change: KinSectionChange) => void;
+}) {
+  const dock = kinPlaceDockSwitch(props.shell, props.id);
+  const detail = dock.full ? KIN_PLACE_DOCK.full : kinPlaceDockDetail(props.shell, props.id);
+  return (
+    <KinSettingsRow
+      title={KIN_PLACE_DOCK.label}
+      wrap
+      detail={detail}
+      control={
+        <Switch
+          aria-label={`${kinSectionName(props.shell, props.id)}: ${KIN_PLACE_DOCK.label}`}
+          aria-busy={props.busy}
+          aria-description={detail}
+          checked={dock.docked}
+          disabled={props.busy || dock.disabled}
+          onCheckedChange={(next) => props.onChange({ id: props.id, dock: next })}
+        />
+      }
+    />
+  );
+}
+
+/** Docs is always on: on Sections it has only its place in the phone's dock. */
+function KinDocsDockSection(props: { readonly held: Held; readonly shell: KinShell }) {
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <KinSettingsSection problem={problem}>
+      <KinSettingsRow title={kinSectionName(props.shell, "docs")} />
+      <KinPlaceDockRow
+        id="docs"
+        shell={props.shell}
+        busy={busy}
+        onChange={async (change) => {
+          setBusy(true);
+          setProblem(null);
+          setProblem(await props.held.change(props.shell, change));
+          setBusy(false);
+        }}
+      />
     </KinSettingsSection>
   );
 }
@@ -297,7 +357,7 @@ function KinSectionRenameDialog(props: {
 
 /**
  * Settings › Sections: each section the company can switch, with Clients' own name. The owner
- * level only; Docs is always on, so it isn't listed.
+ * level only; Docs is always on, so it has only its dock switch.
  */
 export function KinSectionsSettings(props: KinWorkTarget) {
   const may = useKinSectionCanSet(props.environmentId);
@@ -336,6 +396,7 @@ export function KinSectionsSettings(props: KinWorkTarget) {
               {id === "clients" ? <KinSectionRenameRow held={held} shell={shell} /> : null}
             </KinSectionRow>
           ))}
+          <KinDocsDockSection held={held} shell={shell} />
           <KinListSectionsSettings {...props} held={held} shell={shell} />
         </>
       )}

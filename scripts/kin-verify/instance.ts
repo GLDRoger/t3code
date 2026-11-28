@@ -68,6 +68,13 @@ export function instanceOf(name: string): Instance {
   return { name, home, userdata, meta: NodePath.join(home, "verify") };
 }
 
+export const playwrightArtifactsDir = (instance: Instance) =>
+  NodePath.join(instance.meta, "playwright-artifacts");
+
+export const parseSsListenerPids = (output: string): Array<number> => [
+  ...new Set(Array.from(output.matchAll(/\bpid=(\d+)\b/g), ([, pid]) => Number(pid))),
+];
+
 export const readJson = <A>(path: string): A | undefined => {
   try {
     return JSON.parse(NodeFS.readFileSync(path, "utf8")) as A;
@@ -141,10 +148,11 @@ export const gitHead = () =>
     encoding: "utf8",
   }).stdout.trim();
 
-/** The scripted no-model agent as a provider instance, beside the dev server's own settings. */
-function writeScriptProvider(instance: Instance) {
-  const path = NodePath.join(instance.userdata, "settings.json");
-  const settings = readJson<Record<string, unknown>>(path) ?? {};
+/**
+ * The scripted no-model agent as a provider instance, beside the dev server's own settings. Without
+ * real models, background turns stay on each agent's own model: their host default is a real one.
+ */
+export function scriptedSettings(settings: Record<string, unknown>, realModels: boolean) {
   const providers = (settings.providerInstances ?? {}) as Record<string, unknown>;
   providers.kinVerifyScript = {
     driver: "acpRegistry",
@@ -155,7 +163,22 @@ function writeScriptProvider(instance: Instance) {
       commandArgs: [NodePath.join(ROOT, "scripts", "kin-verify", "script-agent.ts")],
     },
   };
-  writeJson(path, { ...settings, providerInstances: providers });
+  return {
+    ...settings,
+    providerInstances: providers,
+    ...(realModels ? {} : { kinBackgroundModelSelection: null }),
+  };
+}
+
+function writeScriptProvider(instance: Instance) {
+  const path = NodePath.join(instance.userdata, "settings.json");
+  writeJson(
+    path,
+    scriptedSettings(
+      readJson<Record<string, unknown>>(path) ?? {},
+      process.env.KIN_VERIFY_REAL_MODELS === "1",
+    ),
+  );
 }
 
 const PROVIDER_CLIS = [
@@ -178,7 +201,13 @@ export function withoutRealModels(base: NodeJS.ProcessEnv, own: string): NodeJS.
   if (base.KIN_VERIFY_REAL_MODELS === "1") return base;
   const stubs = base.KIN_VERIFY_NO_MODELS || own;
   if (stubs === own) writeProviderStubs(stubs);
-  const { ANTHROPIC_API_KEY: _anthropic, OPENAI_API_KEY: _openai, ...rest } = base;
+  const {
+    ANTHROPIC_API_KEY: _anthropic,
+    ANTHROPIC_AUTH_TOKEN: _token,
+    ANTHROPIC_BASE_URL: _gateway,
+    OPENAI_API_KEY: _openai,
+    ...rest
+  } = base;
   return { ...rest, PATH: [stubs, base.PATH].filter(Boolean).join(NodePath.delimiter) };
 }
 

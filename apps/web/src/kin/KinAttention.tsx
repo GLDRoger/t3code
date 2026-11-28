@@ -2,9 +2,12 @@ import {
   KIN_ATTENTION,
   kinAsideOf,
   kinAttention,
-  kinNotNowUntil,
+  kinAttentionMenu,
+  kinGotItCall,
+  kinNotNowCall,
+  kinPickDayCopy,
   kinSetAsideDays,
-  kinSnoozeDays,
+  runKinAttentionCall,
   type KinAsideRow,
   type KinAttentionMore,
   type KinAttentionOpen,
@@ -26,12 +29,21 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinAskAbout, useKinAttention, useKinAttentionHandle } from "./useKinAttention";
-import type { KinWorkTarget } from "./useKinWork";
+import { useKinWorkZone, type KinWorkTarget } from "./useKinWork";
 
 /** Everyone Kin can name, agents and people, for "has it until". */
 export const kinAttentionNames = (names: KinWorkNames) =>
@@ -39,14 +51,17 @@ export const kinAttentionNames = (names: KinWorkNames) =>
 
 type Handler = ReturnType<typeof useKinAttentionHandle>;
 
-/** "Set aside until…": a day it comes back on, or until someone lifts it. */
+/** "Pick a day": a day it comes back on, or until someone lifts it when the row has a record. */
 function KinSetAsideDialog(props: {
   readonly title: string;
   readonly open: boolean;
+  readonly allowUntilLifted: boolean;
+  readonly zone: string | null;
   readonly onOpenChange: (open: boolean) => void;
   readonly onSave: (until?: KinDay) => void;
 }) {
-  const days = kinSetAsideDays(new Date(useNowMinuteMs()));
+  const days = kinSetAsideDays(new Date(useNowMinuteMs()), props.zone);
+  const copy = kinPickDayCopy(props.allowUntilLifted);
   const [day, setDay] = useState<string>(days.initial);
   const save = (until?: KinDay) => {
     props.onOpenChange(false);
@@ -56,7 +71,7 @@ function KinSetAsideDialog(props: {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPopup className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>{`${KIN_ATTENTION.setAsideTitle}: ${props.title}`}</DialogTitle>
+          <DialogTitle>{`${copy.title}: ${props.title}`}</DialogTitle>
         </DialogHeader>
         <DialogPanel>
           <Input
@@ -71,11 +86,13 @@ function KinSetAsideDialog(props: {
           <Button variant="ghost" onClick={() => props.onOpenChange(false)}>
             {KIN_ATTENTION.cancel}
           </Button>
-          <Button variant="outline" onClick={() => save()}>
-            {KIN_ATTENTION.untilLifted}
-          </Button>
+          {copy.untilLifted === null ? null : (
+            <Button variant="outline" onClick={() => save()}>
+              {copy.untilLifted}
+            </Button>
+          )}
           <Button disabled={day < days.min} onClick={() => save(day)}>
-            {KIN_ATTENTION.setAsideSave}
+            {copy.save}
           </Button>
         </DialogFooter>
       </DialogPopup>
@@ -97,7 +114,9 @@ export function KinAttentionItem(
   const busy = handler.busy === row.factKey;
   const opens = row.open.type !== "none";
   const [asideOpen, setAsideOpen] = useState(false);
-  const record = row.record;
+  const { zone } = useKinWorkZone(props);
+  const menu = kinAttentionMenu(row, now, zone);
+  const pickDay = menu.later.choices.find((choice) => choice.id === "pick_day")!;
   const line = row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const body = (
     <>
@@ -141,7 +160,7 @@ export function KinAttentionItem(
             size="xs"
             variant="ghost"
             disabled={busy}
-            onClick={() => void handler.send(row.factKey, "got_it")}
+            onClick={() => runKinAttentionCall(handler, kinGotItCall(row))}
           >
             {KIN_ATTENTION.gotIt}
           </Button>
@@ -168,19 +187,24 @@ export function KinAttentionItem(
             <EllipsisIcon />
           </MenuTrigger>
           <MenuPopup align="end">
-            {kinSnoozeDays(now).map((choice) => (
-              <MenuItem
-                key={choice.label}
-                onClick={() => void handler.send(row.factKey, "got_it", choice.until)}
-              >
-                {choice.label}
-              </MenuItem>
-            ))}
-            {record === null ? null : (
-              <MenuItem onClick={() => setAsideOpen(true)}>{KIN_ATTENTION.setAside}</MenuItem>
-            )}
-            <MenuItem onClick={() => void handler.send(row.factKey, "not_a_problem")}>
-              {KIN_ATTENTION.notAProblem}
+            <MenuSub>
+              <MenuSubTrigger>{menu.later.label}</MenuSubTrigger>
+              <MenuSubPopup>
+                {menu.later.choices.map((choice) => (
+                  <MenuItem
+                    key={choice.id}
+                    onClick={() => {
+                      if (choice.id === "pick_day") setAsideOpen(true);
+                      else runKinAttentionCall(handler, choice.call);
+                    }}
+                  >
+                    {choice.label}
+                  </MenuItem>
+                ))}
+              </MenuSubPopup>
+            </MenuSub>
+            <MenuItem onClick={() => runKinAttentionCall(handler, menu.notNeeded.call)}>
+              {menu.notNeeded.label}
             </MenuItem>
             {asker === null ? null : (
               <>
@@ -193,14 +217,14 @@ export function KinAttentionItem(
           </MenuPopup>
         </Menu>
       </div>
-      {record === null ? null : (
-        <KinSetAsideDialog
-          title={row.title}
-          open={asideOpen}
-          onOpenChange={setAsideOpen}
-          onSave={(until) => void handler.aside(record, "set", until, row.factKey)}
-        />
-      )}
+      <KinSetAsideDialog
+        title={row.title}
+        open={asideOpen}
+        allowUntilLifted={pickDay.allowUntilLifted}
+        zone={zone}
+        onOpenChange={setAsideOpen}
+        onSave={(until) => runKinAttentionCall(handler, pickDay.callForDay(until))}
+      />
     </li>
   );
 }
@@ -228,9 +252,7 @@ function WhatsNext(props: {
         size="xs"
         variant="ghost"
         disabled={props.busy}
-        onClick={() =>
-          void props.handler.aside(props.deal, "set", kinNotNowUntil(now), props.row.factKey)
-        }
+        onClick={() => runKinAttentionCall(props.handler, kinNotNowCall(props.row, now))}
       >
         {KIN_ATTENTION.notNow}
       </Button>

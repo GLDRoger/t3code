@@ -122,7 +122,6 @@ const kinds: Record<string, string> = {
   named: "asked",
   decider: "its call",
   pitch_in: "may pitch in",
-  chair: "chair check",
   object: "may object",
   closing: "must close it",
 };

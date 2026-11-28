@@ -12,17 +12,21 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  KIN_ATTENTION,
   kinAsideOf,
   kinAttention,
   kinAttentionCount,
+  kinAttentionMenu,
   kinGoalDraft,
   kinGoalView,
+  kinGotItCall,
   kinNeedsYouBeside,
+  kinNotNowCall,
   kinPlainDates,
+  kinSetAsideDays,
   kinTasksAttention,
   kinTasksBadgeCount,
   kinTasksBlock,
-  kinSnoozeDays,
 } from "./kinAttention.ts";
 import { kinRateDay } from "./kinCurrency.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
@@ -375,14 +379,162 @@ describe("kinAttention", () => {
     }
   });
 
-  it("snoozes to tomorrow, the next Monday and a week on", () => {
+  it("maps Later, Not needed, I've got it and a deal's Not now onto existing calls", () => {
+    // Row with a record: Later uses the set-aside store; Not needed uses not_a_problem.
+    const recordRow = kinAttention(read([fact("task_late", "W-2")]), {
+      scope: { type: "all" },
+      names,
+      now,
+    }).open[0]!;
+    const recordMenu = kinAttentionMenu(recordRow, now);
     // 15 Nov 2026 is a Sunday: Monday is the next day, never the same day.
-    expect(kinSnoozeDays(now).map((one) => one.until)).toEqual([
-      "2026-11-16",
-      "2026-11-16",
-      "2026-11-22",
+    expect(
+      recordMenu.later.choices
+        .filter((choice) => choice.id !== "pick_day")
+        .map((choice) => [choice.label, choice.until]),
+    ).toEqual([
+      ["Tomorrow", "2026-11-16"],
+      ["Monday", "2026-11-16"],
+      ["A week", "2026-11-22"],
     ]);
-    expect(kinSnoozeDays(new Date(2026, 10, 16))[1].until).toBe("2026-11-23");
+    const mondayChoices = kinAttentionMenu(recordRow, new Date(2026, 10, 16)).later.choices;
+    expect(mondayChoices[1]?.id === "monday" ? mondayChoices[1].until : null).toBe("2026-11-23");
+    // 22:00 Sunday on this device is already Monday 16 Nov at a company on Kiritimati's clock.
+    const lateSunday = new Date(2026, 10, 15, 22, 0);
+    expect(
+      kinAttentionMenu(recordRow, lateSunday, "Pacific/Kiritimati")
+        .later.choices.filter((choice) => choice.id !== "pick_day")
+        .map((choice) => [choice.label, choice.until]),
+    ).toEqual([
+      ["Tomorrow", "2026-11-17"],
+      ["Monday", "2026-11-23"],
+      ["A week", "2026-11-23"],
+    ]);
+    expect(kinSetAsideDays(lateSunday, "Pacific/Kiritimati")).toEqual({
+      min: "2026-11-17",
+      initial: "2026-12-16",
+    });
+    expect(kinSetAsideDays(lateSunday, null).min).toBe("2026-11-16");
+    expect(recordMenu.later.label).toBe("Later");
+    expect(recordMenu.later.choices.map((choice) => choice.label)).toEqual([
+      "Tomorrow",
+      "Monday",
+      "A week",
+      "Pick a day",
+    ]);
+    expect(
+      recordMenu.later.choices
+        .filter((choice) => choice.id !== "pick_day")
+        .map((choice) => choice.call),
+    ).toEqual([
+      { kind: "aside", record: "W-2", until: "2026-11-16", factKey: "task_late:W-2" },
+      { kind: "aside", record: "W-2", until: "2026-11-16", factKey: "task_late:W-2" },
+      { kind: "aside", record: "W-2", until: "2026-11-22", factKey: "task_late:W-2" },
+    ]);
+    const recordPick = recordMenu.later.choices.find((choice) => choice.id === "pick_day")!;
+    expect(recordPick.allowUntilLifted).toBe(true);
+    expect(recordPick.callForDay("2026-12-01")).toEqual({
+      kind: "aside",
+      record: "W-2",
+      until: "2026-12-01",
+      factKey: "task_late:W-2",
+    });
+    expect(recordPick.callForDay(undefined)).toEqual({
+      kind: "aside",
+      record: "W-2",
+      factKey: "task_late:W-2",
+    });
+    expect(recordMenu.notNeeded).toEqual({
+      label: "Not needed",
+      call: { kind: "handle", factKey: "task_late:W-2", action: "not_a_problem" },
+    });
+    expect(kinGotItCall(recordRow)).toEqual({
+      kind: "handle",
+      factKey: "task_late:W-2",
+      action: "got_it",
+    });
+
+    // Row with no record: Later uses got_it with that day; Pick a day requires a day.
+    const budgetFact = fact("budget_over", "BUD-1", {
+      family: "money",
+      subject: { kind: "budget", key: "BUD-1", title: "Cloud spend" },
+      scope: {},
+    });
+    const plainRow = kinAttention(read([budgetFact]), {
+      scope: { type: "all" },
+      names,
+      now,
+    }).open[0]!;
+    expect(plainRow.record).toBeNull();
+    const plainMenu = kinAttentionMenu(plainRow, now);
+    expect(
+      plainMenu.later.choices
+        .filter((choice) => choice.id !== "pick_day")
+        .map((choice) => choice.call),
+    ).toEqual([
+      {
+        kind: "handle",
+        factKey: "budget_over:BUD-1",
+        action: "got_it",
+        until: "2026-11-16",
+      },
+      {
+        kind: "handle",
+        factKey: "budget_over:BUD-1",
+        action: "got_it",
+        until: "2026-11-16",
+      },
+      {
+        kind: "handle",
+        factKey: "budget_over:BUD-1",
+        action: "got_it",
+        until: "2026-11-22",
+      },
+    ]);
+    const plainPick = plainMenu.later.choices.find((choice) => choice.id === "pick_day")!;
+    expect(plainPick.allowUntilLifted).toBe(false);
+    expect(plainPick.callForDay("2026-12-01")).toEqual({
+      kind: "handle",
+      factKey: "budget_over:BUD-1",
+      action: "got_it",
+      until: "2026-12-01",
+    });
+    expect(plainPick.callForDay(undefined)).toBeNull();
+    expect(plainMenu.notNeeded).toEqual({
+      label: "Not needed",
+      call: { kind: "handle", factKey: "budget_over:BUD-1", action: "not_a_problem" },
+    });
+
+    // A deal's existing "Not now" holds it for 14 days in the set-aside store.
+    const dealRow = kinAttention(read([fact("deal_no_next_step", "DL-4")]), {
+      scope: { type: "all" },
+      names,
+      now,
+    }).open[0]!;
+    expect(kinNotNowCall(dealRow, now)).toEqual({
+      kind: "aside",
+      record: "DL-4",
+      until: "2026-11-29",
+      factKey: "deal_no_next_step:DL-4",
+    });
+    expect(kinNotNowCall(recordRow, now)).toBeNull();
+
+    // Handled text for not_a_problem uses the new verb, and the menu label names both verbs.
+    const dismissed = kinAttention(
+      read([
+        fact("task_late", "W-9", {
+          handled: {
+            by: { _tag: "person", personId: KinPersonId.make("owner") },
+            at,
+            until: null,
+            note: null,
+          },
+        }),
+      ]),
+      { scope: { type: "all" }, names, now },
+    );
+    expect(dismissed.handled[0]?.handled).toBe("Arjun: not needed");
+    expect(KIN_ATTENTION.menu("Send the deck")).toBe("Later or not needed for Send the deck");
   });
 
   it("draws a goal against its straight line", () => {

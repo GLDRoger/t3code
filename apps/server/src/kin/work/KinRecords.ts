@@ -72,7 +72,7 @@ import {
   insertComment,
   requestHashOf as commentHashOf,
 } from "./recordComments.ts";
-import { indexRecord, indexRecords } from "./searchIndex.ts";
+import { indexRecord, indexRecords, keysOfSearch } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
   fieldList,
@@ -127,6 +127,7 @@ import {
   parseChanges,
   principal,
   principalId,
+  type ProjectHistory,
   type RecordRow,
   repeatOf,
   samePrincipal,
@@ -765,6 +766,15 @@ const actorIdOf = (writer: Writer) =>
     : writer.actor._tag === "person"
       ? writer.actor.personId
       : null;
+/** A clients-won goal pinned in a chat counts every client, even those outside a member's stream. */
+export const clientsPinned = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql`SELECT 1 FROM kin_chat_pins p JOIN kin_records g
+      ON g.org_id = p.org_id AND g.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND g.register_id = 'goals'
+      AND json_extract(g.fields_json, '$.measure') = 'clients_won' LIMIT 1`.pipe(
+    Effect.map((rows) => rows.length > 0),
+  );
+
 export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
@@ -911,14 +921,16 @@ export class KinRecords extends Context.Service<
       link: LinkInput,
     ) => Effect.Effect<boolean, KinChatError>;
     /**
-     * Takes off the link a "linked" change made (its kind, what it showed, when), and for an entry
-     * the link back made with it, each recorded on its entry. False when it is already gone.
+     * Takes off a link by target, or the link a "linked" change made and its link back.
+     * Each removal is recorded on its entry. False when the link is already gone.
      */
     readonly unlink: (
       orgId: KinOrgId,
       writer: Writer,
       recordId: string,
-      link: { readonly kind: string; readonly shown: string; readonly at: number },
+      link:
+        | { readonly kind: string; readonly shown: string; readonly at: number }
+        | { readonly kind: string; readonly target: string },
     ) => Effect.Effect<boolean, KinChatError>;
     /** Money paid against an entry paid over time; in full, it is marked paid. Never more than owed. */
     readonly pay: (
@@ -984,6 +996,7 @@ export class KinRecords extends Context.Service<
     readonly detail: (
       row: RecordRow,
       changeLimit?: number,
+      projectHistory?: ProjectHistory,
     ) => Effect.Effect<
       Effect.Success<ReturnType<typeof toDetail>> &
         Pick<KinRecordDetail, "askedBy" | "comments" | "olderComments">,
@@ -1035,9 +1048,20 @@ const make = Effect.gen(function* () {
   const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
   const refreshes = yield* KinRefreshObserver;
   let closing: Closing | undefined;
-  /** The clients and projects a task or project can be put under (`workChoices`) changed. */
-  const choicesMoved = (orgId: KinOrgId, list: string) =>
-    list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
+  const recordReadsMoved = Effect.fn("KinRecords.recordReadsMoved")(function* (
+    orgId: KinOrgId,
+    list: string,
+    recordId: string,
+  ) {
+    if (list === "clients" || list === "projects") yield* refreshes.touch(orgId, "workChoices");
+    if (list === "clients" && (yield* clientsPinned(sql, orgId)))
+      yield* refreshes.touch(orgId, "pins");
+    if (list === "goals") {
+      const [pin] = yield* sql`SELECT 1 FROM kin_chat_pins
+        WHERE org_id = ${orgId} AND record_id = ${recordId} LIMIT 1`;
+      if (pin !== undefined) yield* refreshes.touch(orgId, "pins");
+    }
+  });
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   const gstCompany = (orgId: KinOrgId) =>
     companyMoney(orgId).pipe(
@@ -2196,7 +2220,7 @@ const make = Effect.gen(function* () {
         provideSql,
       );
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
-    yield* choicesMoved(orgId, list);
+    yield* recordReadsMoved(orgId, list, recordId);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -3361,7 +3385,7 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* indexRecord(orgId, row.recordId).pipe(provideSql);
-        yield* choicesMoved(orgId, row.registerId);
+        yield* recordReadsMoved(orgId, row.registerId, row.recordId);
         const seq = yield* logChange(
           orgId,
           writer,
@@ -3625,25 +3649,33 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     writer: Writer,
     recordId: string,
-    link: { readonly kind: string; readonly shown: string; readonly at: number },
+    link:
+      | { readonly kind: string; readonly shown: string; readonly at: number }
+      | { readonly kind: string; readonly target: string },
   ) {
     return yield* transaction(
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const [made] = yield* sql<{ target: string }>`SELECT target FROM kin_record_links
-          WHERE org_id = ${orgId} AND record_id = ${recordId} AND kind = ${link.kind}
-            AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`;
+        const exact = "target" in link;
+        const [made] = yield* sql<{ target: string; at: number }>`SELECT target, created_at AS at
+          FROM kin_record_links WHERE org_id = ${orgId} AND record_id = ${recordId}
+            AND kind = ${link.kind}
+            ${
+              exact
+                ? sql`AND target = ${link.target}`
+                : sql`AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`
+            }`;
         if (made === undefined) return false;
-        // The half back is written in its own moment of the same call, so a few ms either side.
+        // The half back may be made a few ms later, and is removed only for a history entry.
         const halves = [
-          { recordId, target: made.target, from: link.at, to: link.at },
-          ...(link.kind === "record"
+          { recordId, target: made.target, from: made.at, to: made.at },
+          ...(!exact && link.kind === "record"
             ? [
                 {
                   recordId: made.target,
                   target: recordId,
-                  from: link.at - 5000,
-                  to: link.at + 5000,
+                  from: made.at - 5000,
+                  to: made.at + 5000,
                 },
               ]
             : []),
@@ -4186,8 +4218,11 @@ const make = Effect.gen(function* () {
       where.push(sql`r.key IN ${sql.in(input.keys)}`);
     if (input.closedAfter !== undefined) where.push(sql`r.closed_at >= ${input.closedAfter}`);
     const text = input.text?.trim().toLowerCase();
-    if (text !== undefined && text !== "")
-      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0)`);
+    if (text !== undefined && text !== "") {
+      const keys = keysOfSearch(text);
+      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0
+        ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`);
+    }
     return sql.and(where);
   };
 
@@ -4307,11 +4342,11 @@ const make = Effect.gen(function* () {
     getById: Effect.fn("KinRecords.getById")(function* (orgId, recordId) {
       return yield* failed(byId(orgId, recordId).pipe(provideSql));
     }),
-    detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit) {
+    detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit, projectHistory) {
       const now = yield* Clock.currentTimeMillis;
       return yield* failed(
         Effect.gen(function* () {
-          const detail = yield* toDetail(row, now, changeLimit);
+          const detail = yield* toDetail(row, now, changeLimit, projectHistory);
           const [record] = yield* sql<{ askedBy: string | null }>`SELECT
               asked_by_person_id AS "askedBy" FROM kin_records
             WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}`;

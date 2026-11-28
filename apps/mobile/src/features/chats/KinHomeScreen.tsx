@@ -7,6 +7,7 @@ import {
   type KinDestination,
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import {
+  kinDockPlaces,
   kinDockWithLists,
   kinIsListSection,
   kinListOfSection,
@@ -97,7 +98,10 @@ function KinHomeWithWork(props: {
 }) {
   const { environmentId } = props.workTarget;
   const places = useAtomValue(kinPlacesAtom(props.workTarget));
-  const live = props.session === null || !places.answered ? null : places.destinations;
+  const shell = useKinShell(environmentId);
+  // A place the company took out of the dock is left out here, and so of the cached dock too.
+  const live =
+    props.session === null || !places.answered ? null : kinDockPlaces(places.destinations, shell);
   const cachedResult = useAtomValue(kinCachedDockAtom(environmentId));
   const cached = AsyncResult.getOrElse(cachedResult, () => null);
   const dock = kinDockShown({ live, cached });
@@ -114,7 +118,6 @@ function KinHomeWithWork(props: {
   }, [toSave, environmentId, save]);
   // List sections docked by the company fill the places left, once the host has said and their
   // names are read; the device keeps only Kin's own places for a cold start.
-  const shell = useKinShell(environmentId);
   const withLists = kinDockWithLists(dock.tabs, dock.known ? shell : null);
   const lists = useKinLists(props.workTarget, { enabled: withLists.length > dock.tabs.length });
   const names = new Map(kinListsOf(lists).map((def) => [def.list, def.name]));

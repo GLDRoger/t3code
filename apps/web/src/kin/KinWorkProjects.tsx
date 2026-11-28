@@ -1,12 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import {
+  kinProjectLookedUpTo,
+  kinProjectSinceLooked,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
 import {
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NEW,
   kinWorkDraftFor,
   type KinWorkDraft,
+  type KinWorkNames,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
+  KIN_CLIENTS,
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_REFUSED,
@@ -15,7 +22,9 @@ import {
   kinCampaignResultOpens,
   kinProjectLeadChoices,
   kinProjectPageView,
+  kinWorkTimeline,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinCampaignResultId } from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
@@ -27,14 +36,14 @@ import type {
   KinRecordKey,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
-import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PlusIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PinIcon, PlusIcon } from "lucide-react";
+import { useId, useRef, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { Radio, RadioGroup } from "../components/ui/radio-group";
 import {
   Sheet,
@@ -46,6 +55,7 @@ import {
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAskRecord } from "./KinAskRecord";
+import { KinPinToChatDialog } from "./KinPinToChatDialog";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
@@ -70,10 +80,19 @@ import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinPinActions } from "./useKinPins";
 import { kinHostConnected } from "./useKinHost";
-import { useKinOpensClients } from "./useKinOwnerLevel";
+import { useKinOpensClients, useKinOwnerLevel } from "./useKinOwnerLevel";
 import {
+  KinSinceLookedLine,
+  scrollIntoViewRespectingMotion,
+  useKinPageVisible,
+} from "./KinSinceLookedLine";
+import {
+  useKinPinnedProjectLook,
   useKinProjectPage,
+  useKinRecordLooked,
+  useKinWorkHistory,
   type KinWorkChangesHandle,
   type KinWorkChoices,
   type KinWorkDirectory,
@@ -130,18 +149,40 @@ function ProjectPage(
   },
 ) {
   const opensClients = useKinOpensClients(props.environmentId);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
+  const pageVisible = useKinPageVisible();
+  const pinnedLook = useKinPinnedProjectLook(props, page);
+  const lookedUpTo = kinProjectLookedUpTo(page);
+  useKinRecordLooked(
+    props,
+    lookedUpTo === null ? null : { recordId: page.project.recordId, upTo: lookedUpTo },
+    pageVisible && !props.pageStale,
+  );
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
   const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
   const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
+  const sinceLooked = kinProjectSinceLooked(
+    page,
+    pinnedLook?.lookedAt,
+    pinnedLook?.sinceLooked,
+    names,
+    now,
+    { opensHistory: ownerLevel },
+  );
   const [editing, setEditing] = useState(false);
   const [addingMilestone, setAddingMilestone] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [choosingLead, setChoosingLead] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [changedOpen, setChangedOpen] = useState(false);
+  const changedRef = useRef<HTMLDivElement>(null);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions({ environmentId, orgId });
   const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
   const shell = useKinShell(props.environmentId);
@@ -227,45 +268,49 @@ function ProjectPage(
               disabled={busy}
             />
             {canChange ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => setEditing(true)}
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
+                <PencilIcon />
+                {KIN_PROJECTS.edit}
+              </Button>
+            ) : null}
+            {canChange || pinActions.canPin ? (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
+                  }
                 >
-                  <PencilIcon />
-                  {KIN_PROJECTS.edit}
-                </Button>
-                <Menu>
-                  <MenuTrigger
-                    render={
-                      <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
-                    }
-                  >
-                    <EllipsisIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    {view.closed === null ? (
-                      <>
-                        <MenuItem onClick={() => void change({ state: "done" })}>
-                          {KIN_PROJECTS.done}
-                        </MenuItem>
-                        <MenuItem
-                          variant="destructive"
-                          onClick={() => void change({ state: "dropped" })}
-                        >
-                          {KIN_PROJECTS.drop}
-                        </MenuItem>
-                      </>
-                    ) : (
-                      <MenuItem onClick={() => void change({ state: "open" })}>
-                        {KIN_PROJECTS.reopen}
+                  <EllipsisIcon />
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  {pinActions.canPin ? (
+                    <>
+                      <MenuItem onClick={() => setPinning(true)}>
+                        <PinIcon />
+                        {KIN_PINS_COPY.pinToChat}
                       </MenuItem>
-                    )}
-                  </MenuPopup>
-                </Menu>
-              </>
+                      {canChange ? <MenuSeparator /> : null}
+                    </>
+                  ) : null}
+                  {!canChange ? null : view.closed === null ? (
+                    <>
+                      <MenuItem onClick={() => void change({ state: "done" })}>
+                        {KIN_PROJECTS.done}
+                      </MenuItem>
+                      <MenuItem
+                        variant="destructive"
+                        onClick={() => void change({ state: "dropped" })}
+                      >
+                        {KIN_PROJECTS.drop}
+                      </MenuItem>
+                    </>
+                  ) : (
+                    <MenuItem onClick={() => void change({ state: "open" })}>
+                      {KIN_PROJECTS.reopen}
+                    </MenuItem>
+                  )}
+                </MenuPopup>
+              </Menu>
             ) : null}
           </div>
         </div>
@@ -273,6 +318,16 @@ function ProjectPage(
           <p className="text-sm text-foreground">{view.why.join(" ")}</p>
         )}
         <p className="text-xs text-muted-foreground tabular-nums">{view.counts}</p>
+        <KinSinceLookedLine
+          view={sinceLooked}
+          onOpen={() => {
+            if (ownerLevel) setHistoryOpen(true);
+            else {
+              setChangedOpen(true);
+              scrollIntoViewRespectingMotion(changedRef.current);
+            }
+          }}
+        />
         {props.pageStale ? (
           <KinWorkStaleLine environmentId={environmentId} onRetry={props.onRefresh} />
         ) : null}
@@ -506,24 +561,28 @@ function ProjectPage(
         under={{ project: props.projectKey }}
         onOpen={props.onOpenDoc}
       />
-      <KinWorkSection
-        title={KIN_PROJECTS.changed}
-        fold={{
-          summary:
-            view.changed.length === 0
-              ? KIN_PROJECTS.nothingChanged
-              : KIN_PROJECTS.count(view.changed.length, "change", "changes"),
-        }}
-      >
-        {view.changed.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{KIN_PROJECTS.nothingChanged}</p>
-        ) : (
-          <KinWorkTimeline lines={view.changed} onOpenTask={props.onOpenTask} />
-        )}
-        {view.changedMore === null ? null : (
-          <p className="text-xs text-muted-foreground">{view.changedMore}</p>
-        )}
-      </KinWorkSection>
+      <div ref={changedRef}>
+        <KinWorkSection
+          title={KIN_PROJECTS.changed}
+          fold={{
+            summary:
+              view.changed.length === 0
+                ? KIN_PROJECTS.nothingChanged
+                : KIN_PROJECTS.count(view.changed.length, "change", "changes"),
+            open: changedOpen,
+            onOpenChange: setChangedOpen,
+          }}
+        >
+          {view.changed.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{KIN_PROJECTS.nothingChanged}</p>
+          ) : (
+            <KinWorkTimeline lines={view.changed} onOpenTask={props.onOpenTask} />
+          )}
+          {view.changedMore === null ? null : (
+            <p className="text-xs text-muted-foreground">{view.changedMore}</p>
+          )}
+        </KinWorkSection>
+      </div>
       {!canChange && view.repos.length === 0 && view.notes === null ? null : (
         <KinWorkSection title={KIN_PROJECTS.details} fold={{ summary: null }}>
           <div className="flex flex-col gap-6">
@@ -668,6 +727,32 @@ function ProjectPage(
           </DialogPopup>
         </Dialog>
       )}
+      {ownerLevel && historyOpen ? (
+        <KinProjectHistorySheet
+          environmentId={environmentId}
+          orgId={orgId}
+          projectKey={view.key}
+          projectName={view.name}
+          seq={page.seq}
+          names={names}
+          now={now}
+          onOpenTask={(key) => {
+            setHistoryOpen(false);
+            props.onOpenTask(key);
+          }}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+      {pinning ? (
+        <KinPinToChatDialog
+          open={pinning}
+          onOpenChange={setPinning}
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.name}
+        />
+      ) : null}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}
@@ -687,6 +772,74 @@ function ProjectPage(
         />
       ) : null}
     </>
+  );
+}
+
+/** A project's full history for the owner level, opened from the since-looked line. */
+function KinProjectHistorySheet(
+  props: KinWorkTarget & {
+    readonly projectKey: KinRecordKey;
+    readonly projectName: string;
+    readonly seq: number;
+    readonly names: KinWorkNames;
+    readonly now: Date;
+    readonly onOpenTask: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const history = useKinWorkHistory(props, props.projectKey, props.seq);
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <SheetPopup side="right">
+        <SheetHeader>
+          <SheetTitle>{KIN_CLIENTS.history}</SheetTitle>
+          <SheetDescription>{props.projectName}</SheetDescription>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pb-6">
+          {history.state.loading ? (
+            <div role="status" aria-label={KIN_CLIENTS.history}>
+              <KinWorkRowSkeletons />
+            </div>
+          ) : history.state.failed !== null ? (
+            <div>
+              <Button size="xs" variant="outline" onClick={history.list.refresh}>
+                {KIN_RETRY}
+              </Button>
+            </div>
+          ) : history.state.records.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noHistory}</p>
+          ) : (
+            <KinWorkTimeline
+              lines={kinWorkTimeline(
+                history.state.records,
+                props.names,
+                props.now,
+                props.projectKey,
+              )}
+              onOpenTask={props.onOpenTask}
+            />
+          )}
+          {history.state.more ? (
+            <div>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={history.state.loadingMore}
+                aria-busy={history.state.loadingMore}
+                onClick={() => void history.list.loadMore()}
+              >
+                {history.state.moreFailed ? KIN_RETRY : KIN_CLIENTS.earlier}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </SheetPopup>
+    </Sheet>
   );
 }
 

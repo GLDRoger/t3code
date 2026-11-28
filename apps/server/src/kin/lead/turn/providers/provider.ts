@@ -9,6 +9,9 @@ import type * as Layer from "effect/Layer";
  */
 export interface KinProvider<Seam> {
   readonly driver: string;
+  /** Deferred tools are found by the provider, by Kin, or not deferred at all (`none`). */
+  readonly lookup: "provider" | "kin" | "none";
+  /** Whether per-turn context can go in a side channel beside the person's message. */
   readonly turnContextBeside: boolean;
   readonly capabilities: Partial<Readonly<Record<KinCapability, ReadonlyArray<string>>>>;
   readonly install: <E, R>(base: Layer.Layer<Seam, E, R>) => Layer.Layer<Seam, unknown, unknown>;

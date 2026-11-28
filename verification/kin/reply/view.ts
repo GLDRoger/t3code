@@ -283,7 +283,7 @@ export const step = (action: string, from: Vars, to: Vars) => {
       if (first(to, "ev") === "done")
         return "The turn fails after the reply: logged, nothing posted";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
-        ? Number(first(to, "tries")) >= 4
+        ? Number(first(from, "tries")) + 1 >= 4
           ? "It fails a fourth time: “won't try again”"
           : "The turn fails after doing something: “stopped partway”"
         : "The turn fails to start: “trying again”";

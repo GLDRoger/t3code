@@ -300,7 +300,7 @@ const layerProviderEventLoggers = Layer.effect(
 
 const layerPtyAdapter = NodePtyAdapter.layer;
 
-const layerServerSettings = ServerSettings.layer.pipe(
+export const layerServerSettings = ServerSettings.layer.pipe(
   Layer.provide(ServerSecretStore.layer),
   Layer.provideMerge(ManagedPolicy.layer),
   Layer.provideMerge(SqlitePersistence.layerConfig),
@@ -591,6 +591,11 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
 );
 
 const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
+
+export const layerKinRegistry = Kin.mcpRegistryLayer(
+  McpSessionRegistry.layer,
+  layerServerSettings,
+).pipe(Layer.provide(layerServerEnvironment));
 
 export const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provide(ProofKeySessions.layer),
@@ -899,6 +904,15 @@ const layerCommandReadiness = HttpRouter.middleware(
   { global: true },
 );
 
+const layerBankAlertReaderMiddleware = HttpRouter.middleware<{
+  provides: BankAlertReader.BankAlertReader;
+}>()(
+  Effect.gen(function* () {
+    const reader = yield* BankAlertReader.BankAlertReader;
+    return (effect) => Effect.provideService(effect, BankAlertReader.BankAlertReader, reader);
+  }),
+).layer;
+
 const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -930,7 +944,10 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
-    Ws.layer,
+    Ws.layer.pipe(
+      Layer.provide(layerBankAlertReaderMiddleware),
+      Layer.provide(BankAlertReader.layer),
+    ),
     speechStreamRouteLayer,
   ),
   Kin.mcpLayer(McpHttpServer.layer).pipe(
@@ -1434,11 +1451,7 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
-      Layer.provideMerge(
-        Kin.mcpRegistryLayer(McpSessionRegistry.layer).pipe(
-          Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
-        ),
-      ),
+      Layer.provideMerge(layerKinRegistry),
       Layer.provide(layerActivation),
       Layer.provideMerge(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),

@@ -21,8 +21,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { entryInputs, keepTypedInvoiceInputs } from "../gendocs/entryInputs.ts";
 import { makeDocument } from "../gendocs/make.ts";
-import { invoiceFromQuote as draftFromQuote, quotedInputs } from "../gendocs/quotes.ts";
+import { invoiceFromQuote as draftFromQuote } from "../gendocs/quotes.ts";
 import { defaultRecipes } from "../gendocs/recipeDefaults.ts";
 import { KinWorkspace, type StoredRecipe } from "../gendocs/workspace.ts";
 import { budgetsView, setBudget as setBudgetFor } from "./budgets.ts";
@@ -288,7 +289,7 @@ export const entryLines = Effect.fn("KinMoneyAnswers.rpc.entryLines")(function* 
   input: KinEntryLinesInput,
 ) {
   yield* theOwner(people, input.orgId);
-  const given = yield* quotedInputs(input.orgId, input.key);
+  const given = yield* entryInputs(input.orgId, input.key, { includeTypedDraft: true });
   // Lines are kept as they were given; an agent may have said a quantity or rate as a number.
   const said = Array.isArray(given.lines)
     ? given.lines.map((row: unknown) =>
@@ -407,8 +408,7 @@ const recordOf = Effect.fn("KinMoneyAnswers.recordOf")(function* (
 
 /**
  * An invoice typed by hand: a Draft for the client, owed by nobody until it is issued, and its
- * document made with the lines typed, which set its amount and tax as Make its PDF does. With no
- * invoice template nothing is saved, since only a document keeps an invoice's lines.
+ * PDF made with the saved lines, which set its amount and tax.
  */
 export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -423,7 +423,7 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
   const recipe = yield* invoiceTemplate(input.orgId);
   if (recipe === undefined)
     return yield* invalid(
-      "There is no invoice template yet, so Kin can't keep the lines. Nothing was saved. Ask an agent to set one up.",
+      "There is no invoice template yet. Nothing was saved. Ask an agent to set one up.",
     );
   const partyId =
     input.client === undefined ? undefined : yield* recordOf(input.orgId, input.client, "clients");
@@ -448,27 +448,45 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
     yield* askSlip(input.orgId, def, total);
   const dueAt = input.dueOn === undefined ? null : yield* dueMillis(input.orgId, input.dueOn, true);
   const notes = input.notes?.trim() ?? "";
-  const { row } = yield* (yield* KinRecords).create(input.orgId, ownerWriter(person), {
-    list: "invoices",
-    originKey: `owner:${input.clientRequestId}`,
-    requestHash: requestHashOf(request),
-    title: input.title,
-    owner: { _tag: "person", personId: person.personId },
-    state: "open",
-    ...(partyId === undefined ? {} : { partyId }),
-    ...(fields === undefined ? {} : { fields }),
-    ...(projectId === undefined ? {} : { projectId }),
-    dueAt,
-    dueAllDay: dueAt !== null,
-    ...(notes === "" ? {} : { notes }),
-  });
-  return yield* draftDocument(
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  const given = {
+    lines: input.lines,
+    ...(input.gstRate === undefined ? {} : { gstRate: input.gstRate }),
+  };
+  const invoice = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const { row } = yield* records.create(input.orgId, ownerWriter(person), {
+        list: "invoices",
+        originKey: `owner:${input.clientRequestId}`,
+        requestHash: requestHashOf(request),
+        title: input.title,
+        owner: { _tag: "person", personId: person.personId },
+        state: "open",
+        ...(partyId === undefined ? {} : { partyId }),
+        ...(fields === undefined ? {} : { fields }),
+        ...(projectId === undefined ? {} : { projectId }),
+        dueAt,
+        dueAllDay: dueAt !== null,
+        ...(notes === "" ? {} : { notes }),
+      });
+      yield* keepTypedInvoiceInputs(row, person.personId, given);
+      return row;
+    }),
+  );
+  const result = yield* draftDocument(
     person,
-    row,
+    invoice,
     recipe,
-    { lines: input.lines, ...(input.gstRate === undefined ? {} : { gstRate: input.gstRate }) },
+    given,
     `owner:${person.personId}:${input.clientRequestId}`,
   );
+  return {
+    ...result,
+    problems: result.problems.map((problem) =>
+      problem.replace(/(?:^Nothing was made\.\s*|\s+Nothing was made\.$)/g, ""),
+    ),
+  };
 }, workFailure);
 
 const sameWord = (choices: ReadonlyArray<string>, given: string | undefined) =>

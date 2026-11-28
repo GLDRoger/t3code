@@ -38,15 +38,24 @@ export const candidateGate = Effect.fn("KinBankAlerts.candidateGate")(function* 
       .replace(/\p{M}/gu, "")
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
-      .filter((word) => word.length >= 4 && word !== "bank");
-    return words.length === 0 ? [] : [{ bankName, matchedFrom, words }];
+      .filter((word) => word !== "" && word !== "bank");
+    const shortLabel = words.length === 1 ? words[0]?.match(/^[a-z]{1,3}$/)?.[0] : undefined;
+    const longWords = words.filter((word) => word.length >= 4);
+    return shortLabel === undefined && longWords.length === 0
+      ? []
+      : [{ bankName, matchedFrom, shortLabel, longWords }];
   });
   return (address: string): CandidateHint | undefined => {
     const domain = address.slice(address.lastIndexOf("@") + 1);
     const suffix = getPublicSuffix(domain, { allowPrivateDomains: true });
     if (suffix === null || !domain.endsWith(`.${suffix}`)) return undefined;
-    const name = domain.slice(0, -suffix.length - 1).replace(/[^a-z0-9]/g, "");
-    const known = banks.find(({ words }) => words.some((word) => name.includes(word)));
+    const prefix = domain.slice(0, -suffix.length - 1);
+    const registrableLabel = prefix.slice(prefix.lastIndexOf(".") + 1);
+    const name = prefix.replace(/[^a-z0-9]/g, "");
+    const known = banks.find(
+      ({ shortLabel, longWords }) =>
+        shortLabel === registrableLabel || longWords.some((word) => name.includes(word)),
+    );
     return known === undefined
       ? undefined
       : {
@@ -57,11 +66,12 @@ export const candidateGate = Effect.fn("KinBankAlerts.candidateGate")(function* 
   };
 });
 
+export const maskedCandidateEndings = (text: string) =>
+  [...new Set([...text.matchAll(/[xX*•]{2,}(\d{4})(?!\d)/g)].map((match) => match[1]!))].toSorted();
+
 export const candidateEndings = (text: string, accounts: ReadonlySet<string>) =>
   accounts.size === 0
-    ? [
-        ...new Set([...text.matchAll(/[xX*•]{2,}(\d{4})(?!\d)/g)].map((match) => match[1]!)),
-      ].toSorted()
+    ? maskedCandidateEndings(text)
     : [
         ...new Set(
           (text.match(/(?<!\d)\d{4}(?!\d)/g) ?? []).filter((digits) => accounts.has(digits)),

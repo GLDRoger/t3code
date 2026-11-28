@@ -14,6 +14,7 @@ import {
   KinStatementSelection,
   KinWidgetId,
 } from "@t3tools/contracts";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,6 +51,7 @@ import {
   type KnownRow,
   knownRows,
 } from "./bankList.ts";
+import { openRepaymentDebits } from "./invoiceCredits.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts";
@@ -104,6 +106,13 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.alerts === undefined ? {} : { alerts: stored.alerts as AlertCheck }),
     }),
   });
+export const withCompanyWithheldTax = Effect.fn("KinStatements.withCompanyWithheldTax")(function* (
+  orgId: KinOrgId,
+  review: Review,
+) {
+  const { country } = yield* companyMoney(orgId);
+  return { ...review, withheldTax: regionOf(country)?.withheldTax };
+});
 export const storeReview = (review: Review) =>
   encodeReview({
     statement: review.statement,
@@ -393,8 +402,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     ORDER BY updated_at DESC LIMIT 500`;
   const partners = yield* partnerCandidates(orgId, home, zone);
   const payees = yield* partnerPayees(orgId);
-  const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
-    WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
+  const accounts = (yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
+    WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`).map((row) => row.account);
   return {
     currency: statement.currency,
     withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
@@ -419,7 +428,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         repeats: row.repeats === 1,
         rev: row.rev,
       })),
-    ownAccounts: accounts.map((row) => row.account).filter((one) => one !== statement.account),
+    bankOwnAccounts: accounts,
+    ownAccounts: accounts.filter((one) => one !== statement.account),
     known: [
       ...new Map(
         vendors.flatMap((row) =>
@@ -520,7 +530,21 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     const had = known.get(row.index);
     return had === undefined || (states !== undefined && had.state === states.open);
   });
-  const results = matchRows(open, yield* candidates(orgId, statement, statementId));
+  const sql = yield* SqlClient.SqlClient;
+  const { matching, bankDebits } = yield* Effect.gen(function* () {
+    const matching = yield* candidates(orgId, statement, statementId);
+    const bankDebits =
+      def === undefined || !open.some((row) => row.direction === "debit")
+        ? []
+        : yield* openRepaymentDebits(orgId, def, matching.payees);
+    return { matching, bankDebits };
+  }).pipe(sql.withTransaction, readOnly);
+  const results = matchRows(open, {
+    ...matching,
+    bankRows: known,
+    bankDebits,
+    possibleDuplicates: new Set(found.possible.keys()),
+  });
   // A possible duplicate is the owner's call: nothing is ticked or matched for it.
   const judged = open.map((row, index): RowMatch => {
     const like = found.possible.get(row.index);
@@ -760,7 +784,7 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   };
   const card = reviewCard(
     input.statementId,
-    input.review,
+    yield* withCompanyWithheldTax(input.orgId, input.review),
     yield* expenseCategories(input.orgId),
     selection,
     yield* heldRows(input.orgId, input.statementId),

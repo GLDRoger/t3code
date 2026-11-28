@@ -174,7 +174,13 @@ export function useKinPalette(input: {
             value: `kin-hit:${hit.id}`,
             searchTerms: [hit.title],
             title: hit.title,
-            description: [hit.kindLabel, hit.section?.title, hit.snippet, hit.closed]
+            description: [
+              hit.kindLabel,
+              hit.identifier,
+              hit.section?.title,
+              hit.snippet,
+              hit.closed,
+            ]
               .filter((part) => part !== null && part !== undefined)
               .join(" · "),
             icon: <Icon className={ITEM_ICON_CLASS} />,

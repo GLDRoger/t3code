@@ -194,7 +194,8 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
       ) => {
         setBusy(factKey ?? record);
         setProblem(null);
-        if (factKey !== undefined) kinReads.markAnswered(target, factKey, true);
+        if (factKey !== undefined) kinReads.markAnswered(target, factKey, true, record);
+        if (action === "lift") kinReads.liftAnswered(target, record);
         const outcome = await aside({
           environmentId: target.environmentId,
           input: {

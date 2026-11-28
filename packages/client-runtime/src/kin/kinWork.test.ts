@@ -21,9 +21,15 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
+  KIN_UNAVAILABLE_LINK,
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
   KIN_WORK_TITLE_TOO_LONG,
+  kinUnavailableEntryLine,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
+  kinWorkMissingLinkDetail,
   kinWorkDueChoices,
   kinWorkDueDays,
   kinWorkNames,
@@ -1460,5 +1466,189 @@ describe("createKinWorkActions", () => {
     const outcome = await h.made.add({ title: "Invented" }, "request-1");
     expect(outcome).toMatchObject({ ok: false, changed: false });
     expect(outcome.ok ? "" : outcome.problem).not.toContain("dueAt");
+  });
+});
+
+describe("missing entry wording by link key", () => {
+  it.each([
+    {
+      key: "W-12",
+      title: "Task",
+      noun: "task",
+      goneTitle: "This task doesn't exist or isn't shared with you.",
+      goneDetail: "Open Tasks to see what there is now.",
+      failedTitle: "Couldn't load this task",
+    },
+    {
+      key: "INV-3",
+      title: "Invoice",
+      noun: "invoice",
+      goneTitle: "This invoice doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this invoice",
+    },
+    {
+      key: "C-4",
+      title: "Client",
+      noun: "client",
+      goneTitle: "This client doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see who there is now.",
+      failedTitle: "Couldn't load this client",
+    },
+    {
+      key: "BNK-9",
+      title: "Bank transaction",
+      noun: "Bank transaction",
+      goneTitle: "This Bank transaction doesn't exist or isn't shared with you.",
+      goneDetail: "Open Docs to see what there is now.",
+      failedTitle: "Couldn't load this Bank transaction",
+    },
+    {
+      key: "BTX-2",
+      title: "Bank transaction",
+      noun: "Bank transaction",
+      goneTitle: "This Bank transaction doesn't exist or isn't shared with you.",
+      goneDetail: "Open Docs to see what there is now.",
+      failedTitle: "Couldn't load this Bank transaction",
+    },
+    {
+      key: "RCT-1",
+      title: "Receipt",
+      noun: "receipt",
+      goneTitle: "This receipt doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this receipt",
+    },
+    {
+      key: "CN-1",
+      title: "Credit note",
+      noun: "credit note",
+      goneTitle: "This credit note doesn't exist or isn't shared with you.",
+      goneDetail: "Open Docs to see what there is now.",
+      failedTitle: "Couldn't load this credit note",
+    },
+    {
+      key: "CT-2",
+      title: "Contact",
+      noun: "contact",
+      goneTitle: "This contact doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see who there is now.",
+      failedTitle: "Couldn't load this contact",
+    },
+    {
+      key: "P-5",
+      title: "Project",
+      noun: "project",
+      goneTitle: "This project doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see what there is now.",
+      failedTitle: "Couldn't load this project",
+    },
+    {
+      key: "M-1",
+      title: "Milestone",
+      noun: "milestone",
+      goneTitle: "This milestone doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see what there is now.",
+      failedTitle: "Couldn't load this milestone",
+    },
+    {
+      key: "DL-8",
+      title: "Deal",
+      noun: "deal",
+      goneTitle: "This deal doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see what there is now.",
+      failedTitle: "Couldn't load this deal",
+    },
+    {
+      key: "DT-3",
+      title: "Date",
+      noun: "date",
+      goneTitle: "This date doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this date",
+    },
+    {
+      key: "G-1",
+      title: "Goal",
+      noun: "goal",
+      goneTitle: "This goal doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this goal",
+    },
+    {
+      key: "EQ-7",
+      title: "Entry",
+      noun: "entry",
+      goneTitle: "This entry doesn't exist or isn't shared with you.",
+      goneDetail: "Open Docs to see what there is now.",
+      failedTitle: "Couldn't load this entry",
+    },
+    {
+      key: null,
+      title: "Entry",
+      noun: "entry",
+      goneTitle: "This entry doesn't exist or isn't shared with you.",
+      goneDetail: "Open Docs to see what there is now.",
+      failedTitle: "Couldn't load this entry",
+    },
+  ])("names $noun for $key and agrees with web unavailable copy", (row) => {
+    expect(kinWorkEntryKind(row.key)).toMatchObject({ title: row.title, noun: row.noun });
+    expect(kinUnavailableEntryLine(row.key)).toBe(row.goneTitle);
+    expect(kinWorkGone(row.key)).toEqual({ title: row.goneTitle, detail: row.goneDetail });
+    expect(kinWorkItemFailed(row.key).title).toBe(row.failedTitle);
+  });
+
+  it("matches KIN_UNAVAILABLE_LINK verbatim for shared kinds", () => {
+    expect(kinUnavailableEntryLine("W-1")).toBe(KIN_UNAVAILABLE_LINK.task);
+    expect(kinUnavailableEntryLine("C-1")).toBe(KIN_UNAVAILABLE_LINK.client);
+    expect(kinUnavailableEntryLine("P-1")).toBe(KIN_UNAVAILABLE_LINK.project);
+    expect(kinUnavailableEntryLine("D-1")).toBe(KIN_UNAVAILABLE_LINK.doc);
+    expect(kinUnavailableEntryLine("EQ-1")).toBe(KIN_UNAVAILABLE_LINK.entry);
+  });
+
+  const ownerPlaces = ["chats", "tasks", "money", "clients", "docs"] as const;
+  const clientsOffPlaces = ["chats", "tasks", "money", "docs"] as const;
+  const moneyOffPlaces = ["chats", "tasks", "clients", "docs"] as const;
+  const memberClientsPlaces = ["chats", "tasks", "clients"] as const;
+  const memberTasksPlaces = ["chats", "tasks"] as const;
+  const chatOnlyPlaces = ["chats"] as const;
+
+  it.each([
+    { kind: "task", open: ownerPlaces, detail: "Open Tasks to see what there is now." },
+    { kind: "client", open: ownerPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "contact", open: ownerPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "project", open: ownerPlaces, detail: "Open Clients to see what there is now." },
+    { kind: "milestone", open: ownerPlaces, detail: "Open Clients to see what there is now." },
+    { kind: "doc", open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "date", open: ownerPlaces, detail: "Open Money to see what there is now." },
+    { kind: "entry", open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: null, open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "project", open: clientsOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "client", open: clientsOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "date", open: moneyOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "client", open: memberClientsPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "doc", open: memberClientsPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "task", open: memberTasksPlaces, detail: "Open Tasks to see what there is now." },
+    { kind: "project", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "client", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "doc", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "date", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: null, open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "task", open: chatOnlyPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "project", open: null, detail: "Open Docs to see what there is now." },
+  ] as const)(
+    "points malformed $kind link to an open place ($open) -> $detail",
+    ({ kind, open, detail }) => {
+      expect(kinWorkMissingLinkDetail(kind, open)).toBe(detail);
+    },
+  );
+
+  it("falls back in kinWorkGone when the entry's place is off for this viewer", () => {
+    expect(kinWorkGone("P-5", clientsOffPlaces).detail).toBe("Open Docs to see what there is now.");
+    expect(kinWorkGone("P-5", memberTasksPlaces).detail).toBe(
+      "Open Chats to see what there is now.",
+    );
+    expect(kinWorkGone("INV-3", moneyOffPlaces).detail).toBe("Open Docs to see what there is now.");
+    expect(kinWorkGone("W-12", chatOnlyPlaces).detail).toBe("Open Chats to see what there is now.");
   });
 });

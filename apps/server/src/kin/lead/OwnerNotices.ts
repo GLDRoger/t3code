@@ -45,9 +45,10 @@ export const layer = Layer.effect(
             : {
                 id: failure,
                 body: `${MEMORY_WRITE_OPERATION_WORDS[operation]} ${MEMORY_WRITE_FAILURE_WORDS[failure]}${link === undefined ? "" : ` ${link}`}`,
-                replaceOnChange: true,
+                scope: "cause",
                 silentDuringQuietHours: true,
               },
+          { rememberUntilRecovery: true },
         ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.provideService(KinChatRepository.KinChatRepository, chat),

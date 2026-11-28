@@ -1,5 +1,6 @@
 import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -150,6 +151,7 @@ export const OUTSIDE_TOOLS = {
   statement_read: "allowed",
   statement_rows: "allowed",
   bills_add: "allowed",
+  bill_cut: "allowed",
   bill_read: "allowed",
   kin_document: recipeOnly,
   kin_recipes: "allowed",
@@ -163,6 +165,7 @@ export const OUTSIDE_TOOLS = {
   kin_connection_offer: "allowed",
   // Outside text could relabel which account is for what.
   kin_connection_note: "refused",
+  mail_rule: "refused",
   // Drafts stay in Kin; only the owner's Confirm on a card Kin draws from them posts anything.
   social_read: "allowed",
   social_lookup: "allowed",
@@ -206,13 +209,17 @@ export type OutsideReadItem = { readonly id?: string; readonly own?: string } & 
   | { readonly k: "coding-agent"; readonly name?: string }
 );
 
-/** A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `github`, …. */
+/**
+ * A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `mail-rule`,
+ * `github`, ….
+ */
 export const stampKey = (stamp: string) => stamp.split(READABLE, 1)[0]!;
 
 const CODING_AGENT_SOURCE = "coding-agent:";
 /** The read a bare key names, as stamps before reads were stored carry it. */
 const keyRead = (key: string): OutsideReadItem => {
   if (key === "check-in") return { k: "check-in" };
+  if (key === "mail-rule") return { k: "mail" };
   if (key === "github") return { k: "github" };
   if (key === "web search") return { k: "web" };
   if (key.startsWith("web:")) return { k: "web", host: key.slice("web:".length) };
@@ -399,6 +406,18 @@ export const followsCodingAgent = Effect.fn("KinOutsideContent.followsCodingAgen
 export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
   outsideStamp(turn).pipe(Effect.map((source) => source !== undefined));
 
+export type OutsideMark = {
+  readonly turn: Pick<Turn, "orgId" | "wakeupId">;
+  readonly source: string;
+  readonly reads: ReadonlyArray<OutsideReadItem> | undefined;
+  readonly scope: "wakeup" | "wakeup-and-events";
+};
+/** Set while a read tool runs on a reader (`mcp/readTools.ts`), which writes these after it. */
+export const heldOutsideMarks = Context.Reference<Array<OutsideMark> | undefined>(
+  "t3/kin/lead/OutsideContent/heldOutsideMarks",
+  { defaultValue: () => undefined },
+);
+
 /**
  * Marks the turn outside-read, before the outside text reaches it. The events it claimed carry
  * the stamp too, so a retry that requeues them starts marked. `source` is a key or a whole stamp.
@@ -410,6 +429,11 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   reads?: ReadonlyArray<OutsideReadItem>,
   scope: "wakeup" | "wakeup-and-events" = "wakeup-and-events",
 ) {
+  const held = yield* heldOutsideMarks;
+  if (held !== undefined) {
+    held.push({ turn: { orgId: turn.orgId, wakeupId: turn.wakeupId }, source, reads, scope });
+    return;
+  }
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
   yield* Effect.gen(function* () {

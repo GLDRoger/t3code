@@ -1,6 +1,7 @@
 import * as KinShell from "../shell/KinShell.ts";
 import { listSectionRefused, sectionOfList } from "../shell/sections.ts";
 import {
+  KIN_CHOICE_UNDO_ACTION,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -57,6 +58,7 @@ import {
   proposedList,
 } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
+import { teammatesIn } from "../chat/memberAccess.ts";
 import {
   applyCredit,
   applyLabel,
@@ -79,7 +81,13 @@ import {
   recordBillLabel,
   recordBillLine,
 } from "../work/statements/billCard.ts";
-import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
+import {
+  drawRepaid,
+  markRepaid,
+  repaidLabel,
+  repaidLine,
+  undoRepaid,
+} from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
   type CardDraw,
@@ -90,6 +98,7 @@ import {
   isFactCard,
   isTaken,
   plansOf,
+  sealPlans,
   takesAsDefault,
 } from "./cardPlans.ts";
 
@@ -117,8 +126,9 @@ const quoted = (text: string, max = 80) => {
 };
 
 const LABEL_MAX = 80;
+type PresentedPlan = Exclude<CardPlan, { kind: "undo_repaid" } | { readonly kind: "mail_rule" }>;
 /** The option's button for a plan: the verb and its key, written by the server, never the agent. */
-const labelOf = (plan: CardPlan): string => {
+const labelOf = (plan: PresentedPlan): string => {
   switch (plan.kind) {
     case "done":
       return plan.heldMeeting === true ? "Nothing to follow up" : `Mark ${plan.key} done`;
@@ -169,7 +179,7 @@ const labelOf = (plan: CardPlan): string => {
 };
 
 /** The line a card shows under it: the real verb and target, with its title. */
-const lineOf = (plan: CardPlan): string => {
+const lineOf = (plan: PresentedPlan): string => {
   switch (plan.kind) {
     case "done":
       return `Mark ${plan.key} ${quoted(plan.title)} done`;
@@ -240,24 +250,6 @@ const drawOf = Effect.fn("KinCardActions.drawOf")(function* (lead: DrawTurn) {
     people: [...new Set([...(behind?.readers ?? []), ...(behind?.askers ?? [])])].toSorted(),
     askers: [...(behind?.askers ?? [])].toSorted(),
   } satisfies CardDraw;
-});
-
-/** The card's readers who are not owner-level: every one of them must see what its line names. */
-const teammatesIn = Effect.fn("KinCardActions.teammatesIn")(function* (
-  orgId: KinOrgId,
-  chatId: KinChatId,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ personId: string }>`SELECT DISTINCT person_id AS "personId"
-    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
-      AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
-    ORDER BY person_id`;
-  const out: Array<KinPersonId> = [];
-  for (const row of rows) {
-    const person = KinPersonId.make(row.personId);
-    if (!(yield* ownerLevel(orgId, person))) out.push(person);
-  }
-  return out;
 });
 
 const recordRow = Effect.fn("KinCardActions.recordRow")(function* (
@@ -465,7 +457,9 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
+    sealed?.kind === "mail_rule" ||
     sealed?.kind === "leaver" ||
+    sealed?.kind === "undo_repaid" ||
     (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
   )
     return yield* refuse("That question has no default to take.");
@@ -477,8 +471,13 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
     );
   // Its action is drawn again for this turn and this card's readers; it may not differ.
   const final = sealed ?? null;
-  if (final !== null && !sameAction(final, yield* drawRun(lead, actionOf(final), turn)))
-    return yield* refuse(`${lineOf(final)}: that changed since it was offered.`);
+  if (final !== null) {
+    const fresh = yield* drawRun(lead, actionOf(final), turn);
+    const drawn =
+      final.kind === "mark_repaid" && final.asExpense ? ordinaryExpenseOption(fresh)?.plan : fresh;
+    if (drawn === undefined || !sameAction(final, drawn))
+      return yield* refuse(`${lineOf(final)}: that changed since it was offered.`);
+  }
   return {
     kind: "take_default",
     questionId: row.questionId,
@@ -501,12 +500,19 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
   input: CardActionInput,
 ) {
   const turn = { drawn: yield* drawOf(lead), teammates: yield* teammatesIn(lead.orgId, chatId) };
-  const plan: CardPlan =
+  const plan =
     input.kind === "take_default"
       ? yield* drawDefault(lead, input.target, turn)
       : yield* drawRun(lead, { kind: input.kind, target: input.target }, turn);
   return { plan, label: labelOf(plan), line: lineOf(plan) };
 });
+
+export const ordinaryExpenseOption = (repayment: CardPlan) => {
+  if (repayment.kind !== "mark_repaid" || repayment.expense === undefined || repayment.asExpense)
+    return undefined;
+  const plan = { ...repayment, asExpense: true as const };
+  return { plan, label: repaidLabel(plan), line: repaidLine(plan) };
+};
 
 /** The action a sealed plan runs, as an agent names it. */
 const actionOf = (plan: RunPlan): RunInput => ({
@@ -587,7 +593,9 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   if (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
+    sealed.kind === "mail_rule" ||
     sealed.kind === "leaver" ||
+    sealed.kind === "undo_repaid" ||
     isFactCard(sealed) ||
     isTaken(sealed) ||
     isAnswered(sealed) ||
@@ -601,14 +609,24 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   };
   const turn = { drawn: sealed.draw, teammates: yield* teammatesIn(orgId, chatId) };
   const plan = yield* Effect.gen(function* () {
-    const one: CardPlan =
+    const one =
       sealed.kind === "take_default"
         ? yield* drawDefault(lead, sealed.questionId, turn)
         : yield* drawRun(lead, actionOf(sealed), turn);
     return Option.some(one);
-  }).pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(Option.none<CardPlan>()) }));
+  }).pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(Option.none<PresentedPlan>()) }));
   if (Option.isNone(plan)) return undefined;
-  const one = plan.value;
+  const one =
+    sealed.kind === "mark_repaid" && sealed.asExpense
+      ? ordinaryExpenseOption(plan.value)?.plan
+      : plan.value;
+  if (one === undefined) return undefined;
+  if (
+    sealed.kind === "mark_repaid" &&
+    one.kind === "mark_repaid" &&
+    sealed.expense?.recordId !== one.expense?.recordId
+  )
+    return undefined;
   if ("recordId" in one && "recordId" in sealed && one.recordId !== sealed.recordId)
     return undefined;
   // The question's own words were written about the record as it was: changed since, it is left off.
@@ -686,7 +704,26 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (plan.kind === "mail_rule") return yield* notAllowed("Answer the mail rule on its own card.");
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
+  if (plan.kind === "undo_repaid") {
+    const { orgId, personId, widget } = tap;
+    // The tapper's live access, as for the repayment itself: whoever marked it may since be demoted.
+    if (!(yield* ownerLevel(orgId, personId)))
+      return yield* notAllowed("Only the owner or a co-owner can undo a repayment.");
+    yield* refuseOff(orgId, "expenses");
+    yield* refuseOff(orgId, "bank_transactions");
+    return yield* undoRepaid(
+      orgId,
+      plan,
+      {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        chatId: widget.chatId,
+      },
+      deps.records,
+    );
+  }
   if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
   if (isQuiet(plan)) return yield* runQuiet(tap, plan);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
@@ -845,6 +882,16 @@ const notStarted = (title: string) =>
     message: `${quoted(title)} couldn't start just now, so nothing changed. Try again.`,
   });
 
+const refuseOff = Effect.fnUntraced(function* (orgId: KinOrgId, list: string) {
+  const section = sectionOfList(list);
+  if (section === null) return;
+  const shell = yield* KinShell.get(orgId);
+  if (!KinShell.sectionOn(shell, section))
+    return yield* refuse(
+      `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
+    );
+});
+
 const runOne = Effect.fn("KinCardActions.runOne")(function* (
   tap: ActionTap,
   plan: RunPlan,
@@ -855,15 +902,6 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
   const { orgId, personId } = tap;
   const draws = [plan.draw, ...also];
   const owner = yield* ownerLevel(orgId, personId);
-  const refuseOff = Effect.fnUntraced(function* (list: string) {
-    const section = sectionOfList(list);
-    if (section === null) return;
-    const shell = yield* KinShell.get(orgId);
-    if (!KinShell.sectionOn(shell, section))
-      return yield* refuse(
-        `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
-      );
-  });
   switch (plan.kind) {
     case "done":
     case "drop": {
@@ -871,7 +909,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       const row = yield* recordRow(orgId, { recordId: plan.recordId });
       if (row === undefined) return nothingDone(`${plan.key} is gone`);
       if (!owner) yield* teamGuard(orgId, personId, { row, changes: true, input: { state } });
-      yield* refuseOff(row.registerId);
+      yield* refuseOff(orgId, row.registerId);
       if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
@@ -946,7 +984,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "create_list": {
       if (!owner) return yield* notAllowed("Only an owner can create a list.");
       const made = proposedList(plan.definition);
-      if (made !== undefined) yield* refuseOff(made);
+      if (made !== undefined) yield* refuseOff(orgId, made);
       const why =
         (yield* drawsHold(orgId, draws)) ??
         (yield* defineProposed({
@@ -964,8 +1002,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     }
     case "record_payment": {
       if (!owner) return yield* notAllowed(PAYMENT_TAP_REFUSAL);
-      yield* refuseOff("invoices");
-      yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "invoices");
+      yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* recordPayment(
@@ -986,7 +1024,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "apply_credit": {
       if (!owner)
         return yield* notAllowed("Only the owner or a co-owner can apply a client's credit.");
-      yield* refuseOff("invoices");
+      yield* refuseOff(orgId, "invoices");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* applyCredit(orgId, plan, {
@@ -1003,8 +1041,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         return yield* notAllowed(
           "Only the owner or a co-owner marks what a partner is owed as repaid.",
         );
-      yield* refuseOff("expenses");
-      yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "expenses");
+      yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* markRepaid(
@@ -1019,16 +1057,27 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         },
         records,
       );
-      return (
-        done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
-      );
+      if (done === undefined) {
+        const expenses =
+          plan.expense === undefined ? "an expense it repays" : "an expense on this card";
+        return nothingDone(`${plan.key} or ${expenses} changed since this was offered`);
+      }
+      if (done.undo !== undefined)
+        yield* sealPlans({
+          orgId,
+          widgetId: tap.widget.widgetId,
+          chatId: tap.widget.chatId,
+          plans: [{ optionId: KIN_CHOICE_UNDO_ACTION, plan: done.undo }],
+          now: tap.now,
+        });
+      return done.outcome;
     }
     case "record_bill":
     case "mark_bill_paid": {
       if (!owner)
         return yield* notAllowed("Only the owner or a co-owner can record a bill or mark it paid.");
-      yield* refuseOff("expenses");
-      if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "expenses");
+      if (plan.kind === "mark_bill_paid") yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const writer = {

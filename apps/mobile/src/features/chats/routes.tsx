@@ -8,6 +8,7 @@ import { KinAppearanceScreen } from "./KinAppearanceScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
+import { KinBankSenderAddScreen } from "./KinBankSenders";
 import { KinCompanyScreen } from "./KinCompanyScreen";
 import { KinHostScreen } from "./KinHostScreen";
 import { KinWatchLogScreen } from "./KinWatchLogScreen";
@@ -25,6 +26,7 @@ import {
 } from "./connections/KinConnectionFormScreens";
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
+import { KinMailRuleScreen, KinMailRulesScreen } from "./connections/KinMailRules";
 import { KinMyMailboxScreen } from "./connections/KinMyMailboxScreen";
 import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
 import { KinSocialConnectScreen, KinSocialLinkScreen } from "./connections/KinSocialConnect";
@@ -188,6 +190,10 @@ export const KIN_SCREENS = {
     linking: "kin/:environmentId/:orgId/company",
     options: pageRoute({ title: "Company details" }),
   }),
+  KinBankSenderAdd: createNativeStackScreen({
+    screen: KinBankSenderAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
   KinHost: createNativeStackScreen({
     screen: KinHostScreen,
     linking: "kin/:environmentId/:orgId/host",
@@ -207,6 +213,16 @@ export const KIN_SCREENS = {
     screen: KinConnectionScreen,
     linking: "kin/:environmentId/:orgId/connections/:connectionId",
     options: pageRoute({ title: "Connection" }),
+  }),
+  KinMailRules: createNativeStackScreen({
+    screen: KinMailRulesScreen,
+    linking: "kin/:environmentId/:orgId/mail-rules",
+    options: pageRoute({ title: "Mail rules" }),
+  }),
+  KinMailRule: createNativeStackScreen({
+    screen: KinMailRuleScreen,
+    linking: "kin/:environmentId/:orgId/connections/:connectionId/rules/:ruleId",
+    options: pageRoute({ title: "Mail rule" }),
   }),
   // Full sheets, so the keyboard never covers the key being pasted.
   KinConnectionAdd: createNativeStackScreen({

@@ -19,6 +19,12 @@ import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { deriveProviderInstanceConfigMap } from "../../provider/ProviderInstanceRegistryHydration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
+// These read and mark; neither drafts for a person nor decides what to bring.
+const BACKGROUND_EVENT_TAGS = new Set(["bills.read", "watchdog"]);
+
+export const backgroundWake = (tags: ReadonlyArray<string>): boolean =>
+  tags.length > 0 && tags.every((tag) => BACKGROUND_EVENT_TAGS.has(tag));
+
 const decodeModel = Schema.decodeUnknownOption(Schema.fromJsonString(KinLead.fields.model));
 const encodeSelection = Schema.encodeSync(KinLead.fields.model);
 /** Rows from before K163 also carry `strong` and `cheap`; decoding ignores them. */
@@ -30,10 +36,17 @@ export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
 );
 
 /** The models this host offers an agent: the one place that decides which providers qualify. */
-export const kinAgentModels = (providers: ReadonlyArray<ServerProvider>, otherProviders: boolean) =>
+export const kinAgentModels = (
+  providers: ReadonlyArray<ServerProvider>,
+  otherProviders: boolean,
+  devServer = false,
+) =>
   providers
     .filter(
-      (provider) => kinAgentDriverAllowed(provider.driver, otherProviders) && provider.enabled,
+      (provider) =>
+        provider.enabled &&
+        provider.driver !== "acpRegistry" &&
+        kinAgentDriverAllowed(provider.driver, otherProviders, devServer),
     )
     .flatMap((provider) =>
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
@@ -56,7 +69,7 @@ export const leadProviderProblem = (
       ? "it isn't a configured provider"
       : facts === undefined
         ? `Kin doesn't run agents on ${driver} yet`
-        : facts.devOnly
+        : facts.devOnly && !devServer
           ? "it runs agents only on a dev server"
           : "turn on Agents on other providers in Kin's Settings first"
   }. Helper tasks follow the same rule.`;
@@ -88,8 +101,8 @@ export const leadModelProblem = (
   const refused = leadProviderProblem(settings, selection, devServer);
   if (refused !== undefined) return refused;
   if (providers === null) return undefined;
-  // A dev-only provider, such as kin-verify's scripted agent, lists no models of its own.
-  if (kinProviderFacts(driverOf(settings, selection))?.devOnly) return undefined;
+  // The registry is used by kin-verify's scripted agent, which lists no models of its own.
+  if (driverOf(settings, selection) === "acpRegistry") return undefined;
   const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
   if (provider === undefined || !provider.enabled || !provider.installed)
     return `${modelLabel(providers, selection)} isn't available on this server right now.`;
@@ -164,7 +177,7 @@ const helperModelProblem = (
   const { instanceId } = selection;
   if (leadProviderProblem(settings, { instanceId, model: "" }, devServer) !== undefined)
     return `Kin's agents don't run on ${instanceId}`;
-  if (kinProviderFacts(driverOf(settings, { instanceId, model: "" }))?.devOnly) return undefined;
+  if (driverOf(settings, { instanceId, model: "" }) === "acpRegistry") return undefined;
   const unreadable = `Kin can't read ${instanceId}'s model list right now, so it can't check the model`;
   if (providers === null) return unreadable;
   const provider = providers.find((entry) => entry.instanceId === instanceId);

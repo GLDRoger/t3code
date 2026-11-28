@@ -1,13 +1,22 @@
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
+import {
+  kinProjectLookedUpTo,
+  kinProjectSinceLooked,
+  type KinSinceLookedView,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { useAtomValue } from "@effect/atom-react";
+import type { LegendListRef } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_DEFAULT_FILTER,
   kinWorkOffline,
   kinWorkOnlyOwner,
+  type KinWorkNames,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
+  KIN_CLIENTS,
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
@@ -15,6 +24,7 @@ import {
   KIN_PROJECT_LEAD,
   kinCampaignResultOpens,
   kinProjectPageView,
+  kinWorkTimeline,
   type KinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -28,8 +38,8 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useState, type ReactNode } from "react";
-import { View } from "react-native";
+import { useRef, useState, type ReactNode } from "react";
+import { ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -38,6 +48,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { Sheet } from "../../components/ui/Sheet";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -45,6 +56,7 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
   KinFoldSection,
   KinGateView,
+  KinMissingLink,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
@@ -62,17 +74,24 @@ import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { useKinAskRecord } from "./state/useKinAskRecord";
+import { useKinPinActions } from "./state/useKinPins";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
+  useKinPinnedProjectLook,
   useKinProjectPage,
+  useKinRecordLooked,
   useKinWork,
   useKinWorkDirectory,
+  useKinWorkHistory,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinProjectNoteSection } from "./components/KinProjectNote";
+import { KinSinceLookedLine, useKinScreenVisible } from "./components/KinSinceLookedLine";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
@@ -96,10 +115,11 @@ export function KinProjectScreen({ route }: StaticScreenProps<KinProjectParams>)
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_PROJECTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't name a project"
-          detail="Open Work from your Kin chats."
+          kind="project"
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );
@@ -191,10 +211,33 @@ function KinProjectBody(
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions(props);
   const shell = useKinShell(environmentId);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const visible = useKinScreenVisible();
+  const pinnedLook = useKinPinnedProjectLook(props, props.page);
+  const lookedUpTo = kinProjectLookedUpTo(props.page);
+  useKinRecordLooked(
+    props,
+    lookedUpTo === null ? null : { recordId: props.page.project.recordId, upTo: lookedUpTo },
+    visible && !props.stale,
+  );
+  const sinceLooked = kinProjectSinceLooked(
+    props.page,
+    pinnedLook?.lookedAt,
+    pinnedLook?.sinceLooked,
+    props.directory.names,
+    now,
+    { opensHistory: ownerLevel },
+  );
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [changedOpen, setChangedOpen] = useState(false);
+  const listRef = useRef<LegendListRef>(null);
+  const changedY = useRef<number | null>(null);
   const view = kinProjectPageView(props.page, props.directory.names, now, shell);
   // A project goes with Clients: opened by its link while that is off, it says so.
-  const offLine = kinSectionOffLine(shell, "clients", useKinIsOwnerLevel(environmentId));
+  const offLine = kinSectionOffLine(shell, "clients", ownerLevel);
   // A project's lead adds its milestones too; the host checks they still lead it.
   const leads =
     view.lead.personId !== null &&
@@ -225,201 +268,325 @@ function KinProjectBody(
   const asker = useKinAskRecord(props, { key: view.key, title: view.name });
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
+  const moreItems = [
+    ...(pinActions.canPin
+      ? [
+          {
+            id: "pin-to-chat",
+            title: KIN_PINS_COPY.pinToChat,
+            disabled: busy,
+            onPress: () => setPinning(true),
+          },
+        ]
+      : []),
+    ...(!canChange
+      ? []
+      : view.state === "open"
+        ? [
+            {
+              id: "done",
+              title: KIN_PROJECTS.done,
+              disabled: busy,
+              onPress: () => void change({ state: "done" }),
+            },
+            {
+              id: "dropped",
+              title: KIN_PROJECTS.drop,
+              destructive: true,
+              disabled: busy,
+              onPress: () => void change({ state: "dropped" }),
+            },
+          ]
+        : [
+            {
+              id: "open",
+              title: KIN_PROJECTS.reopen,
+              disabled: busy,
+              onPress: () => void change({ state: "open" }),
+            },
+          ]),
+  ];
+  const bar = {
+    actions: [
+      ...asker.actions,
+      ...(canChange
+        ? [
+            {
+              accessibilityLabel: KIN_PROJECTS.edit,
+              icon: "pencil" as const,
+              disabled: busy,
+              onPress: () =>
+                navigation.navigate("KinProjectForm", {
+                  environmentId,
+                  orgId,
+                  project: view.key,
+                }),
+            },
+          ]
+        : []),
+    ],
+    menus: [
+      ...asker.menus,
+      ...(moreItems.length === 0
+        ? []
+        : [{ title: "More", icon: "ellipsis" as const, items: moreItems }]),
+    ],
+  };
   return (
-    <KinTasksList
-      environmentId={environmentId}
-      orgId={orgId}
-      live={props.live}
-      stale={props.stale}
-      directory={props.directory}
-      title="Project"
-      onBack={() => navigation.goBack()}
-      choices={null}
-      initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
-      within={{
-        adds: view.adds,
-        bar: canChange
-          ? {
-              actions: [
-                ...asker.actions,
-                {
-                  accessibilityLabel: KIN_PROJECTS.edit,
-                  icon: "pencil",
-                  disabled: busy,
-                  onPress: () =>
-                    navigation.navigate("KinProjectForm", {
-                      environmentId,
-                      orgId,
-                      project: view.key,
-                    }),
-                },
-              ],
-              menus: [
-                ...asker.menus,
-                {
-                  title: "More",
-                  icon: "ellipsis",
-                  items:
-                    view.state === "open"
-                      ? [
-                          {
-                            id: "done",
-                            title: KIN_PROJECTS.done,
-                            disabled: busy,
-                            onPress: () => void change({ state: "done" }),
-                          },
-                          {
-                            id: "dropped",
-                            title: KIN_PROJECTS.drop,
-                            destructive: true,
-                            disabled: busy,
-                            onPress: () => void change({ state: "dropped" }),
-                          },
-                        ]
-                      : [
-                          {
-                            id: "open",
-                            title: KIN_PROJECTS.reopen,
-                            disabled: busy,
-                            onPress: () => void change({ state: "open" }),
-                          },
-                        ],
-                },
-              ],
-            }
-          : asker,
-        header: (
-          <>
-            {offLine === null ? null : (
-              <Text textRole="footnote" className="px-2 text-foreground-muted">
-                {offLine}
-              </Text>
-            )}
-            <KinProjectSummary
-              view={view}
-              problem={problem}
-              onDismissProblem={() => setProblem(null)}
-              onOpenTask={openTask}
-              onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
-              onAddMilestone={
-                (canChange || leads) && view.adds && view.state === "open"
-                  ? () =>
-                      navigation.navigate("KinMilestoneForm", {
-                        environmentId,
-                        orgId,
-                        project: view.key,
-                      })
-                  : null
-              }
-              onChangeLead={
-                canChange
-                  ? () =>
-                      navigation.navigate("KinProjectLead", {
-                        environmentId,
-                        orgId,
-                        project: view.key,
-                      })
-                  : null
-              }
-              privacy={{
-                shown: canChange,
-                disabled: busy || view.privacy.inherited,
-                onChange: (sensitive) => void change({ sensitive }),
-              }}
-              people={
-                <KinProjectPeopleSection
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  view={view}
-                  onChanged={props.onRefresh}
-                  onAdd={() =>
-                    navigation.navigate("KinProjectPeople", {
-                      environmentId,
-                      orgId,
-                      project: view.key,
-                    })
-                  }
-                />
-              }
-              results={
-                props.page.results === undefined ? null : (
-                  <KinCampaignResultsSection
-                    results={props.page.results}
-                    audience={view.audience}
-                    deals={dealsOn}
-                    shell={shell}
-                    onOpen={(id) => {
-                      const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
-                      navigation.navigate("KinMarketingList", {
-                        environmentId,
-                        orgId,
-                        title: opened.title,
-                        ...(opened.to === "contacts"
-                          ? { campaign: view.key }
-                          : opened.to === "deals"
-                            ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
-                            : {
-                                cameFrom: opened.filter.cameFrom ?? "",
-                                show: id === "prospects" ? "prospects" : "clients",
-                              }),
-                      });
-                    }}
-                  />
-                )
-              }
-              docs={
-                <KinDocsUnder
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  names={props.directory.names}
-                  under={{ project: view.key }}
-                />
-              }
-            />
-            <View className="gap-5 px-4 pb-2">
-              {props.page.can?.note === undefined ? null : (
-                <KinProjectNoteSection
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  projectKey={view.key}
-                  note={props.page.note ?? null}
-                  canEdit={props.page.can.note && canNote}
-                  onChanged={props.onRefresh}
-                />
+    <>
+      <KinTasksList
+        environmentId={environmentId}
+        orgId={orgId}
+        live={props.live}
+        stale={props.stale}
+        directory={props.directory}
+        title="Project"
+        onBack={() => navigation.goBack()}
+        choices={null}
+        initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
+        within={{
+          adds: view.adds,
+          listRef,
+          bar,
+          header: (
+            <>
+              {offLine === null ? null : (
+                <Text textRole="footnote" className="px-2 text-foreground-muted">
+                  {offLine}
+                </Text>
               )}
-              <KinAsideNote
-                environmentId={environmentId}
-                orgId={orgId}
-                record={view.key}
-                names={props.directory.names}
-              />
-              <KinAttentionSection
-                environmentId={environmentId}
-                orgId={orgId}
-                scope={{ type: "project", key: view.key }}
-                names={props.directory.names}
-                onOpen={(to) => {
-                  if (to.type === "record") openTask(to.key);
+              <KinProjectSummary
+                view={view}
+                sinceLooked={sinceLooked}
+                changedOpen={changedOpen}
+                onChangedOpenChange={setChangedOpen}
+                onChangedLayout={(y) => {
+                  changedY.current = y;
                 }}
+                onOpenSinceLooked={() => {
+                  if (ownerLevel) setHistoryOpen(true);
+                  else {
+                    setChangedOpen(true);
+                    if (changedY.current !== null) {
+                      void listRef.current?.scrollToOffset({
+                        offset: Math.max(0, changedY.current - 12),
+                        animated: true,
+                      });
+                    }
+                  }
+                }}
+                problem={problem}
+                onDismissProblem={() => setProblem(null)}
+                onOpenTask={openTask}
+                onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
+                onAddMilestone={
+                  (canChange || leads) && view.adds && view.state === "open"
+                    ? () =>
+                        navigation.navigate("KinMilestoneForm", {
+                          environmentId,
+                          orgId,
+                          project: view.key,
+                        })
+                    : null
+                }
+                onChangeLead={
+                  canChange
+                    ? () =>
+                        navigation.navigate("KinProjectLead", {
+                          environmentId,
+                          orgId,
+                          project: view.key,
+                        })
+                    : null
+                }
+                privacy={{
+                  shown: canChange,
+                  disabled: busy || view.privacy.inherited,
+                  onChange: (sensitive) => void change({ sensitive }),
+                }}
+                people={
+                  <KinProjectPeopleSection
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    view={view}
+                    onChanged={props.onRefresh}
+                    onAdd={() =>
+                      navigation.navigate("KinProjectPeople", {
+                        environmentId,
+                        orgId,
+                        project: view.key,
+                      })
+                    }
+                  />
+                }
+                results={
+                  props.page.results === undefined ? null : (
+                    <KinCampaignResultsSection
+                      results={props.page.results}
+                      audience={view.audience}
+                      deals={dealsOn}
+                      shell={shell}
+                      onOpen={(id) => {
+                        const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
+                        navigation.navigate("KinMarketingList", {
+                          environmentId,
+                          orgId,
+                          title: opened.title,
+                          ...(opened.to === "contacts"
+                            ? { campaign: view.key }
+                            : opened.to === "deals"
+                              ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
+                              : {
+                                  cameFrom: opened.filter.cameFrom ?? "",
+                                  show: id === "prospects" ? "prospects" : "clients",
+                                }),
+                        });
+                      }}
+                    />
+                  )
+                }
+                docs={
+                  <KinDocsUnder
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    names={props.directory.names}
+                    under={{ project: view.key }}
+                  />
+                }
               />
-              <KinPlaceLists
-                environmentId={environmentId}
-                orgId={orgId}
-                place={{ project: { key: view.key, title: view.name } }}
-                seq={props.stale ? null : props.page.seq}
-                directory={props.directory}
-              />
-            </View>
-          </>
-        ),
-      }}
-    />
+              <View className="gap-5 px-4 pb-2">
+                {props.page.can?.note === undefined ? null : (
+                  <KinProjectNoteSection
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    projectKey={view.key}
+                    note={props.page.note ?? null}
+                    canEdit={props.page.can.note && canNote}
+                    onChanged={props.onRefresh}
+                  />
+                )}
+                <KinAsideNote
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  record={view.key}
+                  names={props.directory.names}
+                />
+                <KinAttentionSection
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  scope={{ type: "project", key: view.key }}
+                  names={props.directory.names}
+                  onOpen={(to) => {
+                    if (to.type === "record") openTask(to.key);
+                  }}
+                />
+                <KinPlaceLists
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  place={{ project: { key: view.key, title: view.name } }}
+                  seq={props.stale ? null : props.page.seq}
+                  directory={props.directory}
+                />
+              </View>
+            </>
+          ),
+        }}
+      />
+      {ownerLevel && historyOpen ? (
+        <KinProjectHistorySheet
+          environmentId={environmentId}
+          orgId={orgId}
+          projectKey={view.key}
+          seq={props.page.seq}
+          names={props.directory.names}
+          now={now}
+          onOpenTask={(key) => {
+            setHistoryOpen(false);
+            openTask(key);
+          }}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+      {pinning ? (
+        <KinPinToChatSheet
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.name}
+          onClose={() => setPinning(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** A project's full history for the owner level, opened from the since-looked line. */
+function KinProjectHistorySheet(
+  props: KinWorkTarget & {
+    readonly projectKey: KinRecordKey;
+    readonly seq: number;
+    readonly names: KinWorkNames;
+    readonly now: Date;
+    readonly onOpenTask: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const history = useKinWorkHistory(props, props.projectKey, props.seq);
+  return (
+    <Sheet title={KIN_CLIENTS.history} onClose={props.onClose}>
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{ padding: 16, gap: 12 }}
+      >
+        {history.state.loading ? (
+          <KinWorkLoading label={KIN_CLIENTS.history} />
+        ) : history.state.failed !== null ? (
+          <View className="items-start gap-2">
+            <Text textRole="footnote" className="text-foreground-muted">
+              {KIN_DOCS.historyFailed}
+            </Text>
+            <Button
+              tone="secondary"
+              size="compact"
+              label={KIN_RETRY}
+              onPress={history.list.refresh}
+            />
+          </View>
+        ) : history.state.records.length === 0 ? (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_CLIENTS.noHistory}
+          </Text>
+        ) : (
+          <KinWorkTimelineLines
+            lines={kinWorkTimeline(history.state.records, props.names, props.now, props.projectKey)}
+            onOpenTask={props.onOpenTask}
+          />
+        )}
+        {history.state.more ? (
+          <View className="items-start">
+            <Button
+              tone="secondary"
+              size="compact"
+              label={history.state.moreFailed ? KIN_RETRY : KIN_CLIENTS.earlier}
+              loading={history.state.loadingMore}
+              disabled={history.state.loadingMore}
+              onPress={() => void history.list.loadMore()}
+            />
+          </View>
+        ) : null}
+      </ScrollView>
+    </Sheet>
   );
 }
 
 /** Everything about the project above its tasks. Health is shown and never set here. */
 function KinProjectSummary(props: {
   readonly view: KinProjectPageView;
+  readonly sinceLooked: KinSinceLookedView | null;
+  readonly changedOpen: boolean;
+  readonly onChangedOpenChange: (open: boolean) => void;
+  readonly onChangedLayout: (y: number) => void;
+  readonly onOpenSinceLooked: () => void;
   readonly problem: KinWorkFormProblem | null;
   readonly onDismissProblem: () => void;
   readonly onOpenTask: (key: KinRecordKey) => void;
@@ -481,6 +648,7 @@ function KinProjectSummary(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {view.counts}
         </Text>
+        <KinSinceLookedLine view={props.sinceLooked} onPress={props.onOpenSinceLooked} />
       </View>
       {props.problem === null ? null : (
         <KinWorkProblemNotice problem={props.problem} onDismiss={props.onDismissProblem} />
@@ -616,25 +784,33 @@ function KinProjectSummary(props: {
         </KinFoldSection>
       )}
       {props.docs}
-      <KinFoldSection
-        title={KIN_PROJECTS.changed}
-        summary={
-          view.changed.length === 0
-            ? KIN_PROJECTS.nothingChanged
-            : count(view.changed.length, "change", "changes")
-        }
+      <View
+        onLayout={(event) => {
+          props.onChangedLayout(event.nativeEvent.layout.y);
+        }}
       >
-        {view.changed.length === 0 ? null : (
-          <View className="gap-2 bg-grouped-card px-4 py-3">
-            <KinWorkTimelineLines lines={view.changed} onOpenTask={props.onOpenTask} />
-            {view.changedMore === null ? null : (
-              <Text textRole="footnote" className="text-foreground-muted">
-                {view.changedMore}
-              </Text>
-            )}
-          </View>
-        )}
-      </KinFoldSection>
+        <KinFoldSection
+          title={KIN_PROJECTS.changed}
+          open={props.changedOpen}
+          onOpenChange={props.onChangedOpenChange}
+          summary={
+            view.changed.length === 0
+              ? KIN_PROJECTS.nothingChanged
+              : count(view.changed.length, "change", "changes")
+          }
+        >
+          {view.changed.length === 0 ? null : (
+            <View className="gap-2 bg-grouped-card px-4 py-3">
+              <KinWorkTimelineLines lines={view.changed} onOpenTask={props.onOpenTask} />
+              {view.changedMore === null ? null : (
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {view.changedMore}
+                </Text>
+              )}
+            </View>
+          )}
+        </KinFoldSection>
+      </View>
       {!props.privacy.shown && view.repos.length === 0 && view.notes === null ? null : (
         <KinFoldSection title={KIN_PROJECTS.details} summary={null}>
           {view.repos.length === 0 ? null : (

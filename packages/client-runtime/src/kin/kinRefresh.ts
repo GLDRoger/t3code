@@ -7,6 +7,7 @@ import type {
   KinRefreshTopic,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
@@ -115,6 +116,16 @@ export function kinRefreshTriggers(
       return answer;
     }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:serves:${name}:${environmentId}`));
   });
+  const hasTopic = Atom.family((key: string) => {
+    const [environmentId, orgId, topic] = parse(key);
+    return Atom.make((get) => {
+      const revision = AsyncResult.value(get(revisions({ environmentId, input: { orgId } })));
+      const held = Option.getOrUndefined(revision);
+      return held === undefined
+        ? get.self<boolean>().pipe(Option.getOrElse(() => false))
+        : held[topic] !== undefined;
+    }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:has:${topic}:${environmentId}`));
+  });
   const keyOf = (topic: string, target: Target) =>
     JSON.stringify([target.environmentId, target.input.orgId, topic]);
   return Object.assign(
@@ -123,6 +134,7 @@ export function kinRefreshTriggers(
       /** How often a topic has moved since this client first heard it; for a read over several orgs. */
       moves: (topic: KinRefreshTopic) => (target: Target) => moves(keyOf(topic, target)),
       unresumed,
+      hasTopic: (topic: KinRefreshTopic) => (target: Target) => hasTopic(keyOf(topic, target)),
       serves: (name: (typeof KIN_STREAMS)[number]) => (target: Target) =>
         serves(keyOf(name, target)),
     },

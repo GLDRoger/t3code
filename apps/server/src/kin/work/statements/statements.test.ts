@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -67,9 +67,13 @@ import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
 import { dayIn, formatMoney } from "../money.ts";
+import { setProfile } from "../companyProfile.ts";
+import * as Region from "../region.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
+import { makeMigratedSqliteLayer } from "../../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../../fixtureClock.testkit.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
 // The ids Kin's identity bootstraps, so the server's own layer below knows this owner too.
@@ -116,13 +120,14 @@ const logged: Array<string> = [];
 const logger = Logger.make(({ message, cause }) => {
   logged.push(JSON.stringify(message), String(cause));
 });
+const sqlite = makeMigratedSqliteLayer();
 const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFloor.layer).pipe(
   Layer.provideMerge(KinChatRepository.layer),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-statements-" })),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(
     Layer.succeed(
@@ -132,6 +137,7 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFl
   ),
   Layer.provideMerge(Logger.layer([logger])),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  withFixtureClock(NOW),
 );
 
 const fixture = (name: string) =>
@@ -206,7 +212,6 @@ const turn = (
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords.KinRecords;
-  yield* TestClock.setTime(NOW);
   yield* sql`INSERT OR IGNORE INTO kin_orgs VALUES (${orgId}, 'Lakeview Studio', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
@@ -419,6 +424,18 @@ describe("bank statements", () => {
         });
         assert.lengthOf(detail.rows, 1);
         assert.notMatch(detail.rows[0]!.reference!, /••/);
+        yield* setProfile(orgId, owner.actor, { country: "GB", homeCurrency: "INR" }, undefined);
+        const withoutLabel = opened(
+          yield* LeadStatements.read(scope, {
+            sourceEventId: "event-1",
+            attachment: "statement-layout-a.pdf",
+          }),
+        );
+        assert.include(
+          withoutLabel.matched.map((one) => one.to),
+          `${keys.tds} (paid with ₹10,000.00 of tax withheld)`,
+        );
+        assert.notInclude(JSON.stringify([withoutLabel.matched, withoutLabel.choose]), "TDS");
         // Nothing is recorded by reading.
         assert.lengthOf(yield* bankRows, 0);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
@@ -493,12 +510,13 @@ describe("bank statements", () => {
       assert.include(moneyOff.message, "Money is turned off for this company");
       assert.lengthOf(yield* bankRows, 0);
       yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
+      const withheldRow = card.matched.find((one) => one.target.key === keys.tds)!;
+      assert.strictEqual(withheldRow.target.note, "Paid with ₹10,000.00 TDS deducted");
+      yield* setProfile(orgId, owner.actor, { country: "GB", homeCurrency: "INR" }, undefined);
       const applied = yield* OwnerStatements.apply(people, confirmOf(later));
       assert.strictEqual(applied.card.status, "applied");
-      assert.include(
-        applied.card.result!.join(" "),
-        "Recorded 2 payments on invoices, 1 with TDS deducted.",
-      );
+      assert.include(applied.card.result!, "Recorded 2 payments on invoices, 1 with tax withheld.");
+      assert.notInclude(applied.card.result!.join(" "), "TDS");
       const exact = (yield* records.get(orgId, keys.exact))!;
       const tds = (yield* records.get(orgId, keys.tds))!;
       const aws = (yield* records.get(orgId, keys.aws))!;
@@ -512,10 +530,10 @@ describe("bank statements", () => {
         }>`SELECT amount_minor AS minor, note FROM kin_record_payments
           WHERE record_id = ${tds.recordId} ORDER BY amount_minor`).map((one) => [
           one.minor,
-          one.note.slice(0, 12),
+          one.minor === 1_000_000 ? one.note : one.note.slice(0, 12),
         ]),
         [
-          [1_000_000, "TDS deducted"],
+          [1_000_000, `Tax withheld by the client on ${withheldRow.date}`],
           [9_000_000, "HDFC Bank ••"],
         ],
       );
@@ -2176,25 +2194,35 @@ describe("bank statement safety", () => {
         const records = yield* KinRecords.KinRecords;
         const sql = yield* SqlClient.SqlClient;
         const result = yield* read(1, "statement-layout-a.pdf");
-        yield* OwnerStatements.apply(
+        const first = yield* OwnerStatements.apply(
           people,
           yield* confirmAll((yield* reviewCardOf(result.statement)).card),
         );
+        assert.include(first.card.result!, "Recorded 2 payments on invoices, 1 with TDS deducted.");
         yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
         assert.lengthOf(yield* livePayments, 0);
-        // Kin matches it again: undo cleared nothing that a refresh can reset.
-        yield* LeadStatements.read(scope, {
-          sourceEventId: "event-1",
-          attachment: "statement-layout-a.pdf",
-          refresh: true,
+        const regionOf = Region.regionOf;
+        using _label = vi.spyOn(Region, "regionOf").mockImplementation((country) => {
+          const region = regionOf(country);
+          return region?.withheldTax === "TDS" ? { ...region, withheldTax: "WHT" } : region;
         });
+        // Kin matches it again: undo cleared nothing that a refresh can reset.
+        const refreshed = opened(
+          yield* LeadStatements.read(scope, {
+            sourceEventId: "event-1",
+            attachment: "statement-layout-a.pdf",
+            refresh: true,
+          }),
+        );
+        expect
+          .soft(refreshed.matched.map((one) => one.to))
+          .toContain(`${keys.tds} (paid with ₹10,000.00 WHT deducted)`);
         const fresh = (yield* reviewCardOf(result.statement)).card;
         assert.strictEqual(fresh.status, "undone");
         const applied = yield* OwnerStatements.apply(people, yield* confirmAll(fresh));
-        assert.include(
-          applied.card.result!.join(" "),
-          "Recorded 2 payments on invoices, 1 with TDS deducted.",
-        );
+        expect
+          .soft(applied.card.result)
+          .toContain("Recorded 2 payments on invoices, 1 with WHT deducted.");
         assert.deepStrictEqual(
           (yield* livePayments).map((one) => [one.key, one.minor]),
           [
@@ -2618,17 +2646,16 @@ describe("bank statement safety", () => {
           });
         const marked = yield* statementOf(4, "marked.csv", 370_000);
         assert.deepStrictEqual(
-          [marked.card.matched, marked.card.unmatched.map((one) => [one.suggestion, one.why])],
+          marked.card.matched.map(({ target }) => [target.key, target.label, target.note]),
           [
-            [],
             [
-              [
-                "later",
-                "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
-              ],
+              domain.key,
+              `${domain.key}, ${refund.key} · Meera Rao`,
+              "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
             ],
           ],
         );
+        assert.deepStrictEqual(marked.card.unmatched, []);
       }).pipe(Effect.provide(layer)),
   );
 

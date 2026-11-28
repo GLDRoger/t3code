@@ -35,6 +35,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 import { isOrgOwner } from "./orgState.ts";
+import { trackedCardTapIds } from "./cardTapDeliveries.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
@@ -52,8 +53,6 @@ const validLedger = (ledger: TurnTokenUsage) =>
   validCount(ledger.inputTokens) &&
   validCount(ledger.outputTokens) &&
   (ledger.cachedInputTokens === undefined || validCount(ledger.cachedInputTokens));
-const completeLedger = (ledger: TurnTokenUsage | undefined) =>
-  ledger?.usageStatus === "complete" && validLedger(ledger);
 // A partial ledger counts what a running or stopped turn has used so far, which is still a floor.
 const countedLedger = (ledger: TurnTokenUsage | undefined) =>
   (ledger?.usageStatus === "complete" || ledger?.usageStatus === "partial") && validLedger(ledger);
@@ -88,14 +87,6 @@ export const unitsOf = (usage: ReadonlyArray<Usage>) => {
   const units = rawUnits(usage);
   return Number.isFinite(units) ? units : 0;
 };
-/** Whether `unitsOf` read a total: some provider turn's complete ledger, and no floor beside it. */
-export const fromCompleteLedgers = (usage: ReadonlyArray<Usage>) =>
-  usage.some((turn) => completeLedger(turn.turnTokenUsage)) &&
-  usage.every(
-    (turn) =>
-      completeLedger(turn.turnTokenUsage) ||
-      (!countedLedger(turn.turnTokenUsage) && !validCount(turn.usedTokens)),
-  );
 /** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {
@@ -631,6 +622,12 @@ const make = Effect.gen(function* () {
       function* (input) {
         if (input.events.length === 0) return;
         const { now } = yield* period(input.orgId);
+        const cardTaps = yield* trackedCardTapIds(
+          input.orgId,
+          input.events
+            .filter((event) => event._tag === "widget.action")
+            .map((event) => event.eventId),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         yield* queue.release({
           orgId: input.orgId,
           wakeupId: input.wakeupId,
@@ -639,6 +636,12 @@ const make = Effect.gen(function* () {
           countAttempt: false,
           budgetDeferred: true,
         });
+        if (cardTaps.length > 0) {
+          // A card tap gets its card back. It must not become claimable at the budget reset.
+          yield* sql`UPDATE kin_events SET state = 'expired'
+            WHERE org_id = ${input.orgId} AND state = 'queued' AND budget_deferred = 1
+              AND event_id IN ${sql.in(cardTaps)}`;
+        }
         const [lead] = yield* sql<{ name: string; ownerChatId: string }>`
         SELECT name, owner_chat_id AS "ownerChatId" FROM kin_leads
         WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
@@ -652,7 +655,7 @@ const make = Effect.gen(function* () {
           const chats = new Map<string, KinPersonId | undefined>();
           for (const event of input.events) {
             // Bills read in the background say it on their batch's card (`Bills.paused`).
-            if (event._tag === "bills.read") continue;
+            if (event._tag === "bills.read" || cardTaps.includes(event.eventId)) continue;
             const chatId =
               "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId;
             const asker =

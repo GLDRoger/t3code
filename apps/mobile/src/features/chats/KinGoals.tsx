@@ -6,8 +6,9 @@ import {
   kinGoalsSummary,
   type KinGoalDraft,
 } from "@t3tools/client-runtime/kin/kinAttention";
+import { KIN_PINS_COPY, kinGoalPinnable } from "@t3tools/client-runtime/kin/kinPins";
 import { KIN_GOAL_MEASURES, type KinGoal } from "@t3tools/contracts";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -20,9 +21,11 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { KinFoldSection, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, keyParam, targetOf } from "./KinWorkFormScreens";
 import { useKinGoals } from "./state/useKinAttention";
+import { useKinPinActions } from "./state/useKinPins";
 import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
 
 /** A goal's bar: how far it has got, with a tick where its straight line stands today. */
@@ -54,6 +57,8 @@ function GoalBar(props: {
 export function KinGoals(props: KinWorkTarget & { readonly seq: number | null }) {
   const navigation = useNavigation();
   const goals = useKinGoals(props, { enabled: true, money: true });
+  const pinActions = useKinPinActions(props);
+  const [pinning, setPinning] = useState<KinGoal | null>(null);
   const now = new Date(useNowMinuteMs());
   if (goals.state._tag !== "ready") return null;
   const list = goals.state.value.goals;
@@ -67,67 +72,87 @@ export function KinGoals(props: KinWorkTarget & { readonly seq: number | null })
     />
   ) : null;
   return (
-    <KinFoldSection
-      title={KIN_GOALS.title}
-      summary={kinGoalsSummary(list.map((goal) => kinGoalView(goal, now)))}
-    >
-      {list.map((goal) => {
-        const view = kinGoalView(goal, now);
-        const status =
-          view.status === "behind"
-            ? KIN_GOALS.behind
-            : view.status === "reached"
-              ? KIN_GOALS.reachedLabel
-              : null;
-        return (
-          <RowPressable
-            key={goal.key}
-            accessibilityRole="button"
-            accessibilityLabel={[view.title, view.figure, status, view.notCounted, view.about]
-              .filter((part) => part !== null)
-              .join(", ")}
-            disabled={!goals.canSave}
-            onPress={() => navigation.navigate("KinGoalForm", { ...base, goal: goal.key })}
-            className="bg-grouped-card"
-          >
-            <View className="gap-2 px-4 py-3">
-              <View className="flex-row items-baseline justify-between gap-3">
-                <Text textRole="body" className="shrink text-foreground" numberOfLines={1}>
-                  {view.title}
-                </Text>
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {view.figure}
-                </Text>
-              </View>
-              <GoalBar
-                progress={view.progress}
-                pace={view.pace}
-                behind={view.status === "behind"}
-              />
-              <Text
-                textRole="footnote"
-                className={
-                  view.status === "behind" ? "text-warning-foreground" : "text-foreground-muted"
-                }
+    <>
+      <KinFoldSection
+        title={KIN_GOALS.title}
+        summary={kinGoalsSummary(list.map((goal) => kinGoalView(goal, now)))}
+      >
+        {list.map((goal) => {
+          const view = kinGoalView(goal, now);
+          const canPinGoal = pinActions.canPin && kinGoalPinnable(goal);
+          const status =
+            view.status === "behind"
+              ? KIN_GOALS.behind
+              : view.status === "reached"
+                ? KIN_GOALS.reachedLabel
+                : null;
+          return (
+            <Fragment key={goal.key}>
+              <RowPressable
+                accessibilityRole="button"
+                accessibilityLabel={[view.title, view.figure, status, view.notCounted, view.about]
+                  .filter((part) => part !== null)
+                  .join(", ")}
+                disabled={!goals.canSave}
+                onPress={() => navigation.navigate("KinGoalForm", { ...base, goal: goal.key })}
+                className="bg-grouped-card"
               >
-                {[status, view.detail || null].filter((part) => part !== null).join(" · ")}
-              </Text>
-              {view.notCounted === null ? null : (
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {view.notCounted}
-                </Text>
-              )}
-              {view.about === null ? null : (
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {view.about}
-                </Text>
-              )}
-            </View>
-          </RowPressable>
-        );
-      })}
-      {add}
-    </KinFoldSection>
+                <View className="gap-2 px-4 py-3">
+                  <View className="flex-row items-baseline justify-between gap-3">
+                    <Text textRole="body" className="shrink text-foreground" numberOfLines={1}>
+                      {view.title}
+                    </Text>
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {view.figure}
+                    </Text>
+                  </View>
+                  <GoalBar
+                    progress={view.progress}
+                    pace={view.pace}
+                    behind={view.status === "behind"}
+                  />
+                  <Text
+                    textRole="footnote"
+                    className={
+                      view.status === "behind" ? "text-warning-foreground" : "text-foreground-muted"
+                    }
+                  >
+                    {[status, view.detail || null].filter((part) => part !== null).join(" · ")}
+                  </Text>
+                  {view.notCounted === null ? null : (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {view.notCounted}
+                    </Text>
+                  )}
+                  {view.about === null ? null : (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {view.about}
+                    </Text>
+                  )}
+                </View>
+              </RowPressable>
+              {canPinGoal ? (
+                <ListActionRow
+                  icon="pin"
+                  label={KIN_PINS_COPY.pinToChat}
+                  onPress={() => setPinning(goal)}
+                />
+              ) : null}
+            </Fragment>
+          );
+        })}
+        {add}
+      </KinFoldSection>
+      {pinning === null ? null : (
+        <KinPinToChatSheet
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          recordKey={pinning.key}
+          recordTitle={pinning.title}
+          onClose={() => setPinning(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -180,7 +205,10 @@ function GoalForm(props: {
   const [opened] = useState(() => new Date());
   const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, opened, zone));
   const [saving, setSaving] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const pinActions = useKinPinActions(props.target);
+  const canPinHere = goal !== null && kinGoalPinnable(goal) && pinActions.canPin;
   const edit = (patch: Partial<KinGoalDraft>) => setDraft({ ...draft, ...patch });
   const manual = draft.measure === "manual";
   const canSave =
@@ -297,6 +325,14 @@ function GoalForm(props: {
       </ListSection>
       {goal === null ? null : (
         <ListSection>
+          {canPinHere ? (
+            <ListActionRow
+              icon="pin"
+              label={KIN_PINS_COPY.pinToChat}
+              disabled={saving}
+              onPress={() => setPinning(true)}
+            />
+          ) : null}
           {goal.state === "open" ? (
             <ListActionRow
               icon="checkmark.circle"
@@ -314,6 +350,15 @@ function GoalForm(props: {
           />
         </ListSection>
       )}
+      {pinning && goal !== null ? (
+        <KinPinToChatSheet
+          environmentId={props.target.environmentId}
+          orgId={props.target.orgId}
+          recordKey={goal.key}
+          recordTitle={goal.title}
+          onClose={() => setPinning(false)}
+        />
+      ) : null}
     </FormShell>
   );
 }

@@ -21,7 +21,11 @@ it("classifies every shared tool, built-in list and pulse sense, including expli
     "bank_transactions",
     "subscriptions",
   ]);
-  assert.sameMembers(Object.keys(SECTIONS.senses), [...KinPulseSense.literals]);
+  const reservedSenses = ["pr_open_long", "pr_failing", "pr_review_waiting", "pr_ready"];
+  assert.sameMembers(
+    Object.keys(SECTIONS.senses),
+    KinPulseSense.literals.filter((sense) => !reservedSenses.includes(sense)),
+  );
   assert.sameMembers(
     Object.keys(SECTIONS.keys),
     [...Object.values(LISTS), ...Object.values(PRESETS)]
@@ -79,6 +83,7 @@ it("classifies client and project, money, and invoice and quote surfaces", () =>
     ["quote_unanswered", "invoices"],
     ["statement_missing", "money"],
     ["bank_alerts_unreadable", "money"],
+    ["bank_sender_waiting", "money"],
     ["payment_seen", "invoices"],
     ["repaid_seen", "money"],
     ["budget_near", "money"],

@@ -49,9 +49,11 @@ import {
   type KinFeedRow,
   type KinFeedViewer,
 } from "./kinChatFeed.ts";
+import { kinChatFeedRows } from "./kinChatScreen.ts";
 import type { KinHost } from "./kinHost.ts";
 import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive.ts";
 import { kinMessageLayout, kinPageHead, kinPageView } from "./kinMessagePage.ts";
+import { kinReplyButtons } from "./kinReplyButtons.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import {
   applyKinChatEvent,
@@ -846,6 +848,61 @@ describe("streaming replies", () => {
     ]);
   });
 
+  it("only a posted reply from the card's exact turn makes it readable before presence ends", () => {
+    const wakeupId = KinWakeupId.make("juniper-turn");
+    const card = agentMessage(2, {
+      sourceWakeupId: wakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice:juniper"),
+      ordinaryTurnAsk: true,
+    });
+    const progress = agentMessage(3, {
+      sourceWakeupId: wakeupId,
+      body: "Checking Juniper Cold Chain's order.",
+      progress: true,
+    });
+    const words = agentMessage(4, { sourceWakeupId: wakeupId, body: "The order is ready." });
+    const other = {
+      ...words,
+      author: { ...words.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+    };
+    const presence: KinPresence = {
+      agentId: KIN_FIXTURE_AGENT,
+      wakeupId,
+      state: "writing",
+      label: null,
+      startedAt: words.createdAt,
+      since: words.createdAt,
+    };
+    const read = (tail: KinMessage, line = presence) =>
+      kinChatFeedRows({
+        chatId: KIN_FIXTURE_CHAT_ID,
+        live: { ...feed([ownMessage(1), card, progress, tail]), presence: [line] },
+        earlier: emptyKinChat,
+        exhausted: true,
+        outbox: [],
+        viewer,
+        expandedRuns: new Set(),
+        dayStart: streamingAt,
+        teamRoomId: null,
+        direct: true,
+        formatTime: () => "",
+        landOn: null,
+        caughtUp: true,
+        ownsLead: true,
+        agentName: null,
+        retired: false,
+        readOnly: false,
+      }).latestSeq;
+    expect([
+      read(other),
+      read({ ...words, sourceWakeupId: KinWakeupId.make("not-this-turn") }),
+      read({ ...words, chatId: "other-chat" as KinMessage["chatId"] }),
+      read(words),
+      read(other, { ...presence, agentId: KIN_FIXTURE_QA }),
+    ]).toEqual([1, 1, 1, 4, 4]);
+  });
+
   it("draws a reply's buttons and receipt after its last separate card", () => {
     const sourceWakeupId = KinWakeupId.make("tidewater-footer");
     const question = agentMessage(2, {
@@ -1009,6 +1066,94 @@ describe("streaming replies", () => {
   });
 });
 
+describe("progress updates", () => {
+  const turn = KinWakeupId.make("3f1c9a52-7d4e-4b8a-9c21-6e0f5a7b2d13");
+  const update = (seq: number, body: string, overrides: Partial<KinMessage> = {}) =>
+    agentMessage(seq, { sourceWakeupId: turn, progress: true, body, ...overrides });
+  const replyKey = "send:reply:turn-item:provider:claudeAgent:native-item:item-7";
+  const bubble = (seq: number, body: string, key: string | undefined) =>
+    agentMessage(seq, {
+      sourceWakeupId: turn,
+      body,
+      ...(key === undefined ? {} : { clientMessageId: key }),
+    });
+  const card = agentMessage(3, {
+    sourceWakeupId: turn,
+    body: "",
+    widgetId: KinWidgetId.make("choice:tidewater-mismatches"),
+  });
+  const asked = { ...ownMessage(1), body: "Reconcile Tidewater Freight's November invoices." };
+  const first = update(2, "Reading the bank feed and November's invoices first.");
+  const second = update(4, "Found 3 mismatches; checking which are timing.");
+  const keys = (messages: ReadonlyArray<KinMessage>, clearUpdates: boolean) =>
+    messageRows(messages, viewer, new Set(), undefined, [], false, clearUpdates).map(
+      (row) => row.key,
+    );
+
+  // Viewers get the keys stripped (`messageForViewer`), so both shapes must draw alike.
+  it.each([
+    ["keyed", replyKey, `${replyKey}~b2`],
+    ["as a person reads them", undefined, undefined],
+  ] as const)(
+    "keeps the turn's order, and clears its updates once the reply posts (%s)",
+    (_, k1, k2) => {
+      const b1 = bubble(5, "Two of the three are timing; INV-0433 is short by $120.", k1);
+      const b2 = bubble(6, "I flagged INV-0433 for Rhea.", k2);
+      const turnRows = [asked, first, card, second, b1, b2];
+      const withReply = [asked.messageId, b1.messageId, b2.messageId, card.messageId];
+      const stopped = agentMessage(7, {
+        author: { _tag: "system" },
+        messageId: `kin-partway:${turn}` as KinMessage["messageId"],
+        body: "Tech lead stopped partway.",
+      });
+      expect([
+        keys(turnRows, false),
+        keys(turnRows, true),
+        keys([asked, first, card, second], false),
+        keys([asked, first, card, second], true),
+        keys([asked, first, card, second, stopped], true),
+        keys([asked, first, card, second, { ...b1, status: "deleted" }], true),
+        keys(
+          [asked, first, card, second, { ...b1, sourceWakeupId: KinWakeupId.make("a-later-turn") }],
+          true,
+        ),
+      ]).toEqual([
+        [
+          asked.messageId,
+          first.messageId,
+          second.messageId,
+          b1.messageId,
+          b2.messageId,
+          card.messageId,
+        ],
+        withReply,
+        [asked.messageId, first.messageId, second.messageId, card.messageId],
+        [asked.messageId, first.messageId, second.messageId, card.messageId],
+        [asked.messageId, first.messageId, second.messageId, card.messageId, stopped.messageId],
+        [asked.messageId, first.messageId, second.messageId, card.messageId, b1.messageId],
+        [asked.messageId, first.messageId, second.messageId, card.messageId, b1.messageId],
+      ]);
+    },
+  );
+
+  it("never joins a reply's group, so the reply's buttons are its own", () => {
+    const linked = update(2, "Checking INV-0433 against the bank feed.", {
+      links: [{ text: "INV-0433", to: { _tag: "record", key: "INV-12", kind: "doc" }, note: null }],
+    });
+    const reply = bubble(3, "INV-0433 is short by $120.", undefined);
+    const rows = messageRows([linked, reply], viewer, new Set());
+    expect(rows.map((row) => row.type)).toEqual(["message", "message"]);
+    expect(rows[0]).not.toHaveProperty("footerInFeed");
+    expect(rows[1]).toMatchObject({ continues: true });
+    expect(kinReplyButtons(linked)).toEqual([]);
+  });
+
+  it("is never counted as unseen", () => {
+    const messages = [asked, first, second, bubble(5, "Done.", replyKey)];
+    expect(kinUnseenCount(messages, 1, KIN_FIXTURE_OWNER)).toBe(1);
+  });
+});
+
 describe("kinPresenceLine", () => {
   const start = Date.parse("2026-11-08T09:00:00.000Z");
   const iso = (ms: number) => new Date(start + ms).toISOString();
@@ -1127,6 +1272,11 @@ describe("message labels", () => {
       "own messages and emphasis",
       ownRow("Thanks. Let's keep the **fixed timeout** for now"),
       "You. Thanks. Let's keep the fixed timeout for now. 9:30.",
+    ],
+    [
+      "a progress update says it is one",
+      row({ progress: true, body: "Checking the bank feed" }),
+      "Tech lead, agent, update. Checking the bank feed. 9:30.",
     ],
     [
       "link text, not its address",

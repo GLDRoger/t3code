@@ -366,7 +366,7 @@ export function kinTaskStep(
               ? (card.options.find((option) => option.kind === "yes") ?? null)
               : null,
           mayHaveGone:
-            card.mayHaveGone === undefined ? null : kinMayHaveGoneLine(card.mayHaveGone.at, now),
+            card.mayHaveGone === undefined ? null : kinMayHaveGoneLine(card.mayHaveGone, now),
           to: record.party?.title ?? null,
         }
       : {

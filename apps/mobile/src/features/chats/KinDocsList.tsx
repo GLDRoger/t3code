@@ -1,5 +1,6 @@
 import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
+import { kinDocsViewAction } from "./KinDocsMap";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_MORE_FAILED, KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
@@ -391,7 +392,9 @@ export function KinSearchHits(props: {
               )}
             </View>
             <Text textRole="footnote" className="text-foreground-muted">
-              {[props.docsOnly ? null : hit.kindLabel, hit.closed].filter(Boolean).join(" · ")}
+              {[props.docsOnly ? null : hit.kindLabel, hit.identifier, hit.closed]
+                .filter(Boolean)
+                .join(" · ")}
             </Text>
           </Pressable>
           <View className="ml-5 h-px bg-border-subtle" />
@@ -506,6 +509,8 @@ export function KinDocsList(
     readonly live: KinWorkLive;
     readonly directory: KinWorkDirectory;
     readonly stale: boolean;
+    /** Shows Docs as the map instead; absent where the list stands alone. */
+    readonly onMap?: () => void;
   },
 ) {
   const navigation = useNavigation();
@@ -662,22 +667,23 @@ export function KinDocsList(
       <AppBar
         title={KIN_WORK_HOME.places.docs}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
-        {...(agent === null
-          ? {}
-          : {
-              actions: [
+        actions={[
+          ...(props.onMap === undefined ? [] : [kinDocsViewAction("list", props.onMap)]),
+          ...(agent === null
+            ? []
+            : [
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
-                  icon: "bubble.left",
+                  icon: "bubble.left" as const,
                   onPress: () => agent.ask(kinWorkAskDraft("docs")),
                 },
                 {
                   accessibilityLabel: KIN_LISTS.ask,
-                  icon: "plus",
+                  icon: "plus" as const,
                   onPress: () => agent.ask(KIN_LISTS.askMessage),
                 },
-              ],
-            })}
+              ]),
+        ]}
         {...(refused
           ? {}
           : {

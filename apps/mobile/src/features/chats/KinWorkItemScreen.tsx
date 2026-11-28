@@ -13,6 +13,7 @@ import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   kinSectionNamed,
+  kinSectionNamedWords,
   kinSectionOf,
   kinSectionOffLine,
 } from "@t3tools/client-runtime/kin/kinShell";
@@ -39,12 +40,13 @@ import {
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
-  KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
-  KIN_WORK_ITEM_FAILED,
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
   KIN_WORK_STEPS,
@@ -113,6 +115,7 @@ import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
@@ -136,8 +139,12 @@ import {
 } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { useKinAskRecord } from "./state/useKinAskRecord";
+import { useKinPinActions } from "./state/useKinPins";
 import {
+  useKinPinnedEntryLook,
+  useKinRecordLooked,
   useKinWork,
   useKinWorkAnswer,
   useKinWorkChanges,
@@ -151,7 +158,13 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import {
+  kinEntryLookedUpTo,
+  kinEntrySinceLooked,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinSinceLookedLine, useKinScreenVisible } from "./components/KinSinceLookedLine";
 import { KinTaskWithRow } from "./components/KinTaskWithRow";
 import { kinTaskLeftAtom } from "./state/kinTaskLeft";
 import { useKinSectionOn, useKinShell } from "./state/useKinShell";
@@ -239,12 +252,8 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
   const key = Option.getOrNull(decodeKey(route.params.task));
   if (environmentId === null || orgId === null || key === null) {
     return (
-      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
-          title="This link doesn't name a task"
-          detail="Open Work from your Kin chats."
-        />
+      <KinWorkFrame title={kinWorkEntryKind(null).title} onBack={() => navigation.goBack()}>
+        <EmptyState variant="plain" {...kinWorkGone(null)} />
       </KinWorkFrame>
     );
   }
@@ -256,6 +265,8 @@ type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkItemGate(props: ItemTarget) {
   const navigation = useNavigation();
+  const shell = useKinShell(props.environmentId);
+  const title = kinSectionNamed(shell, kinWorkEntryKind(props.itemKey).title);
   const gate = useKinGate(
     kinClient.workRead.permissionStateAtom(props.environmentId),
     props.environmentId,
@@ -263,8 +274,8 @@ function KinWorkItemGate(props: ItemTarget) {
   // A teammate who follows a link asks the host nothing.
   if (gate !== null) {
     return (
-      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
-        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label="Task" />
+      <KinWorkFrame title={title} onBack={() => navigation.goBack()}>
+        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label={title} />
       </KinWorkFrame>
     );
   }
@@ -327,25 +338,53 @@ function KinWorkItemBody(props: ItemTarget) {
     useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
   );
   const now = new Date(useNowMinuteMs());
+  const visible = useKinScreenVisible();
+  const readyItem = state._tag === "ready" ? state.item : null;
+  const pinnedLookedAt = useKinPinnedEntryLook(readyItem);
+  const lookedUpTo = readyItem === null ? null : kinEntryLookedUpTo(readyItem);
+  useKinRecordLooked(
+    props,
+    readyItem === null || lookedUpTo === null
+      ? null
+      : { recordId: readyItem.recordId, upTo: lookedUpTo },
+    visible && making === null,
+  );
+  const sinceLooked =
+    readyItem === null
+      ? null
+      : kinEntrySinceLooked(readyItem, pinnedLookedAt, directory.names, now);
+  const scrollRef = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const historyY = useRef<number | null>(null);
+  const jumpToHistory = () => {
+    if (historyY.current !== null) {
+      scrollRef.current?.scrollTo({ y: Math.max(0, historyY.current - 12), animated: true });
+    }
+  };
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
   const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
+  const pinActions = useKinPinActions(props);
+  const [pinning, setPinning] = useState(false);
   const leadChat = useKinLeadChatId(
     props,
     task !== null && task.owner._tag === "agent" ? task.owner.agentId : null,
   );
 
   if (state._tag !== "ready") {
+    const kind = kinWorkEntryKind(itemKey);
+    const barTitle = kinSectionNamed(shell, kind.title);
+    const gone = kinSectionNamedWords(shell, kinWorkGone(itemKey));
+    const failed = kinSectionNamedWords(shell, kinWorkItemFailed(itemKey));
     return (
-      <KinWorkFrame title="Task" onBack={back}>
+      <KinWorkFrame title={barTitle} onBack={back}>
         {state._tag === "loading" ? (
-          <KinWorkLoading label="Loading task" />
+          <KinWorkLoading label={`Loading ${kinSectionNamed(shell, kind.noun)}`} />
         ) : state._tag === "gone" ? (
-          <EmptyState variant="plain" {...KIN_WORK_GONE} />
+          <EmptyState variant="plain" {...gone} />
         ) : (
           <EmptyState
             variant="plain"
-            {...KIN_WORK_ITEM_FAILED}
+            {...failed}
             action={
               <Button
                 tone="secondary"
@@ -452,7 +491,7 @@ function KinWorkItemBody(props: ItemTarget) {
     const section = kinSectionOf({ list: item.list });
     const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
-      <KinWorkFrame title={listName} onBack={back}>
+      <KinWorkFrame title={listName} onBack={back} scrollRef={scrollRef}>
         {offLine === null ? null : (
           <Text textRole="footnote" className="px-2 text-foreground-muted">
             {offLine}
@@ -465,8 +504,18 @@ function KinWorkItemBody(props: ItemTarget) {
           view={read}
           directory={directory}
           now={now}
+          sinceLooked={sinceLooked}
+          onOpenSinceLooked={jumpToHistory}
           links={linkedSection(item, read.links)}
-          history={<KinWorkHistory view={read} />}
+          history={
+            <View
+              onLayout={(event) => {
+                historyY.current = event.nativeEvent.layout.y;
+              }}
+            >
+              <KinWorkHistory view={read} />
+            </View>
+          }
         />
       </KinWorkFrame>
     );
@@ -619,6 +668,9 @@ function KinWorkItemBody(props: ItemTarget) {
   // The less-used moves; each is here only where the host takes it from this viewer.
   // Giving it to someone is on Held by, so the menu doesn't offer it twice.
   const moreItems: ReadonlyArray<AppBarMenuItem> = [
+    ...(pinActions.canPin
+      ? [{ id: "pin-to-chat", title: KIN_PINS_COPY.pinToChat, onPress: () => setPinning(true) }]
+      : []),
     ...repeatMenu,
     ...(controls.menu.handBack
       ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
@@ -704,6 +756,7 @@ function KinWorkItemBody(props: ItemTarget) {
       form={edit !== null}
       // The form opens at the top, wherever the page was scrolled to.
       showTop={edit === null ? null : edit.key}
+      scrollRef={scrollRef}
       {...(footer === undefined ? {} : { footer })}
     >
       <View className="gap-2.5 px-1">
@@ -731,6 +784,7 @@ function KinWorkItemBody(props: ItemTarget) {
         ))}
       </View>
       <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={itemKey} />
+      <KinSinceLookedLine view={sinceLooked} onPress={jumpToHistory} className="px-1" />
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>
@@ -1077,26 +1131,41 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         </View>
       )}
-      <KinActivity
-        lines={kinTaskActivity(
-          { changes: item.changes, comments },
-          names,
-          now,
-          // The card on top quotes it already when it is all there is to say.
-          step.words === view.reason ? null : view.reason,
-        )}
-        note={view.historyNote}
-        environmentId={environmentId}
-        onPressPreview={setPreviewFile}
-        onRemove={askRemove}
-        {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
-        {...(item.projectNote === undefined
-          ? {}
-          : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
-        onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
-      />
+      <View
+        onLayout={(event) => {
+          historyY.current = event.nativeEvent.layout.y;
+        }}
+      >
+        <KinActivity
+          lines={kinTaskActivity(
+            { changes: item.changes, comments },
+            names,
+            now,
+            // The card on top quotes it already when it is all there is to say.
+            step.words === view.reason ? null : view.reason,
+          )}
+          note={view.historyNote}
+          environmentId={environmentId}
+          onPressPreview={setPreviewFile}
+          onRemove={askRemove}
+          {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+          {...(item.projectNote === undefined
+            ? {}
+            : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
+          onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
+        />
+      </View>
       {linkedSection(shown, view.links, canLink && view.can.links === true)}
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+      {pinning ? (
+        <KinPinToChatSheet
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={item.key}
+          recordTitle={view.title}
+          onClose={() => setPinning(false)}
+        />
+      ) : null}
     </KinWorkFrame>
   );
 }

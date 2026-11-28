@@ -8,7 +8,12 @@ import type {
   ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
-import { KIN_PROVIDER_FACTS, kinCantDo, kinProviderFacts } from "@t3tools/contracts";
+import {
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
+  KIN_PROVIDER_FACTS,
+  kinCantDo,
+  kinProviderFacts,
+} from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
@@ -211,6 +216,14 @@ export const KIN_OTHER_PROVIDER_AGENTS = {
   detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };
 
+/** The host's switch on Settings → Agents, web and phone: a reply clears its turn's progress updates. */
+export const KIN_CLEAR_UPDATES = {
+  section: "Chats",
+  row: "Clear progress updates once the reply arrives",
+  rowDetail:
+    "Applies to everyone's chats in this company; updates from a turn that ends without a reply stay, and nothing is deleted.",
+};
+
 /** What an agent on this provider can't do, from the providers table; null when nothing. */
 export function kinProviderLimitLine(driver: string | undefined): string | null {
   const facts = kinProviderFacts(driver);
@@ -339,14 +352,60 @@ export const KIN_AGENTS_PAGE = {
   open: (name: string) => `Open ${name}`,
   working: "Working",
   paused: "Paused",
-  forNew: "For new agents",
-  model: "Model",
+  forNew: "Models",
+  model: "Model for new agents",
   defaultsTitle: "Choose what new agents run on",
   defaultsLabel: "Model",
   /** The row's line while nobody has chosen: what they start on meanwhile. */
   unchosen: (line: string) => `${line}, as your first agent`,
   save: "Save model",
 } as const;
+
+/** Settings → Agents, web and desktop: the model reading bills and verified-done checks run on. */
+export const KIN_BACKGROUND_MODEL = {
+  row: "Model for background checks",
+  /** The row's line; `line` is the model's line, so no model is named here in fixed words. */
+  detail: (line: string, kind: "default" | "chosen") =>
+    `${line}${kind === "default" ? " (the default)" : ""} reads bills and marks work done once GitHub shows it finished.`,
+  each: "Each agent's own model reads bills and marks work done once GitHub shows it finished.",
+  cantRun: (line: string) =>
+    `${line} can't run here now, so each agent's own model does these checks meanwhile.`,
+  cantRunStatus: "Can't run now",
+  title: "Choose the model for background checks",
+  description:
+    "Reading bills, and marking work done once GitHub shows it finished, run on this model. Anything written for a person, check-ins and briefs always use each agent's own model.",
+  choices: "Run background checks on",
+  useDefault: (line: string) => `The default, ${line}`,
+  another: "Another model",
+  eachChoice: "Each agent's own model",
+  model: "Model",
+  save: "Save model",
+} as const;
+
+/**
+ * The host's background checks model in its three states: the built-in default (no setting),
+ * a chosen model, or each agent's own (`null`). `runs` is false only once the offered models
+ * have loaded (`offered` not null) and none matches.
+ */
+export function kinBackgroundModel(
+  setting: ModelSelection | null | undefined,
+  offered: ReadonlyArray<ModelSelection> | null,
+):
+  | {
+      readonly kind: "default" | "chosen";
+      readonly selection: ModelSelection;
+      readonly runs: boolean;
+    }
+  | { readonly kind: "each" } {
+  if (setting === null) return { kind: "each" };
+  const selection = setting ?? DEFAULT_KIN_BACKGROUND_MODEL_SELECTION;
+  const runs =
+    offered === null ||
+    offered.some(
+      (model) => model.instanceId === selection.instanceId && model.model === selection.model,
+    );
+  return { kind: setting === undefined ? "default" : "chosen", selection, runs };
+}
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {

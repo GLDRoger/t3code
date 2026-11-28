@@ -56,6 +56,7 @@ import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinFoldSection,
+  KinMissingLink,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
@@ -122,10 +123,11 @@ export function KinClientScreen({ route }: StaticScreenProps<KinClientParams>) {
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title={named("This link doesn't name a client")}
-          detail="Open Work from your Kin chats."
+          kind="client"
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );

@@ -14,7 +14,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { turnAsker } from "./Audience.ts";
 import { leadsIn, update } from "./KinLeadProvision.ts";
-import { kinAgentModels } from "./leadModels.ts";
+import { isDevServer, kinAgentModels } from "./leadModels.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
 export const AgentUpdateInput = Schema.Struct({
@@ -35,16 +35,16 @@ const EFFORT_OPTIONS = new Set(KIN_PROVIDER_FACTS.map((facts) => facts.effortOpt
 /**
  * The model this host offers an agent that the owner's words name ("Sonnet", "opus 4.6"), with an
  * effort when that model has one by that name. Exact ids first, then the newest listed match.
- * With the host's switch on (the `kinNonClaudeAgents` setting), Codex's models count too.
  */
 export const matchModel = (
   providers: ReadonlyArray<ServerProvider>,
   words: string,
   effort: string | undefined,
   current: ModelSelection,
-  codex = false,
+  otherProviders = false,
+  devServer = false,
 ): ModelSelection | string => {
-  const offered = kinAgentModels(providers, codex);
+  const offered = kinAgentModels(providers, otherProviders, devServer);
   const wanted = squash(words);
   const found =
     offered.find(({ model }) => model.slug === words || model.aliases?.includes(words)) ??
@@ -54,7 +54,7 @@ export const matchModel = (
         ({ model }) => squash(model.name).includes(wanted) || squash(model.slug).includes(wanted),
       );
   if (found === undefined && words !== current.model)
-    return `This server offers no ${codex ? "" : "Claude "}model called ${words}. It has: ${offered
+    return `This server offers no ${otherProviders ? "" : "Claude "}model called ${words}. It has: ${offered
       .filter(({ model }) => model.isLegacy !== true)
       .map(({ model }) => model.name)
       .join(", ")}.`;
@@ -107,6 +107,7 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
     input.effort,
     agent.model,
     kinNonClaudeAgents,
+    yield* isDevServer,
   );
   if (typeof model === "string") return yield* refused("invalid_state", model);
   yield* update({

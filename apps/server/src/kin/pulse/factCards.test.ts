@@ -7,7 +7,11 @@ import {
   KIN_WAITED_DONE_FIELD,
   KinAgentId,
   KinChatError,
+  type KinEventId,
+  KinMessageId,
   KinPersonId,
+  KinWakeupId,
+  type KinMessage,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -18,10 +22,19 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import { Scheduler } from "../../scheduling/Scheduler.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -32,6 +45,7 @@ import type { Services } from "../KinServer.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { cardTapText } from "./draftWake.ts";
+import { plainFactCardTap } from "./plainFactCardTap.ts";
 import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { untold } from "./told.ts";
@@ -128,7 +142,9 @@ const setup = Effect.gen(function* () {
 type Ctx = Effect.Success<typeof setup>;
 
 /** Kin starts at 03:00 on the day, inside everyone's quiet hours: its clock only moves hours. */
-const run = <A, E>(test: (ctx: Ctx) => Effect.Effect<A, E, SqlClient.SqlClient | Services>) =>
+const run = <A, E>(
+  test: (ctx: Ctx) => Effect.Effect<A, E, SqlClient.SqlClient | Services | Scope.Scope>,
+) =>
   Effect.andThen(
     TestClock.setTime(NOW - 7 * HOUR),
     Effect.gen(function* () {
@@ -196,10 +212,10 @@ const tap = (ctx: Ctx, personId: KinPersonId, card: Card, label: string) =>
 /** A pass of the pulse as of `at`; who is in their hours is read from Kin's own clock. */
 const tickAt = (ctx: Ctx, at: number) => KinPulse.tick(ctx.orgId, at);
 /** Kin's own notices in someone's direct chat with the Chief of staff, oldest first. */
-const noticesTo = (ctx: Ctx, personId: KinPersonId) =>
+const noticesTo = (ctx: Ctx, personId: KinPersonId, agentId = chief) =>
   ctx.sql<{ body: string }>`SELECT m.body FROM kin_messages m
     JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
-    WHERE m.org_id = ${ctx.orgId} AND c.direct_key = ${`${personId}:${chief}`}
+    WHERE m.org_id = ${ctx.orgId} AND c.direct_key = ${`${personId}:${agentId}`}
       AND m.author_kind = 'system' AND m.status = 'posted'
     ORDER BY m.seq`.pipe(Effect.map((rows) => rows.map((row) => row.body)));
 /** Whether the owner's Needs attention holds an open fact about `key` of this sense. */
@@ -1127,6 +1143,470 @@ it.effect(
         assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
       }),
     ),
+);
+
+const startTapWorker = Effect.fn("FactCardsTest.startTapWorker")(function* (ctx: Ctx) {
+  const hub = Context.get(ctx.services, KinChatHub);
+  const pulled = yield* Queue.unbounded<KinMessageId>();
+  const services = Layer.succeedContext(ctx.services);
+  const delivery = LeadDelivery.layer.pipe(
+    Layer.provide(Layer.mock(Scheduler)({ register: () => Effect.void })),
+    Layer.provide(services),
+  );
+  const context = yield* Layer.build(
+    ChatWake.layer.pipe(
+      Layer.provideMerge(delivery),
+      Layer.provide(
+        Layer.succeed(KinChatHub, {
+          ...hub,
+          subscribeAll: hub.subscribeAll.pipe(
+            Effect.map(
+              Stream.tap((event) =>
+                event.type === "message.posted"
+                  ? Queue.offer(pulled, event.message.messageId)
+                  : Effect.void,
+              ),
+            ),
+          ),
+        }),
+      ),
+      Layer.provide(
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAMMATE_DAILY_TURNS: 1 })),
+      ),
+      Layer.provide(services),
+    ),
+  );
+  let barrier = 0;
+  const drain = Effect.fn("FactCardsTest.drainTapWorker")(function* (message: KinMessage) {
+    const messageId = KinMessageId.make(`tap-test-barrier-${++barrier}`);
+    yield* hub.publish({
+      type: "message.posted",
+      orgId: ctx.orgId,
+      message: { ...message, messageId, author: { _tag: "system" } },
+    });
+    while ((yield* Queue.take(pulled)) !== messageId);
+  });
+  return { drain, delivery: Context.get(context, LeadDelivery.KinLeadDelivery) };
+});
+
+const cardAnswer = (ctx: Ctx, card: Card) =>
+  ctx.sql`SELECT closed_at IS NOT NULL AS closed,
+    json_extract(state_json, '$.answer.optionId') AS answer, awaiting_json AS awaiting
+    FROM kin_widgets WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`;
+const deliveriesFor = (ctx: Ctx, card: Card) =>
+  ctx.sql`SELECT d.kind, d.status, e.state
+    FROM kin_lead_deliveries d LEFT JOIN kin_events e
+      ON e.org_id = d.org_id AND e.event_id = d.event_id
+    WHERE d.org_id = ${ctx.orgId} AND d.widget_id = ${card.widgetId}
+    ORDER BY d.created_at, d.event_id`;
+const openForZoya = [{ closed: 0, answer: null, awaiting: '["zoya"]' }];
+const noticeCardForZoya = Effect.fn("FactCardsTest.noticeCardForZoya")(function* (ctx: Ctx) {
+  yield* contract(ctx, { _tag: "person", personId: zoyaId });
+  yield* TestClock.setTime(NOW);
+  yield* tickAt(ctx, NOW);
+  return (yield* noticeCards(ctx))[0]!;
+});
+
+it.effect("a paused Stuck tap past its deadline reopens once and can be tapped again", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* inProgress(ctx, "Draft onboarding guide", zoyaId, NOW - 4 * DAY);
+      yield* tickAt(ctx, NOW);
+      const card = (yield* cards(ctx)).find((one) => one.labels.includes("Stuck"))!;
+      const worker = yield* startTapWorker(ctx);
+      yield* ctx.sql`UPDATE kin_agents SET paused_at = ${stamp}
+        WHERE org_id = ${ctx.orgId} AND agent_id = ${chief}`;
+      const first = yield* tap(ctx, zoyaId, card, "Stuck");
+      yield* worker.drain(first);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "pending", state: "queued" },
+      ]);
+      assert.deepStrictEqual(yield* (yield* KinEventQueue).readyLeads(ctx.orgId), []);
+
+      yield* TestClock.adjust("59 minutes");
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.strictEqual(
+        (yield* cards(ctx)).find((one) => one.widgetId === card.widgetId)?.closed,
+        true,
+      );
+      yield* TestClock.adjust("1 minute");
+      yield* worker.delivery.settle(ctx.orgId);
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId), [
+        "Chief of staff didn't get to your “Stuck” this time. Nothing was done, and the card takes your tap again.",
+      ]);
+      const [stored] = yield* ctx.sql<{ revision: number }>`SELECT revision FROM kin_widgets
+      WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`;
+      const second = yield* ctx.chats.act(ctx.person(zoyaId), {
+        widgetId: card.widgetId,
+        revision: stored!.revision,
+        actionId: "choose",
+        value: "option-3",
+        clientActionId: `${card.widgetId}:second-stuck`,
+      });
+      yield* Context.get(ctx.services, KinChatHub).publish({
+        type: "message.posted",
+        orgId: ctx.orgId,
+        message: first,
+      });
+      yield* worker.drain(second);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "fallback", state: "expired" },
+        { kind: "card_tap", status: "pending", state: "queued" },
+      ]);
+      assert.strictEqual(
+        (yield* cards(ctx)).find((one) => one.widgetId === card.widgetId)?.closed,
+        true,
+      );
+    }),
+  ),
+);
+
+it.effect.each(["failed", "budget_deferred"] as const)(
+  "a Give notice tap whose wake-up is %s reopens immediately on settlement",
+  (end) =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const card = yield* noticeCardForZoya(ctx);
+        const worker = yield* startTapWorker(ctx);
+        const tapped = yield* tap(ctx, zoyaId, card, "Give notice");
+        yield* worker.drain(tapped);
+        const queue = yield* KinEventQueue;
+        const wakeupId = KinWakeupId.make("01KAZJ405NE9CCR3QZ4Q22M1B7");
+        yield* TestClock.adjust("300 millis");
+        assert.deepStrictEqual(
+          (yield* queue.readyLeads(ctx.orgId)).map((lead) => lead.agentId),
+          [sales],
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const claimed = yield* queue.claim({
+              orgId: ctx.orgId,
+              agentId: sales,
+              wakeupId,
+              model: "gpt-5.1",
+            });
+            assert.lengthOf(claimed, 1);
+            if (end === "failed") {
+              yield* queue.finish({ orgId: ctx.orgId, wakeupId, status: "failed", final: true });
+              yield* ctx.sql`INSERT INTO kin_troubles (org_id, trouble_id, cause, opened_at)
+          VALUES (${ctx.orgId}, '01KAZJ405NE9CCR3QZ4Q22M1B8', 'space', ${NOW})`;
+            } else {
+              yield* (yield* KinBudget).defer({
+                orgId: ctx.orgId,
+                agentId: sales,
+                wakeupId,
+                events: claimed,
+                heldBy: "teammates",
+                nextReset: NOW + DAY,
+              });
+            }
+          }),
+        );
+        yield* worker.delivery.settle(ctx.orgId);
+        yield* worker.delivery.settle(ctx.orgId);
+        assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+        assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), [
+          end === "failed"
+            ? "Sales didn't get to your “Give notice”: Kin's computer ran out of space. Nothing was done, and the card takes your tap again."
+            : "Sales didn't get to your “Give notice” this time. Nothing was done, and the card takes your tap again.",
+        ]);
+        assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+          { kind: "card_tap", status: "fallback", state: "expired" },
+        ]);
+        if (end === "budget_deferred") {
+          yield* queue.reconsiderBudget(ctx.orgId);
+          yield* TestClock.adjust("1 day");
+          assert.deepStrictEqual(yield* queue.readyLeads(ctx.orgId), []);
+        }
+      }),
+    ),
+);
+
+it.effect(
+  "a Give notice tap refused by the teammate turn cap reopens without waiting for the sweep",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const card = yield* noticeCardForZoya(ctx);
+        const worker = yield* startTapWorker(ctx);
+        yield* ctx.sql`INSERT INTO kin_budget_limits (org_id, limits_json)
+      VALUES (${ctx.orgId}, '{"leadUnits":1000,"workerUnits":1000}')`;
+        const prior = JSON.stringify({ provenance: { personId: zoyaId } });
+        yield* ctx.sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at, state)
+      VALUES (${ctx.orgId}, '01KAZJ405NE9CCR3QZ4Q22M1B9', ${sales}, 'chat.message', 'P2', ${prior}, ${NOW}, ${NOW}, 'done')`;
+        const tapped = yield* tap(ctx, zoyaId, card, "Give notice");
+        yield* worker.drain(tapped);
+        assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+        assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), [
+          "Sales didn't get to your “Give notice” this time. Nothing was done, and the card takes your tap again.",
+        ]);
+        assert.deepStrictEqual(yield* (yield* KinEventQueue).readyLeads(ctx.orgId), []);
+      }),
+    ),
+);
+
+/** Sales claims the tap's turn, which then fails, after a visible step or not. */
+const claimTap = Effect.fn("FactCardsTest.claimTap")(function* (
+  ctx: Ctx,
+  wakeupId: KinWakeupId,
+  end: { readonly visible: boolean; readonly final?: true },
+) {
+  const queue = yield* KinEventQueue;
+  yield* TestClock.adjust("300 millis");
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const claimed = yield* queue.claim({
+        orgId: ctx.orgId,
+        agentId: sales,
+        wakeupId,
+        model: "gpt-5.1",
+      });
+      assert.lengthOf(claimed, 1);
+      if (end.visible)
+        yield* ctx.sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+          VALUES (${ctx.orgId}, ${wakeupId}, 'kin_draft:1', 'draft')`;
+      yield* queue.finish({
+        orgId: ctx.orgId,
+        wakeupId,
+        status: "failed",
+        ...(end.final ? { final: true } : {}),
+      });
+    }),
+  );
+});
+const tapEventId = (ctx: Ctx, card: Card) =>
+  ctx.sql<{ eventId: KinEventId }>`SELECT event_id AS "eventId" FROM kin_lead_deliveries
+    WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId} ORDER BY created_at, event_id`.pipe(
+    Effect.map((rows) => rows.map((row) => row.eventId)),
+  );
+const closedOnGiveNotice = [{ closed: 1, answer: "option-2", awaiting: "[]" }];
+
+it.effect("a Give notice tap whose turn is still running at its deadline waits for it", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      const queue = yield* KinEventQueue;
+      const wakeupId = KinWakeupId.make("01KAZJ405NE9CCR3QZ4Q22M1C1");
+      yield* TestClock.adjust("300 millis");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          assert.lengthOf(
+            yield* queue.claim({ orgId: ctx.orgId, agentId: sales, wakeupId, model: "gpt-5.1" }),
+            1,
+          );
+          yield* TestClock.adjust("2 hours");
+          yield* worker.delivery.settle(ctx.orgId);
+          assert.deepStrictEqual(yield* cardAnswer(ctx, card), closedOnGiveNotice);
+          assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+            { kind: "card_tap", status: "pending", state: "claimed" },
+          ]);
+          yield* queue.finish({ orgId: ctx.orgId, wakeupId, status: "completed" });
+        }),
+      );
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), closedOnGiveNotice);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "delivered", state: "done" },
+      ]);
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), []);
+    }),
+  ),
+);
+
+it.effect("a Give notice tap whose turn acted and then failed keeps its answer", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      const wakeupId = KinWakeupId.make("01KAZJ405NE9CCR3QZ4Q22M1C2");
+      yield* claimTap(ctx, wakeupId, { visible: true });
+      yield* worker.delivery.settle(ctx.orgId);
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), closedOnGiveNotice);
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), []);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "delivered", state: "failed" },
+      ]);
+    }),
+  ),
+);
+
+it.effect("a failed Give notice tap given back is never run later by a retry", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      const wakeupId = KinWakeupId.make("01KAZJ405NE9CCR3QZ4Q22M1C3");
+      yield* claimTap(ctx, wakeupId, { visible: false, final: true });
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+      const queue = yield* KinEventQueue;
+      // A trouble's release and the owner's Try again both requeue held events this way.
+      assert.strictEqual(yield* queue.wake(ctx.orgId, yield* tapEventId(ctx, card)), 0);
+      assert.deepStrictEqual(yield* queue.readyLeads(ctx.orgId), []);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "fallback", state: "expired" },
+      ]);
+    }),
+  ),
+);
+
+const reopenByHand = (ctx: Ctx, card: Card) =>
+  Effect.gen(function* () {
+    // Stands for any way the card opened again for Zoya before the first turn ran.
+    yield* ctx.sql`UPDATE kin_widgets SET closed_at = NULL, revision = revision + 1,
+        state_json = json_set(state_json, '$.answer', json('null')), awaiting_json = '["zoya"]'
+      WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`;
+    const [stored] = yield* ctx.sql<{ revision: number }>`SELECT revision FROM kin_widgets
+      WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`;
+    return yield* ctx.chats.act(ctx.person(zoyaId), {
+      widgetId: card.widgetId,
+      revision: stored!.revision,
+      actionId: "choose",
+      value: "option-2",
+      clientActionId: `${card.widgetId}:second-notice`,
+    });
+  });
+
+it.effect("a first tap first heard after a second tap answered the card wakes nobody", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const first = yield* tap(ctx, zoyaId, card, "Give notice");
+      const second = yield* reopenByHand(ctx, card);
+      const worker = yield* startTapWorker(ctx);
+      const hub = Context.get(ctx.services, KinChatHub);
+      for (const message of [second, first])
+        yield* hub.publish({ type: "message.posted", orgId: ctx.orgId, message });
+      yield* worker.drain(first);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "pending", state: "queued" },
+      ]);
+    }),
+  ),
+);
+
+it.effect("a budget-deferred Give notice tap does not run at the reset, even before a sweep", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      const wakeupId = KinWakeupId.make("01KAZJ405NE9CCR3QZ4Q22M1C4");
+      const queue = yield* KinEventQueue;
+      yield* TestClock.adjust("300 millis");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const claimed = yield* queue.claim({
+            orgId: ctx.orgId,
+            agentId: sales,
+            wakeupId,
+            model: "gpt-5.1",
+          });
+          yield* (yield* KinBudget).defer({
+            orgId: ctx.orgId,
+            agentId: sales,
+            wakeupId,
+            events: claimed,
+            heldBy: "teammates",
+            nextReset: NOW + DAY,
+          });
+        }),
+      );
+      yield* queue.reconsiderBudget(ctx.orgId);
+      yield* TestClock.adjust("1 day");
+      assert.deepStrictEqual(yield* queue.readyLeads(ctx.orgId), []);
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+    }),
+  ),
+);
+
+it.effect("a late fallback for a first tap leaves the card a second tap answered alone", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      yield* TestClock.adjust("30 minutes");
+      yield* worker.drain(yield* reopenByHand(ctx, card));
+      yield* TestClock.adjust("31 minutes");
+      yield* worker.delivery.settle(ctx.orgId);
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), closedOnGiveNotice);
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), []);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), [
+        { kind: "card_tap", status: "fallback", state: "expired" },
+        { kind: "card_tap", status: "pending", state: "queued" },
+      ]);
+    }),
+  ),
+);
+
+it.effect("a Give notice tap to an agent retired before it was queued gives the card back", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      yield* ctx.sql`UPDATE kin_agents SET retired_at = ${stamp}
+        WHERE org_id = ${ctx.orgId} AND agent_id = ${sales}`;
+      yield* worker.drain(yield* tap(ctx, zoyaId, card, "Give notice"));
+      assert.deepStrictEqual(yield* cardAnswer(ctx, card), openForZoya);
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId, sales), [
+        "Sales didn't get to your “Give notice” this time. Nothing was done, and the card takes your tap again.",
+      ]);
+      assert.deepStrictEqual(yield* (yield* KinEventQueue).readyLeads(ctx.orgId), []);
+    }),
+  ),
+);
+
+it.effect("only a plain tap on a fact card's own answer counts as a fact-card tap", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const tapped = yield* tap(ctx, zoyaId, card, "Give notice");
+      assert.isDefined(yield* plainFactCardTap(ctx.orgId, tapped));
+      const body = (actionId: string, value: string, widgetId: string = card.widgetId) =>
+        JSON.stringify({ widgetId, revision: 1, actionId, value });
+      for (const [actionId, value, widgetId] of [
+        ["confirm", "option-2", card.widgetId],
+        ["undo", "option-2", card.widgetId],
+        ["choose", "option-1", card.widgetId],
+        ["choose", "option-2", "widget-not-a-fact-card"],
+      ] as const)
+        assert.isUndefined(
+          yield* plainFactCardTap(ctx.orgId, { ...tapped, body: body(actionId, value, widgetId) }),
+          `${actionId} ${value} ${widgetId}`,
+        );
+      const author = tapped.author;
+      assert.strictEqual(author._tag, "human");
+      if (author._tag === "human")
+        assert.isUndefined(
+          yield* plainFactCardTap(ctx.orgId, {
+            ...tapped,
+            author: { ...author, personId: meeraId },
+          }),
+        );
+    }),
+  ),
+);
+
+it.effect("a planned Let it renew tap records no delivery", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const card = yield* noticeCardForZoya(ctx);
+      const worker = yield* startTapWorker(ctx);
+      const tapped = yield* tap(ctx, zoyaId, card, "Let it renew");
+      yield* worker.drain(tapped);
+      assert.deepStrictEqual(yield* deliveriesFor(ctx, card), []);
+    }),
+  ),
 );
 
 it.effect(

@@ -24,7 +24,7 @@ import type {
 } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
-import { creditMatch } from "../work/statements/invoiceCredits.ts";
+import { creditMatch, INVOICE_CHOICE_RESOLVED } from "../work/statements/invoiceCredits.ts";
 import {
   PAYMENT_TAP_REFUSAL,
   paymentChanged,
@@ -385,6 +385,7 @@ const runInvoiceChoice = Effect.fn("KinFactCards.runInvoiceChoice")(function* (
       by: { _tag: "person", personId },
       factKey: plan.factKey,
       action: "not_a_problem",
+      ...(match.choice.kind === "same" ? { note: INVOICE_CHOICE_RESOLVED } : {}),
     });
     return undefined;
   }

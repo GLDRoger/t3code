@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   CommandId,
+  DEFAULT_KIN_BACKGROUND_MODEL_SELECTION,
   KinAgentId,
   KinEventId,
   type KinEvent,
@@ -50,7 +51,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
-import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { KinRefreshHub, KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as HostBackup from "../hostBackup.ts";
 import { ServerConfig } from "../../config.ts";
@@ -64,6 +65,8 @@ import { feedTurn } from "../numbers/feeds.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
+import { reportRuleWordingChanged } from "../arrivals/ruleWake.ts";
+import { holdRuleWake } from "../arrivals/ruleRunStore.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -98,11 +101,13 @@ import {
 } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
+  backgroundWake,
   chooseLeadModel,
   companyDefaultModel,
   isDevServer,
   leadModelProblem,
   driverOf,
+  findProviderModel,
   leadProviderProblem,
   modelNotOffered,
 } from "./leadModels.ts";
@@ -113,9 +118,12 @@ import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
+import { trackedCardTapIds } from "./cardTapDeliveries.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { RoutineHasNowState } from "../pulse/nowState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
+import { KinDeferralGithubReader } from "../triggers/deferralGithub.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { textLocale } from "../work/companyProfile.ts";
@@ -230,6 +238,8 @@ const make = Effect.gen(function* () {
   const workspace = Option.getOrUndefined(yield* Effect.serviceOption(KinWorkspace));
   const agentSessions = Option.getOrUndefined(yield* Effect.serviceOption(KinAgentSessions));
   const refreshHub = Option.getOrUndefined(yield* Effect.serviceOption(KinRefreshHub));
+  // A held mail rule run shows in Settings; a turn's own fiber may not carry the observer.
+  const refresh = yield* KinRefreshObserver;
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
   const refusals = yield* Effect.serviceOption(KinRefusedModels);
@@ -246,6 +256,22 @@ const make = Effect.gen(function* () {
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
+  const deliveries = yield* Effect.serviceOption(LeadDelivery.KinLeadDelivery);
+  const cardTapsOf = (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) =>
+    trackedCardTapIds(orgId, eventIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.orElseSucceed((): ReadonlyArray<KinEventId> => []),
+    );
+  const settleCardTaps = (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) =>
+    Option.isNone(deliveries)
+      ? Effect.void
+      : deliveries.value
+          .settleCardTaps(orgId, eventIds)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin card tap settlement failed", { orgId, cause }),
+            ),
+          );
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -267,7 +293,7 @@ const make = Effect.gen(function* () {
     // Why it failed, from the error itself; a time-out has none and keeps the plain retries.
     const cause =
       status !== "failed" || Option.isNone(care) ? undefined : (setup ?? troubleCause(failure));
-    const claimed = cause === undefined ? [] : yield* claimedEvents(row);
+    const claimed = cause === undefined && Option.isNone(lane) ? [] : yield* claimedEvents(row);
     const now = yield* Clock.currentTimeMillis;
     let holdUntil: number | undefined;
     // A full disk: the trouble's one automatic clean, then one more try at once, telling nobody.
@@ -296,6 +322,7 @@ const make = Effect.gen(function* () {
     // Its bills left unanswered are told as unread once the turn is over for good.
     if (Option.isSome(chatRepository) && Option.isSome(chatHub))
       yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
+        Effect.provideService(KinEventQueue.KinEventQueue, queue),
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(Repository.KinChatRepository, chatRepository.value),
         Effect.provideService(KinChatHub, chatHub.value),
@@ -336,6 +363,16 @@ const make = Effect.gen(function* () {
       if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
     }
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
+    const cardTaps = yield* cardTapsOf(row.orgId, claimed);
+    yield* settleCardTaps(row.orgId, cardTaps);
+    // A tap given back says so itself; one whose turn showed something hears it here.
+    if (
+      cardTaps.length > 0 &&
+      cardTaps.length === claimed.length &&
+      finished.stranded === 0 &&
+      finished.replied === 0
+    )
+      return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
@@ -467,6 +504,7 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ensuring(Effect.sync(() => spaceChecks.delete(orgId))), Effect.forkIn(scope));
   }, Effect.uninterruptible);
   const prompt = yield* KinLeadPrompt;
+  const linkReader = yield* KinDeferralGithubReader;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
   const floor = yield* Floor.KinFloor;
@@ -536,6 +574,16 @@ const make = Effect.gen(function* () {
       fromWakeupIds: earlier.map((wake) => wake.wakeupId),
     }).pipe(provideSql);
   });
+  const deferEvents = Effect.fn("WakeupRunner.deferEvents")(function* (
+    input: Parameters<KinBudget.KinBudget["Service"]["defer"]>[0],
+  ) {
+    yield* budget.defer(input);
+    yield* settleCardTaps(
+      input.orgId,
+      input.events.filter((event) => event._tag === "widget.action").map((event) => event.eventId),
+    );
+  });
+
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -854,6 +902,7 @@ const make = Effect.gen(function* () {
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
       const [shadow] = yield* sql<{
+        background: number | null;
         carry: number | null;
         reason: string | null;
         chatId: string | null;
@@ -867,7 +916,8 @@ const make = Effect.gen(function* () {
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
           carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
         WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
-        RETURNING json_extract(carry_json, '$.carry') AS carry,
+        RETURNING json_extract(carry_json, '$.background') AS background,
+          json_extract(carry_json, '$.carry') AS carry,
           json_extract(carry_json, '$.reason') AS reason,
           json_extract(carry_json, '$.sent') AS sent,
           json_extract(carry_json, '$.bootId') AS "bootId",
@@ -986,6 +1036,7 @@ const make = Effect.gen(function* () {
               : (kinCharacterSeat(lead.domain) ?? "custom"),
         driver: driver ?? null,
         model: thread.modelSelection.model,
+        background: shadow?.background === 1,
         instructionsSha256:
           driver === undefined
             ? null
@@ -1038,10 +1089,12 @@ const make = Effect.gen(function* () {
       // Recovery resumes the count from the thread, so steer ids stay stable. T3's table has no
       // org; the thread is this wake-up's own.
       const steerPrefix = KinIdentity.steerMessagePrefix(wakeupId);
-      const [landedSteers] = yield* sql<{ steers: number }>`SELECT COUNT(*) AS steers
-        FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
-          AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}`;
-      const landed = landedSteers?.steers ?? 0;
+      const [wakeState] = yield* sql<{ steers: number; background: number | null }>`
+        SELECT json_extract(carry_json, '$.background') AS background,
+          (SELECT COUNT(*) FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
+            AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}) AS steers
+        FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      const landed = wakeState?.steers ?? 0;
       const steered =
         landed === 0
           ? []
@@ -1051,7 +1104,8 @@ const make = Effect.gen(function* () {
               ),
             })).messages;
       const steering = {
-        open: true,
+        // A new message waits for the agent’s own model rather than joining this background turn.
+        open: wakeState?.background !== 1,
         steers: landed,
         // The session holds a steer's framing once it read one; a taken run's first steer is the
         // whole prompt, which has none.
@@ -1090,7 +1144,7 @@ const make = Effect.gen(function* () {
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
-          yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          yield* deferEvents({ orgId, agentId, wakeupId, ...group });
           yield* onCards(Bills.paused(orgId, group.events, group.nextReset));
           events = events.filter((event) => !ids.has(event.eventId));
         }
@@ -1127,6 +1181,7 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
+            billPhotos: events.every((event) => event._tag === "bills.read"),
             offersBillsAdd: yield* offersBillsAdd(
               row,
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
@@ -1540,7 +1595,13 @@ const make = Effect.gen(function* () {
         attemptLimit: "run",
         notBefore: yield* Clock.currentTimeMillis,
       });
-      if (released.failedEventIds.length > 0 && Option.isSome(bridge) && Option.isSome(lane))
+      const cardTaps = yield* cardTapsOf(row.orgId, released.failedEventIds);
+      yield* settleCardTaps(row.orgId, cardTaps);
+      if (
+        released.failedEventIds.length > cardTaps.length &&
+        Option.isSome(bridge) &&
+        Option.isSome(lane)
+      )
         yield* bridge.value.failed({
           orgId: row.orgId,
           wakeupId: row.wakeupId,
@@ -1727,14 +1788,44 @@ const make = Effect.gen(function* () {
             const providers = Option.isSome(providerRegistry)
               ? yield* providerRegistry.value.getProviders
               : null;
+            const problemOf = (candidate: ModelSelection) =>
+              leadModelProblem(hostSettings, providers, candidate, devServer);
+            let own = current.model;
+            let background = false;
+            const backgroundModel =
+              hostSettings.kinBackgroundModelSelection === undefined
+                ? DEFAULT_KIN_BACKGROUND_MODEL_SELECTION
+                : hostSettings.kinBackgroundModelSelection;
+            if (backgroundModel !== null && backgroundWake(events.map((event) => event._tag))) {
+              const listed = providers?.find(
+                ({ instanceId }) => instanceId === backgroundModel.instanceId,
+              );
+              const slug =
+                findProviderModel(listed?.models ?? [], backgroundModel.model)?.slug ??
+                backgroundModel.model;
+              const refusedAt =
+                hostSettings.providerModelPreferences?.[backgroundModel.instanceId]?.refusedAt?.[
+                  slug
+                ];
+              const reason =
+                problemOf(backgroundModel) ??
+                (refusedAt !== undefined
+                  ? "The provider previously refused this model."
+                  : listed?.auth.status === "unauthenticated"
+                    ? `${listed.displayName ?? listed.instanceId} is signed out.`
+                    : undefined);
+              if (reason === undefined) {
+                own = backgroundModel;
+                background = true;
+              } else yield* Effect.logInfo("Kin background model not used", { reason });
+            }
             const { model: modelSelection } = chooseLeadModel({
-              own: current.model,
+              own,
               companyDefault: yield* companyDefaultModel(orgId).pipe(
                 provideSql,
                 Effect.orElseSucceed(() => null),
               ),
-              problemOf: (candidate) =>
-                leadModelProblem(hostSettings, providers, candidate, devServer),
+              problemOf,
             });
             // Provisioning refuses these too; a row written another way still never launches.
             const wrongProvider = leadProviderProblem(hostSettings, modelSelection, devServer);
@@ -1817,7 +1908,7 @@ const make = Effect.gen(function* () {
                     }
                   }
                 const waits = events.filter((event) => deferred.has(event.eventId));
-                yield* budget.defer({
+                yield* deferEvents({
                   orgId,
                   agentId,
                   wakeupId,
@@ -1944,13 +2035,15 @@ const make = Effect.gen(function* () {
             // The morning check-in carries the retired morning brief's sections as facts.
             if (Option.isSome(routineContent))
               for (const event of events.filter(isMorningCheckIn)) {
-                const facts = yield* routineContent.value.morningFacts(orgId, agentId).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Kin morning facts unavailable", {
-                      cause: error.cause,
-                    }).pipe(Effect.as(null)),
-                  ),
-                );
+                const facts = yield* routineContent.value
+                  .morningFacts(orgId, agentId, wakeupId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin morning facts unavailable", {
+                        cause: error.cause,
+                      }).pipe(Effect.as(null)),
+                    ),
+                  );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
             // The evening check-in carries the retired evening summary's sections as facts. One
@@ -1970,7 +2063,7 @@ const make = Effect.gen(function* () {
                 const facts =
                   day !== today
                     ? null
-                    : yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
+                    : yield* routineContent.value.eveningFacts(orgId, agentId, wakeupId).pipe(
                         Effect.catch((error) =>
                           Effect.logWarning("Kin evening facts unavailable", {
                             cause: error.cause,
@@ -1979,8 +2072,15 @@ const make = Effect.gen(function* () {
                       );
                 if (facts === null) {
                   dropped.add(event.eventId);
-                  yield* sql`DELETE FROM kin_pulse_told
-                    WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                  yield* sql.withTransaction(
+                    Effect.gen(function* () {
+                      yield* sql`UPDATE kin_events SET state = 'expired'
+                        WHERE org_id = ${orgId} AND event_id = ${event.eventId}
+                          AND wakeup_id = ${wakeupId} AND state = 'claimed'`;
+                      yield* sql`DELETE FROM kin_pulse_told
+                        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                    }),
+                  );
                 } else if (facts !== "") routineFacts.set(event.eventId, facts);
               }
             if (Option.isSome(routineContent)) {
@@ -2042,23 +2142,73 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             };
-            const built = candidate
-              ? yield* prompt.buildSession({
-                  ...promptInput,
-                  ...(previous === undefined ? {} : { previous }),
-                })
-              : undefined;
-            const full = built?.full ?? (yield* prompt.build(promptInput));
+            const routineHasNow = events.some(
+              (event) =>
+                (isMorningCheckIn(event) || isEveningCheckIn(event)) &&
+                routineFacts.has(event.eventId),
+            );
+            const rendered = yield* Effect.gen(function* () {
+              const built = candidate
+                ? yield* prompt.buildSession({
+                    ...promptInput,
+                    ...(previous === undefined ? {} : { previous }),
+                  })
+                : undefined;
+              return { built, full: built?.full ?? (yield* prompt.build(promptInput)) };
+            }).pipe(
+              Effect.provideService(RoutineHasNowState, routineHasNow),
+              Effect.provideService(KinDeferralGithubReader, linkReader),
+              Effect.catchTags({
+                KinLeadPromptError: (error) =>
+                  error.mailRuleHold === undefined
+                    ? Effect.fail(error)
+                    : Effect.succeed(error.mailRuleHold),
+              }),
+            );
+            if ("reason" in rendered) {
+              yield* sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    yield* holdRuleWake(orgId, rendered.eventId, wakeupId, rendered.reason).pipe(
+                      Effect.provideService(KinRefreshObserver, refresh),
+                    );
+                    const [event] = events;
+                    if (
+                      rendered.reason === "wording_changed" &&
+                      event?._tag === "pulse" &&
+                      Option.isSome(chatRepository) &&
+                      Option.isSome(chatHub)
+                    )
+                      yield* sql
+                        .withTransaction(
+                          reportRuleWordingChanged(event, yield* Clock.currentTimeMillis),
+                        )
+                        .pipe(
+                          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+                          Effect.provideService(KinChatHub, chatHub.value),
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning("Kin couldn't post a mail rule notice", { cause }),
+                          ),
+                        );
+                    yield* queue.finish({ orgId, wakeupId, status: "completed" });
+                  }),
+                )
+                .pipe(provideSql);
+              return;
+            }
+            const { built, full } = rendered;
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             const files = yield* prompt.attachments({ orgId, events });
+            const billPhotos = events.every((event) => event._tag === "bills.read");
             const canAddBills = yield* offersBillsAdd(row, shared);
             const legacyContent =
               built === undefined
                 ? yield* turnContent.prepare({
                     text: full,
                     attachments: files,
+                    billPhotos,
                     offersBillsAdd: canAddBills,
                   })
                 : undefined;
@@ -2173,7 +2323,10 @@ const make = Effect.gen(function* () {
                 // The running turn's thread: one wake-up runs per lead at a time.
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
-                prepared_at = ${preparedAt}, run_id = ${claimed.runId}
+                prepared_at = ${preparedAt}, run_id = ${claimed.runId},
+                carry_json = CASE WHEN ${background}
+                  THEN json_set(COALESCE(carry_json, '{}'), '$.background', json('true'))
+                  ELSE carry_json END
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
@@ -2270,6 +2423,7 @@ const make = Effect.gen(function* () {
                   fromWakeupIds: facts.sessionWakeupIds.filter((id) => id !== wakeupId),
                 });
               const stamp = yield* encodeShadowJson({
+                ...(background ? { background } : {}),
                 carry: reason === null,
                 reason,
                 sent,
@@ -2328,6 +2482,7 @@ const make = Effect.gen(function* () {
               (yield* turnContent.prepare({
                 text: send.text,
                 attachments: files,
+                billPhotos,
                 offersBillsAdd: canAddBills,
               }));
             // A finished task's run may already be this wake-up's (above).

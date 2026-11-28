@@ -15,6 +15,7 @@ import {
 } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
+import { billPhotoForModel } from "../../work/billPhotoForModel.ts";
 import { readPdfPages } from "../../work/statements/statementFiles.ts";
 import { PDF_PAGE_IMAGES, type PageBudget, renderPdfPages } from "./pdfPageImages.ts";
 
@@ -78,6 +79,15 @@ const pagesNamed = (name: string, shown: number, total: number) =>
 const pageName = (name: string, page: number, total: number) =>
   `${name.slice(0, 200)}, page ${page} of ${total}.jpg`;
 
+type TurnContentInput = {
+  readonly text: string;
+  readonly attachments: ReadonlyArray<ChatAttachment>;
+  /** The turn offers `bills_add`, so the files left out are named to it. */
+  readonly offersBillsAdd?: boolean;
+  /** Only an isolated bills.read lane; ordinary chat pictures are unchanged. */
+  readonly billPhotos?: boolean;
+};
+
 /**
  * What every provider gets in place of a file: text the model reads and pictures it sees. No Kin
  * turn depends on a provider's own document support, so every model reads the same thing.
@@ -85,12 +95,7 @@ const pageName = (name: string, page: number, total: number) =>
 export class KinTurnContent extends Context.Service<
   KinTurnContent,
   {
-    readonly prepare: (input: {
-      readonly text: string;
-      readonly attachments: ReadonlyArray<ChatAttachment>;
-      /** The turn offers `bills_add`, so the files left out are named to it. */
-      readonly offersBillsAdd?: boolean;
-    }) => Effect.Effect<{
+    readonly prepare: (input: TurnContentInput) => Effect.Effect<{
       readonly text: string;
       readonly attachments: ReadonlyArray<ChatAttachment>;
     }>;
@@ -127,12 +132,9 @@ export class KinTurnContent extends Context.Service<
         return image;
       });
 
-      const prepare = Effect.fn("KinTurnContent.prepare")(
-        function* (input: {
-          readonly text: string;
-          readonly attachments: ReadonlyArray<ChatAttachment>;
-          readonly offersBillsAdd?: boolean;
-        }) {
+      // Shares the prepare span with bill-photo normalization.
+      const prepareFiles = Effect.fnUntraced(
+        function* (input: TurnContentInput) {
           if (input.attachments.length === 0)
             return { text: input.text, attachments: input.attachments };
           const { kept, left } = turnFiles(input.attachments);
@@ -249,6 +251,22 @@ export class KinTurnContent extends Context.Service<
             ),
           ),
       );
+      const prepare = Effect.fn("KinTurnContent.prepare")(function* (input: TurnContentInput) {
+        if (!input.billPhotos) return yield* prepareFiles(input);
+        const attachments = yield* Effect.forEach(input.attachments, (file) =>
+          file.type === "image" && shownAsPicture(file)
+            ? billPhotoForModel(attachmentsDir, file).pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+              )
+            : Effect.succeed(file),
+        );
+        // Skipping just one image would point the prompt's B-numbers at the wrong photos.
+        if (!attachments.every((file) => file !== undefined)) {
+          yield* Effect.logWarning("Kin couldn't prepare a bill photo");
+          return { text: input.text, attachments: [] };
+        }
+        return yield* prepareFiles({ ...input, attachments });
+      });
       return KinTurnContent.of({ prepare });
     }),
   );

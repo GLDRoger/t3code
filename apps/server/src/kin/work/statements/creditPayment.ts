@@ -4,6 +4,7 @@ import {
   type KinOrgId,
   kinRateShown,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -24,7 +25,14 @@ import {
 import { BANK_CREDIT_ORIGIN, bankStates, findBankList } from "./bankList.ts";
 import { shortDay } from "./bankKnown.ts";
 import { parseFields } from "../lists.ts";
-import { agentWrote, creditMatch, type CreditPair, rateMoney } from "./invoiceCredits.ts";
+import {
+  agentWrote,
+  creditMatch,
+  type CreditMatch,
+  type CreditPair,
+  rateMoney,
+  resolveInvoiceChoice,
+} from "./invoiceCredits.ts";
 
 /**
  * A `kin_ask` option that records a Bank transactions credit as an invoice's payment: drawn only
@@ -69,6 +77,87 @@ const namedInvoice = Effect.fn("KinCreditPayment.namedInvoice")(function* (
   });
 });
 
+type SameChoice = Extract<NonNullable<CreditMatch["choice"]>, { kind: "same" }>;
+type SameOption = SameChoice["options"][number];
+
+export const sameChoicePayment = (
+  credit: CreditMatch["credit"],
+  choice: SameChoice,
+  first: SameOption,
+  more: ReadonlyArray<SameOption> = [],
+) => {
+  const splits: Array<NonNullable<PaymentTerms["splits"]>[number]> = [];
+  let leftMinor = credit.amountMinor;
+  for (const { invoice, owed } of [first, ...more]) {
+    if (leftMinor === 0) break;
+    const amountMinor = Math.min(owed.minor, leftMinor);
+    splits.push({
+      recordId: invoice.recordId,
+      key: invoice.key,
+      number: invoice.number ?? invoice.key,
+      seen: invoice.seen,
+      rev: invoice.rev,
+      amountMinor,
+      owedAfterMinor: owed.minor - amountMinor,
+    });
+    leftMinor -= amountMinor;
+  }
+  const { invoice } = first;
+  return {
+    kind: "record_payment",
+    recordId: invoice.recordId,
+    key: invoice.key,
+    title: invoice.title,
+    number: invoice.number ?? invoice.key,
+    client: { id: choice.clientId, name: choice.client },
+    seen: invoice.seen,
+    invoiceRev: invoice.rev,
+    bankRecordId: credit.recordId,
+    bankKey: credit.key,
+    rev: credit.rev,
+    amountMinor: credit.amountMinor,
+    currency: credit.currency,
+    day: credit.date,
+    withheldMinor: null,
+    owedAfterMinor: splits[0]!.owedAfterMinor,
+    ...(splits.length === 1 && leftMinor === 0 ? {} : { splits, leftMinor }),
+  } satisfies PaymentTerms;
+};
+
+const drawSameChoice = Effect.fn("KinCreditPayment.drawSameChoice")(function* (
+  orgId: KinOrgId,
+  credit: CreditMatch["credit"],
+  choice: SameChoice,
+  words: ReadonlyArray<string>,
+  draw: CardDraw,
+) {
+  if (words.length === 0 && choice.options.length > 1)
+    return yield* refuse(
+      `Kin can't tell which invoice ${credit.key} pays: name one or more after it, such as ${credit.key} ${choice.options[0]!.invoice.key}.`,
+    );
+  const chosen =
+    words.length === 0
+      ? [choice.options[0]!]
+      : yield* Effect.forEach(words, (word) =>
+          Effect.gen(function* () {
+            const row = yield* namedInvoice(orgId, word);
+            const option = choice.options.find(({ invoice }) => invoice.recordId === row.recordId);
+            if (option === undefined)
+              return yield* refuse(
+                `Each invoice must be ${choice.client}'s, still owed, in ${credit.currency}, and issued by ${shortDay(credit.date)}.`,
+              );
+            return option;
+          }),
+        );
+  if (new Set(chosen.map(({ invoice }) => invoice.recordId)).size !== chosen.length)
+    return yield* refuse("Name each invoice only once.");
+  const [first, ...rest] = chosen;
+  const payment = sameChoicePayment(credit, choice, first!, rest);
+  if (rest.length > 0 && payment.splits?.length !== chosen.length)
+    return yield* refuse("The credit is already used up by the earlier invoices.");
+  return { ...payment, draw } satisfies PaymentPlan;
+});
+
 export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
   orgId: KinOrgId,
   target: string,
@@ -91,13 +180,21 @@ export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
       `${bank.key} was written or changed by an agent, so Kin can't take it as the bank's word that money came in. ${NOTHING_ASKED} A person can record the payment on the invoice.`,
     );
   const match = yield* creditMatch(orgId, bank.recordId);
-  if (match === undefined || match.first.length === 0)
+  if (match === undefined || (match.first.length === 0 && match.choice?.kind !== "same"))
     return yield* refuse(
       `${bank.key} isn't an unexplained credit that Kin's bank matching takes for an open invoice's payment. ${NOTHING_ASKED}`,
     );
   if (match.recorded !== undefined)
     return yield* refuse(
       `${bank.key} may be the payment already recorded on ${match.recorded.key} on ${match.recorded.paidOn}, so Kin offers no card for it. ${NOTHING_ASKED}`,
+    );
+  if (match.choice?.kind === "same")
+    return yield* drawSameChoice(
+      orgId,
+      match.credit,
+      match.choice,
+      invoiceWord === undefined ? [] : [invoiceWord, ...extra],
+      draw,
     );
   const { first } = match;
   let pair: CreditPair | undefined;
@@ -216,12 +313,18 @@ const settledWhat = (plan: PaymentTerms, showBankKey: boolean) => {
   return `${plan.number}${client} (${owed}) with ${rateMoney(plan.received)} received on ${shortDay(plan.day)}${bankKey}, a rate of ${kinRateShown(plan.rate)}`;
 };
 
-export const paymentLabel = (plan: PaymentPlan) =>
-  plan.splits !== undefined
+export const paymentLabel = (plan: PaymentPlan) => {
+  if (plan.invoiceRev !== undefined) {
+    const numbers = plan.splits?.map(({ number }) => number) ?? [plan.number];
+    const label = `Record ${money(plan, plan.amountMinor)} on ${numbers.join(", ")}`;
+    return label.length <= 80 ? label : `${label.slice(0, 79)}…`;
+  }
+  return plan.splits !== undefined
     ? `Record ${money(plan, plan.amountMinor)} from ${plan.bankKey}`
     : plan.rate === undefined
       ? `Record ${money(plan, plan.amountMinor)} for ${plan.number}`
       : `Settle ${plan.number}`;
+};
 export const paymentLine = (plan: PaymentPlan) => {
   if (plan.splits !== undefined) {
     const name = clientName(plan);
@@ -258,9 +361,16 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
     const match = yield* creditMatch(orgId, plan.bankRecordId);
     const findInvoice = (one: { readonly invoice: { readonly recordId: string } }) =>
       one.invoice.recordId === plan.recordId;
-    const choice =
-      plan.invoiceRev === undefined ? undefined : match?.choice?.options.find(findInvoice);
-    const pair = plan.invoiceRev === undefined ? match?.first.find(findInvoice) : choice;
+    const choice = plan.invoiceRev === undefined ? undefined : match?.choice;
+    const selected = choice?.options.find(findInvoice);
+    const pair = plan.invoiceRev === undefined ? match?.first.find(findInvoice) : selected;
+    const clientMatches =
+      choice?.kind === "same"
+        ? typeof plan.client === "object" &&
+          plan.client !== null &&
+          choice.clientId === plan.client.id &&
+          choice.client === plan.client.name
+        : selected === undefined || selected.invoice.client === plan.client;
     const def = yield* findBankList(orgId);
     const ratePair = pair !== undefined && "rate" in pair ? pair : undefined;
     if (
@@ -269,8 +379,8 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
       pair === undefined ||
       def === undefined ||
       match.credit.rev !== plan.rev ||
-      choice?.invoice.rev !== plan.invoiceRev ||
-      (choice !== undefined && choice.invoice.client !== plan.client) ||
+      selected?.invoice.rev !== plan.invoiceRev ||
+      !clientMatches ||
       pair.invoice.seen !== plan.seen ||
       ratePair?.rate !== plan.rate ||
       ratePair?.received.minor !== plan.received?.minor ||
@@ -278,8 +388,9 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
       (ratePair !== undefined &&
         (ratePair.owed.minor !== plan.amountMinor || ratePair.owed.currency !== plan.currency)) ||
       (plan.splits === undefined &&
-        (pair.candidate.fit === "tds" ? (pair.candidate.tdsMinor ?? null) : null) !==
-          plan.withheldMinor)
+        ("candidate" in pair && pair.candidate.fit === "tds"
+          ? (pair.candidate.tdsMinor ?? null)
+          : null) !== plan.withheldMinor)
     ) {
       yield* retell(orgId, `payment_seen:${plan.bankKey}`);
       return undefined;
@@ -301,7 +412,11 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
                 invoice.clientId === client.id &&
                 invoice.currency === plan.currency &&
                 invoice.issued !== null &&
-                invoice.number !== null,
+                (part.rev === undefined
+                  ? invoice.number !== null
+                  : choice?.kind === "same" &&
+                    part.rev === invoice.rev &&
+                    choice.options.some((option) => option.invoice.recordId === part.recordId)),
             ),
         )
       ) {
@@ -386,6 +501,15 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
       relation: "relates",
       label: plan.key,
     });
+    if (choice?.kind === "same") {
+      if (writer.actor._tag !== "person") return yield* refuse(PAYMENT_TAP_REFUSAL);
+      yield* resolveInvoiceChoice(
+        orgId,
+        match.credit,
+        writer.actor.personId,
+        yield* Clock.currentTimeMillis,
+      );
+    }
     if (plan.splits !== undefined) {
       const settled = plan.splits
         .filter((part) => part.owedAfterMinor === 0)

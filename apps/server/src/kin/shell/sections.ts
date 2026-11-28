@@ -93,6 +93,7 @@ export const SECTIONS = {
     statement_read: "money",
     statement_rows: "money",
     bills_add: "money",
+    bill_cut: "money",
     bill_read: "money",
     kin_document: null,
     kin_picture: null,
@@ -102,6 +103,7 @@ export const SECTIONS = {
     kin_receipt: "money",
     kin_connection_tools: null,
     kin_connection_call: null,
+    mail_rule: null,
     kin_connection_offer: null,
     kin_connection_note: null,
     social_read: null,
@@ -225,10 +227,6 @@ export const SECTIONS = {
     client_cold: "clients",
     client_waiting_on_us: "clients",
     goal_behind: null,
-    pr_open_long: null,
-    pr_failing: null,
-    pr_review_waiting: null,
-    pr_ready: null,
     milestone_late: "clients",
     milestone_at_risk: "clients",
     project_no_plan: "clients",
@@ -239,6 +237,7 @@ export const SECTIONS = {
     holder_removed: null,
     statement_missing: "money",
     bank_alerts_unreadable: "money",
+    bank_sender_waiting: "money",
     payment_seen: "invoices",
     repaid_seen: "money",
     deal_no_next_step: "deals",
@@ -254,7 +253,10 @@ export const SECTIONS = {
     notice_due: null,
     bill_due: "money",
     bill_paid_seen: "money",
-  } satisfies Record<KinPulseSense, SectionId | null>,
+  } satisfies Record<
+    Exclude<KinPulseSense, "pr_open_long" | "pr_failing" | "pr_review_waiting" | "pr_ready">,
+    SectionId | null
+  >,
 };
 
 const section = (table: Readonly<Record<string, SectionId | null>>, id: string) =>

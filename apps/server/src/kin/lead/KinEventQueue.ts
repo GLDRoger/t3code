@@ -22,14 +22,18 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import {
   PersistenceDecodeError,
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { linkRuleWake, settleRuleWakes } from "../arrivals/ruleRunStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
-import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinChatRepository, latestOwnTextAtSql } from "../chat/KinChatRepository.ts";
+import { MINUTE_MS } from "../durations.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { fillAskedChats, settleReviews, settleTriage } from "../github/askedFor.ts";
 import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
@@ -104,6 +108,8 @@ const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
   WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'pulse' AND json_extract(e.json, '$.rule') IS NOT NULL
+  THEN 'mail-rule:' || e.event_id
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.review') IS NOT NULL
   THEN 'review:' || json_extract(e.json, '$.chatId')
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL
@@ -115,11 +121,11 @@ const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
   ELSE l.owner_chat_id END`;
 
 /**
- * Event `e` is the morning or weekly brief, whose turn ends as Kin's page (`KinReplyBridge`): it
+ * Event `e` is a scheduled brief, whose turn ends as Kin's page (`KinReplyBridge`): it
  * never shares a turn with someone's message, so its reply is the page and nothing else.
  */
-const MORNING_PAGE = `(e.tag = 'pulse'
-  AND json_extract(e.json, '$.checkIn.scheduleId') IN ('checkin-morning', 'checkin-weekly'))`;
+const CHECK_IN_PAGE = `(e.tag = 'pulse'
+  AND json_extract(e.json, '$.checkIn.scheduleId') IN ('checkin-morning', 'checkin-weekly', 'checkin-evening'))`;
 
 /** Who asked by event `e`: its stored message (a tap's own tap row) or the server's reaction. */
 const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
@@ -147,12 +153,18 @@ export const leadThreadBusy = (sql: SqlClient.SqlClient, lead: string) => {
 };
 
 const OWNER_BURST_MS = 300;
+const CONVERSATION_QUIET_MS = 10 * MINUTE_MS;
 const OWNER_WINDOW_MS = 2_000;
 
 const decodeClaimInput = Schema.decodeEffect(ClaimInput);
 const decodeSteerInput = Schema.decodeEffect(SteerInput);
 const decodeReleaseInput = Schema.decodeEffect(ReleaseInput);
 const decodeFinishInput = Schema.decodeEffect(FinishInput);
+
+type EnqueueOptions = {
+  readonly notBefore?: number;
+  readonly checkInPause?: { readonly until: number; readonly dayEndsAt?: number };
+};
 
 export class KinEventQueueConflict extends Schema.TaggedError<KinEventQueueConflict>()(
   "KinEventQueueConflict",
@@ -199,7 +211,7 @@ export class KinEventQueue extends Context.Service<
     /** `notBefore` holds a new event until then (a loose check-in's minute); a duplicate keeps its own. */
     readonly enqueue: (
       event: KinEvent,
-      options?: { readonly notBefore?: number },
+      options?: EnqueueOptions,
     ) => Effect.Effect<
       { readonly event: KinEvent; readonly duplicate: boolean },
       | PersistenceSqlError
@@ -456,10 +468,14 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
   const hub = yield* Effect.serviceOption(KinChatHub);
+  // A mail rule's run starting or ending shows in Settings; a caller's context has only the no-op.
+  const refresh = yield* KinRefreshObserver;
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
       Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
+      Effect.andThen(settleRuleWakes(orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
     );
   const laneOf = sql.literal(LANE_OF);
   const retryAlone = sql.literal("json_extract(e.json, '$._retryAlone') IS 1");
@@ -534,7 +550,7 @@ const make = Effect.gen(function* () {
   });
 
   const enqueue = Effect.fn("KinEventQueue.enqueue")(
-    function* (input: KinEvent, options?: { readonly notBefore?: number }) {
+    function* (input: KinEvent, options?: EnqueueOptions) {
       yield* validateEvent(input);
       if (
         input._tag === "github" &&
@@ -620,7 +636,13 @@ const make = Effect.gen(function* () {
           const inserted = yield* sql`
       INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at, not_before)
       VALUES (${event.eventId}, ${event.orgId}, ${event.agentId}, ${event._tag}, ${priority},
-        ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now},
+        ${
+          options?.checkInPause === undefined
+            ? json
+            : sql`json_set(${json}, '$._checkInPause', json_object(
+                'until', ${options.checkInPause.until}, 'dayEndsAt', ${options.checkInPause.dayEndsAt ?? null}))`
+        },
+        ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now},
         ${options?.notBefore !== undefined && options.notBefore > now ? options.notBefore : null})
       ON CONFLICT DO NOTHING
       RETURNING event_id
@@ -676,6 +698,49 @@ const make = Effect.gen(function* () {
     Effect.uninterruptible,
   );
 
+  // `not_before` also moves for quiet hours and retries. The original conversation cap does not.
+  const dueEvents = (
+    input: Pick<ClaimInput, "orgId" | "agentId">,
+    now: number,
+    includeRelease = false,
+  ) => {
+    const original = sql`COALESCE(e.not_before, e.queued_at)`;
+    const until = sql`json_extract(e.json, '$._checkInPause.until')`;
+    const dayEnd = sql`COALESCE(json_extract(e.json, '$._checkInPause.dayEndsAt'), ${Number.MAX_SAFE_INTEGER})`;
+    const iso = (time: number) => DateTime.formatIso(DateTime.makeUnsafe(time));
+    const quietAt = (since: string | Statement.Fragment) => {
+      const last = latestOwnTextAtSql(
+        sql,
+        { orgId: sql`e.org_id`, chatId: sql`l.owner_chat_id`, personId: sql`a.owner_person_id` },
+        since,
+        iso(now),
+      );
+      return sql`SELECT quiet_at FROM (
+        SELECT MIN(${until}, CAST(ROUND(unixepoch((${last}), 'subsec') * 1000) AS INTEGER)
+          + ${CONVERSATION_QUIET_MS}) AS quiet_at
+      ) WHERE quiet_at <= ${dayEnd}`;
+    };
+    return sql`
+      SELECT e.*, CASE WHEN ${original} <= ${now} AND e.tag = 'pulse' AND ${until} > ${now}
+        THEN COALESCE((${quietAt(iso(now - CONVERSATION_QUIET_MS))}), ${original})
+        ELSE ${original} END AS due_at,
+        ${
+          includeRelease
+            ? sql`CASE WHEN ${original} <= ${now} AND e.tag = 'pulse' AND ${until} > ${original}
+                THEN MAX(${original}, COALESCE((${quietAt(sql`strftime(
+                  '%Y-%m-%dT%H:%M:%fZ', (${original} - ${CONVERSATION_QUIET_MS}) / 1000.0, 'unixepoch'
+                )`)}), ${original}))
+                ELSE ${original} END AS released_at,`
+            : sql``
+        }
+        ${laneOf} AS lane
+      FROM kin_events e
+      JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+        AND a.retired_at IS NULL AND a.paused_at IS NULL
+      WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'`;
+  };
+
   const readiness = Effect.fn("KinEventQueue.readiness")(function* (
     input: Pick<ClaimInput, "orgId" | "agentId">,
     now: number,
@@ -687,19 +752,16 @@ const make = Effect.gen(function* () {
       deferred_at: number | null;
     }>`
       SELECT
-        MIN(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS first_at,
-        MAX(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS last_at,
+        MIN(CASE WHEN due_at <= ${now} THEN queued_at END) AS first_at,
+        MAX(CASE WHEN due_at <= ${now} THEN queued_at END) AS last_at,
         -- A finished task's run is already going, and a person is waiting on what they wrote:
         -- neither waits out the batch window. A person's place in the budget stays their priority.
         MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished'
             OR (tag IN ('chat.message', 'widget.action')
               AND json_extract(json, '$.provenance._tag') = 'human'))
-          AND COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS urgent_at,
-        MIN(CASE WHEN not_before > ${now} THEN not_before END) AS deferred_at
-      FROM kin_events
-      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
-        AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = kin_events.org_id
-          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL AND a.paused_at IS NULL)
+          AND due_at <= ${now} THEN queued_at END) AS urgent_at,
+        MIN(CASE WHEN due_at > ${now} THEN due_at END) AS deferred_at
+      FROM (${dueEvents(input, now)})
     `;
     const readyAt =
       window?.first_at != null && window.last_at !== null
@@ -816,24 +878,20 @@ const make = Effect.gen(function* () {
                         event_id: string;
                       }>`
                 WITH eligible AS (
-                  SELECT e.event_id, e.priority, e.received_at, ${laneOf} AS lane,
-                    ${retryAlone} AS solo, ${sql.literal(MORNING_PAGE)} AS page,
+                  SELECT e.event_id, e.priority, e.received_at, e.lane,
+                    ${retryAlone} AS solo, ${sql.literal(CHECK_IN_PAGE)} AS page,
                     e.tag IN ('chat.message', 'widget.action', 'chat.reaction') AS asked,
-                    MAX(e.queued_at, COALESCE(e.not_before, 0)) AS due
-                  FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
-                  -- Queued before a retirement, it never runs after it; nor while the agent is paused.
-                  JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-                    AND a.retired_at IS NULL AND a.paused_at IS NULL
-                  WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
-                    AND (e.not_before IS NULL OR e.not_before <= ${now})
+                    MAX(e.queued_at, e.released_at) AS due
+                  FROM (${dueEvents(input, now, true)}) e
+                  WHERE e.due_at <= ${now}
                 ), first AS (
                   SELECT event_id, lane, solo FROM eligible ORDER BY priority, received_at, event_id LIMIT 1
                 ), selected AS (
                   SELECT e.* FROM eligible e JOIN first f
                     ON CASE WHEN f.solo THEN e.event_id = f.event_id ELSE e.lane = f.lane AND NOT e.solo END
                 ), brief AS (
-                  -- The morning page is a turn of its own. It waits for one turn on the messages
-                  -- already waiting when it came due; then it runs, and later ones wait for it.
+                  -- The check-in page is a turn of its own. It waits for one turn on the messages
+                  -- waiting as it came due or its hold released; then it runs, and later ones wait.
                   SELECT EXISTS (SELECT 1 FROM selected p WHERE p.page = 1
                     AND NOT EXISTS (SELECT 1 FROM selected h
                       WHERE h.asked = 1 AND h.received_at <= p.due)) AS alone
@@ -863,6 +921,16 @@ const make = Effect.gen(function* () {
                       const enqueuedAt = Math.min(...rows.map((row) => row.queued_at));
                       yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}, enqueued_at = ${enqueuedAt}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
+                      yield* linkRuleWake(
+                        input.orgId,
+                        events.flatMap((event) =>
+                          event._tag === "pulse" && event.rule !== undefined ? [event.eventId] : [],
+                        ),
+                        input.wakeupId,
+                      ).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql),
+                        Effect.provideService(KinRefreshObserver, refresh),
+                      );
                       return events;
                     }),
                   )
@@ -910,7 +978,7 @@ const make = Effect.gen(function* () {
               AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
                 AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
               AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
-                AND e.wakeup_id = w.wakeup_id AND (${sql.literal(MORNING_PAGE)} OR ${retryAlone}))
+                AND e.wakeup_id = w.wakeup_id AND (${sql.literal(CHECK_IN_PAGE)} OR ${retryAlone}))
           ), lane AS (
             SELECT ${laneOf} AS chat_id FROM wakeup w
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id

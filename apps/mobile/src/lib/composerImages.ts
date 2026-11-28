@@ -229,7 +229,7 @@ export async function persistComposerAttachmentFile(
   return destination.uri;
 }
 
-async function ownedComposerImageAttachment(input: {
+export async function ownedComposerImageAttachment(input: {
   readonly fileUri: string;
   readonly name: string;
   readonly mimeType: string;
@@ -309,8 +309,15 @@ export async function createComposerFileAttachment(input: {
   }
 }
 
+type PreparePickedPhoto = (input: {
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType?: string | null;
+}) => Promise<DraftComposerImageAttachment | null>;
+
 export async function pickComposerFiles(input: {
   readonly existingCount: number;
+  readonly preparePhoto?: PreparePickedPhoto;
   readonly maxBytes?: number;
   readonly acceptSelection?: () => boolean;
 }): Promise<{
@@ -362,6 +369,13 @@ export async function pickComposerFiles(input: {
     const name = file.name.trim().length > 0 ? file.name : "file";
     try {
       const mimeType = imageMimeType({ name, mimeType: file.mimeType ?? "" });
+      if (input.preparePhoto !== undefined) {
+        const photo = await input.preparePhoto({ uri: file.uri, name, mimeType: file.mimeType });
+        if (photo !== null) {
+          attachments.push(photo);
+          continue;
+        }
+      }
       const attachment = await createComposerFileAttachment({
         uri: file.uri,
         name,
@@ -432,6 +446,7 @@ export async function pickComposerImages(input: { readonly existingCount: number
 
 export async function pickComposerMedia(input: {
   readonly existingCount: number;
+  readonly preparePhoto?: PreparePickedPhoto;
   readonly maxVideoBytes?: number;
   readonly acceptSelection?: () => boolean;
 }): Promise<{
@@ -532,6 +547,18 @@ export async function pickComposerMedia(input: {
     }
 
     const name = asset.fileName?.trim() || "image";
+    if (input.preparePhoto !== undefined) {
+      try {
+        const photo = await input.preparePhoto({ uri: asset.uri, name, mimeType });
+        if (photo !== null) {
+          attachments.push(photo);
+          continue;
+        }
+      } catch (cause) {
+        error = errorDisplayMessage(cause, m) ?? m(msg("Failed to read ''{name}''.", { name }));
+        continue;
+      }
+    }
     // Android content streams can exceed their reported size; measure the file before loading bytes into JS.
     let sourceBytes: number | null = null;
     try {

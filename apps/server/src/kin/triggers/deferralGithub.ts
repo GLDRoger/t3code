@@ -8,6 +8,7 @@ export const GithubLinkState = Schema.Struct({
   link: Schema.String,
   state: Schema.Literals(["open", "closed", "merged"]),
   assignees: Schema.Array(Schema.String),
+  author: Schema.optional(Schema.String),
   linkedPrs: Schema.Array(Schema.Int),
 });
 export type GithubLinkState = typeof GithubLinkState.Type;
@@ -125,6 +126,7 @@ export const readGithubLinkSets = Effect.fn("KinDeferralGithub.readLinkSets")(fu
       states.push({
         link,
         state: state.state,
+        ...(state.author === undefined ? {} : { author: state.author }),
         assignees: state.assignees.toSorted(),
         linkedPrs: state.linkedPrs.toSorted((a, b) => a - b),
       });

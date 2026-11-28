@@ -9,7 +9,8 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS Broken, Posts
 
 \* Post 3 is a client's; the others are the company's own. Post 2 is a second post on the company's
-\* card that is only shown, removed or confirmed, never handed over: it keeps the state space small.
+\* card that is only shown, removed or confirmed, never handed over, and "gone" once the card is
+\* confirmed: it keeps the state space small.
 Grp(p) == IF p = 3 THEN "client" ELSE "own"
 Full == Posts \ {2}
 Groups == {"own", "client"}
@@ -21,7 +22,7 @@ Keys == {1, 2}
 After == {"due", "late"}
 
 VARIABLES
-  st,          \* kin_social_posts.state; "none" before Social drafts it
+  st,          \* kin_social_posts.state; "none" before Social drafts it, "gone" for post 2 (above)
   ver,         \* the post's wording and time: 2 after an edit
   acct,        \* kin_social_posts.account_id
   shown,       \* the version the group's card showed for it (its digest)
@@ -53,6 +54,14 @@ Trouble == restarts + errors + moves + widens
 Calm == Trouble < 2
 Idle == \A q \in Posts : pc[q] = "idle"
 Key(p) == IF calls[p] = 0 THEN 1 ELSE calls[p]
+
+\* A post that ends posted or cancelled is never handed over, read, retried or cancelled again, so
+\* what only those steps read is cleared: the end state keeps no copy for each path that led there.
+Pass == <<attempted, sid, calls, lateOk, retried, tried>>
+EndPass(p) ==
+  /\ attempted' = [attempted EXCEPT ![p] = FALSE] /\ sid' = [sid EXCEPT ![p] = FALSE]
+  /\ calls' = [calls EXCEPT ![p] = 0] /\ lateOk' = [lateOk EXCEPT ![p] = FALSE]
+  /\ retried' = [retried EXCEPT ![p] = FALSE] /\ tried' = [tried EXCEPT ![p] = FALSE]
 
 Init ==
   /\ st = [p \in Posts |-> "none"] /\ ver = [p \in Posts |-> 0] /\ acct = [p \in Posts |-> ""]
@@ -123,7 +132,10 @@ ClientSaysOk ==
   /\ UNCHANGED <<post, drawn, replaced, confirmed, service, clock, trouble>>
 
 (* cards.ts applyWeekTap "confirm": refused on a replaced card, without a client's OK, or when the
-   rows no longer match the digest the card showed; then every post still proposed is confirmed. *)
+   rows no longer match the digest the card showed; then every post still proposed is confirmed.
+   The company's card is never drawn again, so post 2 has nothing left to do: Confirm clears it to
+   "gone", and no later state keeps a copy for each way it ended. A removed post 2 that Confirm took
+   stays as it is, because that breaks RemovedNeverScheduled. *)
 OwnerConfirms(g) ==
   /\ drawn[g] /\ ~confirmed[g] /\ ~replaced[g]
   /\ ok[g] \/ g = "own" \/ Broken = "no-client-ok"
@@ -131,14 +143,22 @@ OwnerConfirms(g) ==
          on == IF Broken = "confirm-all-on-card"
                  THEN ps \cup {p \in Posts : Grp(p) = g /\ st[p] = "removed"}
                  ELSE ps
+         gone == {p \in Posts : p = 2 /\ g = "own" /\ ~(p \in on /\ removedEver[p])}
      IN /\ ps # {}
         /\ (\A p \in ps : shown[p] = ver[p]) \/ Broken = "no-replace-no-digest"
-        /\ st' = [p \in Posts |-> IF p \in on THEN "scheduling" ELSE st[p]]
-        /\ conShown' = [p \in Posts |-> IF p \in on THEN shown[p] ELSE conShown[p]]
-        /\ okAtConfirm' = [p \in Posts |-> IF p \in on THEN ok[g] ELSE okAtConfirm[p]]
+        /\ st' = [p \in Posts |->
+                   IF p \in gone THEN "gone" ELSE IF p \in on THEN "scheduling" ELSE st[p]]
+        /\ ver' = [p \in Posts |-> IF p \in gone THEN 0 ELSE ver[p]]
+        /\ acct' = [p \in Posts |-> IF p \in gone THEN "" ELSE acct[p]]
+        /\ shown' = [p \in Posts |-> IF p \in gone THEN 0 ELSE shown[p]]
+        /\ removedEver' = [p \in Posts |-> IF p \in gone THEN FALSE ELSE removedEver[p]]
+        /\ conShown' = [p \in Posts |->
+                         IF p \in gone THEN 0 ELSE IF p \in on THEN shown[p] ELSE conShown[p]]
+        /\ okAtConfirm' = [p \in Posts |-> IF p \in gone THEN FALSE
+                                            ELSE IF p \in on THEN ok[g] ELSE okAtConfirm[p]]
   /\ confirmed' = [confirmed EXCEPT ![g] = TRUE]
-  /\ UNCHANGED <<ver, acct, shown, removedEver, attempted, sid, pc, lateOk, retried, reason,
-                 tried, drawn, replaced, ok, service, clock, trouble>>
+  /\ UNCHANGED <<attempted, sid, pc, lateOk, retried, reason, tried, drawn, replaced, ok, service,
+                 clock, trouble>>
 
 \* Refused for its account: "nothing was sent" only when no earlier attempt may have reached the service.
 AccountReason(p) == IF attempted[p] /\ Broken # "old-account-message" THEN "account-unknown" ELSE "account"
@@ -217,24 +237,25 @@ OwnerUndoes(p) ==
 
 (* SocialService.ts cancelOne, run by the pass the tap starts. With no saved id but an attempt that
    may have reached the service, the same key finds what it made. A post the service already sent
-   can't be deleted: the card goes back to scheduled, saying Undo didn't go through. *)
+   can't be deleted: the card goes back to scheduled, saying Undo didn't go through, and the post
+   is never undoing again, so whether a cancel was lost is cleared. *)
 KinCancels(p) ==
   /\ st[p] = "undoing" /\ Idle
   /\ LET known == sid[p] \/ (attempted[p] /\ Broken # "no-rederive")
          k == Key(p)
      IN IF Broken = "local-undo" \/ ~known \/ svc[p][k] = "none"
-          THEN /\ st' = [st EXCEPT ![p] = "cancelled"]
-               /\ UNCHANGED <<svc, sid, reason>>
+          THEN /\ st' = [st EXCEPT ![p] = "cancelled"] /\ EndPass(p)
+               /\ UNCHANGED <<svc, reason>>
           ELSE IF svc[p][k] = "posted"
             THEN /\ st' = [st EXCEPT ![p] = "scheduled"]
                  /\ reason' = [reason EXCEPT ![p] = "undo-late"]
-                 /\ sid' = [sid EXCEPT ![p] = TRUE]
-                 /\ UNCHANGED svc
+                 /\ sid' = [sid EXCEPT ![p] = TRUE] /\ tried' = [tried EXCEPT ![p] = FALSE]
+                 /\ UNCHANGED <<svc, attempted, calls, lateOk, retried>>
             ELSE /\ svc' = [svc EXCEPT ![p][k] = "cancelled"]
-                 /\ st' = [st EXCEPT ![p] = "cancelled"]
-                 /\ UNCHANGED <<sid, reason>>
-  /\ UNCHANGED <<ver, acct, shown, removedEver, conShown, okAtConfirm, attempted, pc, lateOk,
-                 retried, tried, card, svcVer, svcProf, calls, prof, reach, clock, trouble>>
+                 /\ st' = [st EXCEPT ![p] = "cancelled"] /\ EndPass(p)
+                 /\ UNCHANGED reason
+  /\ UNCHANGED <<ver, acct, shown, removedEver, conShown, okAtConfirm, pc, card, svcVer, svcProf,
+                 prof, reach, clock, trouble>>
 
 (* onError on an undoing post with an unknown outcome: it stays undoing for the next pass. *)
 CancelLost(p) ==
@@ -250,8 +271,9 @@ KinReads(p) ==
        /\ s \in {"posted", "failed", "cancelled"}
        /\ st' = [st EXCEPT ![p] = s]
        /\ reason' = [reason EXCEPT ![p] = IF s = "failed" THEN "platform" ELSE ""]
-  /\ UNCHANGED <<ver, acct, shown, removedEver, conShown, okAtConfirm, attempted, sid, pc, lateOk,
-                 retried, tried, card, service, clock, trouble>>
+       /\ IF s = "failed" THEN UNCHANGED Pass ELSE EndPass(p)
+  /\ UNCHANGED <<ver, acct, shown, removedEver, conShown, okAtConfirm, pc, card, svc, svcVer,
+                 svcProf, prof, reach, clock, trouble>>
 
 (* cards.ts applyWeekTap "retry": back to scheduling, and confirmed_at is now, so a post whose
    time passed goes out now rather than failing as late again. *)

@@ -12,6 +12,7 @@ import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
   KIN_WORK_NO_DRAFT,
+  kinUnavailableEntryLine,
   kinWorkItemState,
   kinWorkOffline,
   kinWorkOnlyOwner,
@@ -56,6 +57,8 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { KIN_CANVAS } from "@t3tools/client-runtime/kin/kinCanvasView";
+import { KinDocsMap } from "./canvas/KinDocsMap";
 import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
@@ -95,6 +98,7 @@ import { kinClient, retryKinAccess } from "./kinClient";
 import {
   KIN_PLACE_PATH,
   kinRecordOf,
+  kinRecordPlace,
   kinSearchDialogPlace,
   kinSearchOf,
   kinTaskAddress,
@@ -138,6 +142,7 @@ const NO_ITEM: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.ini
 
 type UnavailableLink = {
   readonly kind: KinInvalidLink;
+  readonly key?: KinRecordKey;
   readonly hides: "none" | "record" | "task";
 };
 
@@ -199,7 +204,7 @@ function useKinUnavailableLink(
       return { kind: "client", hides: "record" };
   }
   if (taskKey !== null && kinWorkItemState(taskResult, null)._tag === "gone")
-    return { kind: "task", hides: "task" };
+    return { kind: "task", key: taskKey, hides: "task" };
   return input.invalidLink === null ? null : { kind: input.invalidLink, hides: "none" };
 }
 
@@ -288,6 +293,15 @@ export function KinPlacesRoute() {
       }
       dialog={search.open ?? null}
       person={search.person ?? null}
+      view={place === "docs" && search.view === "map" ? "map" : "list"}
+      onView={(next) =>
+        void navigate({
+          to: KIN_PLACE_PATH.docs,
+          params,
+          search: next === "map" ? { view: "map" } : {},
+          state: { kinDepth: 0 },
+        })
+      }
       invalidLink={search.invalidLink ?? location.state.kinInvalidLink ?? null}
       onDialog={(next) => {
         const pushed = location.state.kinDialogPushed === true;
@@ -299,6 +313,7 @@ export function KinPlacesRoute() {
         const under = {
           ...kinSearchOf(record),
           ...kept,
+          ...(search.view === undefined ? {} : { view: search.view }),
           ...(search.task === undefined ? {} : { task: search.task }),
         };
         const replace = next === null || search.open !== undefined;
@@ -384,10 +399,15 @@ export function KinPlaceView({
   tab: askedTab,
   onTab,
   person = null,
+  view = "list",
+  onView,
   invalidLink = null,
   ...props
 }: KinWorkTarget & {
   readonly place: KinPlace;
+  /** Docs as its list or as the map. */
+  readonly view?: "list" | "map";
+  readonly onView?: (view: "list" | "map") => void;
   /** A person's page opened Tasks for what they hold. */
   readonly person?: KinPersonId | null;
   /** A link param whose value wasn't a valid key (`validateKinPlaceSearch`). */
@@ -533,6 +553,9 @@ export function KinPlaceView({
     ready && pickers && seesDeals
       ? (party: KinWorkRef | null) => setAdding({ type: "deal", party })
       : null;
+  const opening = record !== null || taskPage;
+  // The map stands in for the list only with nothing open over it; a record opens from the list.
+  const mapShown = place === "docs" && view === "map" && !opening;
 
   const header = (
     <WorkspacePageHeader electron={hasDesktopWindowChrome}>
@@ -579,6 +602,22 @@ export function KinPlaceView({
               {named(held.label)}
             </Toggle>
           ))}
+        </ToggleGroup>
+      )}
+      {place !== "docs" ||
+      onView === undefined ||
+      !ready ||
+      placeRefused ||
+      (opening && !wide) ? null : (
+        <ToggleGroup
+          aria-label={KIN_CANVAS.views}
+          value={[mapShown ? "map" : "list"]}
+          onValueChange={(value) => {
+            if (value[0] === "map" || value[0] === "list") onView(value[0]);
+          }}
+        >
+          <Toggle value="list">{KIN_CANVAS.list}</Toggle>
+          <Toggle value="map">{KIN_CANVAS.title}</Toggle>
         </ToggleGroup>
       )}
       {!ready ? null : (
@@ -661,6 +700,51 @@ export function KinPlaceView({
           onSubscriptions={() => open({ subscriptions: true })}
           onBills={(batchId) => open({ bills: batchId })}
           onOpenDoc={openDoc}
+        />
+      );
+    if (mapShown)
+      return (
+        <KinDocsMap
+          key={`${props.environmentId}:${props.orgId}`}
+          {...props}
+          wide={wide}
+          renderPeek={(peek, onPeek) =>
+            peek.kind === "doc" ? (
+              <KinDocPage
+                key={peek.where.doc}
+                {...props}
+                where={peek.where}
+                directory={directory}
+                placeTitle={title}
+                inPane
+                onGo={(where) => onPeek(where === null ? null : { kind: "doc", where })}
+                linkTo={(section) => docLink(peek.where.doc, section)}
+                onOpenKey={(key) => onPeek({ kind: "task", key })}
+                onOpenClient={openClient}
+                onOpenProject={openProject}
+              />
+            ) : (
+              task(
+                peek.key,
+                "pane",
+                {
+                  ...fromList,
+                  task: (key) => onPeek(key === null ? null : { kind: "task", key }),
+                  doc: (doc, section) =>
+                    onPeek({
+                      kind: "doc",
+                      where: section === undefined ? { doc } : { doc, section },
+                    }),
+                },
+                () => onPeek(null),
+              )
+            )
+          }
+          onOpen={(peek) =>
+            peek.kind === "doc"
+              ? onGo("docs", peek.where, false)
+              : onLeave(kinRecordPlace({ kind: "task", key: peek.key }))
+          }
         />
       );
     if (place === "docs")
@@ -859,6 +943,7 @@ export function KinPlaceView({
     key: KinRecordKey,
     frame: "sheet" | "pane" | "page",
     go: ReturnType<typeof opens>,
+    onClose: () => void,
   ) =>
     kinIsDealKey(key) ? (
       <KinDealPage
@@ -875,7 +960,7 @@ export function KinPlaceView({
             : (party) => setAdding({ type: "project", party })
         }
         onAddTask={addTask}
-        onClose={() => setOpenKey(null)}
+        onClose={onClose}
       />
     ) : (
       <KinWorkItemSheet
@@ -891,10 +976,9 @@ export function KinPlaceView({
         onOpenClient={go.party}
         onOpenProject={go.project}
         onOpenDoc={(doc) => go.doc(doc)}
-        onClose={() => setOpenKey(null)}
+        onClose={onClose}
       />
     );
-  const opening = record !== null || taskPage;
   // Import a file takes the Clients place over while it is open; the host decides who may.
   const importing = dialog === "import" && place === "clients" && ownerLevel && hostClients;
 
@@ -906,9 +990,11 @@ export function KinPlaceView({
       {unavailable === null ? null : (
         <KinUnavailableLinkNote
           line={named(
-            KIN_UNAVAILABLE_LINK[
-              unavailable.kind === "task" && place !== "tasks" ? "entry" : unavailable.kind
-            ],
+            unavailable.key !== undefined
+              ? kinUnavailableEntryLine(unavailable.key)
+              : KIN_UNAVAILABLE_LINK[
+                  unavailable.kind === "task" && place !== "tasks" ? "entry" : unavailable.kind
+                ],
           )}
         />
       )}
@@ -980,7 +1066,7 @@ export function KinPlaceView({
                   {kinIsDealKey(openKey) ? null : (
                     <KinSectionOffNote line={offLine(kinSectionOf({ key: openKey }))} />
                   )}
-                  {task(openKey, wide ? "pane" : "page", fromRecord)}
+                  {task(openKey, wide ? "pane" : "page", fromRecord, () => setOpenKey(null))}
                 </>
               ) : null}
             </section>
@@ -1006,7 +1092,9 @@ export function KinPlaceView({
           }}
         />
       )}
-      {openKey === null || !ready || taskPage ? null : task(openKey, "sheet", fromList)}
+      {openKey === null || !ready || taskPage
+        ? null
+        : task(openKey, "sheet", fromList, () => setOpenKey(null))}
       {adding?.type === "task" && dialog === "new" ? (
         <KinWorkNewDialog
           {...props}

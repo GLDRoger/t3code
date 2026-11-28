@@ -54,6 +54,8 @@ import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
+import * as Looks from "./looks.ts";
 import { fieldText, LISTS, parseFields } from "./lists.ts";
 import {
   OFFERINGS_ORIGIN,
@@ -75,7 +77,7 @@ import {
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
-import { docKindWords, searchIndexed } from "./searchIndex.ts";
+import { docKindWords, keysOfSearch, searchIndexed } from "./searchIndex.ts";
 import {
   clientDocMoneySeen,
   KIN_OWNER_LEVEL,
@@ -293,12 +295,14 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
   ref: { readonly key: string } | { readonly recordId: string },
   viewer: KinViewer,
   readerId: KinPersonId,
-  version?: number,
+  options: { readonly version?: number | undefined; readonly withLooks?: boolean } = {},
 ) {
+  const { version, withLooks } = options;
   const records = yield* KinRecords;
   const row = yield* Docs.docRow(orgId, ref, viewer);
   const latest = yield* Docs.versionOf(orgId, row.recordId);
-  const found = yield* Docs.versionOf(orgId, row.recordId, version);
+  const found =
+    version === undefined ? latest : yield* Docs.versionOf(orgId, row.recordId, version);
   const seen = yield* Docs.versionsSeen(orgId, viewer, row);
   const shown = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* unavailable;
@@ -318,6 +322,12 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       const seen = yield* teamVisible(orgId, person, ids);
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
+  const mark =
+    withLooks === true ? yield* Looks.lookedAt(orgId, readerId, row.recordId) : undefined;
+  const sinceLooked =
+    mark == null
+      ? undefined
+      : yield* Docs.versionsSinceLooked(orgId, readerId, row, viewer, mark, shown.version);
   return {
     ...docRowOf(
       row,
@@ -327,6 +337,8 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       yield* marksOf(orgId, viewer, [row]),
     ),
     version: Docs.toVersion(shown),
+    ...(mark === undefined ? {} : { lookedAt: mark === null ? null : iso(mark) }),
+    ...(sinceLooked === undefined ? {} : { sinceLooked }),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
     links:
@@ -365,6 +377,7 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
       ? undefined
       : (yield* inList(input.orgId, input.project, "projects")).recordId;
   const text = input.text?.trim().toLowerCase() ?? "";
+  const keys = keysOfSearch(text);
   return sql.and([
     sql`r.org_id = ${input.orgId}`,
     sql`r.register_id = 'docs'`,
@@ -408,7 +421,8 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
               WHERE v.org_id = r.org_id AND v.record_id = r.record_id
                 AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
-                AND instr(lower(v.body), ${text}) > 0))`,
+                AND instr(lower(v.body), ${text}) > 0)
+            ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`,
         ]),
     ...(input.changedSince === undefined
       ? []
@@ -489,7 +503,14 @@ export const get = Effect.fn("KinDocs.get")(
       "key" in input ? { key: input.key } : { recordId: input.recordId },
       options.keyed === true ? keyedViewer(base) : base,
       personId,
-      input.version,
+      {
+        version: input.version,
+        withLooks:
+          input.version === undefined &&
+          !("key" in input && input.card !== undefined) &&
+          options.keyed !== true &&
+          (yield* CodingAgentCall) === undefined,
+      },
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
@@ -625,7 +646,7 @@ export const editSection = Effect.fn("KinDocs.editSection")(
       { key: input.key },
       team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
       personId,
-      written.version.version,
+      { version: written.version.version },
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
@@ -674,13 +695,16 @@ export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
 const MEMORY_HITS = 5;
 export const search = Effect.fn("KinDocs.search")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinSearchInput) {
-    const viewer = yield* viewerOf(people, input.orgId);
-    const team = viewer.teammate ? viewer.person.personId : undefined;
     const now = yield* Clock.currentTimeMillis;
     const limit = input.limit ?? 20;
     const asked = input.kinds ?? [];
     const recordKinds = asked.filter((kind) => kind !== "memory");
     const everything = input.everything === true;
+    const allLists = everything && asked.length === 0;
+    const { viewer, refused } = allLists
+      ? yield* placeRefusals(people, input.orgId)
+      : { viewer: yield* viewerOf(people, input.orgId), refused: undefined };
+    const team = viewer.teammate ? viewer.person.personId : undefined;
     // Memory is the owner level's alone: a teammate's search never reads it.
     const memory =
       everything && team === undefined && (asked.length === 0 || asked.includes("memory"))
@@ -701,19 +725,37 @@ export const search = Effect.fn("KinDocs.search")(
     const deals = input.deals === true || recordKinds.length === 0 || recordKinds.includes("work");
     const found =
       asked.length > 0 && recordKinds.length === 0
-        ? { hits: [], indexed: yield* searchIndexed() }
+        ? { hits: [], indexed: yield* searchIndexed(), keyedCount: 0 }
         : yield* runSearch(input.orgId, {
             text: input.text,
             kinds:
               recordKinds.length > 0 ? recordKinds : everything ? EVERY_RECORD_KIND : undefined,
             closed: input.closed,
-            limit: limit - memoryHits.length,
+            limit,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
             deals,
+            allKeys: allLists,
+            bankTransactions: allLists && refused?.money === false,
           });
+    const recordHits = found.hits.map((hit) => ({
+      recordId: hit.recordId as never,
+      key: hit.key,
+      kind: hit.kind,
+      ...(hit.bankTransaction === true ? { bankTransaction: true as const } : {}),
+      title: hit.title as never,
+      snippet: hit.snippet,
+      ...(hit.section === undefined
+        ? {}
+        : { section: { id: hit.section.id, title: hit.section.title } }),
+      ...(hit.client === undefined ? {} : { client: KinRecordKey.make(hit.client) }),
+      sensitive: hit.sensitive,
+      closed: hit.closed,
+      updatedAt: iso(hit.updatedAt),
+    }));
     return {
       hits: [
+        ...recordHits.slice(0, found.keyedCount),
         ...memoryHits.map((hit) => ({
           recordId: KinRecordId.make(`memory:${hit.itemId}`),
           key: hit.itemId,
@@ -724,21 +766,8 @@ export const search = Effect.fn("KinDocs.search")(
           closed: false,
           updatedAt: iso(hit.recordedAt),
         })),
-        ...found.hits.map((hit) => ({
-          recordId: hit.recordId as never,
-          key: hit.key,
-          kind: hit.kind,
-          title: hit.title as never,
-          snippet: hit.snippet,
-          ...(hit.section === undefined
-            ? {}
-            : { section: { id: hit.section.id, title: hit.section.title } }),
-          ...(hit.client === undefined ? {} : { client: KinRecordKey.make(hit.client) }),
-          sensitive: hit.sensitive,
-          closed: hit.closed,
-          updatedAt: iso(hit.updatedAt),
-        })),
-      ],
+        ...recordHits.slice(found.keyedCount),
+      ].slice(0, limit),
       indexed: found.indexed,
       asOf: iso(now),
       ...(memory === null ? { memoryUnavailable: true } : {}),

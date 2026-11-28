@@ -682,6 +682,24 @@ describe("kinTaskActivity", () => {
       before: "Send the welcome letter.",
       after: "Send it signed, as a PDF.",
     });
+
+    // A timed due at 23:30 company time is already the next day for a reader in Kolkata.
+    const [timed] = kinTaskActivity(
+      task({
+        changes: [
+          change({
+            seq: 2,
+            fields: [
+              { field: "due", from: "2026-11-10T23:30:00.000Z", to: "2026-11-25T23:30:00.000Z" },
+            ],
+          }),
+        ],
+      }),
+      { ...names, readerZone: "Asia/Kolkata" },
+      now,
+    );
+    expect(timed?.text).toBe(`set it due ${timed?.after}`);
+    expect(timed?.before).toBe("Wed, Nov 11");
   });
 
   it("names a hand-over and leaves a line with nothing replaced plain", () => {

@@ -85,6 +85,15 @@ export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
     lacks: [...KIN_CAPABILITIES],
     limits: ["ownConfigLoads", "ownToolsStay", "hostEnvironment"],
   },
+  {
+    driver: "antigravity",
+    label: "Gemini",
+    effortOption: "thinking_level",
+    behindSwitch: true,
+    devOnly: true,
+    lacks: [...KIN_CAPABILITIES],
+    limits: ["ownConfigLoads", "ownToolsStay", "hostEnvironment"],
+  },
 ];
 
 export const kinProviderFacts = (driver: string | undefined) =>

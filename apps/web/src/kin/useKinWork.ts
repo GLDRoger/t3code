@@ -1,3 +1,4 @@
+import { makeKinSinceLookedHooks } from "@t3tools/client-runtime/kin/react/kinSinceLookedHooks";
 import { makeKinWorkHooks } from "@t3tools/client-runtime/kin/react/kinWorkHooks";
 
 import { environmentCatalog } from "../connection/catalog";
@@ -36,3 +37,10 @@ export const {
   useKinHostAt,
   catalogValueAtom: environmentCatalog.catalogValueAtom,
 });
+
+export const {
+  useKinRecordLooked,
+  useKinPinnedEntryLook,
+  useKinPinnedDocLook,
+  useKinPinnedProjectLook,
+} = makeKinSinceLookedHooks(kinHookApp);

@@ -52,7 +52,9 @@ import {
   type SelectionActionPoint,
 } from "../lib/selectionActions";
 import { downloadPlanAsTextFile } from "../proposedPlan";
+import type { KinSinceLookedView } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { KinEmbedView } from "./KinEmbedView";
+import { KinSinceLookedLine } from "./KinSinceLookedLine";
 import { useKinDocLabel } from "./KinConfirm";
 import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
@@ -133,8 +135,8 @@ export type KinDocPoint = (ref: KinMessageRef, intent: KinDocAsk) => void;
 const FILE_IMAGE = "#kin-file:";
 // The sanitizer drops a source with a scheme it doesn't know; a fragment reaches the renderer,
 // which loads nothing else from one.
-const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
-const fileImageAttachment = (src: string) =>
+export const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
+export const fileImageAttachment = (src: string) =>
   src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
 
 /**
@@ -206,6 +208,8 @@ export function KinDocReader(
     /** Opens a section to change by hand; null where this reader may not. */
     readonly onEdit: ((section: string) => void) | null;
     readonly onSeeChanges: (to: number) => void;
+    readonly sinceLooked?: KinSinceLookedView | null;
+    readonly onOpenSinceLooked?: () => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
     /** Null where the doc is a file already, or this browser may not make one. */
@@ -454,6 +458,12 @@ export function KinDocReader(
                 </>
               )}
             </p>
+            {old ? null : (
+              <KinSinceLookedLine
+                view={props.sinceLooked ?? null}
+                onOpen={() => props.onOpenSinceLooked?.()}
+              />
+            )}
             {label.dialog}
             {label.problem === null ? null : (
               <Alert variant="error">

@@ -1,8 +1,11 @@
 import {
   type KinChatId,
   KinMessageId,
+  KinMailRuleCardState,
   KinMoney,
   type KinOrgId,
+  KinPersonId,
+  KinRecordState,
   KinTrimmedText,
   type KinWidgetId,
 } from "@t3tools/contracts";
@@ -28,7 +31,7 @@ export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14). apply_credit: a client's credit and that client's invoice (RCT-3 INV-14). record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14); when Kin can't tell which invoice a credit pays, the first may be any of them. apply_credit: a client's credit and that client's invoice (RCT-3 INV-14). record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -98,6 +101,7 @@ const PaymentTerms = Schema.Struct({
         key: Schema.String,
         number: Schema.String,
         seen: Schema.String,
+        rev: Schema.optionalKey(Schema.Number),
         amountMinor: Schema.Number,
         owedAfterMinor: Schema.Number,
       }),
@@ -148,9 +152,44 @@ const RepaidPlan = Schema.Struct({
     }),
   ),
   owedAfterMinor: Schema.Number,
+  expense: Schema.optionalKey(
+    Schema.Struct({
+      recordId: Schema.String,
+      key: Schema.String,
+      rev: Schema.Number,
+      open: Schema.Boolean,
+      day: Schema.NullOr(Schema.String),
+    }),
+  ),
+  asExpense: Schema.optionalKey(Schema.Literal(true)),
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
+const RepaidUndoRecord = Schema.Struct({
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  change: Schema.Number,
+});
+const RepaidUndoPlan = Schema.Struct({
+  kind: Schema.Literal("undo_repaid"),
+  personId: KinPersonId,
+  bank: Schema.Struct({
+    ...RepaidUndoRecord.fields,
+    state: KinRecordState,
+    category: Schema.NullOr(Schema.String),
+  }),
+  expenses: Schema.Array(
+    Schema.Struct({
+      ...RepaidUndoRecord.fields,
+      reimbursement: Schema.NullOr(Schema.String),
+      repaidOn: Schema.NullOr(Schema.String),
+      evidence: Schema.Boolean,
+      relates: Schema.Boolean,
+    }),
+  ),
+});
+export type RepaidUndoPlan = typeof RepaidUndoPlan.Type;
 const ApplyPlan = Schema.Struct({
   kind: Schema.Literal("apply_credit"),
   key: Schema.String,
@@ -258,6 +297,13 @@ export type TakenPlan = typeof TakenPlan.Type;
 /** The one setting a recommendation's Do it changes, as the setting's own place would. */
 export const RecommendChange = Schema.Union([
   Schema.Struct({
+    kind: Schema.Literal("bank_sender"),
+    address: Schema.String,
+    bankName: Schema.String,
+    accounts: Schema.Array(Schema.String),
+    siblingAddress: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
     kind: Schema.Literal("lead_access"),
     personId: Schema.String,
     personName: Schema.String,
@@ -299,6 +345,19 @@ const RecommendPlan = Schema.Struct({
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
 export type RecommendChange = typeof RecommendChange.Type;
+const MailRulePlan = Schema.Struct({
+  kind: Schema.Literal("mail_rule"),
+  personId: KinPersonId,
+  shown: Schema.Struct({
+    mailbox: KinMailRuleCardState.fields.mailbox,
+    lead: KinMailRuleCardState.fields.lead,
+    contentSha256: KinMailRuleCardState.fields.contentSha256,
+    monthlyCap: KinMailRuleCardState.fields.monthlyCap,
+    expiresAt: KinMailRuleCardState.fields.expiresAt,
+  }),
+});
+export type MailRulePlan = typeof MailRulePlan.Type;
+
 /**
  * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
  * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
@@ -393,14 +452,7 @@ export type NoticePlan = typeof NoticePlan.Type;
 const InvoiceChoicePlan = Schema.Struct({
   kind: Schema.Literal("invoice_choice"),
   ...FactCardFields,
-  payment: Schema.NullOr(
-    Schema.Struct({
-      ...PaymentTerms.fields,
-      invoiceRev: Schema.Number,
-      received: KinMoney,
-      rate: Schema.String,
-    }),
-  ),
+  payment: Schema.NullOr(Schema.Struct({ ...PaymentTerms.fields, invoiceRev: Schema.Number })),
 });
 export type InvoiceChoicePlan = typeof InvoiceChoicePlan.Type;
 
@@ -420,10 +472,12 @@ export const CardPlan = Schema.Union([
   PaymentPlan,
   ApplyPlan,
   RepaidPlan,
+  RepaidUndoPlan,
   DefaultPlan,
   RoutePlan,
   TakenPlan,
   RecommendPlan,
+  MailRulePlan,
   AnsweredPlan,
   LeaverPlan,
   WaitedPlan,

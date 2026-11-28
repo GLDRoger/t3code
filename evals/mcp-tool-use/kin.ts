@@ -113,6 +113,7 @@ import {
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
   KinMoneySummary,
+  kinPageShape,
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_CLAUDE_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
@@ -233,9 +234,11 @@ import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/
 import {
   CAPTION_PROMPT,
   classifySegment,
+  normalized,
   replyNextForTool,
   repeats,
   RESCUE_PROMPT,
+  UPDATES_RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import {
   followUpFor,
@@ -246,6 +249,8 @@ import {
   startedBy,
   TRIGGER_TAGS,
   triggerWords,
+  UPDATE_REFUSALS,
+  UPDATE_SHOWN,
   voiceFor,
 } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
@@ -736,8 +741,22 @@ const promptTags = (
 const caseTags = ({ prompt, setup }: McpToolUseCase) => promptTags(prompt, setup.world);
 
 export const isReplyEnding = (name: string) => name === "kin_send" || name === "kin_skip";
-const replyEnding = (calls: ReadonlyArray<Call>) =>
-  calls.find((call) => isReplyEnding(call.tool) && call.failed === false);
+const isUpdate = (call: { readonly tool: string; readonly input?: unknown }) =>
+  call.tool === "kin_send" && isRecord(call.input) && call.input.level === "update";
+/** As Kin's end-turn wrapper: a successful send or skip ends the turn, an update never does. */
+export const endsTurn = (call: Call) =>
+  isReplyEnding(call.tool) && call.failed === false && !isUpdate(call);
+const replyEnding = (calls: ReadonlyArray<Call>) => calls.find(endsTurn);
+/** This turn's shown updates, a resumed case's earlier ones included. */
+const shownUpdates = (testCase: McpToolUseCase, calls: ReadonlyArray<Call>) => [
+  ...(testCase.setup.priorTurns ?? [])
+    .flatMap((turn) => turn.toolCalls ?? [])
+    .filter(
+      (call) =>
+        isUpdate(call) && (call.result === "{{UPDATE_SHOWN}}" || call.result === UPDATE_SHOWN),
+    ),
+  ...calls.filter((call) => isUpdate(call) && call.failed === false),
+];
 
 const replyVoice = (sample: ReplySample, sendOnly: boolean) =>
   voiceFor({ tags: caseTags(sample.testCase), sendOnly });
@@ -1099,6 +1118,11 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
+    .replaceAll("{{UPDATE_SHOWN}}", UPDATE_SHOWN)
+    .replace(/\{\{UPDATE_REFUSAL:([a-z ]+)\}\}/g, (_, reason: keyof typeof UPDATE_REFUSALS) => {
+      if (!(reason in UPDATE_REFUSALS)) throw new Error(`unknown update refusal: ${reason}`);
+      return UPDATE_REFUSALS[reason];
+    })
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
@@ -2180,6 +2204,7 @@ export const defaultReplyMock = (
 ) => {
   if (sample.testCase.setup.world?.kinLead !== true || !isReplyEnding(name)) return undefined;
   const ending = replyEnding(sample.calls);
+  if (name === "kin_send" && input.level === "update") return updateMock(sample, input, ending);
   if (name === "kin_skip") {
     if (
       ending?.tool !== "kin_send" &&
@@ -2213,6 +2238,33 @@ export const defaultReplyMock = (
     return { held: true, when: "At the next check-in." };
   }
   return { sent: true, messageId: "82136085-9468-4997-82b9-a1c46a81a809" };
+};
+
+// `KinReplyBridge.update`'s refusals, in its order.
+const updateMock = (
+  sample: ReplySample,
+  input: Record<string, unknown>,
+  ending: Call | undefined,
+) => {
+  const { prompt } = sample.testCase;
+  const text = typeof input.text === "string" ? input.text : "";
+  if (startedBy(caseTags(sample.testCase)) === "trigger")
+    return { $error: UPDATE_REFUSALS.trigger };
+  if (
+    /^This turn is in the Team room, chat /m.test(prompt) ||
+    /^Your reply goes to chat "[^"\n]*", (?:a group|the group )/m.test(prompt)
+  )
+    return { $error: UPDATE_REFUSALS["not direct"] };
+  if (ending !== undefined) return { $error: UPDATE_REFUSALS["already sent"] };
+  if (text.length > 600 || kinPageShape(text) !== "bubble")
+    return { $error: UPDATE_REFUSALS["too long"] };
+  if (
+    shownUpdates(sample.testCase, sample.calls).some(
+      (call) => isRecord(call.input) && normalized(String(call.input.text)) === normalized(text),
+    )
+  )
+    return { $error: UPDATE_REFUSALS.same };
+  return UPDATE_SHOWN;
 };
 
 /** What Kin asks once after a turn that owes an answer or has an unsent final message. */
@@ -2268,7 +2320,14 @@ export const replyFollowUp = (
       return { kind: "nudge", prompt: replyNudgePrompt(tags.map((tag) => ({ _tag: tag }))) };
     case "rescue": {
       if (voice === "text")
-        return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };
+        return {
+          kind: "rescue",
+          prompt: used.some(shows)
+            ? CAPTION_PROMPT
+            : shownUpdates(testCase, used).length > 0
+              ? UPDATES_RESCUE_PROMPT
+              : RESCUE_PROMPT,
+        };
       const asker =
         /^>.*"(?:askedBy|assignee)":\s*"([^"]+)"/m.exec(testCase.prompt)?.[1] ??
         "The person who asked";

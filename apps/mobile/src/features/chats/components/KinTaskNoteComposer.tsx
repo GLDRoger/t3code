@@ -45,6 +45,9 @@ import { kinClient } from "../state/kinClient";
 import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
 import { kinDraftKey } from "../state/kinDraftKey";
 
+/** The note box's text scale cap: "Add a note…" stays whole beside its two buttons. */
+const NOTE_MAX_FONT_SCALE = 2;
+
 const NOTE_SEND: ComposerSendPresentation = {
   label: KIN_TASK_NOTE_COPY.send,
   icon: "arrow.up",
@@ -234,6 +237,7 @@ export function KinTaskNoteComposer(props: {
               multiline
               onChangeText={(text) => setComposerDraftText(draftKey, text)}
               placeholder={KIN_TASK_RECORD.addNote}
+              maxFontSizeMultiplier={NOTE_MAX_FONT_SCALE}
               placeholderTextColorClassName="accent-placeholder"
               textAlignVertical="center"
               className="max-h-28 min-h-9 py-1.5 font-sans text-base text-foreground"

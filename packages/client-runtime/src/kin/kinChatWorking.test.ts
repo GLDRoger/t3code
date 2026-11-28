@@ -118,6 +118,40 @@ describe("kinChatWorkingItems", () => {
     ).toEqual(["Waiting to start", "Working"]);
   });
 
+  it("says what a turn is doing in its newest progress update's words", () => {
+    const update = (seq: number, body: string, overrides: Partial<KinMessage> = {}) =>
+      ({
+        messageId: `m-${seq}`,
+        seq,
+        sourceWakeupId: "w1",
+        author: { _tag: "agent", agentId: lead },
+        kind: "text",
+        status: "posted",
+        progress: true,
+        body,
+        createdAt: iso(seq * 1_000),
+        ...overrides,
+      }) as KinMessage;
+    const messages = [
+      update(3, "Reading the bank feed and November's invoices first."),
+      update(5, "Found 3 mismatches; checking which are **timing**"),
+      update(6, "Drafting the Ambermill invoice.", { sourceWakeupId: "w2" as KinWakeupId }),
+      update(7, "", { status: "deleted" }),
+      update(8, "Two of the three are timing.", { progress: undefined }),
+    ];
+    const doing = (state: KinPresence["state"], held: ReadonlyArray<KinMessage>) =>
+      items({ presence: [presence({ state })], messages: held })[0]?.doing;
+    expect([
+      doing("working", messages),
+      doing("stalled", messages),
+      doing("working", messages.slice(2)),
+    ]).toEqual([
+      "Found 3 mismatches; checking which are timing.",
+      "Found 3 mismatches; checking which are timing.",
+      "Reading memory",
+    ]);
+  });
+
   it("marks held turns: paused, waiting for budget, silent, or a hand-off not started", () => {
     const held = items({
       presence: [presence({ state: "stalled", since: iso(0) })],

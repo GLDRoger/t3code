@@ -132,6 +132,8 @@ export interface KinPlaceSearch {
   tab?: "deals" | "projects";
   /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
   person?: KinPersonId;
+  /** Docs shown as the map instead of the list. */
+  view?: "map";
   /** Set only when a link param held a malformed non-empty value; never kept on navigation. */
   invalidLink?: KinInvalidLink;
 }
@@ -201,6 +203,7 @@ const PLACE_SEARCH_KEYS: ReadonlyArray<keyof KinPlaceSearch> = [
   "open",
   "tab",
   "person",
+  "view",
   "invalidLink",
 ];
 
@@ -245,6 +248,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
       : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
+    ...(raw.view === "map" ? { view: "map" as const } : {}),
     ...(invalidLink === undefined ? {} : { invalidLink }),
   });
 }
