@@ -696,6 +696,11 @@ const BillRow = memo(function BillRow(props: {
             </View>
           ))}
         </View>
+        {view.mailLine === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {view.mailLine}
+          </Text>
+        )}
         <Text textRole="footnote" className="min-h-4 text-foreground-muted">
           {note ?? ""}
         </Text>
