@@ -2259,7 +2259,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           const byId = new Map(
             capabilities.providers.map((provider) => [provider.providerInstanceId, provider]),
           );
-          for (const provider of providers) {
+          const usable = (provider: ServerProvider) => byId.has(provider.instanceId);
+          for (const provider of providers.filter(usable)) {
             assert.deepEqual(
               byId.get(provider.instanceId)?.models.map((model) => model.id),
               provider.models.map((model) => model.slug),
@@ -2279,7 +2280,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             ],
           }));
           const refreshed = yield* service.capabilities(scope);
-          for (const provider of providers) {
+          for (const provider of providers.filter(usable)) {
             assert.deepEqual(
               refreshed.providers
                 .find((entry) => entry.providerInstanceId === provider.instanceId)
@@ -2305,37 +2306,176 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.deepEqual(entry!.constraints, []);
           }
 
-          const disabled = byId.get(disabledAntigravityInstanceId);
-          assert.isDefined(disabled);
-          assert.isFalse(disabled!.canRunChildTask);
-          assert.isFalse(disabled!.canRunCrossProviderChildTask);
-          assert.deepEqual(disabled!.constraints, ["Provider instance is disabled."]);
-
-          const projectDisabled = byId.get(projectDisabledInstanceId);
-          assert.isDefined(projectDisabled);
-          assert.isFalse(projectDisabled!.canRunChildTask);
-          assert.deepEqual(projectDisabled!.constraints, ["Provider instance is disabled."]);
-
-          const disabledWithoutAdapter = byId.get(disabledWithoutAdapterInstanceId);
-          assert.isDefined(disabledWithoutAdapter);
-          assert.isFalse(disabledWithoutAdapter!.canRunChildTask);
-          assert.isFalse(disabledWithoutAdapter!.canRunCrossProviderChildTask);
-          assert.deepEqual(disabledWithoutAdapter!.constraints, [
-            "No V2 provider adapter is registered.",
-            "Provider instance is disabled.",
-          ]);
-
-          const fork = byId.get(forkOnlyInstanceId);
-          assert.isDefined(fork);
-          assert.isFalse(fork!.canRunChildTask);
-          assert.isFalse(fork!.canRunCrossProviderChildTask);
-          assert.deepEqual(fork!.constraints, [
-            "No V2 provider adapter is registered.",
-            "Driver 'forkOnly' is not registered in this build.",
-            "Provider instance is disabled.",
+          // Unusable instances cost one line per reason, not a full entry each.
+          for (const instanceId of [
+            disabledAntigravityInstanceId,
+            projectDisabledInstanceId,
+            disabledWithoutAdapterInstanceId,
+            forkOnlyInstanceId,
+          ]) {
+            assert.isFalse(byId.has(instanceId), `expected ${instanceId} to be collapsed`);
+          }
+          assert.deepEqual(capabilities.unavailableProviders, [
+            {
+              reason: "Provider instance is disabled.",
+              providerInstanceIds: [disabledAntigravityInstanceId, projectDisabledInstanceId],
+            },
+            {
+              reason: "No V2 provider adapter is registered. Provider instance is disabled.",
+              providerInstanceIds: [disabledWithoutAdapterInstanceId],
+            },
+            {
+              reason:
+                "No V2 provider adapter is registered. Driver 'forkOnly' is not registered in this build. Provider instance is disabled.",
+              providerInstanceIds: [forkOnlyInstanceId],
+            },
           ]);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
+  );
+
+  it.effect("collapses disabled providers into one line and still names them on search", () =>
+    Effect.gen(function* () {
+      const disabledIds = [
+        "claudeAgent",
+        "cursor",
+        "grok",
+        "opencode",
+        "pi",
+        "acpRegistry",
+        "antigravity",
+        "kiro",
+        "muse",
+      ].map((id) => ProviderInstanceId.make(id));
+      const providers: ReadonlyArray<ServerProvider> = [
+        providerSnapshot({
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          model: "gpt-5.4",
+        }),
+        ...disabledIds.map((instanceId) =>
+          providerSnapshot({
+            instanceId,
+            driver: ProviderDriverKind.make(instanceId),
+            model: `${instanceId}-model`,
+            enabled: false,
+          }),
+        ),
+      ];
+      const capabilitiesWith = (search?: string) =>
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.capabilities(scope, search === undefined ? {} : { search });
+        }).pipe(
+          Effect.provide(
+            layerOrchestratorService.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  NodeCrypto.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    getThreadRecords: () => Effect.succeed(parentProjection([])),
+                  }),
+                  ServerSettings.layerTest(),
+                  providerRegistryLayer(providers),
+                  adapterRegistryLayer([codexInstanceId, ...disabledIds]),
+                  Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+                ),
+              ),
+            ),
+          ),
+        );
+      const disabledLine = [
+        { reason: "Provider instance is disabled.", providerInstanceIds: disabledIds },
+      ];
+
+      const capabilities = yield* capabilitiesWith();
+      assert.deepEqual(
+        capabilities.providers.map((provider) => provider.providerInstanceId),
+        [codexInstanceId],
+      );
+      assert.deepEqual(capabilities.providers[0], {
+        providerInstanceId: codexInstanceId,
+        driverKind: ProviderDriverKind.make("codex"),
+        displayName: null,
+        models: [{ id: "gpt-5.4" }],
+        canRunChildTask: true,
+        canRunCrossProviderChildTask: true,
+        constraints: [],
+      });
+      assert.deepEqual(capabilities.unavailableProviders, disabledLine);
+      // An agent asked to use a disabled provider still finds why it can't.
+      assert.deepEqual((yield* capabilitiesWith("cursor")).unavailableProviders, disabledLine);
+    }),
+  );
+
+  it.effect("keeps a provider still on its first probe usable, unlike one found missing", () =>
+    Effect.gen(function* () {
+      const checkingId = ProviderInstanceId.make("claudeAgent");
+      const missingId = codexInstanceId;
+      const unprobed = (
+        instanceId: ProviderInstanceId,
+        probe: Pick<ServerProvider, "status" | "message">,
+      ): ServerProvider => ({
+        ...providerSnapshot({ instanceId, driver: ProviderDriverKind.make(instanceId) }),
+        installed: false,
+        version: null,
+        auth: { status: "unknown" },
+        ...probe,
+      });
+      const providers = [
+        unprobed(checkingId, {
+          status: "warning",
+          message: "Claude provider status has not been checked in this session yet.",
+        }),
+        unprobed(missingId, {
+          status: "error",
+          message: "Codex CLI (`codex`) is not installed or not on PATH.",
+        }),
+      ];
+      const capabilities = yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.capabilities(scope);
+      }).pipe(
+        Effect.provide(
+          layerOrchestratorService.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                NodeCrypto.layer,
+                Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  getThreadRecords: () => Effect.succeed(parentProjection([])),
+                }),
+                ServerSettings.layerTest(),
+                providerRegistryLayer(providers),
+                adapterRegistryLayer([checkingId, missingId]),
+                Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const checking = capabilities.providers.find(
+        (provider) => provider.providerInstanceId === checkingId,
+      );
+      assert.isDefined(checking);
+      assert.isTrue(checking!.canRunChildTask);
+      assert.deepEqual(checking!.constraints, []);
+      assert.deepEqual(capabilities.unavailableProviders, [
+        {
+          reason:
+            "Provider executable is not installed. Codex CLI (`codex`) is not installed or not on PATH.",
+          providerInstanceIds: [missingId],
+        },
+      ]);
+    }),
   );
 
   describe("listed models", () => {
@@ -2427,6 +2567,12 @@ describe("OrchestratorMcpService provider resolution", () => {
                   ],
                   providerModelPreferences: {
                     [opencodeInstanceId]: { hiddenModels: ["oc/m02"], modelOrder: ["oc/m12"] },
+                  },
+                  providerInstances: {
+                    [opencodeInstanceId]: {
+                      driver: ProviderDriverKind.make("opencode"),
+                      enabled: true,
+                    },
                   },
                 }),
                 providerRegistryLayer(catalog),
@@ -2703,7 +2849,9 @@ describe("OrchestratorMcpService provider resolution", () => {
               } as never;
             }),
         }),
-        ServerSettings.layerTest(),
+        ServerSettings.layerTest({
+          providerInstances: { [opencodeInstanceId]: { driver: "opencode", enabled: true } },
+        }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([opencode]),
           refreshInstance: () => Effect.succeed([opencode]),

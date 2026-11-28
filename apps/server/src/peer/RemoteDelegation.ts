@@ -233,18 +233,32 @@ const make = Effect.gen(function* () {
       readonly inheritedInstanceId: ProviderInstanceId;
     },
   ) {
-    const { providers } = yield* forwarding.call(scope, RemoteCapabilitiesTool, environmentId, {});
-    if (requested.providerInstanceId !== undefined) {
-      const named = providers.find(
-        (provider) => provider.providerInstanceId === requested.providerInstanceId,
+    const { providers, unavailableProviders } = yield* forwarding.call(
+      scope,
+      RemoteCapabilitiesTool,
+      environmentId,
+      {},
+    );
+    const namedId = requested.providerInstanceId;
+    if (namedId !== undefined) {
+      // Unusable instances are listed by reason only, without their driver.
+      const unavailable = unavailableProviders?.find((entry) =>
+        entry.providerInstanceIds.includes(namedId),
       );
+      if (unavailable !== undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "provider_unavailable",
+          message: `Provider instance ${namedId} there can't run a child task: ${unavailable.reason}`,
+        });
+      }
+      const named = providers.find((provider) => provider.providerInstanceId === namedId);
       if (named !== undefined && named.driverKind !== requested.driverKind) {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: `Provider instance ${named.providerInstanceId} there uses driver ${named.driverKind}, not ${requested.driverKind}.`,
         });
       }
-      return requested.providerInstanceId;
+      return namedId;
     }
     const candidates = providers.filter(
       (provider) => provider.driverKind === requested.driverKind && provider.canRunChildTask,
