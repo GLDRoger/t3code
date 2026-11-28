@@ -51,3 +51,5 @@ On 2026-11-27, against the repayment Undo (`feat/kin-repaid-undo-contest` at `0f
 **Re-confirmed 2026-11-28** on train 11 (the search fence, joined on kin `252c46ce43d`; no spec change, all rules hold; 8/8 variants caught). The covered code changed only in which text a teammate's search may match; nothing about what is pushed to whom changed.
 
 **Re-confirmed 2026-11-28** for the bills chat card (train 13 base `5ec5553ef2b`; all 5 rules hold over 647,684 states; 8/8 variants caught). `KinRecords.update` refreshes only an expense's bill-batch card. The Work stream, cursor, scope, and change notices are unchanged.
+
+**Re-confirmed 2026-11-28** on train 15 (the phone fix and bills round 2, four steps joined on kin `19fff00b325`; no spec change, all 5 rules hold over 647,684 states; 8/8 variants caught). `work/KinRecords.ts` differs from kin only by the bills chat card's refresh in `update` (step 2, above); the other steps touch no covered file. The Work stream, cursor, scope and change notices are unchanged.

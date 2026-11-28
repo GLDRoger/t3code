@@ -59,3 +59,5 @@ On 2026-11-27, against the advertised record-writer core (`perf/kin-advertised-c
 **Re-confirmed 2026-11-28** on train 11 (the search fence, joined on kin `252c46ce43d`; no spec change, all rules hold; 12/12 variants caught). The Work list's text filter and `record_query` now match a project's or client's notes by the same rule Search uses; a task's own notes on a task the member can see still match.
 
 **Re-confirmed 2026-11-28** for the bills chat card (train 13 base `5ec5553ef2b`; all 10 rules hold over 244,584 states; 12/12 variants caught). `KinRecords.update` refreshes only an expense's bill-batch card. Task authority, assignment, hand-back and notices are unchanged.
+
+**Re-confirmed 2026-11-28** on train 15 (the phone fix and bills round 2, four steps joined on kin `19fff00b325`; no spec change, all 10 rules hold over 244,584 states; 12/12 variants caught). `work/KinRecords.ts` differs from kin only by the bills chat card's refresh in `update` (step 2, above); the other steps touch no covered file. Task authority, assignment, hand-back and notices are unchanged.
