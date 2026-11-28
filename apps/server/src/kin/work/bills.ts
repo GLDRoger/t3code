@@ -1581,6 +1581,7 @@ for (const currency of KIN_CURRENCY_CODES) {
   };
   add(displayNames.of(currency));
   for (const currencyDisplay of ["symbol", "narrowSymbol", "name"] as const) {
+    // oxlint-disable-next-line t3code/kin-one-format -- Intl supplies currency labels here; no money is formatted.
     const format = new Intl.NumberFormat(KIN_TEXT_LOCALE, {
       style: "currency",
       currency,

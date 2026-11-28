@@ -122,7 +122,9 @@ const runEntries = Effect.fnUntraced(function* <T, E, R>(
       const bill = /^B\d{1,6}$/u.test(name) ? name : `Entry ${index + 1}`;
       if (Option.isNone(parsed[index]!)) return { bill, result: `${bill} ${refused}` };
       const result = results.next().value!;
-      return Result.isSuccess(result) ? result.success : { bill, result: result.failure.message };
+      return Result.isSuccess(result)
+        ? result.success
+        : { bill, result: result.failure.message.replace(/\s+/gu, " ") };
     }),
   };
 });

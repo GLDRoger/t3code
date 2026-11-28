@@ -221,6 +221,7 @@ const seed = Effect.gen(function* () {
 const decodeCard = Schema.decodeUnknownSync(KinBillBatchCard);
 const decodeBillList = Schema.decodeEffect(KinBillsListResult);
 const decodeReaderInput = Schema.decodeEffect(LeadBills.ReadInput);
+const decodeCutterInput = Schema.decodeEffect(LeadBills.CutInput);
 const encodeAdded = Schema.encodeUnknownEffect(KinBillsAddResult);
 const card = (batchId: string) =>
   Effect.gen(function* () {
@@ -462,7 +463,7 @@ describe("batched bill tools", () => {
       const box = threeBoxes[0]!;
       const result = yield* LeadBills.cut(
         readerScope,
-        yield* Schema.decodeEffect(LeadBills.CutInput)({
+        yield* decodeCutterInput({
           cuts: [
             { bill: "B1", boxes: [] },
             { bill: "B9", boxes: [box] },
@@ -1549,11 +1550,12 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  for (const [country, home, ownMark, otherMark, other] of [
-    ["IN", "INR", " ₹ ", "eUrOs", "EUR"],
-    ["US", "USD", " $ ", " ₹ ", "INR"],
-  ] as const) {
-    it.effect(`resolves only safe printed currency marks for a ${home} company`, () =>
+  it.effect.each([
+    { country: "IN", home: "INR", ownMark: " ₹ ", otherMark: "eUrOs", other: "EUR" },
+    { country: "US", home: "USD", ownMark: " $ ", otherMark: " ₹ ", other: "INR" },
+  ] as const)(
+    "resolves only safe printed currency marks for a $home company",
+    ({ country, home, ownMark, otherMark, other }) =>
       Effect.gen(function* () {
         yield* seed;
         yield* setProfile(
@@ -1625,8 +1627,7 @@ describe("bills in bulk", () => {
         assert.notInclude(JSON.stringify(summary), "Mystery");
         assert.notInclude(JSON.stringify(summary), "¥");
       }).pipe(Effect.provide(layer)),
-    );
-  }
+  );
 
   it.effect("uses the company's own currency to parse a bill's unmarked total and tax", () =>
     Effect.gen(function* () {
