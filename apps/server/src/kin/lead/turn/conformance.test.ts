@@ -210,7 +210,9 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
               [],
             );
             assert.strictEqual(yield* asked(owner.askShell), "allowed");
-            assert.strictEqual(yield* asked(owner.askRead), "allowed");
+            assert.deepStrictEqual(yield* asked(owner.askRead), {
+              refused: "Use your shell for files in your working folder.",
+            });
           } else {
             assert.isFalse(owner.builtins);
             assert.isUndefined(owner.shell);
