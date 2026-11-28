@@ -13,6 +13,7 @@ import {
   type KinChatMember,
   type KinEvent,
   type KinGithubTrigger,
+  githubWakeHasShell,
   type KinMessage,
   type KinMessageRef,
   KinMessageId,
@@ -1433,8 +1434,6 @@ export class KinLeadPrompt extends Context.Service<
                     ...(mailShown.length > 1 ? { more: mailShown.length - 1 } : {}),
                   },
                 ],
-          // One rule with the check-in's: text from someone who can't write to the repo is outside.
-          // A review someone asked for in Kin runs as one too: their ask never gets a shell.
           // A mail rule's run is outside-read the same way; its cards say it was a rule's run.
           shows: input.events.some((event) => event._tag === "pulse" && event.rule !== undefined)
             ? "mail-rule"
@@ -1445,7 +1444,8 @@ export class KinLeadPrompt extends Context.Service<
               : input.events.some(
                     (event) =>
                       event._tag === "github" &&
-                      (event.trigger?.inside === false || event.askedBy !== undefined),
+                      (event.askedBy !== undefined ||
+                        (event.trigger !== undefined && !githubWakeHasShell(event.trigger))),
                   )
                 ? "github"
                 : input.events.some((event) => event._tag === "bills.read")
@@ -4160,10 +4160,10 @@ const eventsLimit = 60_000;
 export const githubTriggerEvent = (
   eventId: string,
   repo: string,
-  trigger: KinGithubTrigger,
+  { ownerAuthored, ...trigger }: KinGithubTrigger,
   askedBy?: string,
 ) =>
-  `${githubTriggerText(repo, trigger, askedBy)}\n\n${quote(
+  `${githubTriggerText(repo, { ...trigger, ownerAuthored }, askedBy)}\n\n${quote(
     trigger.inside ? QUOTE_LABELS.githubTrigger : QUOTE_LABELS.githubTriggerOutside,
     { event: eventId, repo, ...trigger },
   )}`;

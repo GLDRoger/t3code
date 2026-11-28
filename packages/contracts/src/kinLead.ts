@@ -750,8 +750,7 @@ export type KinPulseOutsideLine = typeof KinPulseOutsideLine.Type;
 /**
  * What on GitHub starts an agent's work, decided by Kin's code from GitHub's own data: a PR to
  * review, a call in a comment or body, the `kin` label, a review asked of the owner, or failing
- * checks on a PR an agent opened. `inside` is GitHub's author association (owner, member or
- * collaborator); text from anyone else is outside content.
+ * checks on a PR an agent opened. `inside` tracks write access, not shell authority.
  */
 export const KinGithubTrigger = Schema.Struct({
   key: TrimmedNonEmptyString,
@@ -768,10 +767,12 @@ export const KinGithubTrigger = Schema.Struct({
   number: Schema.Int,
   url: Schema.String,
   title: Schema.String,
-  /** Who caused it: the comment's, body's or PR's author on GitHub. */
+  /** Whose text caused it, which need not be the GitHub actor. */
   author: Schema.String,
   association: Schema.String,
   inside: Schema.Boolean,
+  /** The watch could attribute the actor and shown material to the connected owner login. */
+  ownerAuthored: Schema.optional(Schema.Literal(true)),
   /** The words that called the agent, or the PR's body; clipped. */
   text: Schema.String,
   /** A line comment's place on the PR. */
@@ -793,7 +794,7 @@ export const KinGithubTrigger = Schema.Struct({
       headSha: Schema.optional(Schema.String),
       /** The base commit when Kin read it: the diff is read from it, so every read is the same. */
       baseSha: Schema.optional(Schema.String),
-      /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
+      /** For a review without a shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
       /**
        * A re-review after new commits: the head Kin last reviewed, and whether `diff` is the whole
@@ -827,6 +828,11 @@ export const KinGithubTrigger = Schema.Struct({
   failing: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinGithubTrigger = typeof KinGithubTrigger.Type;
+
+export const githubWakeHasShell = (
+  trigger: Pick<KinGithubTrigger, "inside" | "ownerAuthored">,
+  askedBy?: string,
+) => trigger.inside && trigger.ownerAuthored === true && askedBy === undefined;
 
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {

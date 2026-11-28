@@ -5,7 +5,7 @@ import * as NodeUtil from "node:util";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinEvent, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { githubWakeHasShell, KinEvent, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -43,6 +43,7 @@ import { KinGitHubApp, make as makeGitHubApp } from "./KinGitHubApp.ts";
 import { appHost, BOT_EMAIL, BOT_LOGIN, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { headKey } from "./boundReview.ts";
+import { postReview, readReviewDiff } from "./reviewAsk.ts";
 import * as AppHook from "./appHook.ts";
 import { hookSecretName } from "./appKey.ts";
 import { receive } from "./hookHttp.ts";
@@ -370,11 +371,17 @@ describe("KinGitHubWatch", () => {
       const number = github.openItem({
         repo: REPO,
         pull: true,
-        author: "teammate-a",
+        author: "zoya",
         association: "COLLABORATOR",
         title: "Add a hello script",
         body: "Closes #1",
       });
+      github.world.repos[0]!.roles = { zoya: "write", meera: "write", "stranger-one": "read" };
+      for (const [author, body] of [
+        ["meera", "The dispatch tests are in CI."],
+        ["stranger-one", "Not a writer's comment."],
+      ] as const)
+        github.comment({ repo: REPO, number, author, association: "MEMBER", body });
       yield* look(github);
       const [review, ...rest] = yield* events;
       assert.lengthOf(rest, 0);
@@ -382,11 +389,14 @@ describe("KinGitHubWatch", () => {
         kind: "review",
         agentId: "tech",
         inside: true,
-        author: "teammate-a",
+        author: "zoya",
       });
       assert.strictEqual(review!.number, number);
       assert.strictEqual(review!.pull?.ownersOwn, false);
-      assert.isUndefined(review!.pull?.diff);
+      assert.include(review!.pull?.diff ?? "", "+an invented line");
+      assert.deepStrictEqual(review!.conversation, [
+        { author: "meera", kin: false, text: "The dispatch tests are in CI." },
+      ]);
       assert.deepStrictEqual(github.world.reactions, [
         { on: `${REPO}/issues/${number}/reactions`, content: "eyes", by: "invented-owner" },
       ]);
@@ -401,18 +411,81 @@ describe("KinGitHubWatch", () => {
         `GET repos/${REPO}/pulls`,
       ]);
 
-      // The agent's review posts under the owner's login; its inline words call no one.
-      yield* GitHubWatch.ownerGitHubReview(
-        { orgId, agentId: "tech" },
-        {
-          repo: REPO,
-          number,
-          body: "Looks right.",
-          comments: [{ path: "hello.sh", line: 1, body: "/kin rename this too" }],
-        },
+      const sql = yield* SqlClient.SqlClient;
+      const wakeupId = "writer-review";
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, 'tech', 'test', ${T0}, 'running', '[]')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId} WHERE org_id = ${orgId} AND tag = 'github'`;
+      const turn = { orgId, agentId: "tech", wakeupId };
+      assert.include((yield* readReviewDiff(turn, { from: 0 })).diff, "+an invented line");
+      // The GitHub receipt holds the head, preserves the writer's block, and does not wake itself.
+      const posted = yield* postReview(turn, {
+        repo: REPO,
+        number,
+        body: "The dispatch test is missing.",
+        event: "REQUEST_CHANGES",
+        comments: [{ path: "hello.sh", line: 1, body: "/kin rename this too" }],
+      });
+      assert.strictEqual(posted?.status, "posted");
+      const [receipt] = yield* sql<{ reviewUrl: string }>`SELECT review_url AS "reviewUrl"
+        FROM kin_github_handled
+        WHERE org_id = ${orgId} AND trigger_key = ${headKey(REPO, number, review!.pull!.headSha!)}`;
+      assert.strictEqual(receipt?.reviewUrl, posted?.url);
+      assert.isTrue(
+        github.world.reviews.some(
+          (one) => one.number === number && one.event === "REQUEST_CHANGES",
+        ),
       );
       yield* look(github);
       assert.lengthOf(yield* events, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("uses the connected login for both the GitHub actor and thread author", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const owner = "invented-owner";
+      const writer = "zoya";
+      yield* start(github, { triage: false });
+      github.world.repos[0]!.roles = { zoya: "write" };
+      const pull = (author: string) =>
+        github.openItem({
+          repo: REPO,
+          pull: true,
+          author,
+          association: "MEMBER",
+          title: "Dispatch",
+        });
+      const ownPull = pull(owner);
+      const writerPull = pull(writer);
+      for (const [number, author] of [
+        [ownPull, owner],
+        [ownPull, writer],
+        [writerPull, owner],
+      ] as const)
+        github.comment({ repo: REPO, number, author, association: "MEMBER", body: "/kin review" });
+      github.label({ repo: REPO, number: ownPull, label: "kin", actor: writer });
+      github.label({ repo: REPO, number: writerPull, label: "kin", actor: owner });
+      yield* look(github);
+
+      assert.sameDeepMembers(
+        (yield* events).map((trigger) => [
+          trigger.number,
+          trigger.kind,
+          trigger.author,
+          githubWakeHasShell(trigger),
+          trigger.pull?.diff !== undefined,
+        ]),
+        [
+          [ownPull, "review", owner, true, false],
+          [writerPull, "review", writer, false, true],
+          [ownPull, "call", owner, true, false],
+          [ownPull, "call", writer, false, true],
+          [writerPull, "call", owner, false, true],
+          [ownPull, "label", owner, false, true],
+          [writerPull, "label", writer, false, true],
+        ],
+      );
     }).pipe(Effect.provide(layer));
   });
 

@@ -116,6 +116,7 @@ export interface Trigger {
   readonly kind: KinGithubTrigger["kind"];
   readonly agentId: string;
   readonly inside: boolean;
+  readonly ownerActed?: boolean;
   readonly author: string;
   readonly association: string;
   readonly text: string;
@@ -206,6 +207,8 @@ export const decideTriggers = (
   const at = `${thread.repo.toLowerCase()}#${thread.number}`;
   const agentsOwn = isAgentsOwn(thread.body, thread.author, context.botLogin, context.agentPosts);
   const itemInside = context.writes(thread.author);
+  const isOwner = (login: string | undefined) =>
+    context.ownerLogin !== "" && login?.toLowerCase() === context.ownerLogin.toLowerCase();
   const triggers: Trigger[] = [];
   const onItem = {
     agentId: context.defaultAgentId,
@@ -220,6 +223,7 @@ export const decideTriggers = (
         ...onItem,
         key: `review:${at}`,
         kind: "review",
+        ownerActed: !context.draftSeen && isOwner(thread.author),
         inside: itemInside,
         text: clip(thread.body),
       });
@@ -260,6 +264,7 @@ export const decideTriggers = (
       ...onItem,
       key: `label:${at}`,
       kind: "label",
+      ownerActed: isOwner(context.labeledBy),
       inside: itemInside,
       text: clip(thread.body),
     });
@@ -277,6 +282,7 @@ export const decideTriggers = (
         agentId,
         key: `call:${at}:body`,
         kind: "call",
+        ownerActed: isOwner(thread.author),
         inside: true,
         text: clip(thread.body),
       });
@@ -297,6 +303,7 @@ export const decideTriggers = (
     triggers.push({
       key: `call:${at}:${comment.kind === "review" ? "r" : "c"}${comment.id}`,
       kind: "call",
+      ownerActed: isOwner(comment.author),
       agentId,
       inside: true,
       author: comment.author,
@@ -327,6 +334,7 @@ export const decideTriggers = (
       ...onItem,
       key: `triage:${at}`,
       kind: "triage",
+      ownerActed: isOwner(thread.author),
       inside: itemInside,
       text: clip(thread.body),
     });
@@ -339,6 +347,7 @@ export const decideTriggers = (
       triggers.push({
         key: `triage_reply:${at}:c${last.id}`,
         kind: "triage_reply",
+        ownerActed: after.every((comment) => isOwner(comment.author)),
         agentId: context.defaultAgentId,
         inside,
         author: last.author,
