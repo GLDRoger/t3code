@@ -443,7 +443,7 @@ export type KinBillCounts = KinBillBatchSummary["states"] & {
 
 type KinBillCountRow = Pick<KinBillRow, "state" | "readClean" | "wrongKind" | "problem" | "read">;
 
-export const kinBillCounts = (rows: ReadonlyArray<KinBillCountRow>): KinBillCounts => {
+const kinBillCounts = (rows: ReadonlyArray<KinBillCountRow>): KinBillCounts => {
   const count = (state: KinBillState) => rows.filter((row) => row.state === state).length;
   return {
     reading: count("reading"),
