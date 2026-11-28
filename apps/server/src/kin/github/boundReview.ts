@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import { githubWakeHasShell, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -40,36 +40,53 @@ export interface BoundReview {
 
 /**
  * The one answer to "is this turn bound to one pull request at one head, and has it posted": a
- * review someone asked for, a re-review after new commits, or a review of a pull request by someone
- * who can't write to its repo. Each GitHub trigger has its own lane, so at most one such event.
+ * review someone asked for, a re-review after new commits, or a review that cannot use the shell.
+ * Each GitHub trigger has its own lane, so at most one such event.
  */
 export const boundReview = Effect.fn("KinGitHubReview.bound")(function* (turn: {
   readonly orgId: KinOrgId;
   readonly wakeupId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [event] = yield* sql<{
+  const rows = yield* sql<{
     eventId: string;
     repo: string;
     number: number;
     key: string;
     head: string | null;
     asked: number;
+    again: number;
+    inside: number | null;
+    ownerAuthored: number | null;
+    item: string | null;
     outside: number;
   }>`SELECT event_id AS "eventId", json_extract(json, '$.repo') AS repo,
       json_extract(json, '$.trigger.number') AS number,
       json_extract(json, '$.trigger.key') AS key,
       json_extract(json, '$.trigger.pull.headSha') AS head,
       json_extract(json, '$.askedBy') IS NOT NULL AS asked,
+      json_extract(json, '$.trigger.pull.reReview') IS NOT NULL AS again,
+      json_extract(json, '$.trigger.inside') AS inside,
+      json_extract(json, '$.trigger.ownerAuthored') AS "ownerAuthored",
+      json_extract(json, '$.trigger.item') AS item,
       (json_extract(json, '$.trigger.inside') = 0
         AND json_extract(json, '$.trigger.kind') IN ('review', 'review_request')) AS outside
     FROM kin_events
     WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId} AND tag = 'github'
       AND (json_extract(json, '$.askedBy') IS NOT NULL
         OR json_extract(json, '$.trigger.pull.reReview') IS NOT NULL
-        OR (json_extract(json, '$.trigger.inside') = 0
-          AND json_extract(json, '$.trigger.kind') IN ('review', 'review_request')))
-    ORDER BY event_id LIMIT 1`;
+        OR json_extract(json, '$.trigger.kind') IN ('review', 'review_request'))
+    ORDER BY event_id`;
+  const event = rows.find(
+    (row) =>
+      row.asked === 1 ||
+      row.again === 1 ||
+      !githubWakeHasShell({
+        inside: row.inside === 1,
+        ownerAuthored: row.ownerAuthored === 1 ? true : undefined,
+        item: row.item === "issue" ? "issue" : "pull",
+      }),
+  );
   if (event === undefined) return undefined;
   const key = event.head === null ? event.key : headKey(event.repo, event.number, event.head);
   const [row] = yield* sql<{ url: string | null }>`SELECT review_url AS url

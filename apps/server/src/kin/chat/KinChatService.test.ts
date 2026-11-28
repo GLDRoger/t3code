@@ -14,7 +14,10 @@ import {
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as AttachmentStore from "./KinAttachmentStore.ts";
-import { authorizeAttachmentRead } from "./attachmentAccess.ts";
+import { authorizeAttachmentRead, authorizeAttachmentServe } from "./attachmentAccess.ts";
+import * as SessionStore from "../../auth/SessionStore.ts";
+import { KinServer, type Services as KinServices } from "../KinServer.ts";
+import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -66,6 +69,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Tracer from "effect/Tracer";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
@@ -658,7 +662,7 @@ describe("KinChatService", () => {
     Effect.gen(function* () {
       const { repo, service, identity, person, chat } = yield* seed();
       const sql = yield* SqlClient.SqlClient;
-      const memberId = KinPersonId.make("suraj");
+      const memberId = KinPersonId.make("zoya");
       const memberSession = {
         ...session,
         sessionId: AuthSessionId.make("member-session"),
@@ -667,19 +671,19 @@ describe("KinChatService", () => {
       yield* repo.insertPerson({
         orgId: person.orgId,
         personId: memberId,
-        handle: "suraj",
-        displayName: "Suraj",
+        handle: "zoya",
+        displayName: "Zoya",
         githubLogin: null,
         createdAt: timestamp,
       });
       yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
       const members = yield* identity.resolve(memberSession);
-      const ownAgent = KinAgentId.make("suraj-lead");
+      const ownAgent = KinAgentId.make("zoya-lead");
       yield* repo.insertAgent({
         orgId: person.orgId,
         agentId: ownAgent,
         ownerPersonId: memberId,
-        displayName: "Suraj lead",
+        displayName: "Zoya lead",
         role: "lead",
         createdAt: timestamp,
       });
@@ -725,6 +729,7 @@ describe("KinChatService", () => {
       const kin = Option.some(
         Context.make(Identity.KinIdentity, identity).pipe(
           Context.add(Service.KinChatService, service),
+          Context.add(SqlClient.SqlClient, sql),
         ),
       );
       const read = (reader: AuthenticatedSession, attachmentId: string, host = kin) =>
@@ -766,15 +771,141 @@ describe("KinChatService", () => {
       ] as const)
         yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
             name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
-            widget_id, added_by_person_id, added_at, state)
+            widget_id, added_by_person_id, added_at, state, preview_id)
           VALUES (${person.orgId}, ${by.padEnd(64, "0")}, ${file}, ${chatId},
             'm', 'bill.png', 'image', 'image/png', 8, 'b', 0, ${agentId}, ${chatId}, 'w', ${by}, 0,
-            'read')`;
+            'read', ${billPhotoPreviewId(file)})`;
       assert.strictEqual(yield* read(session, membersFile), "served");
       assert.strictEqual(yield* read(memberSession, ownersFile), "refused");
+      const preview = billPhotoPreviewId(ownersFile)!;
+      assert.strictEqual(yield* read(session, preview), "served");
+      yield* sql`WITH RECURSIVE history(n) AS (
+          VALUES (1) UNION ALL SELECT n + 1 FROM history WHERE n < 4998
+        ) INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+          name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+          widget_id, added_by_person_id, added_at, state, preview_id)
+        SELECT ${person.orgId}, 'old-' || n, 'old-' || n, ${chat.chatId}, 'm',
+          'old.jpg', 'image', 'image/jpeg', 8, 'history', n, ${agentId}, ${chat.chatId},
+          'w', ${person.personId}, 0, 'read', 'old-preview-' || n FROM history`;
+      const serve = (id: string, reader: AuthSessionId | undefined, host = kin) =>
+        authorizeAttachmentServe(reader, id).pipe(
+          Effect.provideService(KinServer, {
+            services: host as Option.Option<Context.Context<KinServices>>,
+            subscribeForViewer: Option.none(),
+            taskCardUpdater: Layer.empty,
+          }),
+          Effect.provide(
+            Layer.mock(SessionStore.SessionStore)({
+              cookieName: "test",
+              legacyCookieName: undefined,
+              getActive: (id) =>
+                Effect.succeed(
+                  Option.fromNullishOr(
+                    [session, memberSession].find((one) => one.sessionId === id),
+                  ),
+                ),
+            }),
+          ),
+        );
+      const lookups: Array<ReturnType<Statement.Statement<unknown>["compile"]>> = [];
+      const observe: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          const query = statement.compile();
+          if (/SELECT attachment_id AS id.*FROM kin_bill_reads/s.test(query[0]))
+            lookups.push(query);
+          return statement;
+        });
+      assert.isTrue(
+        yield* serve(preview, session.sessionId).pipe(
+          Effect.provideService(Statement.CurrentTransformer, observe),
+        ),
+      );
+      assert.lengthOf(lookups, 1);
+      const [query, params] = lookups[0]!;
+      const [plan] = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params);
+      assert.lengthOf(yield* sql.unsafe(query, params), 1);
+      assert.match(plan!.detail, /idx_kin_bill_reads_preview.*org_id=\? AND preview_id=\?/);
+      assert.isFalse(yield* serve(preview, undefined));
+
+      for (const id of aliases(preview))
+        assert.strictEqual(yield* read(memberSession, id), "refused");
+      assert.strictEqual(yield* read(memberSession, strayFile), "served");
+      assert.strictEqual(yield* read(memberSession, billPhotoPreviewId(strayFile)!), "refused");
+      // The copy opens and closes with its original: a co-owner only while one, no other company.
+      const membersPreview = billPhotoPreviewId(membersFile)!;
+      assert.strictEqual(yield* read(memberSession, membersPreview), "served");
+      const access = (level: "co_owner" | "member") =>
+        sql`UPDATE kin_people SET access = ${level}
+          WHERE org_id = ${person.orgId} AND person_id = ${memberId}`;
+      yield* access("co_owner");
+      assert.deepStrictEqual(
+        [yield* read(memberSession, ownersFile), yield* read(memberSession, preview)],
+        ["served", "served"],
+      );
+      yield* access("member");
+      assert.deepStrictEqual(
+        [yield* read(memberSession, ownersFile), yield* read(memberSession, preview)],
+        ["refused", "refused"],
+      );
+      // One host serves one company, so a person of another is put in front of the check by hand.
+      const otherOrg = KinOrgId.make("org-tidewater-freight");
+      const arjun = KinPersonId.make("arjun");
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES (${otherOrg}, 'Tidewater Freight', ${timestamp})`;
+      yield* repo.insertPerson({
+        orgId: otherOrg,
+        personId: arjun,
+        handle: "arjun",
+        displayName: "Arjun",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${otherOrg}`;
+      const elsewhere = Option.map(kin, (services) =>
+        Context.add(services, Identity.KinIdentity, {
+          ...identity,
+          resolve: () => Effect.succeed([{ _tag: "person", orgId: otherOrg, personId: arjun }]),
+        }),
+      );
+      for (const id of [ownersFile, preview, membersFile, membersPreview])
+        assert.strictEqual(yield* read(session, id, elsewhere), "refused", id);
+      assert.deepStrictEqual(
+        [
+          yield* serve(preview, session.sessionId, elsewhere),
+          yield* serve(billPhotoPreviewId(strayFile)!, session.sessionId, elsewhere),
+        ],
+        [false, false],
+      );
+      // A copy id that exists only in another company tells Arjun nothing: the same refusal and
+      // the same statements, in the same order, as an id that exists nowhere, bar the id itself.
+      const traced = (id: string) =>
+        Effect.gen(function* () {
+          const seen: Array<string> = [];
+          const observe: Statement.Transformer = (statement) =>
+            Effect.sync(() => {
+              const [text, params] = statement.compile();
+              seen.push(JSON.stringify([text, params.map((one) => (one === id ? "<id>" : one))]));
+              return statement;
+            });
+          const refusal = yield* authorizeAttachmentRead(
+            session,
+            { _tag: "attachment", attachmentId: id },
+            elsewhere,
+          ).pipe(Effect.flip, Effect.provideService(Statement.CurrentTransformer, observe));
+          return { refusal: JSON.stringify(refusal).replaceAll(id, "<id>"), seen };
+        });
+      const nowhere = billPhotoPreviewId(strayFile)!;
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_bill_reads WHERE preview_id IN (${preview}, ${nowhere})`,
+        1,
+      );
+      const [existsElsewhere, existsNowhere] = [yield* traced(preview), yield* traced(nowhere)];
+      assert.isAbove(existsNowhere.seen.length, 0);
+      assert.deepStrictEqual(existsElsewhere, existsNowhere);
 
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
+      assert.strictEqual(yield* read(memberSession, membersPreview), "refused");
 
       // Added to a group later, they get its files from their join on, never one from before.
       const group = KinChatId.make("files-group");
@@ -803,7 +934,7 @@ describe("KinChatService", () => {
           return sent.attachments![0]!.id;
         });
       const before = yield* groupFile("before.png");
-      yield* joinGroup("files-suraj", memberId, "member");
+      yield* joinGroup("files-zoya", memberId, "member");
       const after = yield* groupFile("after.png");
       assert.strictEqual(yield* read(memberSession, before), "refused");
       assert.strictEqual(yield* read(memberSession, after), "served");

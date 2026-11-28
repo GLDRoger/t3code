@@ -1,5 +1,6 @@
 import { KinOrgId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -48,7 +49,13 @@ export const KinDeferralGithubReader = Context.Reference<KinDeferralGithubReader
 );
 
 // Callers hold the org memory lock, so every GitHub read for one sync shares this budget.
-const READ_BUDGET = "10 seconds";
+const KinDeferralGithubBudget = Context.Reference<Duration.Input>(
+  "t3/kin/triggers/deferralGithub/KinDeferralGithubBudget",
+  { defaultValue: () => "10 seconds" },
+);
+/** A person's own tap or memory change waits on GitHub this long at most, then saves no state. */
+export const asPersonWaits = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.provideService(effect, KinDeferralGithubBudget, "3 seconds");
 const READ_CONCURRENCY = 4;
 
 const urlRef = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/;
@@ -72,6 +79,7 @@ export const readGithubLinkSets = Effect.fn("KinDeferralGithub.readLinkSets")(fu
   linkSets: ReadonlyArray<ReadonlyArray<string>>,
 ) {
   const reader = yield* KinDeferralGithubReader;
+  const budget = yield* KinDeferralGithubBudget;
   const byRepo = new Map<string, { readonly repo: string; readonly numbers: Set<number> }>();
   for (const links of linkSets)
     for (const link of links) {
@@ -109,7 +117,7 @@ export const readGithubLinkSets = Effect.fn("KinDeferralGithub.readLinkSets")(fu
         ),
     { concurrency: READ_CONCURRENCY, discard: true },
   ).pipe(
-    Effect.timeoutOption(READ_BUDGET),
+    Effect.timeoutOption(budget),
     Effect.tap((done) =>
       Option.isNone(done)
         ? Effect.logWarning("Kin deferral GitHub reads ran out of time", { orgId })

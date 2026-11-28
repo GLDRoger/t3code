@@ -37,6 +37,7 @@ import * as Tracer from "effect/Tracer";
 import * as ServerConfig from "../../config.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import { viewHash } from "../hashedLive.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -384,11 +385,13 @@ const moneyCase = (ops: ReadonlyArray<Op>) =>
           for (const [burst, demand] of bursts.entries())
             events.push(...(yield* screen.session.apply(demand, `${step}:${burst}`)));
           for (const event of events) {
-            if (event._tag !== "changed") return yield* Effect.die(new Error("Not a change."));
+            if (event._tag === "current") return assert.fail("Current after the first event");
+            const sent = event._tag === "snapshot" ? event.live : event;
             for (const part of KIN_MONEY_PARTS)
-              if (event[part] !== undefined)
+              if (sent[part] !== undefined)
                 assert.include(screen.parts, part, `${screen.who} was sent ${part} unasked`);
-            screen.held = kinMoneyApply(screen.held, event);
+            screen.held =
+              event._tag === "snapshot" ? event.live : kinMoneyApply(screen.held, event);
           }
           const fresh = yield* freshOf(screen.who);
           const asked = Object.fromEntries(screen.parts.map((part) => [part, fresh[part]]));
@@ -620,6 +623,70 @@ const heldIn = (held: string | undefined) => (held === undefined ? {} : { held }
 
 // Both hashed live reads (`hashedLive.ts`), one row each, through the same steps.
 describe("Hashed live reads", () => {
+  it.effect("paying the last bill clears To pay on an open screen and on reconnect", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const amount = { minor: 1200, currency: "INR" };
+      const { row: bill } = yield* records.create(orgId, ownerWriter, {
+        list: "expenses",
+        title: "Inkspot Cloud",
+        state: "open",
+        owner: { _tag: "person", personId: ownerId },
+        amount,
+        confirmed: true,
+        originKey: "inkspot-cloud",
+      });
+      const open = (held?: string) =>
+        subscribe(as("owner"), { orgId, parts: ["summary"], ...heldIn(held) });
+      const heard = yield* Queue.unbounded<KinMoneyEvent>();
+      yield* open().pipe(
+        Stream.take(2),
+        Stream.runForEach((event) => Queue.offer(heard, event)),
+        Effect.forkScoped,
+      );
+      const first = yield* Queue.take(heard);
+      if (first._tag !== "snapshot") return assert.fail("the screen did not open with a snapshot");
+      assert.deepStrictEqual(first.live.summary?.toPay?.total, [amount]);
+
+      yield* Work.update(as("owner"), {
+        orgId,
+        key: bill.key as never,
+        rev: bill.rev,
+        state: "done",
+      });
+      yield* settle;
+      const next = yield* Queue.take(heard);
+      const held =
+        next._tag === "snapshot"
+          ? next.live
+          : next._tag === "changed"
+            ? kinMoneyApply(first.live, next)
+            : first.live;
+      assert.notProperty(held.summary, "toPay", "the open screen still says the bill is owed");
+      assert.deepStrictEqual(held.summary?.spent.thisMonth.total, [amount]);
+      if (next._tag !== "snapshot") return assert.fail("the screen was not sent a replacement");
+
+      const staleSummary = { ...first.live.summary!, ...next.live.summary! };
+      assert.deepStrictEqual(staleSummary.toPay?.total, [amount]);
+      const staleMergeHash = viewHash(
+        JSON.stringify(
+          KIN_MONEY_PARTS.map((part) =>
+            part === "summary" ? kinMoneySettled(part, staleSummary) : null,
+          ),
+        ),
+      );
+      for (const hash of [first.hash, staleMergeHash]) {
+        const stale = yield* Stream.runHead(open(hash)).pipe(Effect.map(Option.getOrThrow));
+        if (stale._tag !== "snapshot") return assert.fail("a stale screen was told it was current");
+        assert.strictEqual(stale.hash, next.hash);
+        assert.deepStrictEqual(timeless(stale.live), timeless(next.live));
+      }
+      const current = yield* Stream.runHead(open(next.hash)).pipe(Effect.map(Option.getOrThrow));
+      assert.deepStrictEqual(current, { _tag: "current", hash: next.hash });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect(
     "Money and Needs attention send a change, nothing for no change, current on reconnect, and stop at a lost level",
     () =>

@@ -18,7 +18,7 @@ import * as AttachmentClaims from "../../orchestration-v2/AttachmentClaims.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { pageImageId } from "../lead/turn/content.ts";
 import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
-import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
+import { billPhotoPreviewPath } from "../work/billPhotoForModel.ts";
 
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
 const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
@@ -106,8 +106,11 @@ export const layer = Layer.effect(
           }),
         };
       }),
-      release: Effect.fn("KinAttachmentStore.release")(({ claimed }) =>
-        AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths).pipe(
+      release: Effect.fn("KinAttachmentStore.release")(({ claimed, attachments }) =>
+        AttachmentClaims.releaseClaimedAttachments([
+          ...claimed.claimedPaths,
+          ...attachments.flatMap(({ id }) => billPhotoPreviewPath(attachmentsDir, id) ?? []),
+        ]).pipe(
           Effect.andThen(AttachmentClaims.restoreMovedAttachments(claimed.moved)),
           Effect.provideContext(context),
         ),
@@ -177,14 +180,7 @@ export const layer = Layer.effect(
             const originals = [attachmentId, ...pagesOf(attachmentId)]
               .map((id) => resolveAttachmentPathById({ attachmentsDir, attachmentId: id }))
               .filter((path) => path !== null);
-            const previewId = billPhotoPreviewId(attachmentId);
-            const preview =
-              previewId === null
-                ? null
-                : resolveAttachmentRelativePath({
-                    attachmentsDir,
-                    relativePath: `${previewId}.jpg`,
-                  });
+            const preview = billPhotoPreviewPath(attachmentsDir, attachmentId);
             return preview === null ? originals : [...originals, preview];
           }),
         ).pipe(Effect.provideContext(context)),

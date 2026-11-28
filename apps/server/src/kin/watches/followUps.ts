@@ -283,7 +283,7 @@ export const stop = Effect.fn("KinFollowUps.stop")(function* (
       const closed = yield* repo.updateWidget({
         ...widget.value,
         audience: "chat",
-        state: { ...card, actions: [] },
+        state: { ...card, actions: [], closed: "cancelled" },
         expectedRevision: widget.value.revision,
         closedAt: at,
         updatedAt: at,
