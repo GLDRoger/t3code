@@ -2450,7 +2450,7 @@ describe("Kin migrations", () => {
         const ids = sql<{ org: string; attachment: string; preview: string | null }>`
           SELECT org_id AS org, attachment_id AS attachment, preview_id AS preview
           FROM kin_bill_reads ORDER BY org_id, sha256`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(241));
         assert.deepStrictEqual(yield* ids, [
           { org: "org-ambermill", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
           {
@@ -2471,7 +2471,7 @@ describe("Kin migrations", () => {
         yield* sql`UPDATE kin_bill_reads SET preview_id = NULL WHERE org_id = 'org-tidewater'`;
         const held = yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`;
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 241`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(241));
         assert.deepStrictEqual(
           yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`,
           held,
@@ -2570,15 +2570,11 @@ describe("Kin migrations", () => {
           VALUES ('org', ${hash}, ${id}, 'chat', 'message', ${name}, ${type}, ${mime}, 8, 'batch',
             0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting', 'billing@inkspot.example', 2)`;
       const before = yield* sql`SELECT * FROM kin_bill_reads ORDER BY sha256`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [240, "RemovedRuleCards"],
-        [241, "BillPreviewIds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(240));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads ORDER BY sha256`, [
         { ...before[0], preview_id: billPhotoPreviewId(photo) },
         { ...before[1], preview_id: null },
       ]);
-      assert.deepStrictEqual(kinMigrations.at(-1), [241, "BillPreviewIds"]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
