@@ -706,10 +706,24 @@ features:
     web: [money, "?bills"]
     phone: [tab:money, KinList, KinBills]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file. A bill that came by mail says from which address and the day it arrived.
+    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file and everything read. Read the unread again asks for every bill reading again can change. A bill that came by mail says from which address and the day it arrived.
     proof:
       - packages/client-runtime/src/kin/kinBills.test.ts
       - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/mobile/src/features/chats/state/kinBillsPick.test.ts
+
+  - id: bills-fix
+    name: Fix and keep a bill Kin couldn't read cleanly
+    tab: money
+    web: [money, "?bills", dialog:Fix and keep]
+    phone: [tab:money, KinList, KinBills, KinBillFix]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Opens with every figure that was read, marks the missing ones as needed, and keeps the bill as an expense with the person's own figures.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/server/src/kin/work/bills.test.ts
       - apps/mobile/src/features/chats/state/kinBillsPick.test.ts
 
   - id: receipt-apply

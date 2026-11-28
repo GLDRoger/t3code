@@ -2,13 +2,16 @@ import {
   KIN_BILLS,
   kinBillBatchSentence,
   kinBillExpenseStart,
+  kinBillFixStart,
   kinBillIsPdf,
+  kinBillName,
   kinBillReviewCounts,
   kinBillRowViews,
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsEntry,
   kinBillsOutcome,
+  kinBillsUnreadAgain,
   kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
@@ -16,6 +19,7 @@ import {
   type KinBillTone,
 } from "@t3tools/client-runtime/kin/kinBills";
 import { kinCategoryLabel } from "@t3tools/client-runtime/kin/kinLists";
+import { kinExpenseChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_DEFAULT_HOME_CURRENCY,
   type EnvironmentId,
@@ -55,7 +59,7 @@ import {
 } from "../lib/attachmentUploadQueue";
 import { prepareImageForBill } from "../lib/imageCompression";
 import { cn, randomUUID } from "../lib/utils";
-import { KinNewExpenseDialog } from "./KinMoneyForms";
+import { KinBillFixDialog, KinNewExpenseDialog } from "./KinMoneyForms";
 import { KinLoadFailed, KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
 import {
   useKinBillActions,
@@ -449,6 +453,7 @@ function KinBillBatchReview(
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const now = new Date(useNowMinuteMs());
   const [byHand, setByHand] = useState<KinBillRow | null>(null);
+  const [fixing, setFixing] = useState<KinBillRow | null>(null);
   const skipped = actions.kept?.skipped;
   const views = kinBillRowViews(rows, {
     categoryLabel: (category) => kinCategoryLabel(category, expenses),
@@ -484,6 +489,7 @@ function KinBillBatchReview(
   const previewKey = `kin-bills:${environmentId}:${props.batchId}`;
   const counts = kinBillReviewCounts(batch?.states ?? null, rows);
   const canKeepAll = actions.allowed && kinBillsCanKeepAll(counts);
+  const unread = kinBillsUnreadAgain(views);
   const run = (view: KinBillRowView, action: KinBillAction) => {
     switch (action) {
       case "keep":
@@ -499,6 +505,8 @@ function KinBillBatchReview(
         return view.duplicateOf === null ? undefined : props.onOpenKey(view.duplicateOf);
       case "byHand":
         return setByHand(view.row);
+      case "fix":
+        return setFixing(view.row);
     }
   };
   return (
@@ -521,6 +529,17 @@ function KinBillBatchReview(
             >
               {KIN_BILLS.keepAll}
             </Button>
+            {unread.length === 0 ? null : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={actions.busy !== null}
+                aria-busy={actions.busy === "again"}
+                onClick={() => void actions.readUnreadAgain(unread)}
+              >
+                {KIN_BILLS.readUnreadAgain(unread.length)}
+              </Button>
+            )}
             {actions.kept === null ? null : (
               <p role="status" className="text-sm text-foreground">
                 {actions.kept.said}
@@ -556,9 +575,22 @@ function KinBillBatchReview(
           {...props}
           start={{
             draft: kinBillExpenseStart(byHand, home, expenses?.categories ?? []),
-            receipt: byHand.file,
+            receipt: { ...byHand.file, name: kinBillName(byHand) },
           }}
           onClose={() => setByHand(null)}
+        />
+      )}
+      {fixing === null ? null : (
+        <KinBillFixDialog
+          {...props}
+          row={fixing}
+          start={kinBillFixStart(fixing, home, expenses?.categories ?? [])}
+          categories={kinExpenseChoices(expenses).categories}
+          home={home}
+          onClose={() => {
+            setFixing(null);
+            refresh();
+          }}
         />
       )}
     </>
@@ -580,6 +612,7 @@ const CHANGES: ReadonlySet<KinBillAction> = new Set([
   "byHand",
   "readAgain",
   "edit",
+  "fix",
 ]);
 
 const LABEL = (view: KinBillRowView, action: KinBillAction) => {
@@ -608,6 +641,7 @@ const BillRow = memo(function BillRow(props: {
   const { view, src } = props;
   const opens = props.original ?? src;
   const { file } = view;
+  const name = kinBillName(view.row);
   const actions = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
   return (
@@ -615,7 +649,7 @@ const BillRow = memo(function BillRow(props: {
       {view.asFile ? (
         <a
           {...(opens === null ? {} : { href: opens, download: file.name })}
-          aria-label={`Open ${file.name}`}
+          aria-label={`Open ${name}`}
           aria-disabled={opens === null}
           className={cn(
             "flex size-16 shrink-0 flex-col items-center justify-center gap-1 border border-border/80 px-1 text-muted-foreground",
@@ -623,17 +657,17 @@ const BillRow = memo(function BillRow(props: {
           )}
         >
           <FileIcon aria-hidden className="size-5" />
-          <span className="w-full truncate text-center text-3xs">{file.name}</span>
+          <span className="w-full truncate text-center text-3xs">{name}</span>
         </a>
       ) : src === null ? (
         <span className="block size-16 shrink-0 rounded-lg border border-border/80 bg-muted" />
       ) : (
         <button
           type="button"
-          aria-label={`Open ${file.name}`}
+          aria-label={`Open ${name}`}
           onClick={() =>
             openExpandedImagePreview(props.previewKey, {
-              images: [{ src: opens ?? src, name: file.name, mimeType: file.mimeType }],
+              images: [{ src: opens ?? src, name, mimeType: file.mimeType }],
               index: 0,
             })
           }
@@ -643,10 +677,10 @@ const BillRow = memo(function BillRow(props: {
             name={file.name}
             mimeType={view.picture.mimeType}
             src={src}
-            alt={file.name}
+            alt={name}
             loading="lazy"
             decoding="async"
-            className="block size-full object-cover"
+            className="block size-full object-cover object-top"
           />
         </button>
       )}
@@ -674,7 +708,11 @@ const BillRow = memo(function BillRow(props: {
             <Button
               key={action}
               size="xs"
-              variant={action === "keep" || action === "addAnyway" ? "outline" : "ghost"}
+              variant={
+                action === "keep" || action === "addAnyway" || action === "fix"
+                  ? "outline"
+                  : "ghost"
+              }
               disabled={props.busy && CHANGES.has(action)}
               aria-label={`${LABEL(view, action)}: ${view.name}`}
               onClick={() => props.onAction(view, action)}

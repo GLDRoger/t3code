@@ -20,6 +20,15 @@ import {
 } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_BILL_TO, kinBillToOffered } from "@t3tools/client-runtime/kin/kinBillTo";
 import {
+  KIN_BILLS,
+  kinBillCurrencies,
+  kinBillFixInput,
+  kinBillFixNeeds,
+  kinBillName,
+  type KinBillFixDraft,
+} from "@t3tools/client-runtime/kin/kinBills";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
+import {
   KIN_GST_STATE_NAMES,
   KIN_WORK_FORM_COPY,
   kinIndiaFields,
@@ -28,7 +37,12 @@ import { KIN_AMOUNT_SLIP } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkDayOf } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import { KIN_DEFAULT_HOME_CURRENCY, type KinFileRef, type KinRecordKey } from "@t3tools/contracts";
+import {
+  KIN_DEFAULT_HOME_CURRENCY,
+  type KinBillRow,
+  type KinFileRef,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -66,6 +80,7 @@ import { Textarea } from "../components/ui/textarea";
 import { randomUUID } from "../lib/utils";
 import { KinLinesEditor } from "./KinMoneyAnswers";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
+import { useKinBillFix } from "./useKinBills";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   kinListsOf,
@@ -565,6 +580,190 @@ export function KinNewInvoiceDialog(
   );
 }
 
+/** The currency a plain amount is in: the company's unless another is picked. */
+function CurrencyPick(props: {
+  readonly id: string;
+  readonly label: React.ReactNode;
+  readonly value: string;
+  readonly options: ReadonlyArray<string>;
+  readonly onPick: (currency: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={props.id}>{props.label}</Label>
+      <Select
+        value={props.value}
+        onValueChange={(picked) => {
+          if (picked !== null) props.onPick(picked);
+        }}
+      >
+        <SelectTrigger id={props.id} className="w-full">
+          <SelectValue>{kinCurrencyName(props.value)}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup>
+          {props.options.map((one) => (
+            <SelectItem key={one} value={one}>
+              {kinCurrencyName(one)}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+    </div>
+  );
+}
+
+/**
+ * Fix and keep: a bill not read cleanly, every figure read filled in and each one still needed
+ * marked, kept as an expense with the person's figures on save.
+ */
+export function KinBillFixDialog(
+  props: KinWorkTarget & {
+    readonly row: KinBillRow;
+    readonly start: KinBillFixDraft;
+    readonly categories: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+    readonly home: string;
+    readonly onClose: () => void;
+  },
+) {
+  const [draft, setDraft] = useState(props.start);
+  const [problem, setProblem] = useState<string | null>(null);
+  const fix = useKinBillFix(props);
+  const needs = new Set<string>(kinBillFixNeeds(draft));
+  const copy = KIN_BILLS.fix;
+  const field = KIN_BILLS.field;
+  const ids = {
+    vendor: useId(),
+    date: useId(),
+    amount: useId(),
+    currency: useId(),
+    tax: useId(),
+    category: useId(),
+    number: useId(),
+  };
+  const set = (patch: Partial<KinBillFixDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+    setProblem(null);
+  };
+  const label = (key: keyof KinBillFixDraft, text: string) => (
+    <Label htmlFor={ids[key]}>
+      {text}
+      {needs.has(key) ? (
+        <span className="font-normal text-warning-foreground">{copy.needed}</span>
+      ) : null}
+    </Label>
+  );
+  const save = async () => {
+    const checked = kinBillFixInput(draft);
+    if (!checked.ok) return setProblem(checked.problem);
+    if (await fix.save(props.row.sha256, checked.entered)) props.onClose();
+  };
+  return (
+    <FormDialog
+      title={copy.title}
+      detail={copy.hint}
+      typed={JSON.stringify(draft) !== JSON.stringify(props.start)}
+      busy={fix.busy}
+      discardTitle={KIN_MONEY_FORMS.discard.expense}
+      saveLabel={copy.keep}
+      onSave={() => void save()}
+      onClose={props.onClose}
+    >
+      <div className="flex flex-col gap-1.5">
+        {label("vendor", field.vendor)}
+        <Input
+          id={ids.vendor}
+          maxLength={200}
+          autoComplete="off"
+          aria-required
+          value={draft.vendor}
+          onChange={(event) => set({ vendor: event.target.value })}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {label("date", field.date)}
+        <Input
+          id={ids.date}
+          type="date"
+          aria-required
+          value={draft.date}
+          onChange={(event) => set({ date: event.target.value })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          {label("amount", field.amount)}
+          <Input
+            id={ids.amount}
+            autoComplete="off"
+            aria-required
+            placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+            value={draft.amount}
+            onChange={(event) => set({ amount: event.target.value })}
+          />
+        </div>
+        <CurrencyPick
+          id={ids.currency}
+          label={copy.currency}
+          value={draft.currency}
+          options={kinBillCurrencies(props.home, props.start.currency)}
+          onPick={(currency) => set({ currency })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          {label("tax", field.tax)}
+          <Input
+            id={ids.tax}
+            autoComplete="off"
+            value={draft.tax}
+            onChange={(event) => set({ tax: event.target.value })}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {label("number", field.number)}
+          <Input
+            id={ids.number}
+            maxLength={200}
+            autoComplete="off"
+            value={draft.number}
+            onChange={(event) => set({ number: event.target.value })}
+          />
+        </div>
+      </div>
+      {props.categories.length === 0 ? null : (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={ids.category}>{field.category}</Label>
+          <Select
+            value={draft.category === "" ? NONE : draft.category}
+            onValueChange={(picked) =>
+              set({ category: picked === NONE || picked === null ? "" : picked })
+            }
+          >
+            <SelectTrigger id={ids.category} className="w-full">
+              <SelectValue>
+                {props.categories.find((one) => one.value === draft.category)?.label ??
+                  KIN_MONEY_FORMS.expense.noCategory}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value={NONE}>{KIN_MONEY_FORMS.expense.noCategory}</SelectItem>
+              {props.categories.map((one) => (
+                <SelectItem key={one.value} value={one.value}>
+                  {one.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
+      )}
+      <p className="text-sm text-muted-foreground">
+        {copy.receipt}: {kinBillName(props.row)}
+      </p>
+      <Problem text={problem ?? fix.problem} />
+    </FormDialog>
+  );
+}
+
 /** A new expense typed by hand; the first one starts the company's Expenses list. */
 export function KinNewExpenseDialog(
   props: KinWorkTarget & {
@@ -600,10 +799,12 @@ export function KinNewExpenseDialog(
     start === undefined || chatFiles.some((file) => file.attachmentId === start.attachmentId)
       ? chatFiles
       : [start, ...chatFiles];
+  const currencies = kinBillCurrencies(currency, opened.currency);
   const ids = {
     what: useId(),
     amount: useId(),
     amountHint: useId(),
+    currency: useId(),
     day: useId(),
     vendor: useId(),
     category: useId(),
@@ -692,15 +893,22 @@ export function KinNewExpenseDialog(
             {KIN_MONEY_FORMS.expense.amountRefundHint}
           </p>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={ids.day}>{KIN_MONEY_FORMS.expense.paidOn}</Label>
-          <Input
-            id={ids.day}
-            type="date"
-            value={draft.paidOn}
-            onChange={(event) => set({ paidOn: event.target.value })}
-          />
-        </div>
+        <CurrencyPick
+          id={ids.currency}
+          label={KIN_MONEY_FORMS.expense.currency}
+          value={draft.currency || currency}
+          options={currencies}
+          onPick={(picked) => set({ currency: picked === currency ? "" : picked })}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={ids.day}>{KIN_MONEY_FORMS.expense.paidOn}</Label>
+        <Input
+          id={ids.day}
+          type="date"
+          value={draft.paidOn}
+          onChange={(event) => set({ paidOn: event.target.value })}
+        />
       </div>
       <Slip line={slip} />
       {draft.paidOn > today ? (
