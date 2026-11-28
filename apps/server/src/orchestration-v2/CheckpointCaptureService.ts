@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import {
   CheckpointScopeId,
   CommandId,
@@ -64,6 +65,7 @@ export const layer: Layer.Layer<
   CheckpointCaptureServiceV2,
   Effect.gen(function* () {
     const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+    const workspaceAccess = yield* WorkspaceHostAccess;
     const eventSink = yield* EventSink.EventSinkV2;
     const ids = yield* IdAllocator.IdAllocatorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -106,6 +108,7 @@ export const layer: Layer.Layer<
         });
       }
 
+      const forceMissing = sideChat || (yield* workspaceAccess.fenced(scope.cwd, input.threadId));
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const isPreserved = (ordinalWithinScope: number) =>
@@ -118,12 +121,12 @@ export const layer: Layer.Layer<
           ordinalWithinScope,
           nodeId: rootNode.id,
           capturedAt: run.requestedAt,
-          forceMissing: sideChat,
+          forceMissing,
         });
       // The tracked Git folders the thread reaches now. One added since the turn began has no
       // baseline, so its first checkpoint lists no files; one removed is simply not captured.
       const repositoryScopes =
-        sideChat || context.thread === undefined
+        forceMissing || context.thread === undefined
           ? []
           : yield* checkpoints.repositoryScopes({ rootScope: scope, ...context.thread });
       const nested =
@@ -150,7 +153,7 @@ export const layer: Layer.Layer<
           ordinalWithinScope: run.ordinal,
           appRunOrdinal: run.ordinal,
           capturedAt,
-          forceMissing: sideChat,
+          forceMissing,
           capturesBeforeLock,
           ...excluded(scope),
         });

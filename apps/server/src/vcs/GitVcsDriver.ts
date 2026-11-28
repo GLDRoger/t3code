@@ -56,6 +56,8 @@ import * as VcsProcess from "./VcsProcess.ts";
 export interface ExecuteGitInput {
   readonly operation: string;
   readonly cwd: string;
+  /** Extra folders Git must enter itself, such as a local clone source and destination. */
+  readonly workspacePaths?: ReadonlyArray<string>;
   readonly args: ReadonlyArray<string>;
   readonly stdin?: string;
   readonly env?: NodeJS.ProcessEnv;

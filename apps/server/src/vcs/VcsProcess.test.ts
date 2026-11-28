@@ -19,6 +19,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 
 const encodeExitError = Schema.encodeEffect(Schema.fromJsonString(VcsProcessExitError));
 
@@ -53,6 +54,45 @@ const captureProcessResult = (
   );
 
 describe("VcsProcess.run", () => {
+  it.effect("treats a fenced workspace as missing without spawning Git", () =>
+    Effect.gen(function* () {
+      let spawned = 0;
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(WorkspaceHostAccess, {
+          fenced: () => Effect.succeed(true),
+          register: () => Effect.succeed(true),
+          guard: (_paths, _effect, refused) => refused,
+        }),
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: () =>
+            Effect.sync(() => {
+              spawned++;
+              return {
+                stdout: "true",
+                stderr: "",
+                code: ChildProcessSpawner.ExitCode(0),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              };
+            }),
+        }),
+      );
+      const result = yield* service.run({
+        ...baseInput,
+        args: ["rev-parse", "--is-inside-work-tree"],
+        allowNonZeroExit: true,
+      });
+      expect([spawned, result.exitCode, result.stderr]).toEqual([
+        0,
+        128,
+        "fatal: not a git repository",
+      ]);
+    }),
+  );
+
   it.effect("explains a locked Git index and allows restore after the lock is released", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

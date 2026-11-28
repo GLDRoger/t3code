@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import {
   defaultInstanceIdForDriver,
   isProviderWorkspaceSnapshotCurrent,
@@ -457,6 +458,7 @@ export const layer = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
+    const workspaceAccess = yield* WorkspaceHostAccess;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
       PubSub.shutdown,
@@ -1203,6 +1205,13 @@ export const layer = Layer.effect(
       // Set by an instance's own report that its workspace skills changed.
       readonly rescan?: ProviderInstance;
     }) {
+      const scanCwd = input.scanCwd ?? input.cwd;
+      const scanPaths = scanCwd === input.cwd ? [scanCwd] : [input.cwd, scanCwd];
+      const baseProviders = Ref.get(providersRef).pipe(
+        Effect.map((items) => items.map((item) => dropProviderWorkspaceSnapshot(item, input.cwd))),
+      );
+      for (const path of scanPaths)
+        if (yield* workspaceAccess.fenced(path)) return yield* baseProviders;
       const workspaceSnapshotOf = (candidate: ServerProvider | undefined) =>
         candidate?.workspaceSnapshots?.find((s) => s.cwd === input.cwd);
       // What clients saw before the awaited scan, which may already have published the change.
@@ -1267,7 +1276,7 @@ export const layer = Layer.effect(
         : Effect.succeed(scannedFrom);
       const runScan = refreshMachineSnapshot.pipe(
         Effect.flatMap((scanBase) =>
-          Effect.map(snapshotForCwd(input.scanCwd ?? input.cwd), (scopedSnapshot) => ({
+          Effect.map(snapshotForCwd(scanCwd), (scopedSnapshot) => ({
             scanBase,
             scopedSnapshot,
           })),
@@ -1312,6 +1321,7 @@ export const layer = Layer.effect(
             }),
           ),
         ),
+        (scan) => workspaceAccess.guard(scanPaths, scan, baseProviders),
         Effect.ensuring(
           Ref.update(workspaceRefreshesRef, (refreshes) => {
             const current = refreshes.get(instance);

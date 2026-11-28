@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import {
   CheckpointId,
   CheckpointRef,
@@ -378,6 +379,7 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const checkpointStore = yield* CheckpointStore.CheckpointStore;
     const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
+    const workspaceAccess = yield* WorkspaceHostAccess;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const crypto = yield* Digest.Digest;
@@ -436,7 +438,10 @@ export const layer: Layer.Layer<
 
     // A failed probe is an operational error, not proof that the workspace has no repository.
     const probeRepository = (scope: OrchestrationV2CheckpointScope) =>
-      checkpointStore.isGitRepository(scope.cwd).pipe(
+      workspaceAccess.fenced(scope.cwd, scope.threadId).pipe(
+        Effect.flatMap((fenced) =>
+          fenced ? Effect.succeed(false) : checkpointStore.isGitRepository(scope.cwd),
+        ),
         Effect.map((isRepository) =>
           isRepository ? ("repository" as const) : ("missing" as const),
         ),
@@ -476,7 +481,10 @@ export const layer: Layer.Layer<
       withWorkspaceLock(
         input.scope.cwd,
         Effect.gen(function* () {
-          if (!(yield* checkpointStore.isGitRepository(input.scope.cwd))) {
+          if (
+            (yield* workspaceAccess.fenced(input.scope.cwd, input.scope.threadId)) ||
+            !(yield* checkpointStore.isGitRepository(input.scope.cwd))
+          ) {
             return;
           }
 
@@ -838,6 +846,10 @@ export const layer: Layer.Layer<
               failed(target, `Checkpoint status is ${target.checkpoint.status}.`),
             );
           }
+          if (yield* workspaceAccess.fenced(target.scope.cwd))
+            return yield* Effect.flip(
+              failed(target, "The working folder has no checkpoint to restore."),
+            );
           const exists = yield* checkpointStore
             .hasCheckpointRef({ cwd: target.scope.cwd, checkpointRef: target.checkpoint.ref })
             .pipe(Effect.catch((cause) => Effect.flip(failed(target, cause))));
@@ -924,6 +936,8 @@ export const layer: Layer.Layer<
     const repositoryScopesIfReadable: CheckpointServiceV2Shape["repositoryScopesIfReadable"] =
       Effect.fn("CheckpointService.repositoryScopes")(
         function* (input) {
+          if (yield* workspaceAccess.fenced(input.rootScope.cwd, input.rootScope.threadId))
+            return [];
           const workspace = yield* workspaceFolders.forThread(input);
           const submodules = yield* workspaceFolders.submodules({
             ...input,

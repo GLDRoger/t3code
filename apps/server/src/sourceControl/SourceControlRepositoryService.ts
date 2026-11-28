@@ -387,11 +387,28 @@ export const make = Effect.gen(function* () {
     // Git misreads @ in a pathless URL's query as userinfo and echoes its suffix as the host.
     const normalizedCloneUrl = cloneUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\?/i, "$1/?");
     const provider = input.provider ?? SourceControlProviderKind.make("unknown");
+    const source = yield* Effect.try({
+      try: () => {
+        if (cloneUrl.toLowerCase().startsWith("file:"))
+          return decodeURIComponent(new URL(cloneUrl).pathname);
+        if (!cloneUrl.includes("://") && !cloneUrl.includes(":"))
+          return path.resolve(path.dirname(destinationPath), cloneUrl);
+        return path.isAbsolute(cloneUrl) ? cloneUrl : undefined;
+      },
+      catch: (cause) =>
+        new SourceControlRepositoryError({
+          operation: "cloneRepository",
+          provider,
+          detail: "The local repository path is invalid.",
+          cause,
+        }),
+    });
     const timeoutMs = options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs;
     const clone = git
       .execute({
         operation: "SourceControlRepositoryService.cloneRepository",
         cwd: path.dirname(destinationPath),
+        workspacePaths: source === undefined ? [destinationPath] : [destinationPath, source],
         args: ["clone", "--progress", "--", normalizedCloneUrl, path.basename(destinationPath)],
         // The deadline is applied below so a timeout is reported as one, not as git's last line.
         timeoutMs: null,

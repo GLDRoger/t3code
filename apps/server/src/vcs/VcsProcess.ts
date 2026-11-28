@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -228,6 +229,7 @@ const canRetryFullFsync = (stderr: string) =>
 
 export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
+  const workspaceAccess = yield* WorkspaceHostAccess;
   const hostPlatform = yield* HostProcess.Platform;
   const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
   const nonGitProcesses = yield* Semaphore.make(NON_GIT_PROCESS_CONCURRENCY);
@@ -401,7 +403,26 @@ export const make = Effect.gen(function* () {
   });
 
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
-    const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
+    const paths = [input.cwd, ...(input.spawnCwd === undefined ? [] : [input.spawnCwd])];
+    const refused = input.allowNonZeroExit
+      ? Effect.succeed({
+          exitCode: ChildProcessSpawner.ExitCode(128),
+          stdout: "",
+          stderr: "fatal: not a git repository",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        })
+      : Effect.fail(
+          new VcsProcessExitError({
+            operation: input.operation,
+            command: input.command,
+            cwd: input.cwd,
+            exitCode: ChildProcessSpawner.ExitCode(128),
+            detail: "Server commands are unavailable in this agent's working folder.",
+          }),
+        );
+    const protectedRun = workspaceAccess.guard(paths, runUnbounded(input), refused);
+    const bounded = vcsProcesses.withPermits(1)(protectedRun);
     if (
       input.command === "git" &&
       input.operation === CHECKPOINT_CAPTURE_OPERATION &&

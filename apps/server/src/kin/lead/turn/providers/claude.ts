@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../../../../workspace/WorkspaceHostAccess.ts";
 import type { HookCallback, HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -358,6 +359,7 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const config = yield* ServerConfig;
       const path = yield* Path.Path;
       const fs = yield* FileSystem.FileSystem;
+      const workspaceAccess = yield* WorkspaceHostAccess;
       const relative = (parent: string, child: string) => {
         const result = path.relative(parent, child);
         return !path.isAbsolute(result) && result.split(path.sep)[0] !== ".." ? result : undefined;
@@ -492,6 +494,14 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
               if (unsafe) root = undefined;
               else if (plan.shell !== undefined) sandbox = settings;
             } else root = undefined;
+            if (
+              root !== undefined &&
+              !input.refresh &&
+              !(yield* workspaceAccess.register(root, input.threadId))
+            ) {
+              root = undefined;
+              sandbox = undefined;
+            }
             // With no shell, there is no sandboxed process racing these checkout path checks.
             scope = {
               root,

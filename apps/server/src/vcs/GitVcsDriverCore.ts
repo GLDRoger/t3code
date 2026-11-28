@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1039,6 +1040,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const workspaceAccess = yield* WorkspaceHostAccess;
   const { worktreesDir, worktreeCheckoutCacheDir } = yield* ServerConfig.ServerConfig;
   const isServerInternalPath = yield* makeIsServerInternalPath;
   const digest = yield* Digest.Digest;
@@ -1187,7 +1189,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         } satisfies GitVcsDriver.ExecuteGitResult;
       });
 
-      const execution = runGitCommand().pipe(Effect.scoped);
+      const execution = workspaceAccess.guard(
+        [input.cwd, ...(input.workspacePaths ?? [])],
+        runGitCommand().pipe(Effect.scoped),
+        input.allowNonZeroExit
+          ? Effect.succeed({
+              exitCode: ChildProcessSpawner.ExitCode(128),
+              stdout: "",
+              stderr: "fatal: not a git repository",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            })
+          : Effect.fail(
+              new GitCommandError({
+                ...gitCommandContext(input),
+                detail: "Server Git is unavailable in this agent's working folder.",
+              }),
+            ),
+      );
       if (timeoutMs === null) {
         return yield* execution;
       }
@@ -3082,6 +3101,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusDetailsLocal: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsLocal"] = Effect.fn(
     "statusDetailsLocal",
   )(function* (cwd, options) {
+    if (yield* workspaceAccess.fenced(cwd)) return NON_REPOSITORY_STATUS_DETAILS;
     return yield* readStatusDetailsLocal(cwd, options);
   });
 
@@ -3097,12 +3117,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusDetails: GitVcsDriver.GitVcsDriver["Service"]["statusDetails"] = Effect.fn(
     "statusDetails",
   )(function* (cwd) {
+    if (yield* workspaceAccess.fenced(cwd)) return NON_REPOSITORY_STATUS_DETAILS;
     yield* refreshStatusUpstream(cwd);
     return yield* readStatusDetailsLocal(cwd);
   });
 
   const statusDetailsRemote: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsRemote"] =
     Effect.fn("statusDetailsRemote")(function* (cwd, options) {
+      if (yield* workspaceAccess.fenced(cwd)) return NON_REPOSITORY_REMOTE_STATUS_DETAILS;
       return yield* readStatusDetailsRemote(
         cwd,
         options?.refreshUpstream !== false,
