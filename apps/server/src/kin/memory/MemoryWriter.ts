@@ -62,6 +62,7 @@ import { CHAT_SOURCE, deletedQuotes, withoutQuote } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
+import { asPersonWaits } from "../triggers/deferralGithub.ts";
 import {
   memoryWriteFailure,
   observeMemoryWrite,
@@ -912,6 +913,7 @@ const make = Effect.gen(function* () {
       yield* record(commit);
     }
     yield* memory.rebuildCache(orgId).pipe(
+      asPersonWaits,
       Effect.catch((error) =>
         Effect.logWarning("Could not refresh memory cache after an owner change", {
           orgId,

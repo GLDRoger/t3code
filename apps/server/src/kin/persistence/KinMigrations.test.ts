@@ -29,6 +29,7 @@ import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
 import BillReadsMigration from "./migrations/K217_BillReads.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
 import BillCropsMigration from "./migrations/K236_BillCrops.ts";
+import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
 import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -579,6 +580,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_bill_reads_attachment" },
           { name: "idx_kin_bill_reads_batch" },
           { name: "idx_kin_bill_reads_event" },
+          { name: "idx_kin_bill_reads_preview" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chat_pins_source" },
@@ -2365,6 +2367,9 @@ describe("Kin migrations", () => {
         yield* BillReadsMigration;
         yield* sql`CREATE TABLE kin_sql_migrations (migration_id INTEGER PRIMARY KEY,
         name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
+        // K240 reads mail rules, which this cut-down database otherwise lacks.
+        yield* sql`CREATE TABLE kin_mail_rules (org_id TEXT, rule_id TEXT, state TEXT,
+          updated_at INTEGER)`;
         for (const [id, name] of kinMigrations.filter(([id]) => id <= 235))
           yield* sql`INSERT INTO kin_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
         yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
@@ -2378,7 +2383,9 @@ describe("Kin migrations", () => {
           [237, "CardTapDeliveries"],
           [238, "BillSenders"],
           [239, "BillMail"],
-          [240, "ShadowLandings"],
+          [240, "RemovedRuleCards"],
+          [241, "BillPreviewIds"],
+          [242, "ShadowLandings"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
           {
@@ -2388,6 +2395,7 @@ describe("Kin migrations", () => {
             cut_box_json: null,
             mail_from: null,
             mail_at: null,
+            preview_id: billPhotoPreviewId("attachment"),
           },
         ]);
         yield* sql`UPDATE kin_bill_reads SET parent_sha256 = 'parent', cut_page = 1,
@@ -2395,6 +2403,79 @@ describe("Kin migrations", () => {
         const cropped = yield* sql`SELECT * FROM kin_bill_reads`;
         yield* BillCropsMigration;
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, cropped);
+        assert.deepStrictEqual(yield* runKinMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K241 points each company's copy id at its own photo, even for the same bytes, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP INDEX idx_kin_bill_reads_preview`;
+        yield* sql`ALTER TABLE kin_bill_reads DROP COLUMN preview_id`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 241`;
+        const photo = "a".repeat(64);
+        const ambermill = "kin-chat-0b7a5e1c-1d2e-4f3a-8b4c-5d6e7f809101";
+        const tidewater = "kin-chat-1c8b6f2d-2e3f-4a4b-9c5d-6e7f80910212";
+        const rows: ReadonlyArray<readonly [string, string, string, string, string]> = [
+          ["org-ambermill", photo, ambermill, "bill.png", "image/png"],
+          // The same photo in another company, under its own upload.
+          ["org-tidewater", photo, tidewater, "bill.png", "image/png"],
+          // An imported copy that kept another company's file id: still its own row.
+          ["org-copied", photo, ambermill, "bill.png", "image/png"],
+          [
+            "org-ambermill",
+            "b".repeat(64),
+            "kin-chat-2d9c7a3e-3f4a-4b5c-8d6e-7f8091021323",
+            "bill.pdf",
+            "application/pdf",
+          ],
+          [
+            "org-ambermill",
+            "c".repeat(64),
+            "kin-chat-3e0d8b4f-4a5b-4c6d-9e7f-809102132434",
+            "IMG_0001.heic",
+            "image/heic",
+          ],
+        ];
+        for (const [org, hash, attachment, name, mime] of rows)
+          yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+              name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+              widget_id, added_by_person_id, added_at, state)
+            VALUES (${org}, ${hash}, ${attachment}, 'chat', 'message', ${name},
+              ${mime === "application/pdf" ? "file" : "image"}, ${mime}, 8, 'batch', 0, 'finance',
+              'chat', 'widget', 'rhea', 1, 'read')`;
+        const ids = sql<{ org: string; attachment: string; preview: string | null }>`
+          SELECT org_id AS org, attachment_id AS attachment, preview_id AS preview
+          FROM kin_bill_reads ORDER BY org_id, sha256`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* ids, [
+          { org: "org-ambermill", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
+          {
+            org: "org-ambermill",
+            attachment: "kin-chat-2d9c7a3e-3f4a-4b5c-8d6e-7f8091021323",
+            preview: null,
+          },
+          {
+            org: "org-ambermill",
+            attachment: "kin-chat-3e0d8b4f-4a5b-4c6d-9e7f-809102132434",
+            preview: null,
+          },
+          { org: "org-copied", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
+          { org: "org-tidewater", attachment: tidewater, preview: billPhotoPreviewId(tidewater) },
+        ]);
+        assert.notStrictEqual(billPhotoPreviewId(ambermill), billPhotoPreviewId(tidewater));
+        // Copies made since: one cleared by a new attachment, one indexed by the worker.
+        yield* sql`UPDATE kin_bill_reads SET preview_id = NULL WHERE org_id = 'org-tidewater'`;
+        const held = yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 241`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`,
+          held,
+        );
         assert.deepStrictEqual(yield* runKinMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -2451,10 +2532,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.pdf', 'file', 'application/pdf',
           8, 'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting')`;
       const before = yield* sql`SELECT * FROM kin_bill_reads`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [239, "BillMail"],
-        [240, "ShadowLandings"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(239));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: null, mail_at: null },
       ]);
@@ -2463,16 +2541,45 @@ describe("Kin migrations", () => {
         (org_id, connection_id, message_id, address, state, next_at, queued_at)
         VALUES ('org', 'box', 'message', 'billing@inkspot.example', 'waiting', 2, 2)`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [239, "BillMail"],
-        [240, "ShadowLandings"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(239));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: "billing@inkspot.example", mail_at: 2 },
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_bill_mail`, [
         { message_id: "message" },
       ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("a database at the bill mail migration moves forward to the copy ids", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP INDEX idx_kin_bill_reads_preview`;
+      yield* sql`ALTER TABLE kin_bill_reads DROP COLUMN preview_id`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 240`;
+      const photo = "kin-chat-4f1e9c50-5b6c-4d7e-8f90-a1b2c3d4e5f6";
+      const pdf = "kin-chat-5a2f0d61-6c7d-4e8f-9a01-b2c3d4e5f607";
+      for (const [hash, id, name, type, mime] of [
+        ["a".repeat(64), photo, "harbor.png", "image", "image/png"],
+        ["b".repeat(64), pdf, "inkspot.pdf", "file", "application/pdf"],
+      ])
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state, mail_from, mail_at)
+          VALUES ('org', ${hash}, ${id}, 'chat', 'message', ${name}, ${type}, ${mime}, 8, 'batch',
+            0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting', 'billing@inkspot.example', 2)`;
+      const before = yield* sql`SELECT * FROM kin_bill_reads ORDER BY sha256`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [240, "RemovedRuleCards"],
+        [241, "BillPreviewIds"],
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads ORDER BY sha256`, [
+        { ...before[0], preview_id: billPhotoPreviewId(photo) },
+        { ...before[1], preview_id: null },
+      ]);
+      assert.deepStrictEqual(kinMigrations.at(-1), [241, "BillPreviewIds"]);
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

@@ -33,6 +33,7 @@ import {
   kinImageText,
   kinMessageLabel,
   kinMessageLinks,
+  kinNoteParts,
   kinPlainText,
   kinWithdrawnLine,
   type KinFeedRow,
@@ -678,13 +679,30 @@ export function KinSystemLine(props: {
   readonly onOpen: (open: KinNoticeOpen) => void;
   /** Opens the Team-room discussion the line names; null when there is no room to open. */
   readonly onOpenDiscussion: ((discussionId: string) => void) | null;
+  /** Opens a web address in the line, as one in an agent's message opens. */
+  readonly onLinkPress: (href: string) => void;
 }) {
   const { open, discussionId } = props.row;
   const onOpenDiscussion = props.onOpenDiscussion;
   return (
     <View className="items-center gap-2 px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
-        {props.row.text}
+        {kinNoteParts(props.row.text).map((part, index) => {
+          const { href } = part;
+          return href === null ? (
+            part.text
+          ) : (
+            <Text
+              // oxlint-disable-next-line react/no-array-index-key -- a note's parts never move
+              key={index}
+              accessibilityRole="link"
+              className="underline"
+              onPress={() => props.onLinkPress(href)}
+            >
+              {part.text}
+            </Text>
+          );
+        })}
       </Text>
       {open === null ? null : (
         <Chip

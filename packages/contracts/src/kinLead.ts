@@ -555,6 +555,9 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
+  note: Schema.optional(Schema.String),
+  lateSince: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
+  closed: Schema.optional(Schema.Literals(["cancelled", "undone", "started", "done"])),
   // Absent on the confirm card; heads_up and asked are decisions; started is done.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
@@ -1033,6 +1036,7 @@ export const KinEvent = Schema.Union([
     ...EventBase,
     chatId: KinChatId,
     batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    photosPrepared: Schema.optionalKey(Schema.Literal(true)),
     bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(10),

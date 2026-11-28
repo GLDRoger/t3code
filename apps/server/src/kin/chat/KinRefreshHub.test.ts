@@ -232,6 +232,15 @@ describe("KinRefreshHub", () => {
         yield* sql.withTransaction((yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "stop"));
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
+        // A bill's smaller copy is ready (`work/bills.ts`, outside any transaction): Money's
+        // topic moves for the owner, and the teammate hears nothing at all.
+        const heard = [...(yield* Queue.takeAll(ownerSees))].at(-1) ?? start;
+        yield* (yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "moneyStatements");
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          moneyStatements: (heard.moneyStatements ?? 0) + 1,
+        });
+        assert.strictEqual(yield* Queue.size(priyaSees), 0);
         yield* KinShell.KinShell.use((shell) =>
           shell.set(me.orgId, me.personId, 0, [{ id: "deals", on: false }]),
         ).pipe(Effect.provide(KinShell.layer));
@@ -724,6 +733,7 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      kin_bill_reads: ["work/bills.ts"],
       kin_github_watch: ["github/GitHubWatch.ts"],
       kin_github_branch_guards: ["github/branchGuard.ts"],
       kin_github_owner_uses: [
