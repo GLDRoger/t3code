@@ -101,7 +101,7 @@ import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/rece
 import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
 import {
   alreadyRecordedNext,
-  PAYMENT_PROPOSED_NEXT,
+  paymentProposedNext,
   TAKE_BACK_PROPOSED_NEXT,
 } from "../../apps/server/src/kin/work/leadMoney.ts";
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
@@ -1372,6 +1372,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     amount: string | null;
     withheld: string | null;
     paidOn: string | null;
+    note?: string | null;
+    noBankEvidence?: true;
   }) => {
     const money = (text: string | null) => {
       if (text === null) return undefined;
@@ -1399,6 +1401,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       paidOn,
       ...(amount === undefined ? {} : { amount }),
       ...(withheld === undefined ? {} : { withheld }),
+      ...(input.note == null ? {} : { note: input.note }),
     };
     const snapshot: Snapshot = {
       entry: null,
@@ -1413,8 +1416,12 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       status: "proposed",
       key: input.invoice.key,
       proposal: input.proposal,
-      shown: cardLines(snapshot, { received, version: 2 }),
-      next: PAYMENT_PROPOSED_NEXT,
+      shown: cardLines(snapshot, {
+        received,
+        version: 2,
+        ...(input.noBankEvidence === true ? { noBankEvidence: true } : {}),
+      }),
+      next: paymentProposedNext(input.noBankEvidence === true),
       sensitive: true,
     };
   },

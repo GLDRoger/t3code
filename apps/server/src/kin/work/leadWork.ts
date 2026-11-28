@@ -198,7 +198,7 @@ import {
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
 import { leadNamer, shownName, toolNameOfText, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
-import { invoiceCredits } from "./statements/invoiceCredits.ts";
+import { agentWrote, invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
@@ -442,11 +442,17 @@ export const QueryResult = Schema.Struct({
     ),
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
+  /** A text search that found nothing outside clients and contacts: what text matches. */
+  textNote: Schema.optional(Schema.String),
   withoutText: Schema.optional(Schema.Number).annotate({
     description:
       "Clients or contacts: how many the same query finds without text, which matches only their own words, never what kind of business they are.",
   }),
 });
+const TEXT_NOTE =
+  "text matches only an entry's own title and notes, never its client's or project's name: ask by client or project for theirs.";
+const NOT_BANK_WORD =
+  "An agent wrote or changed this entry, so it isn't the bank's word that this money moved: it may be only what someone's mail said. Kin offers no card from it; until a bank statement or alert shows the money, say the bank doesn't show it yet.";
 /** An invoice's or quote's issued number, in whatever shape its company's series gives. */
 const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40)).annotate({
   description: "An issued invoice's or quote's number, such as INV/26-27/004.",
@@ -458,6 +464,8 @@ export const GetResult = Schema.Struct({
   progress: Schema.optional(Schema.String),
   /** A client's printed details an agent proposed that wait for a person's tap. */
   unconfirmed: Schema.optional(Schema.Array(Schema.String)),
+  /** A Bank transactions entry an agent wrote or changed: why it isn't the bank's word. */
+  notBankWord: Schema.optional(Schema.String),
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
@@ -2456,6 +2464,13 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
         })).total;
   const withoutText =
     unfiltered === undefined || unfiltered <= page.total ? {} : { withoutText: unfiltered };
+  const textNote =
+    input.text !== undefined &&
+    page.total === 0 &&
+    list?.id !== "clients" &&
+    list?.id !== "contacts"
+      ? { textNote: TEXT_NOTE }
+      : {};
   const shownTo = (input.offset ?? 0) + page.rows.length;
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
@@ -2476,6 +2491,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
       records,
       ...next,
       ...withoutText,
+      ...textNote,
     };
     return shown;
   }
@@ -2502,6 +2518,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...keys,
     ...next,
     ...withoutText,
+    ...textNote,
     ...(totals === undefined || totals.total.length === 0
       ? {}
       : { ...amountsOf(totals), sensitive: true as const }),
@@ -2885,8 +2902,14 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   // A client's tax details are the owner level's, so only their turns read what waits on them.
   const unconfirmed =
     list === "clients" && team === undefined ? yield* unconfirmedLines(lead.orgId, row) : [];
+  const notBank =
+    team === undefined &&
+    moneyOn &&
+    (yield* findBankList(lead.orgId))?.id === list &&
+    (yield* agentWrote(lead.orgId, row.recordId));
   return {
     ...withDeal(deals, rowFor(view, row, now)),
+    ...(notBank ? { notBankWord: NOT_BANK_WORD } : {}),
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(unconfirmed.length === 0 ? {} : { unconfirmed }),
