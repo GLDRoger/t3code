@@ -267,6 +267,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)touch_log$/, "Logging a contact"],
   [/(?:^|__|\.)project_note$/, "Noting it on the project"],
   [/(?:^|__|\.)list_define$/, "Setting up a list"],
+  [/(?:^|__|\.)list_fields$/, "Checking a list's fields"],
   [/(?:^|__|\.)payment_record$/, "Recording a payment"],
   [/(?:^|__|\.)number_record$/, "Recording a number"],
   [/(?:^|__|\.)numbers_(?:read|watch)$/, "Checking the numbers"],

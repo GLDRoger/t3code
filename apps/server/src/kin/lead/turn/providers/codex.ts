@@ -90,6 +90,7 @@ export const CODEX_ALWAYS_LOADED = [
   "record_get",
   "record_create",
   "record_update",
+  "list_fields",
   "client_read",
   "pulse_handle",
   "docs_search",

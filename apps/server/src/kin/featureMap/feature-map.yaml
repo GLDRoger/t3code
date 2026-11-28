@@ -490,9 +490,10 @@ features:
     phone: [tab:tasks, KinWorkNew]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [record_create]
+    tools: [record_create, list_fields]
     proof:
       - packages/client-runtime/src/kin/kinWorkForms.test.ts
+      - apps/server/src/kin/work/crm.test.ts
       - .agents/skills/verify-kin/scripts/assign-member-sees.sh
 
   - id: task

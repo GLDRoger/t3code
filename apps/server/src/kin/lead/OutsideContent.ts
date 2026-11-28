@@ -112,6 +112,7 @@ export const OUTSIDE_TOOLS = {
   record_get: "allowed",
   record_create: "allowed",
   record_update: "allowed",
+  list_fields: "allowed",
   // Kin's own facts and the hold on one; nothing leaves the company.
   pulse_read: "allowed",
   pulse_handle: "allowed",

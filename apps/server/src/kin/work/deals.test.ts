@@ -1649,3 +1649,30 @@ it.effect(
       }
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect("a concern given twice is refused whole and writes nothing", () =>
+  Effect.gen(function* () {
+    const records = yield* KinRecords.KinRecords;
+    const { corran } = yield* seed;
+    const { deal } = yield* Deals.create([owner], newDeal(corran, "Invented cold store"));
+    const refused = yield* Effect.flip(
+      Deals.update([owner], {
+        orgId,
+        key: deal.key,
+        rev: deal.rev,
+        title: "Invented cold store, renamed",
+        concerns: [
+          { label: "loading dock", heard: "narrow gate" },
+          { label: "Loading dock", heard: "no ramp" },
+        ],
+      }),
+    );
+    assert.strictEqual(
+      refused.message,
+      "Loading dock is given twice in concerns: give each concern once. Nothing was written.",
+    );
+    const after = (yield* records.get(orgId, deal.key))!;
+    assert.strictEqual(after.title, "Invented cold store");
+    assert.strictEqual(after.rev, deal.rev);
+  }).pipe(Effect.provide(layer)),
+);

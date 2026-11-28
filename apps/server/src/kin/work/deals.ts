@@ -278,7 +278,10 @@ const concernsFor = Effect.fn("KinDeals.concernsFor")(function* (
     if ((concern.heard?.length ?? 0) > CONCERN_HEARD_MAX)
       return yield* invalid(`What was heard is at most ${CONCERN_HEARD_MAX} characters a concern.`);
     const folded = foldConcern(concern.label);
-    if (seen.has(folded)) return yield* invalid(`${concern.label} is given twice.`);
+    if (seen.has(folded))
+      return yield* invalid(
+        `${concern.label} is given twice in concerns: give each concern once. Nothing was written.`,
+      );
     seen.add(folded);
     stored.push(concern.heard === undefined ? concern.label : `${concern.label}: ${concern.heard}`);
   }

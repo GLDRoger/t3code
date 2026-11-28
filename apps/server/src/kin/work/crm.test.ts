@@ -373,10 +373,15 @@ it.effect("record writes refuse conflicting names for a field", () =>
             records: [{ ...row, kind: "client", category: " prospect " }],
           }),
         ),
-        "kind",
+        "category and kind",
       ],
     ] as const)
-      assert.include((yield* refusal).message, `${name} given twice`);
+      assert.include(
+        (yield* refusal).message,
+        name === "category and kind"
+          ? "category and kind say different kinds: send category alone. Nothing was written."
+          : `${name} given twice with different values: send it once, at the top or under fields. Nothing was written.`,
+      );
 
     const { records } = yield* decodeCreate({
       sourceEventId: "ask-event",
@@ -391,21 +396,73 @@ it.effect("nested fields cannot supply shared record columns", () =>
     const refused = yield* Effect.flip(
       decodeUpdate({ key: "W-1", sourceEventId: "ask-event", fields: { owner: "Zoya" } }),
     );
-    assert.include(refused.message, "owner");
+    assert.include(
+      refused.message,
+      '"owner" goes at the top of the row, not under fields. Nothing was written.',
+    );
+    const clientKeys = "cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom";
+    const said = (name: string, change: boolean) =>
+      ["client", "title", "sensitive", "category"].includes(name) ||
+      (change ? name === "key" : name === "list")
+        ? `"${name}" goes at the top of the row, not under fields. Nothing was written.`
+        : name === "kind"
+          ? '"kind" goes at the top of the row as category, not under fields. Nothing was written.'
+          : `Clients takes no "${name}" under fields; pass one of: ${
+              change ? clientKeys.replace("cameFrom, ", "") : clientKeys
+            }. Nothing was written.`;
     const columns = ["id", "key", "holder", "visibility", "client", "title", "sensitive", "list"];
     for (const name of [...columns, "kind", "category", "accountsForTax"])
-      for (const refused of [
-        yield* Effect.flip(
-          decodeCreate({
-            sourceEventId: "ask-event",
-            records: [{ list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } }],
-          }),
-        ),
-        yield* Effect.flip(
-          decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
-        ),
-      ])
-        assert.include(refused.message, `"${name}" is not a field for this record write.`);
+      for (const [change, refused] of [
+        [
+          false,
+          yield* Effect.flip(
+            decodeCreate({
+              sourceEventId: "ask-event",
+              records: [
+                { list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } },
+              ],
+            }),
+          ),
+        ],
+        [
+          true,
+          yield* Effect.flip(
+            decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
+          ),
+        ],
+      ] as const)
+        assert.include(refused.message, said(name, change), name);
+    // A key of another list says where it goes; one of these lists, that they differ.
+    const elsewhere = yield* Effect.flip(
+      decodeCreate({
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Juniper Cold Chain", fields: { email: "a@x.invalid" } },
+        ],
+      }),
+    );
+    assert.include(
+      elsewhere.message,
+      `Clients takes no "email" under fields, which goes on contacts; pass one of: ${clientKeys}. Nothing was written.`,
+    );
+    const mixed = yield* Effect.flip(
+      decodeUpdate({
+        keys: ["C-1", "CT-1"],
+        sourceEventId: "ask-event",
+        fields: { terms: "Net 30" },
+      }),
+    );
+    assert.include(
+      mixed.message,
+      "keys mixes clients with contacts, whose fields differ: change them in separate calls. Nothing was written.",
+    );
+    const taxOnWork = yield* Effect.flip(
+      decodeUpdate({ key: "W-1", sourceEventId: "ask-event", taxNumber: "29ABCDE1234F1Z5" }),
+    );
+    assert.include(
+      taxOnWork.message,
+      "taxNumber goes on clients alone: change the client in its own call. Nothing was written.",
+    );
   }),
 );
 
@@ -449,11 +506,143 @@ it.effect(
         Effect.flatMap((input) => LeadWork.updateMany(scope, input)),
         Effect.flip,
       );
-      assert.include(
+      assert.strictEqual(
         refused.message,
-        "A client's details are named fields of their own, not fields.",
+        "keys mixes clients with expenses, whose fields differ: change them in separate calls. Nothing was written.",
       );
       assert.deepStrictEqual(yield* stored(), [client, expense]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "reads show a client's tax details by the names agents write, and stay stored as they were",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      const made = yield* decodeCreate({
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "clients",
+            title: "Juniper Cold Chain",
+            gstin: "27ABCDE1234F1Z5",
+            placeOfSupply: "Maharashtra",
+          },
+        ],
+      }).pipe(Effect.flatMap((input) => LeadWork.create(scope, input)));
+      const key = made.records[0]!.key;
+      const [row] = (yield* LeadWork.query(scope, { list: "clients" })).records;
+      const got = yield* LeadWork.get(scope, { key });
+      for (const read of [row!, got]) {
+        assert.include(read, { taxNumber: "27ABCDE1234F1Z5", taxPlace: "Maharashtra" });
+        assert.notProperty(read, "gstin");
+        assert.notProperty(read, "placeOfSupply");
+      }
+      // A change shaped like the read writes back.
+      const change = yield* decodeUpdate({
+        sourceEventId: "again-event",
+        key,
+        taxNumber: "29ABCDE1234F1Z5",
+        taxPlace: "Karnataka",
+      });
+      yield* LeadWork.update(scope, { ...change, key });
+      const records = yield* KinRecords.KinRecords;
+      assert.deepStrictEqual(JSON.parse((yield* records.get(orgId, key))!.fieldsJson), {
+        gstin: "29ABCDE1234F1Z5",
+        placeOfSupply: "Karnataka",
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "list_fields says each list's keys and words, and no value, to the owner and a teammate",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Juniper Cold Chain", terms: "Net 45" }],
+      });
+      const clients = yield* LeadWork.listFields(scope, { list: "clients" });
+      assert.deepStrictEqual(
+        clients.fields.map((field) => [field.key, field.ownerOnly === true]),
+        [
+          ["cameFrom", false],
+          ["tags", false],
+          ["terms", true],
+          ["address", true],
+          ["taxNumber", true],
+          ["taxPlace", true],
+          ["heardFrom", false],
+        ],
+      );
+      assert.deepInclude((yield* LeadWork.listFields(scope, { list: "work" })).fields, {
+        key: "size",
+        takes: "one of S, M, L",
+      });
+      const reason = (yield* LeadWork.listFields(scope, { list: "work" })).fields.find(
+        (field) => field.key === "reason",
+      );
+      assert.include(reason?.about, "never their name");
+      const expenses = yield* LeadWork.listFields(scope, { list: "expenses" });
+      assert.include(
+        expenses.fields.map((field) => field.key),
+        "vendor",
+      );
+      assert.isTrue(expenses.fields.every((field) => typeof field.takes === "string"));
+      const deals = yield* LeadWork.listFields(scope, { list: "deals" });
+      assert.deepStrictEqual(
+        deals.fields.map((field) => field.key),
+        ["stage", "source", "lostReason", "concerns"],
+      );
+      assert.notInclude(JSON.stringify(clients), "Net 45");
+
+      // The same turn, now one a teammate reads.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('team-chat', ${orgId}, 'team_group', NULL, 1, ${at})`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES ('team-chat-mate', ${orgId}, 'team-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+        role, joined_at)
+      VALUES ('team-chat-lead', ${orgId}, 'team-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+        created_at)
+      VALUES ('team-ask', ${orgId}, 'team-chat', 1, 'human', ${mateId}, 'team-chat-mate',
+        'member', 'text', 'What does a client take?', '[]', 'posted', ${at})`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "team-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "team-chat-mate" },
+        chatId: "team-chat",
+        messageId: "team-ask",
+      };
+      yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done'`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state, wakeup_id)
+      VALUES ('team-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+        0, 0, 'claimed', 'wake')`;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '["team-event"]', audience = 'shared'
+      WHERE wakeup_id = 'wake'`;
+      assert.deepStrictEqual(yield* LeadWork.listFields(scope, { list: "clients" }), clients);
+      // Expenses aren't the team's: a teammate learns none of its field names.
+      const refused = yield* Effect.flip(LeadWork.listFields(scope, { list: "expenses" }));
+      assert.strictEqual(refused.message, "I can't do that in a chat other people can read.");
+      assert.notInclude(refused.message, "vendor");
     }).pipe(Effect.provide(layer)),
 );
 
@@ -2377,6 +2566,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
       // Stage names only: nothing of a deal.
       deal_stages: [LeadWork.dealStages(scope, {}), false],
+      list_fields: [LeadWork.listFields(scope, { list: "clients" }), false],
       company_profile: [LeadMoney.profile(scope, {}), true],
       // Section switches and names: nothing of an entry. No chat here, so no card either.
       company_sections: [

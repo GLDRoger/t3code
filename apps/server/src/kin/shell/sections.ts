@@ -61,6 +61,7 @@ export const SECTIONS = {
     client_read: "clients",
     record_create: null,
     record_update: null,
+    list_fields: null,
     pulse_read: null,
     pulse_handle: null,
     pulse_nudge: null,

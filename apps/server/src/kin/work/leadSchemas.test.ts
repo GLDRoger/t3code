@@ -1,4 +1,5 @@
 import { assert, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
@@ -7,6 +8,7 @@ import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
+import * as LeadWork from "./leadWork.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 
@@ -98,18 +100,94 @@ it("advertises every list definition key except the filled-in source event, with
   });
 });
 
-it("advertises record write keys except the filled-in source event and the tax aliases", () => {
+// Each built-in list's own keys, which go under fields; a client's kind is category.
+const MOVED = [
+  "kind",
+  "cameFrom",
+  "tags",
+  "audience",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+  "terms",
+  "repos",
+  "address",
+  "gstin",
+  "placeOfSupply",
+  "taxNumber",
+  "taxPlace",
+  "heardFrom",
+  "milestone",
+  "size",
+  "reason",
+  "from",
+  "at",
+  "attendees",
+  "where",
+  "billing",
+  "value",
+  "startsOn",
+  "renewsOn",
+  "members",
+  "alsoOn",
+  "promisedTo",
+  "measure",
+  "target",
+  "current",
+  "unit",
+];
+// record_update takes no cameFrom, finishedOn or deal at all.
+const CREATE_ONLY = ["finishedOn", "deal"];
+
+it("advertises each list's own keys under fields, accepting them unadvertised at the top", () => {
   const { record_create, record_update } = KinWorkToolkit.tools;
   for (const tool of [record_create, record_update]) {
     const raw = Tool.getJsonSchema(tool);
     const advertised = advertisedJsonSchema(tool, { kin: true });
     const row = tool.name === "record_create" ? "records[]." : "";
-    const hidden = new Set(["sourceEventId", `${row}taxNumber`, `${row}taxPlace`]);
+    const moved =
+      tool.name === "record_create"
+        ? [...MOVED, ...CREATE_ONLY]
+        : MOVED.filter((key) => key !== "cameFrom");
     const accepted = inputPropertyPaths(raw);
-    assert.isTrue(hidden.isSubsetOf(accepted), tool.name);
+    const roots = ["sourceEventId", ...moved.map((key) => `${row}${key}`)];
+    const hidden = new Set(
+      [...accepted].filter((path) =>
+        roots.some((one) => path === one || path.startsWith(`${one}.`)),
+      ),
+    );
+    assert.includeMembers([...hidden], roots, tool.name);
     assert.deepStrictEqual(inputPropertyPaths(advertised), accepted.difference(hidden), tool.name);
     const prefix = tool.name === "record_create" ? "records.items.properties." : "";
     expect(advertised.properties).toHaveProperty(`${prefix}confirmed`, { type: "boolean" });
     expect(advertised.properties).toHaveProperty(`${prefix}due.description`, expect.any(String));
+    expect(advertised.properties).toHaveProperty(
+      `${prefix}category.description`,
+      expect.stringContaining("a client: client, vendor or prospect"),
+    );
+    expect(advertised.properties).toHaveProperty(
+      `${prefix}fields.description`,
+      expect.stringContaining(
+        "clients: cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom.",
+      ),
+    );
   }
 });
+
+it.effect("the fields index names exactly what the decoder takes for each built-in list", () =>
+  Effect.gen(function* () {
+    const decode = Schema.decodeUnknownEffect(LeadWork.CreateInput);
+    for (const list of ["work", "clients", "contacts", "projects", "goals"]) {
+      const named = new RegExp(` ${list}: ([^.]+)\\.`).exec(LeadWork.FIELDS_INDEX)![1]!;
+      const refused = yield* Effect.flip(
+        decode({
+          sourceEventId: "e",
+          records: [{ list, title: "Tidewater", fields: { nope: "x" } }],
+        }),
+      );
+      assert.include(refused.message, `takes no "nope" under fields; pass one of: ${named}.`, list);
+    }
+  }),
+);

@@ -75,6 +75,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
         : yield* Work.update(scope, { ...change, key });
     }, Effect.mapError(failure)),
   ),
+  list_fields: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.listFields")(function* (input) {
+      return yield* Work.listFields(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
   record_assign: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.assign")(function* (input) {
       return yield* Work.assign(yield* McpInvocationContext, input);

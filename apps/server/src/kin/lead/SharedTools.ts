@@ -199,6 +199,8 @@ export const SHARED_TOOLS = {
   // Tasks, meetings and milestones for the people there, shared with the team (`viewGuard`).
   record_create: "view",
   record_update: "view",
+  // A list's keys and words, never a value; a defined list's only when it is the team's.
+  list_fields: "view",
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
   pulse_handle: (_turn, args) => {

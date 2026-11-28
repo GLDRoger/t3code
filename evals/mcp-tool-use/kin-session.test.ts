@@ -481,7 +481,7 @@ it("lets the run override Kin's default effort", () => {
   assert.equal(ownerFirstRequest("low").output_config.effort, "low");
 });
 
-it("uses the fourteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
+it("uses the fifteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
   const { tools, messages } = ownerFirstRequest();
   assert.sameMembers(
     tools
@@ -489,6 +489,7 @@ it("uses the fourteen-tool Claude owner core, keeps WebSearch deferred, and drop
       .filter((name: string) => name.startsWith("mcp__t3-code__")),
     [
       "record_update",
+      "list_fields",
       "record_assign",
       "kin_ask_person",
       "kin_relay",

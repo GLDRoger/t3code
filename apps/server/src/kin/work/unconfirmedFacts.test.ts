@@ -445,7 +445,7 @@ it.effect(
       );
       // The record says it waits; an invoice made now prints the confirmed number.
       const read = yield* LeadWork.get(scope, { key: "C-1" });
-      assert.strictEqual(read.gstin, OLD);
+      assert.strictEqual(read.taxNumber, OLD);
       assert.deepStrictEqual(read.unconfirmed, [
         `Unconfirmed GSTIN: "${NEW}", from their mail of 3 Nov. It waits for Rhea's tap and is not on invoices or quotes; never state it as fact.`,
       ]);

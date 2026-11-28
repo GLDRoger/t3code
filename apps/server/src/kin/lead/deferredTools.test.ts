@@ -45,7 +45,15 @@ it("one set decides which Kin tools load up front: no tool marks itself, and eve
   );
   assert.sameMembers(
     [...KIN_ALWAYS_LOADED],
-    ["record_update", "record_assign", "kin_ask_person", "kin_relay", "kin_defer", "records_query"],
+    [
+      "record_update",
+      "list_fields",
+      "record_assign",
+      "kin_ask_person",
+      "kin_relay",
+      "kin_defer",
+      "records_query",
+    ],
   );
   assert.includeMembers(
     kinTools.map((tool) => tool.name),

@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import { Tool } from "effect/ai";
 import * as CreditNotes from "../gendocs/creditNotes.ts";
 import {
   KinAgentId,
@@ -150,6 +151,7 @@ import {
 } from "./recordRows.ts";
 import {
   allLists,
+  describe,
   isBuiltIn,
   isFieldNumber,
   isInvoiceDraft,
@@ -181,6 +183,7 @@ import {
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   teamChanges,
+  teamLists,
   teamPairs,
   viewerOfPeople,
   viewReadsWhole,
@@ -202,7 +205,6 @@ import { agentWrote, invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
-import { withArticle } from "../article.ts";
 import { NOTES_MAX } from "../textLimits.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
@@ -234,7 +236,7 @@ const List = KinListId.annotate({
 });
 const Category = KinToolText(
   60,
-  "work: task, issue, obligation or meeting; a project: campaign; a defined list: one of its own.",
+  "work: task, issue, obligation or meeting; a client: client, vendor or prospect; a project: campaign; a defined list: one of its own.",
 );
 const Amount = KinToolText(
   60,
@@ -386,8 +388,9 @@ const Row = Schema.Struct({
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
   address: Schema.optional(Schema.String),
-  gstin: Schema.optional(Schema.String),
-  placeOfSupply: Schema.optional(Schema.String),
+  /** A client's tax details, by the names agents write them; stored as `gstin` and `placeOfSupply`. */
+  taxNumber: Schema.optional(Schema.String),
+  taxPlace: Schema.optional(Schema.String),
   /** A defined list's: its list, what it calls the state, amount, date and own fields. */
   listName: Schema.optional(Schema.String),
   stateLabel: Schema.optional(Schema.String),
@@ -773,9 +776,9 @@ const recordFields = {
     "value",
     "startsOn",
     "renewsOn",
+    "finishedOn",
     "members",
     "audience",
-    "finishedOn",
   ],
   milestones: [],
   goals: ["measure", "target", "current", "unit", "startsOn"],
@@ -804,12 +807,50 @@ const updateLists = ({
 
 const canonicalField = (key: string) =>
   key === "taxNumber" ? "gstin" : key === "taxPlace" ? "placeOfSupply" : key;
+/** The names agents read and write for a client's stored tax keys. */
+const taxName = (key: string) =>
+  key === "gstin" ? "taxNumber" : key === "placeOfSupply" ? "taxPlace" : key;
 const parameterIssue = (message: string) => new SchemaIssue.InvalidValue({ message });
 const quoteFieldName = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const isPartyKind = Schema.is(NewPartyKind);
 // The neutral alias uses the client editor's GSTIN format check.
 const clientTaxNumberAlias = Symbol("clientTaxNumberAlias");
 const TaxNumberAlias = { [clientTaxNumberAlias]: Schema.optionalKey(Schema.Literal(true)) };
+const NOTHING_WRITTEN = "Nothing was written.";
+const fieldOwners = (key: string) => [
+  ...Object.keys(recordFields).filter(
+    (list) => isFieldList(list) && (recordFields[list] as ReadonlyArray<string>).includes(key),
+  ),
+  ...(DEAL_FIELDS.includes(key) ? ["deals"] : []),
+];
+/** A key under fields that this row's list or lists don't take, said in their words. */
+const notAField = (name: string, key: string, lists: ReadonlyArray<FieldList>, rowKeys: object) => {
+  const takes = (list: FieldList) =>
+    (recordFields[list] as ReadonlyArray<string>).filter((one) => Object.hasOwn(rowKeys, one));
+  const has = lists.filter((list) => takes(list).includes(key));
+  if (has.length > 0) {
+    const lacks = lists.filter((list) => !has.includes(list));
+    return `keys mixes ${has[0]} with ${lacks[0]}, whose fields differ: change them in separate calls. ${NOTHING_WRITTEN}`;
+  }
+  const quoted = quoteFieldName(name);
+  const owners = fieldOwners(key);
+  if (Object.hasOwn(rowKeys, key) && owners.length === 0)
+    return key === "kind"
+      ? `${quoted} goes at the top of the row as category, not under fields. ${NOTHING_WRITTEN}`
+      : `${quoted} goes at the top of the row, not under fields. ${NOTHING_WRITTEN}`;
+  const valid = lists
+    .map((list) => takes(list).map(taxName))
+    .reduce((all, keys) => all.filter((one) => keys.includes(one)));
+  const names = lists.map((list) => LISTS[list].name).join(" and ");
+  const others = owners.filter((one) => !(lists as ReadonlyArray<string>).includes(one));
+  const pass =
+    valid.length === 0 ? "it has no fields of its own" : `pass one of: ${valid.join(", ")}`;
+  return `${names} ${lists.length === 1 ? "takes" : "take"} no ${quoted} under fields${
+    others.length > 0 ? `, which goes on ${others.join(" or ")}` : ""
+  }; ${pass}. ${NOTHING_WRITTEN}`;
+};
+const givenTwice = (name: string) =>
+  `${name} given twice with different values: send it once, at the top or under fields. ${NOTHING_WRITTEN}`;
 
 const liftRecordFields = Effect.fnUntraced(function* (
   {
@@ -823,11 +864,13 @@ const liftRecordFields = Effect.fnUntraced(function* (
   lists: ReadonlyArray<FieldList>,
   rowKeys: object,
 ) {
+  const clientsOnly = (name: string) =>
+    parameterIssue(
+      `${name} goes on clients alone: change the client in its own call. ${NOTHING_WRITTEN}`,
+    );
   if (lists.length === 0) {
     if (taxNumber !== undefined || taxPlace !== undefined)
-      return yield* Effect.fail(
-        parameterIssue(`${taxNumber === undefined ? "taxPlace" : "taxNumber"} goes on clients.`),
-      );
+      return yield* Effect.fail(clientsOnly(taxNumber === undefined ? "taxPlace" : "taxNumber"));
     return fields === undefined ? out : { ...out, fields };
   }
   let usedTaxNumberAlias = taxNumber !== undefined;
@@ -837,11 +880,9 @@ const liftRecordFields = Effect.fnUntraced(function* (
       !Object.hasOwn(rowKeys, key) ||
       !lists.every((list) => (recordFields[list] as ReadonlyArray<string>).includes(key))
     )
-      return yield* Effect.fail(
-        parameterIssue(`${quoteFieldName(name)} is not a field for this record write.`),
-      );
+      return yield* Effect.fail(parameterIssue(notAField(name, key, lists, rowKeys)));
     if (out[key] !== undefined && !Equal.equals(out[key], value))
-      return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
+      return yield* Effect.fail(parameterIssue(givenTwice(name)));
     out[key] = value;
     usedTaxNumberAlias ||= name === "taxNumber" && value !== undefined;
   }
@@ -850,28 +891,92 @@ const liftRecordFields = Effect.fnUntraced(function* (
     ["taxPlace", taxPlace],
   ] as const) {
     if (value === undefined) continue;
-    if (!lists.every((list) => list === "clients"))
-      return yield* Effect.fail(parameterIssue(`${name} goes on clients.`));
+    if (!lists.every((list) => list === "clients")) return yield* Effect.fail(clientsOnly(name));
     const key = canonicalField(name);
     if (out[key] !== undefined && !Equal.equals(out[key], value))
-      return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
+      return yield* Effect.fail(parameterIssue(givenTwice(name)));
     out[key] = value;
   }
   const category = typeof out.category === "string" ? out.category.trim() : out.category;
   if (lists.every((list) => list === "clients") && isPartyKind(category)) {
     if (out.kind !== undefined && out.kind !== category)
-      return yield* Effect.fail(parameterIssue("kind given twice with different values."));
+      return yield* Effect.fail(
+        parameterIssue(
+          `category and kind say different kinds: send category alone. ${NOTHING_WRITTEN}`,
+        ),
+      );
     out.kind = category;
     delete out.category;
   }
   return usedTaxNumberAlias ? { ...out, [clientTaxNumberAlias]: true } : out;
 });
 
+type Json = { readonly [key: string]: unknown };
+const isJson = (value: unknown): value is Json => typeof value === "object" && value !== null;
+/** A field's input schema in words: its type or choices, and its own description. */
+const takesOf = (schema: Json): { readonly takes: string; readonly about?: string } => {
+  const branches = Array.isArray(schema.anyOf)
+    ? schema.anyOf.filter((one): one is Json => isJson(one) && one.type !== "null")
+    : [];
+  const about = typeof schema.description === "string" ? schema.description : undefined;
+  const words =
+    branches.length > 0
+      ? branches.map((one) => takesOf(one))
+      : [
+          {
+            takes: Array.isArray(schema.enum)
+              ? `one of ${schema.enum.join(", ")}`
+              : schema.type === "array" && isJson(schema.items)
+                ? `a list of ${takesOf(schema.items).takes}`
+                : schema.type === "object" && isJson(schema.properties)
+                  ? Object.keys(schema.properties).join(" and ")
+                  : schema.type === "number" || schema.type === "integer"
+                    ? "a number"
+                    : schema.type === "boolean"
+                      ? "true or false"
+                      : "text",
+          },
+        ];
+  const abouts = [about, ...words.map((one) => one.about)].filter((one) => one !== undefined);
+  return {
+    takes: words.map((one) => one.takes).join(", or "),
+    ...(abouts.length === 0 ? {} : { about: abouts.join(" Or: ") }),
+  };
+};
+const createRowJson = Tool.getJsonSchemaFromSchema(Schema.Struct(CreateRow.fields)) as Json;
+const rowProperty = (key: string) =>
+  isJson(createRowJson.properties) && isJson(createRowJson.properties[key])
+    ? createRowJson.properties[key]
+    : {};
+/**
+ * The built-in lists' own keys under fields. Each key is accepted at the top too,
+ * unadvertised (`HIDDEN_CREATE_KEYS`), so a call shaped like a read still writes.
+ */
+export const FIELDS_INDEX =
+  "The list's own fields by key; null clears one. work: milestone, size, reason, from, at, attendees, where, alsoOn, promisedTo, deal. clients: cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom. contacts: role, email, phone, emails, phones, tags. projects: repos, billing, value, startsOn, renewsOn, finishedOn, members, audience. goals: measure, target, current, unit, startsOn. deals: stage, source, concerns. A defined list's are its own. list_fields says what each takes.";
+// Their own words stay in sight beside the index, as they were beside their keys.
+const keptWords = ["reason", "from"]
+  .map((key) => `${key}: ${takesOf(rowProperty(key)).about}`)
+  .join(" ");
+const AdvertisedFields = RawRecordFields.annotate({
+  description: `${FIELDS_INDEX} ${keptWords}`,
+});
+const movedKeys = (rowKeys: object) => [
+  ...new Set([
+    "kind",
+    "taxNumber",
+    "taxPlace",
+    ...Object.values(recordFields)
+      .flat()
+      .filter((key) => Object.hasOwn(rowKeys, key)),
+  ]),
+];
+
 const openRow = <S extends Schema.Struct.Fields>(fields: S) =>
   Schema.StructWithRest(Schema.Struct(fields), [Schema.Record(Schema.String, Schema.Unknown)]);
 const rawCreate = openRow({
   ...CreateRow.fields,
-  fields: Schema.optional(RawRecordFields),
+  fields: Schema.optional(AdvertisedFields),
   taxNumber: CreateRow.fields.gstin,
   taxPlace: CreateRow.fields.placeOfSupply,
 });
@@ -901,7 +1006,7 @@ export const CreateInput = Schema.Struct({
 
 const rawUpdate = Schema.Struct({
   ...UpdateRow.fields,
-  fields: Schema.optional(RawRecordFields),
+  fields: Schema.optional(AdvertisedFields),
   taxNumber: UpdateRow.fields.gstin,
   taxPlace: UpdateRow.fields.placeOfSupply,
 });
@@ -932,6 +1037,9 @@ export const UpdateInput = rawUpdate.pipe(
   }),
   Schema.decodeTo(canonicalUpdate),
 );
+/** Accepted and not advertised: each list's own keys at the top, and a client's kind. */
+export const HIDDEN_CREATE_KEYS = movedKeys(CreateRow.fields);
+export const HIDDEN_UPDATE_KEYS = movedKeys(UpdateRow.fields);
 const createKeys = Object.keys(CreateRow.fields);
 const updateKeys = Object.keys(UpdateRow.fields);
 const dealKeys = new Set([
@@ -1577,6 +1685,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     const value = fieldText(fields, key);
     return value === null ? {} : { [key]: value };
   };
+  const shownAs = (key: "gstin" | "placeOfSupply") => {
+    const value = fieldText(fields, key);
+    return value === null ? {} : { [taxName(key)]: value };
+  };
   const repos = fieldList(fields, "repos");
   const tags = list === "clients" || list === "contacts" ? fieldList(fields, "tags") : [];
   const cameFrom = list === "clients" ? fieldText(fields, "source") : null;
@@ -1636,7 +1748,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...several("phones"),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
-    ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
+    ...(defined ? {} : { ...text("address"), ...shownAs("gstin"), ...shownAs("placeOfSupply") }),
     ...(defined && row.category !== null ? { category: row.category } : {}),
     ...(!("amount" in record) || record.amount === undefined
       ? {}
@@ -2099,7 +2211,7 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
       ? undefined
       : def.builtIn !== null
         ? yield* invalid(
-            `${withArticle(def.noun, "A")}'s details are named fields of their own, not fields.`,
+            `keys mixes ${def.id} with another list, whose fields differ: change them in separate calls. ${NOTHING_WRITTEN}`,
           )
         : yield* typedFields(def, row.fields, {
             who: (text) => resolveWho(lead, text),
@@ -2127,6 +2239,9 @@ export const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
   return behind;
 });
 type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
+
+/** A client's fields only the owner level sets; a teammate's prospect carries none of them. */
+const CLIENT_OWNERS_FIELDS = ["terms", "address", "gstin", "placeOfSupply"] as const;
 
 /** What a teammate's own Edit contact changes, and the call's own bookkeeping. */
 const CONTACT_CHANGES: ReadonlySet<string> = new Set([
@@ -2188,8 +2303,8 @@ const teamRow = ({
   tags: _tags,
   audience: _audience,
   terms: _terms,
-  gstin: _gstin,
-  placeOfSupply: _placeOfSupply,
+  taxNumber: _taxNumber,
+  taxPlace: _taxPlace,
   amount: _amount,
   balance: _balance,
   date: _date,
@@ -3194,7 +3309,7 @@ const createRow = Effect.fnUntraced(function* (
       prospect: true,
       owner: named,
       ownersFields:
-        [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
+        [...CLIENT_OWNERS_FIELDS.map((key) => row[key]), row.sensitive].some(
           (value) => value !== undefined,
         ) ||
         row.state === "done" ||
@@ -4242,6 +4357,7 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     return yield* invalid("Give key for one entry, or keys for several, not both.");
   if (change.expectedRev !== undefined)
     return yield* invalid("expectedRev goes with one key; leave it out with keys.");
+  if (change.fields !== undefined) yield* sameFields(lead, keys);
   const done = yield* allOrNone(
     [...new Set(keys)],
     (one) => one,
@@ -4255,6 +4371,28 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     )),
     entries: done.map((one) => one.result),
   };
+});
+/**
+ * fields reads as one list's, so keys under one change share a list when any is built-in. Keys
+ * the caller can't see are left to `updateCore`, which answers them as not found.
+ */
+const sameFields = Effect.fnUntraced(function* (lead: Lead, keys: ReadonlyArray<string>) {
+  const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  const lists: Array<string> = [];
+  for (const key of keys) {
+    const row = yield* records.get(lead.orgId, key);
+    if (row === undefined) continue;
+    if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
+      continue;
+    if (!lists.includes(row.registerId)) lists.push(row.registerId);
+  }
+  const builtIn = lists.find(isFieldList);
+  const other = lists.find((list) => list !== builtIn);
+  if (builtIn !== undefined && other !== undefined)
+    return yield* invalid(
+      `keys mixes ${builtIn} with ${other}, whose fields differ: change them in separate calls. ${NOTHING_WRITTEN}`,
+    );
 });
 const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: Change) {
   yield* admitted(lead, "record_update", { ...asked, key });
@@ -4616,3 +4754,53 @@ const runDealStages = Effect.fnUntraced(function* (lead: Lead, _input: unknown) 
   };
 });
 export const dealStages = leadTool("KinWorkTools.dealStages", runDealStages);
+
+export const ListFieldsInput = Schema.Struct({ list: KinListId });
+export const ListFieldsResult = Schema.Struct({
+  list: Schema.String,
+  fields: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      label: Schema.optional(Schema.String),
+      takes: Schema.optional(Schema.String),
+      about: Schema.optional(Schema.String),
+      /** Only the owner or a co-owner sets it. */
+      ownerOnly: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
+  /** Where these fields' words are said elsewhere. */
+  note: Schema.optional(Schema.String),
+});
+const answered = (answer: typeof ListFieldsResult.Type) => answer;
+const runListFields = Effect.fnUntraced(function* (lead: Lead, input: typeof ListFieldsInput.Type) {
+  if (input.list === "deals")
+    return answered({
+      list: "deals",
+      fields: DEAL_FIELDS.map((key) => ({ key })),
+      note: "record_create and record_update say what a deal's fields take.",
+    });
+  if (isFieldList(input.list)) {
+    const list = input.list;
+    return answered({
+      list,
+      fields: recordFields[list].map((key) => ({
+        key: taxName(key),
+        ...takesOf(rowProperty(key)),
+        ...(list === "clients" && (CLIENT_OWNERS_FIELDS as ReadonlyArray<string>).includes(key)
+          ? { ownerOnly: true as const }
+          : {}),
+      })),
+    });
+  }
+  const def = yield* listFor(lead, input.list);
+  // In a turn others read, a defined list's fields are told only for a list the team has.
+  if ((yield* viewOf(lead)) !== undefined && !(yield* teamLists(lead.orgId)).has(def.id))
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  return answered({
+    list: def.id,
+    fields: def.fields
+      .filter((field) => field.retired !== true)
+      .map((field) => ({ key: field.key, label: field.label, takes: describe(field) })),
+  });
+});
+export const listFields = leadTool("KinWorkTools.listFields", runListFields);

@@ -1782,9 +1782,10 @@ it.effect(
         "money_summary",
         "dates_query",
         "deal_stages",
+        "list_fields",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 23);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 24);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.

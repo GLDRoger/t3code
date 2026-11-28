@@ -118,10 +118,10 @@ export const KinWorkToolkit = turnEventToolkit(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_create", {
     ...shared,
-    description: `Track things in Work: one call for one row or many (up to 100), all saved or none; a refused row says what to fix. A row may name a client made earlier in the call, so one call sets up a client, its contacts and what each side owes. list (default work) decides a row's own fields:
+    description: `Track things in Work: one call for one row or many (up to 100), all saved or none; a refused row says what to fix. A row may name a client made earlier in the call, so one call sets up a client, its contacts and what each side owes. list (default work) decides a row's own fields, which go in fields:
 - work: a task, issue or obligation. steps is a task's checklist, never more tasks; alsoOn, who helps while its owner answers for it; promisedTo, the one person here it was promised to; urgent only when the person or the record says so. A follow-up with a client is a task on that client, owner "me", due that day. A meeting: category meeting, at, attendees, where; one already held is recorded, never booked.
 - A promise (what we or a client said would be done by a day) is an obligation: client, side (theirs when they owe it), due, from, and deal when it is on one, even when you also change that deal.
-- clients (list: clients): title the name; kind client, vendor or prospect (not sold to yet); cameFrom, tags, terms, address, gstin, placeOfSupply, heardFrom (a teammate adds only prospects). contacts: client, role, email(s), phone(s), the first the main one; tags.
+- clients (list: clients): title the name; category client, vendor or prospect (not sold to yet); cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom (a teammate adds only prospects). contacts: client, role, email(s), phone(s), the first the main one; tags.
 - projects: client, due (its target), repos, billing, value, startsOn, renewsOn, members, finishedOn; a campaign has category campaign and audience. milestones: project, due. goals: measure, target, due, startsOn. A plan's tasks name project, milestone, size, owner, reason, from.
 - deals: client (never a vendor), title what we hope to sell, fields.stage from deal_stages, amount, due the day a yes is expected, fields.source, fields.concerns ("label: words heard", reusing a pipeline_read label that means the same), next.
 - A list defined with list_define (expenses, invoices, quotes, dates…) takes amount as said ("4.2 lakh", "₹1,200"), date for when it happened or was issued, category, repeat, and its own fields by key. expenses: titled by vendor and what was bought ("Vercel Pro, Nov 2026"), never by how it reached you; fields.vendor, fields.receipt (a file sent this turn); a bill still to pay has state open and its due. An invoice or quote names its project (a retainer's, its retainer) and is for a client or, with no client record, fields.billToName (billToAddress, billToTaxNumber, billToPlace, billToEmail), never both. credit_notes: fields.invoice, amount, fields.reason; a draft until the owner issues it.
@@ -130,7 +130,10 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: CreateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AcceptedUnadvertisedArguments, ["records[].taxNumber", "records[].taxPlace"])
+    .annotate(
+      AcceptedUnadvertisedArguments,
+      Work.HIDDEN_CREATE_KEYS.map((key) => `records[].${key}`),
+    )
     .annotate(AdvertisedDescriptions, [
       {
         path: ["properties", "records", "items"],
@@ -149,8 +152,6 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
           "date",
           "fields",
           "suggested",
-          "reason",
-          "from",
         ],
       },
     ]),
@@ -161,7 +162,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: Work.UpdateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AcceptedUnadvertisedArguments, ["taxNumber", "taxPlace"])
+    .annotate(AcceptedUnadvertisedArguments, Work.HIDDEN_UPDATE_KEYS)
     .annotate(AdvertisedDescriptions, [
       {
         path: [],
@@ -176,15 +177,21 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
           "due",
           "owner",
           "title",
+          "category",
           "next",
           "fields",
           "tell",
-          "reason",
-          "alsoOn",
           "leftover",
         ],
       },
     ]),
+  Tool.make("list_fields", {
+    ...shared,
+    description:
+      "One list's own fields (work, clients, contacts, projects, milestones, goals, deals or a defined list): each key record_create and record_update take under fields, what it takes, and ownerOnly where only the owner or a co-owner sets it. Read it before a first write to a list whose fields you don't know. Read-only.",
+    parameters: Work.ListFieldsInput,
+    success: Work.ListFieldsResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_assign", {
     ...shared,
     description:

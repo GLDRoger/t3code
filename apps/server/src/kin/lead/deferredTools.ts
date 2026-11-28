@@ -6,6 +6,7 @@ import { KIN_SEARCH_HINTS } from "./searchHints.ts";
 /** Codex's up-front partition. */
 export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "record_update",
+  "list_fields",
   "record_assign",
   "kin_ask_person",
   "kin_relay",
