@@ -1348,6 +1348,31 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("reports the process exit when a write fails before the input stream ends", () =>
+    Effect.gen(function* () {
+      const termination = yield* Deferred.make<AcpError.AcpError>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio: Stdio.make({
+          args: Effect.succeed([]),
+          stdin: Stream.never,
+          stdout: () => Sink.forEach(() => Effect.fail(new Error("write EPIPE"))),
+          stderr: () => Sink.drain,
+        }),
+        terminationError: Effect.succeed(new AcpError.AcpProcessExitedError({ code: 134 })),
+        serverRequestMethods: new Set(),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      const failed = yield* transport
+        .request("x/test", { hello: "world" })
+        .pipe(Effect.flip, Effect.orDie);
+      const error = yield* Deferred.await(termination);
+      assert.instanceOf(error, AcpError.AcpProcessExitedError);
+      assert.equal((error as AcpError.AcpProcessExitedError).code, 134);
+      assert.strictEqual(failed, error);
+    }),
+  );
+
   it.effect("does not treat intentional serverProtocol.end as a transport failure", () =>
     Effect.gen(function* () {
       const { stdio, input } = yield* makeInMemoryStdio();
