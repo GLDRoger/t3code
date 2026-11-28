@@ -22,6 +22,8 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { EnvironmentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { Atom } from "effect/reactivity";
+import { useState } from "react";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -32,11 +34,13 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinDocsList } from "./KinDocsList";
+import { KinDocsMap } from "./KinDocsMap";
 import { KinTasksList } from "./KinTasksList";
 import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinMissingLink } from "./components/KinWorkPieces";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { useKinIsOwnerLevel, useKinViewerScope } from "./state/kinChatOnly";
 import { retryKinAccess } from "./state/kinClient";
@@ -56,6 +60,7 @@ import {
   kinSectionNamed,
   kinSectionOffNotice,
   kinSectionOn,
+  type KinDockPlace,
 } from "@t3tools/client-runtime/kin/kinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -76,43 +81,81 @@ export function KinWorkEntry(target: KinWorkTarget) {
 function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | null }) {
   const open = useKinOpenPlace(props);
   const summary = props.live?.summary ?? null;
-  const hostClients = kinWorkHostClients(summary);
-  const money = useKinMoneySummary(props, { enabled: true }).state;
-  const docs = useKinDocsRecent(props);
   // A place whose section the company turned off has no row.
   const moneyOn = useKinSectionOn(props.environmentId, "money");
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
-  const named = useKinSectionNamed(props.environmentId);
-  const counts = useKinClientCounts(props, hostClients && clientsOn);
-  const scope = useKinViewerScope(props.environmentId);
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
-      {!moneyOn || money._tag === "refused" || money._tag === "failed" ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="money"
-          summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
-          onPress={() => open("money")}
-        />
-      )}
-      {!hostClients || !clientsOn ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="clients"
-          summary={counts === null ? null : named(kinClientsLine(counts.clients, counts.projects))}
-          onPress={() => open("clients")}
-        />
-      )}
-      {docs.refused ? null : (
-        <KinPlaceEntryRow
-          environmentId={props.environmentId}
-          place="docs"
-          summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
-          onPress={() => open("docs")}
-        />
+      {moneyOn ? <KinMoneyEntry {...props} /> : null}
+      {kinWorkHostClients(summary) && clientsOn ? <KinClientsEntry {...props} /> : null}
+      <KinDocsEntry {...props} />
+    </>
+  );
+}
+
+/**
+ * On a docked Chats list, a row for each of this person's places the company took out of the dock,
+ * opening it as a page. `places` are the ones the host says they reach.
+ */
+export function KinOutOfDockEntries(
+  props: KinWorkTarget & { readonly places: ReadonlyArray<KinDockPlace> },
+) {
+  return (
+    <>
+      {props.places.map((place) =>
+        place === "money" ? (
+          <KinMoneyEntry key={place} {...props} />
+        ) : place === "clients" ? (
+          <KinClientsEntry key={place} {...props} />
+        ) : (
+          <KinDocsEntry key={place} {...props} />
+        ),
       )}
     </>
+  );
+}
+
+function KinMoneyEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const money = useKinMoneySummary(props, { enabled: true }).state;
+  const scope = useKinViewerScope(props.environmentId);
+  if (money._tag === "refused" || money._tag === "failed") return null;
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="money"
+      summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
+      onPress={() => open("money")}
+    />
+  );
+}
+
+function KinClientsEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const named = useKinSectionNamed(props.environmentId);
+  const counts = useKinClientCounts(props, true);
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="clients"
+      summary={counts === null ? null : named(kinClientsLine(counts.clients, counts.projects))}
+      onPress={() => open("clients")}
+    />
+  );
+}
+
+function KinDocsEntry(props: KinWorkTarget) {
+  const open = useKinOpenPlace(props);
+  const docs = useKinDocsRecent(props);
+  if (docs.refused) return null;
+  return (
+    <KinPlaceEntryRow
+      environmentId={props.environmentId}
+      place="docs"
+      summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
+      onPress={() => open("docs")}
+    />
   );
 }
 
@@ -168,12 +211,24 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   if (environmentId === null || orgId === null) {
+    const place = kinWorkPlaceParam(route.params.show);
+    const kind =
+      place.place === "money"
+        ? "date"
+        : place.place === "docs"
+          ? "doc"
+          : place.place === "clients"
+            ? place.projects
+              ? "project"
+              : "client"
+            : "task";
     return (
       <KinWorkMessage title={KIN_WORK_TITLE}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't open anything"
-          detail="Open Work from your Kin chats."
+          kind={kind}
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkMessage>
     );
@@ -256,7 +311,8 @@ export function KinPlace(
         </KinWorkMessage>
       );
     }
-    if (place.place === "docs") return <KinDocsList {...shared} />;
+    if (place.place === "docs")
+      return <KinDocsPlace key={`${target.environmentId}:${target.orgId}`} {...shared} />;
     if (place.place === "clients") return <KinClientsList {...shared} projects={place.projects} />;
     if (place.place === "money") return <KinMoneyArea {...shared} />;
     return (
@@ -300,5 +356,29 @@ export function KinPlace(
         </View>
       )}
     </KinWorkMessage>
+  );
+}
+
+/** Which of Docs' two views each company's Docs shows, kept while the app runs. */
+const kinDocsViewAtom = Atom.family((_company: string) =>
+  Atom.make<"list" | "map">("list").pipe(Atom.keepAlive),
+);
+
+/** Docs, as the list or as the map of what's being worked on; the bar switches between them. */
+function KinDocsPlace(props: React.ComponentProps<typeof KinDocsList>) {
+  const held = kinDocsViewAtom(`${props.environmentId}:${props.orgId}`);
+  const [view, setView] = useState(() => appAtomRegistry.get(held));
+  const choose = (next: "list" | "map") => {
+    appAtomRegistry.set(held, next);
+    setView(next);
+  };
+  return view === "map" ? (
+    <KinDocsMap
+      environmentId={props.environmentId}
+      orgId={props.orgId}
+      onList={() => choose("list")}
+    />
+  ) : (
+    <KinDocsList {...props} onMap={() => choose("map")} />
   );
 }

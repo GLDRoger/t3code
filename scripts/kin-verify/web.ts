@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { chromium, type CDPSession, type Locator, type Page } from "playwright-core";
 
 import {
@@ -12,6 +13,7 @@ import {
   isInside,
   LIVE_T3,
   ORG,
+  playwrightArtifactsDir,
   readJson,
   readSeed,
   readState,
@@ -38,28 +40,24 @@ const binariesUnder = (dir: string, binary: string): Array<string> => {
 };
 
 /** A Chrome already on this machine: one we were pointed at, Playwright's, or T3's preview one. */
-function chromePath(): string {
-  const found = [
-    process.env.KIN_VERIFY_CHROME,
-    ...binariesUnder(
-      NodePath.join(NodeOS.homedir(), "Library", "Caches", "ms-playwright"),
-      "chrome-headless-shell",
-    ),
-    ...binariesUnder(
-      NodePath.join(NodeOS.homedir(), ".cache", "ms-playwright"),
-      "chrome-headless-shell",
-    ),
-    // T3's preview browser keeps its download at <platform>/<version>/.
-    ...binariesUnder(
-      NodePath.join(LIVE_T3, "tools", "chrome-headless-shell"),
-      "chrome-headless-shell",
-    ),
-  ].find((path) => path !== undefined && NodeFS.existsSync(path));
-  if (found === undefined)
-    throw new VerifyError(
-      "no headless Chrome found. Set KIN_VERIFY_CHROME to a Chrome binary, or open T3's browser preview once so it downloads chrome-headless-shell",
+export function chromePath(): string {
+  const override = process.env.KIN_VERIFY_CHROME;
+  if (override !== undefined && NodeFS.existsSync(override)) return override;
+  const dirs: Array<string> = [];
+  const platform = HostProcess.Platform.defaultValue();
+  if (platform === "linux") dirs.push(NodePath.join(NodeOS.homedir(), ".cache", "ms-playwright"));
+  if (platform === "darwin")
+    dirs.push(NodePath.join(NodeOS.homedir(), "Library", "Caches", "ms-playwright"));
+  dirs.push(NodePath.join(LIVE_T3, "tools", "chrome-headless-shell"));
+  for (const dir of dirs) {
+    const found = binariesUnder(dir, "chrome-headless-shell").find((path) =>
+      NodeFS.existsSync(path),
     );
-  return found;
+    if (found !== undefined) return found;
+  }
+  throw new VerifyError(
+    "no headless Chrome found. Set KIN_VERIFY_CHROME to a Chrome binary, or open T3's browser preview once so it downloads chrome-headless-shell",
+  );
 }
 
 const profileOf = (instance: Instance, person: string) =>
@@ -182,7 +180,12 @@ async function applyClock(page: Page, instance: Instance, web: string) {
 
 async function livePage(instance: Instance, person: string): Promise<Page> {
   const { port } = await chromeFor(instance, person);
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 8000 });
+  const artifactsDir = playwrightArtifactsDir(instance);
+  NodeFS.mkdirSync(artifactsDir, { recursive: true });
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {
+    timeout: 8000,
+    artifactsDir,
+  });
   const context = browser.contexts()[0]!;
   const page = context.pages().find((one) => !one.isClosed()) ?? (await context.newPage());
   const alive = await Promise.race([

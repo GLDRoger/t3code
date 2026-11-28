@@ -270,7 +270,7 @@ const triageRefusal = Effect.fn("KinToolGate.triageRefusal")(
   ),
 );
 
-/** A bills turn refuses all but `bill_read` with its own refusal. */
+/** A bills turn refuses tools not in `BILLS_TOOLS` with its own refusal. */
 const billsOnlyCheck: Check = (turn, tool, args) =>
   billToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
 /** An approved draft's turn refuses what it may not call with its own refusal. */
@@ -535,7 +535,7 @@ export const callCounts = Layer.unwrap(
 /**
  * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
  * none of these checks follow; only the review in a stranger's pull request's turn
- * (`outsideReview`), only `bill_read` in a bills turn (`billsOnly`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
+ * (`outsideReview`), only the bills tools in a bills turn (`billsOnly`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
  * run outside text could steer (`OutsideContent`); no task past the limit (or off `helperModels`).
  */
 export const layer = ReadTools.layer.pipe(

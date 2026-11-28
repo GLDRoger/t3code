@@ -119,6 +119,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
           Work.get(people, input).pipe(Effect.flatMap((detail) => withWatch(people, detail))),
         );
       }),
+      "kin.work.looked": Effect.fn("KinWork.rpc.looked")(function* (input) {
+        return yield* call((people) => Work.looked(people, input));
+      }),
       // Rows only for a client that asks: an older phone keeps getting `changed`.
       "kin.work.subscribe": (input) =>
         stream((people) =>

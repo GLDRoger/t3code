@@ -2,9 +2,12 @@ import {
   KIN_ATTENTION,
   kinAsideOf,
   kinAttention,
-  kinNotNowUntil,
+  kinAttentionMenu,
+  kinGotItCall,
+  kinNotNowCall,
+  kinPickDayCopy,
   kinSetAsideDays,
-  kinSnoozeDays,
+  runKinAttentionCall,
   type KinAsideRow,
   type KinAttentionOpen,
   type KinAttentionRow,
@@ -18,6 +21,7 @@ import { Platform, Pressable, View } from "react-native";
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Chip } from "../../components/ui/Chip";
 import { ListActionRow } from "../../components/ui/ListActionRow";
@@ -35,28 +39,32 @@ const kinAttentionNames = (names: KinWorkNames) => new Map([...names.agents, ...
 type Handler = ReturnType<typeof useKinAttentionHandle>;
 
 const GOT_IT = "got-it";
-const NOT_A_PROBLEM = "not-a-problem";
+const NOT_NEEDED = "not-needed";
 const ASK = "ask";
-const SNOOZE = "snooze:";
-const SET_ASIDE = "set-aside";
+const LATER = "later";
+const LATER_CHOICE = "later:";
 const WHATS_NEXT = "whats-next";
 const NOT_NOW = "not-now";
 
-/** "Set aside until…" unfolded under its row: a day it comes back on, or until it is lifted. */
+/** "Pick a day" unfolded under its row: a day it comes back on, or until lifted for a record. */
 function KinSetAsidePicker(props: {
   readonly names: KinWorkNames;
+  readonly allowUntilLifted: boolean;
   readonly onPick: (until: string | undefined) => void;
   readonly onCancel: () => void;
 }) {
   const now = new Date(useNowMinuteMs());
-  const days = kinSetAsideDays(now);
+  const days = kinSetAsideDays(now, props.names.zone);
+  const copy = kinPickDayCopy(props.allowUntilLifted);
   const [month, setMonth] = useState(days.initial.slice(0, 7));
   const grid = kinDatesMonth(month, [], props.names, now);
   return (
     <View className="gap-3 bg-grouped-card px-2 py-3">
-      <Text className="px-2 text-sm text-foreground-muted">{KIN_ATTENTION.setAsideTitle}</Text>
+      <Text className="px-2 text-sm text-foreground-muted">{copy.title}</Text>
       <View className="flex-row flex-wrap gap-2 px-2">
-        <Chip label={KIN_ATTENTION.untilLifted} onPress={() => props.onPick(undefined)} />
+        {copy.untilLifted === null ? null : (
+          <Chip label={copy.untilLifted} onPress={() => props.onPick(undefined)} />
+        )}
         <Chip label={KIN_ATTENTION.cancel} onPress={props.onCancel} />
       </View>
       <KinMonthGrid
@@ -83,11 +91,12 @@ export function KinAttentionItem(
 ) {
   const { row, handler } = props;
   const [asiding, setAsiding] = useState(false);
-  const record = row.record;
   const now = new Date(useNowMinuteMs());
   const asker = useKinAskAbout(props)(row.agentId);
   const ripple = useResolveClassNames("bg-subtle-strong");
   const busy = handler.busy === row.factKey;
+  const menu = kinAttentionMenu(row, now, props.names.zone);
+  const pickDay = menu.later.choices.find((choice) => choice.id === "pick_day")!;
   const description =
     row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const layout = (
@@ -96,6 +105,7 @@ export function KinAttentionItem(
       label={row.title}
       description={description}
       disabled={busy}
+      labelWholeWords
     />
   );
   return (
@@ -128,15 +138,17 @@ export function KinAttentionItem(
                   { id: NOT_NOW, title: KIN_ATTENTION.notNow, image: "clock" },
                 ]),
             { id: GOT_IT, title: KIN_ATTENTION.gotIt, image: "hand.raised" },
-            ...kinSnoozeDays(now).map((choice) => ({
-              id: `${SNOOZE}${choice.until}`,
-              title: choice.label,
+            {
+              id: LATER,
+              title: menu.later.label,
               image: "clock",
-            })),
-            ...(record === null
-              ? []
-              : [{ id: SET_ASIDE, title: KIN_ATTENTION.setAside, image: "calendar" }]),
-            { id: NOT_A_PROBLEM, title: KIN_ATTENTION.notAProblem, image: "checkmark" },
+              subactions: menu.later.choices.map((choice) => ({
+                id: `${LATER_CHOICE}${choice.id}`,
+                title: choice.label,
+                image: choice.id === "pick_day" ? "calendar" : "clock",
+              })),
+            },
+            { id: NOT_NEEDED, title: menu.notNeeded.label, image: "checkmark" },
             ...(asker === null
               ? []
               : [{ id: ASK, title: KIN_ATTENTION.ask(asker.name), image: "bubble.left" }]),
@@ -145,14 +157,17 @@ export function KinAttentionItem(
             if (busy) return;
             const deal = row.whatsNext;
             if (event === WHATS_NEXT && deal !== null) props.onOpen({ type: "record", key: deal });
-            else if (event === NOT_NOW && deal !== null)
-              void handler.aside(deal, "set", kinNotNowUntil(now), row.factKey);
-            else if (event === GOT_IT) void handler.send(row.factKey, "got_it");
-            else if (event === NOT_A_PROBLEM) void handler.send(row.factKey, "not_a_problem");
+            else if (event === NOT_NOW) runKinAttentionCall(handler, kinNotNowCall(row, now));
+            else if (event === GOT_IT) runKinAttentionCall(handler, kinGotItCall(row));
+            else if (event === NOT_NEEDED) runKinAttentionCall(handler, menu.notNeeded.call);
             else if (event === ASK) asker?.ask(row.askDraft);
-            else if (event === SET_ASIDE) setAsiding(true);
-            else if (event.startsWith(SNOOZE))
-              void handler.send(row.factKey, "got_it", event.slice(SNOOZE.length));
+            else if (event.startsWith(LATER_CHOICE)) {
+              const id = event.slice(LATER_CHOICE.length);
+              const choice = menu.later.choices.find((one) => one.id === id);
+              if (choice === undefined) return;
+              if (choice.id === "pick_day") setAsiding(true);
+              else runKinAttentionCall(handler, choice.call);
+            }
           }}
         >
           <Pressable className="size-11 items-center justify-center me-1" hitSlop={4}>
@@ -166,17 +181,50 @@ export function KinAttentionItem(
           </Pressable>
         </Menu>
       </View>
-      {!asiding || record === null ? null : (
+      {!asiding ? null : (
         <KinSetAsidePicker
           names={props.names}
+          allowUntilLifted={pickDay.allowUntilLifted}
           onCancel={() => setAsiding(false)}
           onPick={(until) => {
             setAsiding(false);
-            void handler.aside(record, "set", until, row.factKey);
+            runKinAttentionCall(handler, pickDay.callForDay(until));
           }}
         />
       )}
     </>
+  );
+}
+
+/** One handled row: what it is, and its Undo as a control of its own. */
+function KinHandledRow(props: {
+  readonly title: string;
+  readonly detail: string | null;
+  readonly busy: boolean;
+  readonly onUndo: (() => void) | null;
+}) {
+  return (
+    <View className="flex-row items-center bg-grouped-card">
+      <View className="flex-1">
+        <ListRowLayout
+          label={props.title}
+          description={props.detail ?? undefined}
+          labelWholeWords
+        />
+      </View>
+      {props.onUndo === null ? null : (
+        <View className="pe-4">
+          <Button
+            label={KIN_ATTENTION.undo}
+            accessibilityLabel={KIN_ATTENTION.undoFor(props.title)}
+            tone="outline"
+            size="compact"
+            loading={props.busy}
+            onPress={props.onUndo}
+          />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -197,32 +245,24 @@ function KinAttentionHandled(props: {
         onPress={() => setOpen((held) => !held)}
       />
       {open
-        ? props.asides.map((row) =>
-            row.liftable ? (
-              <ListActionRow
-                key={row.id}
-                label={row.title}
-                description={row.detail}
-                detail={KIN_ATTENTION.undo}
-                loading={props.handler.busy === row.record}
-                onPress={() => void props.handler.aside(row.record, "lift")}
-              />
-            ) : (
-              <View key={row.id} className="bg-grouped-card">
-                <ListRowLayout label={row.title} description={row.detail} />
-              </View>
-            ),
-          )
+        ? props.asides.map((row) => (
+            <KinHandledRow
+              key={row.id}
+              title={row.title}
+              detail={row.detail}
+              busy={props.handler.busy === row.record}
+              onUndo={row.liftable ? () => void props.handler.aside(row.record, "lift") : null}
+            />
+          ))
         : null}
       {open
         ? props.rows.map((row) => (
-            <ListActionRow
+            <KinHandledRow
               key={row.id}
-              label={row.title}
-              description={row.handled ?? undefined}
-              detail={KIN_ATTENTION.undo}
-              loading={props.handler.busy === row.factKey}
-              onPress={() => void props.handler.send(row.factKey, "undo")}
+              title={row.title}
+              detail={row.handled}
+              busy={props.handler.busy === row.factKey}
+              onUndo={() => void props.handler.send(row.factKey, "undo")}
             />
           ))
         : null}

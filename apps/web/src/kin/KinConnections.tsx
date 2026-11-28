@@ -20,6 +20,7 @@ import {
   type KinConnectionStatus,
   type KinMailPermission,
 } from "@t3tools/client-runtime/kin/kinConnections";
+import { KIN_MAIL_RULES as RULES } from "@t3tools/client-runtime/kin/kinMailRules";
 import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -70,7 +71,8 @@ import { KinSocialConnect } from "./KinSocialConnect";
 import { KinPicturesConnect } from "./KinPicturesConnect";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
-import { kinSettingsFindIn } from "./kinSettingsAddress";
+import { kinSettingsAtIn, kinSettingsFindIn } from "./kinSettingsAddress";
+import { KinMailRulePage, useKinMailRulesLanding } from "./settings/KinMailRules";
 import { KinSettingsChoice, useKinSettingsSave } from "./settings/KinSettingsControls";
 import {
   KinSettingsEmpty,
@@ -86,7 +88,18 @@ import { useKinHost } from "./useKinHost";
 
 type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId };
 /** The drill-in that replaces the list: one connection's page, or GitHub's. */
-type Open = { readonly kind: "connection"; readonly id: string } | { readonly kind: "github" };
+type Open =
+  | { readonly kind: "connection"; readonly id: string }
+  | { readonly kind: "github" }
+  | {
+      readonly kind: "rule";
+      readonly id: string;
+      readonly ruleId: string;
+      /** Opened from the mailbox's Removed group. */
+      readonly removed: boolean;
+    }
+  /** Back on the list, so a search that landed on one mailbox's rules doesn't open it again. */
+  | { readonly kind: "list" };
 type Adding = { readonly title: string; readonly offered: ReadonlyArray<KinConnectionService> };
 
 const isMailService = (service: KinConnectionService) =>
@@ -208,6 +221,10 @@ function ConnectionsBody(
   const [open, setOpen] = useState<Open | null>(
     named === "" ? null : { kind: "connection", id: named },
   );
+  // A search for mail rules opens the company mailbox they live under. As the address said on
+  // arrival: the landing takes `at` away at the first scroll or click.
+  const searched = useLocation({ select: (location) => kinSettingsAtIn(location.searchStr) });
+  const [findingRules] = useState(searched === "kin-mail-rules");
   const [adding, setAdding] = useState<Adding | null>(null);
   const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
@@ -258,14 +275,48 @@ function ConnectionsBody(
       return last;
     });
 
+  const rulesAt = useKinMailRulesLanding(
+    props,
+    open === null && findingRules && accounts.length > 1,
+  );
+  const landed =
+    open !== null || !findingRules
+      ? null
+      : accounts.length === 1
+        ? accounts[0]
+        : accounts.find((account) => account.connectionId === rulesAt);
   const opened =
-    open?.kind === "connection"
+    open?.kind === "connection" || open?.kind === "rule"
       ? (connections.find((connection) => connection.connectionId === open.id) ?? null)
-      : null;
+      : (landed ?? null);
+  if (opened !== null && open?.kind === "rule") {
+    const address = opened.accountLabel ?? opened.label;
+    return (
+      <KinSettingsSubpage
+        title={RULES.pageTitle}
+        backTo={address}
+        onBack={() => setOpen({ kind: "connection", id: opened.connectionId })}
+      >
+        <KinMailRulePage
+          environmentId={environmentId}
+          orgId={orgId}
+          connectionId={opened.connectionId}
+          ruleId={open.ruleId}
+          removed={open.removed}
+          mailbox={address}
+          onGone={() => setOpen({ kind: "connection", id: opened.connectionId })}
+        />
+      </KinSettingsSubpage>
+    );
+  }
   if (opened !== null) {
     const address = opened.accountLabel ?? opened.label;
     return (
-      <KinSettingsSubpage title={address} backTo={COPY.title} onBack={() => setOpen(null)}>
+      <KinSettingsSubpage
+        title={address}
+        backTo={COPY.title}
+        onBack={() => setOpen({ kind: "list" })}
+      >
         <KinConnectionPage
           environmentId={environmentId}
           orgId={orgId}
@@ -273,14 +324,21 @@ function ConnectionsBody(
           actions={actions}
           signInAddress={view?.signInAddress ?? ""}
           differs={differs}
-          onRemoved={() => setOpen(null)}
+          onRemoved={() => setOpen({ kind: "list" })}
+          onOpenRule={(ruleId, removed) =>
+            setOpen({ kind: "rule", id: opened.connectionId, ruleId, removed })
+          }
         />
       </KinSettingsSubpage>
     );
   }
   if (open?.kind === "github")
     return (
-      <KinSettingsSubpage title={COPY.github} backTo={COPY.title} onBack={() => setOpen(null)}>
+      <KinSettingsSubpage
+        title={COPY.github}
+        backTo={COPY.title}
+        onBack={() => setOpen({ kind: "list" })}
+      >
         <KinGitHubPage environmentId={environmentId} orgId={orgId} />
       </KinSettingsSubpage>
     );
@@ -378,8 +436,13 @@ function ConnectionsBody(
             )
           )}
         </KinSettingsSection>
-        {byProvider.map(({ preset, list }) => (
-          <KinSettingsSection key={preset} title={MAIL.providerAccounts(preset)}>
+        {byProvider.map(({ preset, list }, index) => (
+          <KinSettingsSection
+            key={preset}
+            title={MAIL.providerAccounts(preset)}
+            // With several company mailboxes and no rule yet, a search for mail rules lands here.
+            {...(index === 0 ? { searchId: searchableSetting("kin-mail-rules").id } : {})}
+          >
             {list.map((account) => {
               const address = account.accountLabel ?? account.label;
               const label =

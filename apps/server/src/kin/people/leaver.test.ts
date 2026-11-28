@@ -696,6 +696,43 @@ it.effect(
     ),
 );
 
+it.effect("a departing co-owner's mail rules pause and the owner hears once", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'google', 'Juniper bills', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 1, 1)`;
+      yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what, agent_id,
+        chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at, updated_at)
+        VALUES (${orgId}, 'meera-a', 'mail', '{}', 'File the bill.', ${chief}, 'meera-chief',
+          ${meeraId}, 'tap-a', 'hash', 'on', 30, 1, 1),
+          (${orgId}, 'meera-b', 'mail', '{}', 'Check the bill.', ${chief}, 'meera-chief',
+          ${meeraId}, 'tap-b', 'hash', 'on', 30, 1, 1)`;
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, paused_why FROM kin_mail_rules ORDER BY rule_id`,
+        [
+          { state: "paused", paused_why: "left" },
+          { state: "paused", paused_why: "left" },
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, body FROM kin_messages
+        WHERE org_id = ${orgId} AND body LIKE '%mail rules%'`,
+        [
+          {
+            chat_id: ctx.ownerChat,
+            body: "Meera left, so 2 mail rules Meera set up on Juniper bills are paused. Resume or remove each from its mailbox in Settings → Connections.",
+          },
+        ],
+      );
+    }),
+  ),
+);
+
 it.effect(
   "picture counts and settings keep the leaver's and the retired agent's names: they are the company's billing and audit history",
   () =>
@@ -743,9 +780,20 @@ it.effect(
             ${zoyaId}, 0, 'reading', 'bills-zoya', 1)`;
         yield* sql`INSERT INTO kin_bill_requests (org_id, person_id, kind, request_id, input_hash,
             result_json, created_at) VALUES (${orgId}, ${zoyaId}, 'add', 'add-1', 'h', '{}', 0)`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, 'mail', 'google', 'Juniper bills', 'builtin', 'gmail.googleapis.com',
+            'oauth', 'closed', 'active', 1, 1)`;
+        yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what,
+          agent_id, chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at,
+          updated_at) VALUES (${orgId}, 'rule', 'mail', '{}', 'File the bill.', ${chief},
+            ${ctx.ownerChat}, 'rhea', 'tap', 'hash', 'on', 30, 1, 1)`;
         yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
         yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
         yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        assert.deepStrictEqual(yield* sql`SELECT state, paused_why FROM kin_mail_rules`, [
+          { state: "paused", paused_why: "agent" },
+        ]);
         // Who added it is the bill's history; its read waits for the sweep to give it to the
         // company's reader now (`bills.ts` `queueWaiting`, tested in `bills.test.ts`).
         assert.deepStrictEqual(
@@ -765,6 +813,27 @@ it.effect(
         );
       }),
     ),
+);
+
+it.effect("a leaver's pins stay in their chats and their own looks stay theirs", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { orgId, sql } = ctx;
+      yield* sql`INSERT INTO kin_chat_pins (org_id, chat_id, record_id, pinned_by_person_id, pinned_at, pin_id)
+        VALUES (${orgId}, ${ctx.ownerChat}, 'record-tallmoor', ${meeraId}, 1, 'pin-meera')`;
+      yield* sql`INSERT INTO kin_looks (org_id, person_id, record_id, looked_at)
+        VALUES (${orgId}, ${meeraId}, 'record-tallmoor', 1)`;
+      const held = sql`SELECT p.pin_id AS pin, person.display_name AS "pinnedBy", l.looked_at AS looked
+        FROM kin_chat_pins p JOIN kin_people person ON person.org_id = p.org_id
+          AND person.person_id = p.pinned_by_person_id
+        JOIN kin_looks l ON l.org_id = p.org_id AND l.person_id = p.pinned_by_person_id
+        WHERE p.org_id = ${orgId}`;
+      const before = yield* held;
+      assert.lengthOf(before, 1);
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      assert.deepStrictEqual(yield* held, before);
+    }),
+  ),
 );
 
 it.effect("a co-owner's bank sender decision stays company history after access is removed", () =>
@@ -806,6 +875,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_bill_requests: "person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
+  // Who pinned a card, shown like a message's author; any writable member unpins, readers' access decides.
+  kin_chat_pins: "pinned_by_person_id",
   kin_chats: "lead_agent_id",
   kin_client_touches: "logged_by_id person_id",
   kin_company_profile: "updated_by_id",
@@ -830,7 +901,10 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_lead_access: "agent_id granted_by person_id",
   kin_lead_deliveries: "agent_id",
   kin_leads: "agent_id created_by_person_id",
+  kin_mail_rules: "agent_id said_by",
   kin_list_proposals: "agent_id",
+  // A person's own last-looked marks, read only for that person; kept like kin_read_state for a rejoin.
+  kin_looks: "person_id",
   kin_memory_shared_writes: "person_id",
   kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",
   kin_money_budgets: "set_by_id",

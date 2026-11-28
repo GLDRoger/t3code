@@ -1,12 +1,15 @@
-import { assert, describe, it, vi } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 import {
   KinAgentId,
   KinChatId,
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
+  KinWakeupId,
   type KinPulseOutsideLine,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -15,6 +18,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
+import { classify, type ArrivalHeaders } from "../arrivals/classify.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -32,11 +37,11 @@ import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
 import {
   mailLine,
-  matchLines,
   type OutsideRead,
   type OutsideSource,
   outsideKey,
   poll,
+  wakeMatches,
 } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
@@ -131,6 +136,83 @@ const mail = (id: string, who: string, subject: string): KinPulseOutsideLine => 
   subject,
   where: null,
 });
+const mailbox = "company-mail";
+const companyMail = "hello@tidewater.example";
+const addMailbox = Effect.fn("test.addMailbox")(function* (connectionId = mailbox) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, created_at, updated_at)
+    VALUES (${orgId}, ${connectionId}, 'google', 'Google', 'builtin', 'google.example',
+      'oauth', 'closed', 'active', 0, 0)`;
+});
+
+const storeArrival = Effect.fn("test.storeArrival")(function* (
+  line: KinPulseOutsideLine,
+  fromAddress: string,
+  options: {
+    readonly connectionId?: string;
+    readonly messageId?: string;
+    readonly receivedAt?: number;
+    readonly headers?: Partial<ArrivalHeaders>;
+  } = {},
+) {
+  const connectionId = options.connectionId ?? mailbox;
+  const threadId = line.thread!;
+  const messageId = options.messageId ?? line.id;
+  const classified = classify(
+    {
+      threadId,
+      from: line.who,
+      fromAddress,
+      to: line.to === undefined ? [] : [line.to],
+      cc: [],
+      subject: line.subject!,
+      authResults: [],
+      listUnsubscribe: false,
+      precedence: null,
+      autoSubmitted: null,
+      bulk: false,
+      hasFile: false,
+      ...options.headers,
+    },
+    yield* ArrivalStore.rowsFor(orgId, connectionId, [companyMail]),
+  );
+  assert.isTrue(
+    yield* ArrivalStore.claim(
+      orgId,
+      {
+        arrivalId: ArrivalStore.arrivalIdOf(orgId, connectionId, messageId),
+        connectionId,
+        messageId,
+        threadId,
+        mailKey: null,
+        fromAddress,
+        receivedAt: options.receivedAt ?? SLOT - MINUTE,
+        class: classified.class,
+        reason: classified.reason,
+        needsLook: classified.look !== undefined,
+        hasFile: null,
+        senderCheck: null,
+      },
+      SLOT,
+      false,
+    ),
+  );
+});
+
+const outsideMail = (id: string, who: string, subject: string, to?: string) => ({
+  ...mail(id, who, subject),
+  thread: id.split(":")[0]!,
+  ...(to === undefined ? {} : { to }),
+});
+
+const mailOutside = (lines: ReadonlyArray<KinPulseOutsideLine>, identified = lines) => ({
+  lines,
+  seen: [],
+  mailThreads: new Map(
+    identified.map((line) => [line, { connectionId: mailbox, threadId: line.thread! }]),
+  ),
+});
 const source = (lines: ReadonlyArray<KinPulseOutsideLine>): OutsideSource => ({
   read: () => Effect.succeed({ lines, seen: [] }),
   seen: () => Effect.void,
@@ -168,11 +250,12 @@ const decline = Effect.fn("test.decline")(function* (options: unknown = declineO
 const chatLine = Effect.fn("test.chatLine")(function* (input: {
   id: string;
   person?: KinPersonId;
-  to?: KinPersonId;
+  to?: KinPersonId | KinAgentId;
   seq: number;
   at: number;
   replyTo?: string;
   clientId?: string;
+  memberId?: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { id, person, seq, at, replyTo, clientId } = input;
@@ -182,7 +265,7 @@ const chatLine = Effect.fn("test.chatLine")(function* (input: {
       author_member_id, author_role, kind, body, mentions_json, status, created_at, reply_to, client_message_id)
     VALUES (${id}, ${orgId}, ${`chat-${recipient}`}, ${seq}, ${person ? "human" : "agent"},
       ${person ?? null}, ${person ? null : chief}, ${person ? null : owner}, ${person ? null : "thread"},
-      ${person ? `member-${person}` : `lead-${recipient}`},
+      ${input.memberId ?? (person ? `member-${person}` : `lead-${recipient}`)},
       'member', 'text', 'Invented message', '[]', 'posted',
       ${DateTime.formatIso(DateTime.makeUnsafe(at))}, ${replyTo ?? null}, ${clientId ?? null})`;
 });
@@ -438,6 +521,153 @@ describe("pulse check-ins", () => {
       );
       assert.strictEqual(tuesday._tag, "queued");
       assert.notStrictEqual(looseOffsetMs(afternoon, "2026-11-17"), offset);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    { name: "waits for ten quiet minutes", expected: 7 * MINUTE, activity: "single" },
+    { name: "waits at most an hour", expected: HOUR, activity: "continuous" },
+    { name: "ignores other writes", expected: 0, activity: "other" },
+    { name: "stays in the evening's day", expected: 0, activity: "evening" },
+    { name: "keeps the usual loose minute in a quiet chat", expected: 0, activity: "quiet" },
+    { name: "survives restart once", expected: 7 * MINUTE, activity: "restart" },
+    { name: "holds from the end of quiet hours", expected: 7 * MINUTE, activity: "after-quiet" },
+    { name: "holds late on a long DST evening", expected: 7 * MINUTE, activity: "evening-dst" },
+  ])("a scheduled check-in $name", ({ expected, activity }) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const chat = `chat-${chief}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, agent_id, role, joined_at)
+        VALUES (${`member-${owner}`}, ${orgId}, ${chat}, 'person', ${owner}, NULL, 'owner', ${stamp}),
+          (${`lead-${chief}`}, ${orgId}, ${chat}, 'agent', NULL, ${chief}, 'member', ${stamp}),
+          ('member-owner-finance', ${orgId}, ${`chat-${finance}`}, 'person', ${owner}, NULL, 'owner', ${stamp})`;
+      const dst = activity === "evening-dst";
+      const evening = activity === "evening" || dst;
+      if (evening)
+        yield* companyClock(dst ? "America/New_York" : "UTC", '{"from":"02:00","to":"03:00"}');
+      // Quiet hours past the slot's whole hour: the check-in first comes due when they end.
+      if (activity === "after-quiet") yield* companyClock("UTC", '{"from":"14:00","to":"17:00"}');
+      // 23:40 in New York on Sunday 1 November 2026, a 25-hour day: 04:40 UTC the next day.
+      const opens = dst ? Date.UTC(2026, 10, 2, 4, 40) : evening ? MONDAY + DAY - 3 * MINUTE : SLOT;
+      const due = evening
+        ? opens + 20_000
+        : activity === "after-quiet"
+          ? MONDAY + 17 * HOUR
+          : SLOT + looseOffsetMs(afternoon, "2026-11-16");
+      const personWrites = (seq: number, at: number) =>
+        chatLine({ id: `owner-${seq}`, to: chief, person: owner, seq, at });
+      yield* TestClock.setTime(opens);
+      yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
+      if (activity === "other") {
+        yield* chatLine({ id: "agent", to: chief, seq: 1, at: due - 3 * MINUTE });
+        yield* chatLine({ id: "card", to: chief, person: owner, seq: 2, at: due - 2 * MINUTE });
+        yield* sql`UPDATE kin_messages SET kind = 'widget_action' WHERE message_id = 'card'`;
+        yield* chatLine({
+          id: "key",
+          to: chief,
+          person: owner,
+          seq: 3,
+          at: due - MINUTE,
+          clientId: "send:key:test:one",
+        });
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('notice', ${orgId}, ${chat}, 4, 'system', 'member', 'system', 'Invented notice',
+            '[]', 'posted', ${DateTime.formatIso(DateTime.makeUnsafe(due - MINUTE))})`;
+        yield* chatLine({
+          id: "elsewhere",
+          to: finance,
+          person: owner,
+          seq: 1,
+          at: due - MINUTE,
+          memberId: "member-owner-finance",
+        });
+        // Forwarded, deleted or only suggested text, and a co-owner's, is not the owner talking.
+        for (const [seq, id] of [
+          [5, "forwarded"],
+          [6, "deleted"],
+          [7, "suggested"],
+        ] as const)
+          yield* chatLine({ id, to: chief, person: owner, seq, at: due - MINUTE });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${`member-${mate}`}, ${orgId}, ${chat}, 'person', ${mate}, NULL, 'member', ${stamp})`;
+        yield* chatLine({ id: "co-owner", to: chief, person: mate, seq: 8, at: due - MINUTE });
+        yield* sql`UPDATE kin_messages SET origin_json = '{"chatId":"elsewhere"}'
+          WHERE message_id = 'forwarded'`;
+        yield* sql`UPDATE kin_messages SET status = message_id
+          WHERE message_id IN ('deleted', 'suggested')`;
+      }
+      const enqueue = evening
+        ? queueCheckIn({
+            orgId,
+            agentId: chief,
+            scheduleId: KinMemoryItemId.make("checkin-evening"),
+            title: "Evening check-in",
+            what: "Sum up today.",
+            dueAt: opens,
+            looseAt: null,
+            zone: "UTC",
+            at: opens,
+            outside: nothingOutside,
+            sumUp: true,
+          })
+        : checkIn(opens);
+      assert.strictEqual((yield* enqueue)._tag, "queued");
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const claim = (current: typeof queue, id: string) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const wakeupId = KinWakeupId.make(id);
+            const events = yield* current.claim({ orgId, agentId: chief, wakeupId, model: "test" });
+            const started = yield* Clock.currentTimeMillis;
+            yield* current.finish({ orgId, wakeupId, status: "completed" });
+            return { started, events };
+          }),
+        );
+      if (activity !== "quiet" && activity !== "other") yield* personWrites(1, due - 3 * MINUTE);
+      const elapsed = due - opens;
+      if (activity === "restart") {
+        const first = yield* claim(queue, "before-restart").pipe(
+          Effect.timeoutOption(elapsed + 2 * MINUTE),
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(elapsed + 2 * MINUTE);
+        assert.isTrue(Option.isNone(yield* Fiber.join(first)), "no turn before restart");
+        yield* Effect.gen(function* () {
+          assert.strictEqual((yield* enqueue)._tag, "duplicate");
+          const restarted = yield* KinEventQueue.KinEventQueue;
+          const run = yield* claim(restarted, "after-restart").pipe(Effect.forkChild);
+          yield* TestClock.adjust(5 * MINUTE);
+          const { started, events } = yield* Fiber.join(run);
+          assert.strictEqual(started, due + expected);
+          assert.lengthOf(events, 1);
+        }).pipe(Effect.provide(KinEventQueue.layer));
+        const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_wakeups`;
+        assert.strictEqual(count?.n, 1);
+      } else {
+        const run = yield* claim(queue, "page").pipe(
+          Effect.timeoutOption(elapsed + expected + 2 * MINUTE),
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(elapsed);
+        if (activity === "continuous") {
+          for (let offset = 2; offset < 60; offset += 5) {
+            const at = due + offset * MINUTE;
+            yield* TestClock.adjust(at - (yield* Clock.currentTimeMillis));
+            yield* personWrites(2 + (offset - 2) / 5, at);
+          }
+        }
+        yield* TestClock.adjust(due + expected - (yield* Clock.currentTimeMillis));
+        yield* TestClock.adjust(2 * MINUTE);
+        const result = yield* Fiber.join(run);
+        assert(Option.isSome(result), "check-in claimed by deadline");
+        const { started, events } = result.value;
+        assert.strictEqual(started, due + expected);
+        assert.lengthOf(events, 1);
+      }
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1012,25 +1242,58 @@ describe("pulse check-ins", () => {
           emails: ["ravi@lumen.example", "ravi.home@lumen.example", "priya@lumen.example"],
         }),
       });
-      const result = yield* checkIn(SLOT, {
-        lines: [
-          mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
-          mail("t2:a", "Priya <Priya@lumen.example>", "Re: launch date"),
-          mail("t3:a", "Ravi <ravi.home@lumen.example>", "Re: launch date"),
-        ],
-        seen: [],
+      yield* addMailbox();
+      yield* addMailbox("other-mail");
+      const newsletter = outsideMail("t1:a", "Shop <news@shop.example>", "Weekend sale");
+      const priya = outsideMail("t2:a", "Priya <Priya@lumen.example>", "Re: launch date");
+      const ravi = outsideMail("t3:a", "Ravi <ravi.home@lumen.example>", "Re: launch date");
+      const forged = outsideMail("t4:a", priya.who!, "New bank details", companyMail);
+      const signIn = outsideMail(
+        "t5:a",
+        "security@identity.example",
+        "Your verification code is 123456",
+        companyMail,
+      );
+      const pending = outsideMail("t6:a", priya.who!, "Still in the feed", companyMail);
+      yield* storeArrival(newsletter, "news@shop.example");
+      yield* storeArrival(priya, "priya@lumen.example");
+      yield* storeArrival(ravi, "ravi.home@lumen.example");
+      yield* storeArrival(forged, "priya@lumen.example", {
+        headers: { authResults: ["mx.example; dmarc=fail (p=reject) header.from=lumen.example"] },
       });
+      yield* storeArrival(forged, "priya@lumen.example", {
+        messageId: "older",
+        receivedAt: SLOT - 2 * MINUTE,
+      });
+      yield* storeArrival(forged, "priya@lumen.example", {
+        connectionId: "other-mail",
+        receivedAt: SLOT,
+      });
+      yield* storeArrival(signIn, "security@identity.example");
+      const result = yield* checkIn(
+        SLOT,
+        mailOutside([newsletter, priya, ravi, forged, signIn, pending]),
+      );
       assert.strictEqual(result._tag, "queued");
       const [event] = yield* pulseEvents;
       const parsed = JSON.parse(event!.json);
-      assert.deepStrictEqual(
-        parsed.outside.map((line: KinPulseOutsideLine) => [line.id, line.matched ?? null]),
-        [
-          ["t2:a", "contact CT-1 Priya of client C-1 Lumen"],
-          ["t3:a", "contact CT-2 Ravi of client C-1 Lumen"],
-          ["t1:a", null],
-        ],
+      const marks = new Map<string, string | undefined>(
+        parsed.outside.map((line: KinPulseOutsideLine) => [line.id, line.matched]),
       );
+      expect
+        .soft(marks.get(forged.id), "failed sender checks must not show as a contact")
+        .toBe("This mail failed the sender checks for priya@lumen.example.");
+      expect.soft(marks.get(signIn.id), "sign-in mail must not be raised").toBeUndefined();
+      expect
+        .soft(marks.get(pending.id), "mail not classified yet must not be raised")
+        .toBeUndefined();
+      assert.deepStrictEqual(
+        [...marks.keys()],
+        [priya.id, ravi.id, forged.id, newsletter.id, signIn.id, pending.id],
+      );
+      assert.strictEqual(marks.get(priya.id), "contact CT-1 Priya of client C-1 Lumen");
+      assert.strictEqual(marks.get(ravi.id), "contact CT-2 Ravi of client C-1 Lumen");
+      assert.isUndefined(marks.get(newsletter.id));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1064,8 +1327,10 @@ describe("pulse check-ins", () => {
           mail(`${prefix}${n}:a`, `Migration <noreply-${n}@tidewater.example>`, "Synced"),
         );
       const matched = ["q1:a", "q2:a", "q3:a"].map((id) =>
-        mail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
+        outsideMail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
       );
+      yield* addMailbox();
+      for (const line of matched) yield* storeArrival(line, "arjun@tidewater.example");
       const listed = Effect.fn("test.listed")(function* (day: string) {
         const events = yield* pulseEvents;
         const parsed = JSON.parse(events.find((event) => event.key.endsWith(day))!.json);
@@ -1074,7 +1339,7 @@ describe("pulse check-ins", () => {
           notListed: parsed.outsideNotListed,
         };
       });
-      assert.include(yield* checkIn(SLOT, { lines: [...many("a", 67), ...matched], seen: [] }), {
+      assert.include(yield* checkIn(SLOT, mailOutside([...many("a", 67), ...matched], matched)), {
         _tag: "queued",
         outside: 60,
       });
@@ -1128,94 +1393,89 @@ describe("pulse check-ins", () => {
         fields: '{"number":"2026-17"}',
       });
       yield* record({ key: "Q-1", list: "quotes", title: "Audit", fields: '{"number":"2026-17"}' });
-      const matched = (subject: string) =>
-        matchLines(orgId, [mail("m", "accounts@other.example", subject)]).pipe(
-          Effect.map((found) => found.map((match) => match.line.matched)),
-        );
-      const inv1 = ["invoice INV/26-27/004 (INV-1)"];
-      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/004"), inv1);
-      assert.deepStrictEqual(yield* matched("Re: Invoice INV/26-27/004 paid."), inv1);
-      assert.deepStrictEqual(yield* matched("Re: INV-1 for the retainer"), inv1);
-      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/0041"), []);
-      assert.deepStrictEqual(yield* matched("Invoice XINV/26-27/004"), []);
-      assert.deepStrictEqual(yield* matched("Invoice inv/26-27/004"), []);
-      // The invoice and the quote both show 2026-17: neither is guessed.
-      assert.deepStrictEqual(yield* matched("Re: 2026-17"), []);
+      yield* addMailbox();
+      const subjects = [
+        ["Invoice INV/26-27/004", true],
+        ["Re: Invoice INV/26-27/004 paid.", true],
+        ["Re: INV-1 for the retainer", true],
+        ["Invoice INV/26-27/0041", false],
+        ["Invoice XINV/26-27/004", false],
+        ["Invoice inv/26-27/004", false],
+        // The invoice and the quote both show 2026-17: neither is guessed.
+        ["Re: 2026-17", false],
+      ] as const;
+      const lines = subjects.map(([subject], index) =>
+        outsideMail(`number-${index}:a`, "accounts@other.example", subject),
+      );
+      for (const line of lines) yield* storeArrival(line, "accounts@other.example");
+      assert.include(yield* checkIn(SLOT, mailOutside(lines)), { _tag: "queued", outside: 7 });
+      const [event] = yield* pulseEvents;
+      assert.deepStrictEqual(
+        JSON.parse(event!.json).outside.map((line: KinPulseOutsideLine) => [
+          line.subject,
+          line.matched ?? null,
+        ]),
+        subjects.map(([subject, matched]) => [
+          subject,
+          matched ? "names invoice INV/26-27/004 (INV-1)" : null,
+        ]),
+      );
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "between check-ins, only mail a watch matches or a new person wakes an agent, once",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        yield* record({ key: "C-1", list: "clients", title: "Lumen" });
-        yield* record({
-          key: "CT-1",
-          list: "contacts",
-          title: "Priya",
-          partyId: "r-C-1",
-          fields: '{"email":"priya@lumen.example"}',
-        });
-        yield* record({ key: "INV-4", list: "invoices", title: "October", state: "waiting" });
-        const lines = [
-          mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
-          mail("t2:a", "Priya <priya@lumen.example>", "Re: launch date"),
-          mail("t3:a", "accounts@lumen.example", "Re: INV-4 for October"),
-          // INV-40 is not INV-4.
-          mail("t4:a", "accounts@other.example", "INV-40 attached"),
-        ];
-        // Sent to one of the company's addresses: a person Kin doesn't know is maybe a new client
-        // (H07); a list, a no-reply sender or the company's own people are not.
-        const toUs = (line: KinPulseOutsideLine) => ({ ...line, to: "hello@studio.example" });
-        const unknown = [
-          toUs(
-            mail("t5:a", "Meera Iyer <meera@lumengrove.example>", "Booking app for our clinics"),
-          ),
-          toUs(mail("t6:a", "Shop <news@shop.example>", "Weekend sale")),
-          toUs(mail("t7:a", "Bank <no-reply@bank.example>", "Your statement")),
-          toUs(mail("t8:a", "Offers <deals@em.shop.example>", "Just for you")),
-          toUs(mail("t9:a", "Dev <dev@studio.example>", "Lunch?")),
-        ];
-        assert.lengthOf(
-          yield* poll(orgId, SLOT, source([lines[0]!, lines[3]!, ...unknown.slice(1)])),
-          0,
-        );
-        assert.lengthOf(yield* pulseEvents, 0);
-        assert.sameMembers(yield* poll(orgId, SLOT, source([...lines, ...unknown])), [
-          "t2:a",
-          "t3:a",
-          "t5:a",
-        ]);
-        assert.lengthOf(yield* poll(orgId, SLOT + 3 * MINUTE, source(lines)), 0);
-        const events = yield* pulseEvents;
-        assert.sameMembers(
-          events.map((event) => event.agent),
-          [chief, finance, chief],
-        );
-        const sql = yield* SqlClient.SqlClient;
-        const wakeFor = (id: string) =>
-          events.find((event) => JSON.parse(event.json).outside[0].id === id)!;
-        const done = wakeFor("t2:a");
-        const failed = wakeFor("t5:a");
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
-            ended_at, status, event_ids)
-          VALUES ('mail-wake', ${orgId}, ${chief}, 'replay', ${SLOT}, ${SLOT + MINUTE},
-            'completed', '[]')`;
-        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = 'mail-wake'
-          WHERE org_id = ${orgId} AND dedupe_key = ${done.key}`;
-        yield* sql`UPDATE kin_events SET state = 'failed'
-          WHERE org_id = ${orgId} AND dedupe_key = ${failed.key}`;
-        const outside = { lines: [...lines, ...unknown], seen: [] };
-        assert.include(yield* checkIn(SLOT + 5 * MINUTE, outside), { _tag: "queued", outside: 8 });
-        const checkInEvent = (yield* pulseEvents).find((event) =>
-          event.key.startsWith("checkin:"),
-        )!;
-        assert.notInclude(
-          JSON.parse(checkInEvent.json).outside.map((line: KinPulseOutsideLine) => line.id),
-          "t2:a",
-        );
-      }).pipe(Effect.provide(layer)),
+  it.effect("wakes once for a matching calendar change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* record({ key: "C-1", list: "clients", title: "Tidewater Freight" });
+      const calendar: KinPulseOutsideLine = {
+        source: "calendar",
+        connection: "Google",
+        id: "evt_391:2026-11-16T10:41:00.000Z",
+        at: "2026-11-16T10:41:00.000Z",
+        who: null,
+        subject: "Tidewater Freight launch",
+        where: null,
+      };
+      assert.deepStrictEqual(
+        yield* poll(
+          orgId,
+          SLOT,
+          source([calendar, { ...calendar, id: "evt_392", subject: "Lunch" }]),
+        ),
+        [calendar.id],
+      );
+      assert.deepStrictEqual(yield* poll(orgId, SLOT + 3 * MINUTE, source([calendar])), []);
+      const [event] = yield* pulseEvents;
+      assert.strictEqual(event?.agent, chief);
+      assert.deepStrictEqual(JSON.parse(event!.json).outside, [
+        { ...calendar, matched: "client C-1 Tidewater Freight" },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a check-in carries failed mail watches and skips completed ones", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const done = mail("thread_391:a", "Zoya <zoya@tidewater.example>", "Launch date");
+      const failed = mail("thread_392:a", "Arjun <arjun@juniper.example>", "Delivery schedule");
+      yield* wakeMatches(orgId, SLOT, [
+        { line: done, domain: "chief", arrivalId: "arr_35175a463fe31728ae445d624f622185" },
+        { line: failed, domain: "chief", arrivalId: "arr_115ffc8c4421235ffc6213f643f7590a" },
+      ]);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+          ended_at, status, event_ids)
+        VALUES ('mail-wake', ${orgId}, ${chief}, 'replay', ${SLOT}, ${SLOT + MINUTE},
+          'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = 'mail-wake'
+        WHERE org_id = ${orgId} AND dedupe_key = ${outsideKey(done)}`;
+      yield* sql`UPDATE kin_events SET state = 'failed'
+        WHERE org_id = ${orgId} AND dedupe_key = ${outsideKey(failed)}`;
+      const outside = { lines: [done, failed], seen: [] };
+      assert.include(yield* checkIn(SLOT + 5 * MINUTE, outside), { _tag: "queued", outside: 1 });
+      const checkInEvent = (yield* pulseEvents).find((event) => event.key.startsWith("checkin:"))!;
+      assert.deepStrictEqual(JSON.parse(checkInEvent.json).outside, [failed]);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

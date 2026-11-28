@@ -41,7 +41,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
-import { makeAcpAdapterV2 } from "@t3tools/provider-acp/server/adapter";
+import { AcpSessionShaper, makeAcpAdapterV2 } from "@t3tools/provider-acp/server/adapter";
 import { makeAntigravityAcpRuntime } from "../../provider/acp/AntigravityAcpSupport.ts";
 import { normalizeAntigravitySessionUpdate } from "../../provider/acp/AntigravityProtocol.ts";
 import { ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE } from "../../provider/antigravityAuthSupport.ts";
@@ -2844,6 +2844,9 @@ describe("AntigravityAdapterV2 session system prompt", () => {
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         const promptReceived = yield* Deferred.make<Parameters<RuntimeService["prompt"]>[0]>();
         const instanceId = ProviderInstanceId.make("antigravity-system-prompt-test");
+        const sessionInstructions = "Invented session instructions";
+        const driverSeen = yield* Ref.make<string | undefined>(undefined);
+        const runtimeInputSeen = yield* Deferred.make<AntigravityAdapterV2RuntimeInput>();
         const adapter = yield* makeAntigravityAdapterV2({
           instanceId,
           selfInvocation: yield* resolveSelfInvocation(),
@@ -2864,6 +2867,7 @@ describe("AntigravityAdapterV2 session system prompt", () => {
               },
             }).pipe(
               Effect.provideService(SecureRandom.SecureRandom, crypto),
+              Effect.tap(() => Deferred.succeed(runtimeInputSeen, input)),
               Effect.map((runtime): RuntimeService => ({
                 ...runtime,
                 prompt: (request) =>
@@ -2874,7 +2878,24 @@ describe("AntigravityAdapterV2 session system prompt", () => {
             ),
           withProcess: (_stop, task) => task,
           defaultModel: Effect.undefined,
-        });
+        }).pipe(
+          Effect.provideService(
+            AcpSessionShaper,
+            (make, driver) => (input) =>
+              Ref.set(driverSeen, driver).pipe(
+                Effect.andThen(
+                  make({
+                    ...input,
+                    clientCapabilities: {
+                      ...input.clientCapabilities,
+                      fs: { readTextFile: false },
+                    },
+                    sessionSystemPromptAppend: sessionInstructions,
+                  }),
+                ),
+              ),
+          ),
+        );
         const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-sp-" });
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
@@ -2945,6 +2966,10 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           .map((line) => JSON.parse(line) as { method?: string; params?: { _meta?: unknown } })
           .find((request) => request.method === "session/new");
         const append = JSON.stringify(sessionNew?.params?._meta ?? null);
+        const seen = yield* Deferred.await(runtimeInputSeen);
+        assert.strictEqual(yield* Ref.get(driverSeen), "antigravity");
+        assert.strictEqual(seen.sessionSystemPromptAppend, sessionInstructions);
+        assert.isFalse(seen.clientFileReads);
         // Identity stays per turn either way.
         assert.include(sent, "through the Antigravity harness, as gemini-test-low");
         assert.notInclude(append, "systemPrompt");

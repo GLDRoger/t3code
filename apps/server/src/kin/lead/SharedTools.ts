@@ -248,6 +248,7 @@ export const SHARED_TOOLS = {
   statement_rows: "refused",
   // Bills become the owner's expenses.
   bills_add: "refused",
+  bill_cut: "refused",
   bill_read: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.
   kin_document: "refused",
@@ -261,6 +262,7 @@ export const SHARED_TOOLS = {
   kin_connection_call: ownMailboxTurn,
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
+  mail_rule: "refused",
   // The company's and clients' social accounts are the owner's.
   social_read: "refused",
   social_lookup: "refused",

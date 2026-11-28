@@ -4,6 +4,7 @@ import {
   KinChatError,
   KinChatId,
   type KinDocKind,
+  type KinDocLatestSlim,
   KinMessageId,
   KinDocFile,
   type KinDocOperation,
@@ -11,7 +12,7 @@ import {
   type KinDocVersion,
   type KinDocVersionKind,
   type KinOrgId,
-  type KinPersonId,
+  KinPersonId,
   type KinRecordRelation,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -273,6 +274,17 @@ const privateNow = (
       AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
     ORDER BY r.record_id LIMIT 1`;
 
+const versionAudience = (
+  sql: SqlClient.SqlClient,
+  viewer: KinViewer,
+  row: Pick<RecordRow, "originKey">,
+) =>
+  viewer._tag === "ownerLevel" || !row.originKey.startsWith(PICTURE_DOC_ORIGIN)
+    ? sql`1 = 1`
+    : viewer.people.length === 0
+      ? sql`0 = 1`
+      : sql.and(viewer.people.map((person) => pictureVersionSeen(sql, person)));
+
 /**
  * Which of a doc's versions the viewer reads: every one, but a picture's each by its own rule
  * (`pictureVersionSeen`), so an earlier one may be theirs or not.
@@ -285,16 +297,58 @@ export const versionsSeen = Effect.fn("KinDocs.versionsSeen")(function* (
   if (viewer._tag === "ownerLevel" || !row.originKey.startsWith(PICTURE_DOC_ORIGIN))
     return (_version: number) => true;
   const sql = yield* SqlClient.SqlClient;
-  const rows =
-    viewer.people.length === 0
-      ? []
-      : yield* sql<{ version: number }>`SELECT pv.version FROM kin_doc_versions pv
-          JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
-          WHERE pv.org_id = ${orgId} AND pv.record_id = ${row.recordId}
-            AND ${sql.and(viewer.people.map((person) => pictureVersionSeen(sql, person)))}
-          ORDER BY pv.version`;
+  const rows = yield* sql<{ version: number }>`SELECT pv.version FROM kin_doc_versions pv
+    JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
+    WHERE pv.org_id = ${orgId} AND pv.record_id = ${row.recordId}
+      AND ${versionAudience(sql, viewer, row)}
+    ORDER BY pv.version`;
   const seen = new Set(rows.map((one) => one.version));
   return (version: number) => seen.has(version);
+});
+
+export const versionsSinceLooked = Effect.fn("KinLooks.docChanges")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  row: Pick<RecordRow, "recordId" | "originKey">,
+  viewer: KinViewer,
+  mark: number,
+  latest: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const visible = sql`FROM kin_doc_versions pv
+    JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
+    WHERE pv.org_id = ${orgId} AND pv.record_id = ${row.recordId}
+      AND pv.version <= ${latest} AND ${versionAudience(sql, viewer, row)}`;
+  const [base] = yield* sql<{ version: number | null }>`SELECT MAX(pv.version) AS version
+    ${visible} AND pv.created_at <= ${mark}`;
+  if (base?.version == null) return undefined;
+  const rows = yield* sql<
+    Pick<VersionRow, "version" | "createdAt" | "kind" | "summary" | "actorKind" | "actorId"> & {
+      total: number;
+      askedBy: string | null;
+    }
+  >`SELECT pv.version, pv.created_at AS "createdAt", pv.kind, pv.summary,
+      pv.actor_kind AS "actorKind", pv.actor_id AS "actorId",
+      CASE WHEN pv.actor_kind = 'agent' AND pv.answered_author_kind = 'person'
+        AND pv.answered_message_id IS NOT NULL THEN pv.answered_author_id END AS "askedBy",
+      COUNT(*) OVER () AS total
+    ${visible} AND pv.created_at > ${mark}
+      AND NOT (pv.actor_kind = 'person' AND pv.actor_id IS ${personId})
+    ORDER BY pv.version DESC LIMIT 3`;
+  const first = rows[0];
+  if (first === undefined) return undefined;
+  return {
+    total: first.total,
+    from: base.version,
+    versions: rows.map((row): KinDocLatestSlim => ({
+      version: row.version,
+      at: iso(row.createdAt),
+      kind: row.kind,
+      summary: row.summary,
+      provenance: { by: actorOf(row.actorKind, row.actorId) },
+      ...(row.askedBy === null ? {} : { askedBy: KinPersonId.make(row.askedBy) }),
+    })),
+  };
 });
 
 /** A doc's kind as stored; one stored before kinds, or by no one, is `other`. */
@@ -808,6 +862,15 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
       });
     }),
   );
+});
+
+export const savedFile = Effect.fn("KinDocs.savedFile")(function* (
+  orgId: KinOrgId,
+  originKey: string,
+) {
+  const made = yield* madeBy(orgId, originKey);
+  if (made === undefined) return undefined;
+  return yield* retried(orgId, made.recordId, originKey);
 });
 
 /**

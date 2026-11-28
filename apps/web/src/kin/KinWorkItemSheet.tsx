@@ -6,9 +6,7 @@ import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_ASSIGN,
-  KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
-  KIN_WORK_ITEM_FAILED,
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
@@ -16,6 +14,9 @@ import {
   KIN_WORK_STEPS,
   KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
@@ -70,6 +71,7 @@ import {
   type KinRecordKey,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -95,13 +97,19 @@ import {
   MessageSquareIcon,
   NotebookTextIcon,
   PencilIcon,
+  PinIcon,
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
   FlagIcon,
   XIcon,
 } from "lucide-react";
-import { useId, useState, type ComponentProps } from "react";
+import {
+  kinEntryLookedUpTo,
+  kinEntrySinceLooked,
+  type KinSinceLookedView,
+} from "@t3tools/client-runtime/kin/kinSinceLooked";
+import { useId, useRef, useState, type ComponentProps } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
@@ -154,13 +162,22 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { KinAskRecord } from "./KinAskRecord";
+import { KinPinToChatDialog } from "./KinPinToChatDialog";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { KinWatchLine } from "./KinWatchLine";
+import {
+  KinSinceLookedLine,
+  scrollIntoViewRespectingMotion,
+  useKinPageVisible,
+} from "./KinSinceLookedLine";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinPinActions } from "./useKinPins";
 import { KIN_WEB_ONLY } from "./kinWebOnly";
 import {
   useKinPickerSearch,
+  useKinPinnedEntryLook,
+  useKinRecordLooked,
   useKinWorkItemWatch,
   useKinWorkPlace,
   type KinWorkChangesHandle,
@@ -172,6 +189,8 @@ import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import {
   kinPickerNamed,
   kinPlaceFind,
+  kinSectionNamed,
+  kinSectionNamedWords,
   kinSectionNoun,
   kinSectionOf,
   kinSectionOffLine,
@@ -248,6 +267,19 @@ export function KinWorkItemSheet(
   const ownerLevel = useKinOwnerLevel(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
+  const pageVisible = useKinPageVisible();
+  const readyItem = state._tag === "ready" ? state.item : null;
+  const pinnedLookedAt = useKinPinnedEntryLook(readyItem);
+  const lookedUpTo = readyItem === null ? null : kinEntryLookedUpTo(readyItem);
+  useKinRecordLooked(
+    props,
+    readyItem === null || lookedUpTo === null
+      ? null
+      : { recordId: readyItem.recordId, upTo: lookedUpTo },
+    pageVisible,
+  );
+  const sinceLooked =
+    readyItem === null ? null : kinEntrySinceLooked(readyItem, pinnedLookedAt, names, now);
   useKinWorkItemWatch(
     props,
     itemKey,
@@ -258,6 +290,10 @@ export function KinWorkItemSheet(
   const close = () => {
     if (!saving) props.onClose();
   };
+  const entryKind = kinWorkEntryKind(itemKey);
+  const entryNoun = kinSectionNamed(shell, entryKind.noun);
+  const goneCopy = kinSectionNamedWords(shell, kinWorkGone(itemKey));
+  const failedCopy = kinSectionNamedWords(shell, kinWorkItemFailed(itemKey));
   const entry = state._tag === "ready" && state.item.list !== undefined;
   const sheet = props.frame === "sheet" || entry;
   const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
@@ -310,6 +346,7 @@ export function KinWorkItemSheet(
           />
         }
         offLine={offLine}
+        sinceLooked={sinceLooked}
       />
     ) : state._tag === "ready" ? (
       <KinWorkItem
@@ -317,6 +354,7 @@ export function KinWorkItemSheet(
         frame={Frame}
         item={state.item}
         shown={kinWorkApplied(state.item, changed)}
+        sinceLooked={sinceLooked}
         view={kinWorkItemView(
           kinWorkApplied(state.item, changed),
           names,
@@ -349,22 +387,26 @@ export function KinWorkItemSheet(
         <Frame.Header>
           <Frame.Title>
             {state._tag === "gone"
-              ? KIN_WORK_GONE.title
+              ? goneCopy.title
               : state._tag === "failed"
-                ? KIN_WORK_ITEM_FAILED.title
+                ? failedCopy.title
                 : itemKey}
           </Frame.Title>
           <Frame.Description>
             {state._tag === "gone"
-              ? KIN_WORK_GONE.detail
+              ? goneCopy.detail
               : state._tag === "failed"
-                ? KIN_WORK_ITEM_FAILED.detail
+                ? failedCopy.detail
                 : "Loading…"}
           </Frame.Description>
         </Frame.Header>
         <div className="flex flex-col items-start gap-3 px-6 pb-6">
           {state._tag === "loading" ? (
-            <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
+            <div
+              className="flex w-full flex-col gap-2"
+              role="status"
+              aria-label={`Loading ${entryNoun}`}
+            >
               <Skeleton className="h-4 w-4/5" />
               <Skeleton className="h-3.5 w-3/5" />
               <Skeleton className="h-3.5 w-2/5" />
@@ -407,7 +449,7 @@ export function KinWorkItemSheet(
       {content}
       {props.frame === "page" ? null : (
         <div className="absolute end-2 top-2">
-          <Button size="icon" variant="ghost" aria-label="Close task" onClick={close}>
+          <Button size="icon" variant="ghost" aria-label={`Close ${entryNoun}`} onClick={close}>
             <XIcon />
           </Button>
         </div>
@@ -648,6 +690,7 @@ function KinWorkItem(
     readonly item: KinRecordDetail;
     /** The task with this browser's unsaved changes applied, as `view` reads it. */
     readonly shown: KinRecordDetail;
+    readonly sinceLooked: KinSinceLookedView | null;
     readonly view: KinWorkItemView;
     readonly directory: KinWorkDirectory;
     readonly now: Date;
@@ -680,6 +723,9 @@ function KinWorkItem(
     useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
   );
   const [handingBack, setHandingBack] = useState(false);
+  const activityRef = useRef<HTMLDivElement>(null);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions({ environmentId, orgId });
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -763,7 +809,8 @@ function KinWorkItem(
     step: step.acts,
   });
   const status = change === null ? null : controls.page.status;
-  const more = Object.values(controls.menu).some(Boolean);
+  const more = Object.values(controls.menu).some(Boolean) || pinActions.canPin;
+  const hasOtherMenu = Object.values(controls.menu).some(Boolean);
   return (
     <>
       <Frame.Header>
@@ -806,6 +853,15 @@ function KinWorkItem(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    {!pinActions.canPin ? null : (
+                      <>
+                        <MenuItem onClick={() => setPinning(true)}>
+                          <PinIcon />
+                          {KIN_PINS_COPY.pinToChat}
+                        </MenuItem>
+                        {hasOtherMenu ? <MenuSeparator /> : null}
+                      </>
+                    )}
                     {!controls.menu.give || give === null || view.assignLabel === null ? null : (
                       <>
                         <MenuSub>
@@ -856,6 +912,10 @@ function KinWorkItem(
             </p>
           ))}
           <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
+          <KinSinceLookedLine
+            view={props.sinceLooked}
+            onOpen={() => scrollIntoViewRespectingMotion(activityRef.current)}
+          />
         </div>
       </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -1298,17 +1358,19 @@ function KinWorkItem(
             />
           </Section>
         )}
-        <KinTaskActivity
-          environmentId={environmentId}
-          orgId={orgId}
-          itemKey={props.item.key}
-          item={props.item}
-          names={names}
-          now={props.now}
-          note={view.historyNote}
-          reason={step.words === view.reason ? null : view.reason}
-          onOpenProject={props.onOpenProject}
-        />
+        <div ref={activityRef}>
+          <KinTaskActivity
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={props.item.key}
+            item={props.item}
+            names={names}
+            now={props.now}
+            note={view.historyNote}
+            reason={step.words === view.reason ? null : view.reason}
+            onOpenProject={props.onOpenProject}
+          />
+        </div>
         <KinWorkLinks
           {...props}
           item={props.shown}
@@ -1327,6 +1389,16 @@ function KinWorkItem(
           />
         </div>
       )}
+      {pinning ? (
+        <KinPinToChatDialog
+          open={pinning}
+          onOpenChange={setPinning}
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.title}
+        />
+      ) : null}
       {view.handBackTo === null || change === null ? null : (
         <KinWorkHandBack
           environmentId={environmentId}

@@ -28,6 +28,7 @@ export type Lane = {
   readonly voice: "text" | "send";
   readonly owed: boolean;
   readonly leadName: string;
+  readonly direct?: true;
   /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
   readonly team?: true;
   /**
@@ -125,7 +126,10 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     const waiting = yield* sql`SELECT 1 FROM kin_events e
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
         AND e.wakeup_id = ${input.wakeupId} AND ${sql.literal(owedNotice("e"))} LIMIT 1`;
+    const [chat] = yield* sql<{ kind: string }>`SELECT kind FROM kin_chats
+      WHERE org_id = ${input.orgId} AND chat_id = ${chatId}`;
     return Option.some<Lane>({
+      ...(chat?.kind === "direct" ? { direct: true } : {}),
       chatId: KinChatId.make(chatId),
       mode,
       voice,

@@ -34,7 +34,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { memo, useEffect, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, useWindowDimensions, View } from "react-native";
 
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { AppBar } from "../../components/ui/AppBar";
@@ -51,7 +51,6 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
-  convertPastedImagesToAttachments,
   createComposerFileAttachment,
   pickComposerFiles,
   pickComposerMedia,
@@ -61,6 +60,7 @@ import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAssetUrl } from "../../state/assets";
 import { uploadComposerAttachmentShared } from "../../state/composer-attachment-uploads";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { createBillPhotoAttachment, preparePickedBillPhoto } from "./kinBillPhoto";
 import { forgetKinSharedFile } from "./kinSharedFileInbox";
 import type { KinSharedFile } from "./state/kinSharedFile";
 import { kinBillChoices, kinExpenseParamsOfBill } from "./state/kinBillsPick";
@@ -109,7 +109,7 @@ async function uploadBill(
     : { type: "file", id, name, mimeType, sizeBytes };
 }
 
-/** A photo of a bill from the camera, through the same path a pasted photo takes. */
+/** A photo of a bill from the camera. */
 async function takeBillPhoto(number: number) {
   const picker = await import("expo-image-picker");
   const allowed = await picker.requestCameraPermissionsAsync();
@@ -123,11 +123,17 @@ async function takeBillPhoto(number: number) {
   }
   const asset = taken.canceled ? undefined : taken.assets[0];
   if (asset === undefined) return { photo: null, error: null };
-  const converted = await convertPastedImagesToAttachments({ uris: [asset.uri] });
-  const [photo] = converted.attachments;
-  if (photo === undefined) return { photo: null, error: converted.error };
-  const extension = photo.mimeType === "image/png" ? "png" : "jpg";
-  return { photo: { ...photo, name: `bill-photo-${number}.${extension}` }, error: null };
+  try {
+    const photo = await createBillPhotoAttachment({
+      uri: asset.uri,
+      name: asset.fileName ?? `bill-photo-${number}.jpg`,
+      mimeType: asset.mimeType,
+    });
+    const extension = photo.mimeType === "image/jpeg" ? "jpg" : photo.mimeType.split("/")[1];
+    return { photo: { ...photo, name: `bill-photo-${number}.${extension}` }, error: null };
+  } catch (cause) {
+    return { photo: null, error: cause instanceof Error ? cause.message : KIN_BILLS.uploadFailed };
+  }
 }
 
 /** Money's Add › Bills on the phone: from the photo library, files or the camera, then one add. */
@@ -152,12 +158,8 @@ export function KinBillsAddScreen({ route }: StaticScreenProps<KinBillsAddParams
 async function sharedBill(shared: KinSharedFile) {
   try {
     if (shared.mimeType.startsWith("image/")) {
-      const converted = await convertPastedImagesToAttachments({ uris: [shared.uri] });
-      const [photo] = converted.attachments;
-      return {
-        bill: photo === undefined ? null : { ...photo, name: shared.name },
-        error: converted.error,
-      };
+      const bill = await createBillPhotoAttachment(shared);
+      return { bill: { ...bill, name: shared.name }, error: null };
     }
     const bill = await createComposerFileAttachment({
       uri: shared.uri,
@@ -226,11 +228,14 @@ function AddBills(props: KinWorkTarget & { readonly shared: KinSharedFile | null
     }
     const picked =
       from === "library"
-        ? await pickComposerMedia({ existingCount: held }).then((result) => ({
+        ? await pickComposerMedia({
+            existingCount: held,
+            preparePhoto: createBillPhotoAttachment,
+          }).then((result) => ({
             files: result.attachments,
             error: result.error,
           }))
-        : await pickComposerFiles({ existingCount: held });
+        : await pickComposerFiles({ existingCount: held, preparePhoto: preparePickedBillPhoto });
     if (picked.files.length > 0) adding.choose(kinBillChoices(picked.files));
     setPicking(picked.error);
   };
@@ -579,8 +584,11 @@ const TONE: Record<KinBillTone, string> = {
   muted: "text-foreground-muted",
   active: "text-foreground",
   attention: "text-warning-foreground",
-  done: "text-success-foreground",
+  // The phone's themes have no success colour; an unknown class draws black, unreadable in dark.
+  done: "text-foreground-secondary",
 };
+// From this text size a field's label goes above its value, so neither breaks mid-word.
+const LARGE_TEXT_SCALE = 1.5;
 
 const CHANGES: ReadonlySet<KinBillAction> = new Set([
   "keep",
@@ -657,6 +665,7 @@ const BillRow = memo(function BillRow(props: {
   const { view } = props;
   const taps = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
+  const stacked = useWindowDimensions().fontScale >= LARGE_TEXT_SCALE;
   return (
     <View accessible={false} className="flex-row gap-3 border-b border-border px-4 py-3">
       <BillThumb view={view} environmentId={props.environmentId} onPreview={props.onPreview} />
@@ -670,11 +679,18 @@ const BillRow = memo(function BillRow(props: {
         </Text>
         <View className="gap-0.5">
           {view.fields.map((field) => (
-            <View key={field.key} className="min-h-4 flex-row gap-3">
-              <Text textRole="footnote" className="w-28 text-foreground-muted">
+            <View key={field.key} className={stacked ? "min-h-4" : "min-h-4 flex-row gap-3"}>
+              <Text
+                textRole="footnote"
+                className={stacked ? "text-foreground-muted" : "w-28 text-foreground-muted"}
+              >
                 {field.label}
               </Text>
-              <Text textRole="footnote" numberOfLines={1} className="flex-1 text-foreground">
+              <Text
+                textRole="footnote"
+                numberOfLines={stacked ? undefined : 1}
+                className={stacked ? "text-foreground" : "flex-1 text-foreground"}
+              >
                 {field.value ?? ""}
               </Text>
             </View>

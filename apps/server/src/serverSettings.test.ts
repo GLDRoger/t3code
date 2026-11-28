@@ -450,6 +450,50 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect(
+    "persists the configured and off background model states, and resets to the host default",
+    () =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const stored = fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodeServerSettingsJson));
+        const background = createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "invented-check",
+        );
+        const withOptions = {
+          ...background,
+          options: [{ id: "effort", value: "low" }],
+        };
+        assert.isUndefined((yield* serverSettings.getSettings).kinBackgroundModelSelection);
+        yield* serverSettings.updateSettings(
+          yield* decodeServerSettingsPatch({
+            kinBackgroundModelSelection: withOptions,
+          }),
+        );
+        assert.deepStrictEqual((yield* stored).kinBackgroundModelSelection, withOptions);
+        yield* serverSettings.updateSettings(
+          yield* decodeServerSettingsPatch({
+            kinBackgroundModelSelection: background,
+          }),
+        );
+        assert.deepStrictEqual((yield* stored).kinBackgroundModelSelection, background);
+        const off = yield* serverSettings.updateSettings(
+          yield* decodeServerSettingsPatch({ kinBackgroundModelSelection: null }),
+        );
+        assert.isNull(off.kinBackgroundModelSelection);
+        assert.isNull((yield* stored).kinBackgroundModelSelection);
+        const cleared = yield* serverSettings.updateSettings(
+          yield* decodeServerSettingsPatch({ kinBackgroundModelSelection: "default" }),
+        );
+        assert.isFalse(Object.hasOwn(cleared, "kinBackgroundModelSelection"));
+        assert.isFalse(Object.hasOwn(yield* stored, "kinBackgroundModelSelection"));
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("keeps an external settings edit that the watcher has not reloaded yet", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

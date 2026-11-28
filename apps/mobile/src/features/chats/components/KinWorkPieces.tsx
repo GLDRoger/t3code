@@ -1,9 +1,17 @@
+import { useAtomValue } from "@effect/atom-react";
 import { KIN_GATE_FAILED, type KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinDockTabs } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
+import { kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_WORK_PRIVATE,
+  kinWorkGone,
+  kinWorkMissingLinkDetail,
   kinWorkStaleNotice,
+  type KinMissingLinkKind,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -22,7 +30,8 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
-import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { type ComponentRef, createContext, use, useEffect, useRef, useState } from "react";
 import { Dimensions, Keyboard, Platform, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -42,10 +51,14 @@ import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useBarOverlap } from "../../../components/ui/useBarInset";
+import { environmentCatalog } from "../../../connection/catalog";
 import { cn } from "../../../lib/cn";
 import { MOBILE_SHAPE } from "../../../lib/designTokens";
+import { environmentSession } from "../../../state/session";
+import { kinPlacesAtom } from "../state/kinChatOnly";
 import { retryKinAccess } from "../state/kinClient";
 import { useKinHost, useKinHostAt } from "../state/useKinHost";
+import { useKinShell } from "../state/useKinShell";
 import { KinLoadFailed } from "./KinLoadFailed";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
@@ -137,10 +150,12 @@ export function KinWorkFrame(
       /** The space under it with the keyboard closed, which the keyboard covers when open. */
       readonly bottomInset: number;
     };
+    /** Optional handle to scroll this frame's scroll view to a section. */
+    readonly scrollRef?: React.RefObject<ComponentRef<typeof ScreenScrollView> | null>;
     readonly children: React.ReactNode;
   },
 ) {
-  const { form, showTop, footer, children, ...bar } = props;
+  const { form, showTop, footer, scrollRef, children, ...bar } = props;
   const navigation = useNavigation();
   const guarded = props.guardBack === true;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a guarded step turns its screen's swipe and Back off (AppBar); options merge, so leaving the step must turn them on again
@@ -167,7 +182,10 @@ export function KinWorkFrame(
       <AppBar {...bar} />
       <ScreenContent surface="screen">
         <ScreenScrollView
-          ref={scroll}
+          ref={(node) => {
+            scroll.current = node;
+            if (scrollRef !== undefined) scrollRef.current = node;
+          }}
           className="flex-1"
           // Every frame, not only a form: a task page's pickers have a search field too, and
           // without these a tap on a found row only closes the keyboard.
@@ -948,9 +966,13 @@ export function KinFoldSection(props: {
   readonly title: string;
   readonly summary: string | null;
   readonly onOpen?: () => void;
+  readonly open?: boolean;
+  readonly onOpenChange?: (open: boolean) => void;
   readonly children?: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = props.open ?? localOpen;
+  const setOpen = props.onOpenChange ?? setLocalOpen;
   const { onOpen } = props;
   return (
     <ListSection>
@@ -1015,4 +1037,52 @@ export function KinGateView(props: {
       <AppActivityIndicator />
     </View>
   );
+}
+
+const noMissingLinkSessionAtom = Atom.make(null);
+const noMissingLinkPlacesAtom = Atom.make<KinPlaces | null>(null);
+
+/** Empty state for a malformed Kin link, naming a place this viewer can really open on the phone. */
+export function KinMissingLink(props: {
+  readonly title: string;
+  readonly kind: KinMissingLinkKind | null;
+  readonly environmentId?: EnvironmentId | null;
+  readonly orgId?: KinOrgId | null;
+  /** When the link carried a valid record key and only the company was missing. */
+  readonly recordKey?: KinRecordKey | null;
+}) {
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const host = useKinHost();
+  const hostOrgId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.orgId ?? null)
+      : null;
+  const resolved =
+    props.environmentId != null && props.orgId != null && catalog.entries.has(props.environmentId)
+      ? { environmentId: props.environmentId, orgId: props.orgId }
+      : host._tag === "host" && hostOrgId !== null
+        ? { environmentId: host.environmentId, orgId: hostOrgId }
+        : null;
+  const session = useAtomValue(
+    resolved === null
+      ? noMissingLinkSessionAtom
+      : environmentSession.sessionStateValueAtom(resolved.environmentId),
+  );
+  const chatsOnly =
+    session !== null &&
+    kinDockTabs(session, true, { money: false, clients: false, docs: false }).length === 1;
+  const places = useAtomValue(
+    resolved === null || chatsOnly ? noMissingLinkPlacesAtom : kinPlacesAtom(resolved),
+  );
+  const open: ReadonlyArray<KinDestination> | null = chatsOnly
+    ? ["chats"]
+    : (places?.destinations ?? null);
+  const shell = useKinShell(resolved?.environmentId ?? null);
+  const detail = kinSectionNamed(
+    shell,
+    props.recordKey != null
+      ? kinWorkGone(props.recordKey, open).detail
+      : kinWorkMissingLinkDetail(props.kind, open),
+  );
+  return <EmptyState variant="plain" title={props.title} detail={detail} />;
 }

@@ -109,13 +109,14 @@ it("advertises every accepted chart key at every level", () => {
   );
 });
 
-it("advertises every accepted memory write key and a single operation enum", () => {
+it("advertises every memory write key except the filled-in source event, with a single operation enum", () => {
   const tool = KinLeadToolkit.tools.memory_write;
   const advertised = advertisedJsonSchema(tool, { kin: true });
   assert.deepStrictEqual(
     inputPropertyPaths(advertised),
-    inputPropertyPaths(Tool.getJsonSchema(tool)),
+    inputPropertyPaths(Tool.getJsonSchema(tool)).difference(new Set(["sourceEventId"])),
   );
+  expect(advertised.properties).toHaveProperty("item.properties.sender_mail_voice.description");
   expect(advertised.properties).toHaveProperty("op", {
     type: "string",
     enum: ["create", "update", "supersede", "invalidate"],

@@ -107,39 +107,44 @@ export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
 /**
  * Everyone who has funded a Paid expense, owed or not, with repaid amounts lacking a statement
- * row as totals per currency and day, and the share tied to each live Bank transactions entry
- * on the same day. A statement line naming one is never a new expense. A mark with no Repaid on
- * day counts on the day it was written, in the owner's zone.
+ * row as totals and individual marks per currency and day. A mark with no Repaid on day counts
+ * on the day it was written, in the owner's zone.
  */
 export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const bank = yield* findBankList(orgId);
   const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    rev: number;
     minor: number;
     currency: string;
+    paidAt: number;
     fieldsJson: string;
     linked: number;
     markedAt: number;
-    bankRecordId: string | null;
+    bankEvidenceId: string | null;
     bankDateAt: number | null;
+    bankState: string | null;
   }>`
-    SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
+    SELECT r.record_id AS "recordId", r.key, r.rev, r.amount_minor AS minor,
+      r.currency, COALESCE(r.date_at, r.created_at) AS "paidAt", r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
         AND e.target_record_id = r.record_id) AS linked,
       COALESCE((SELECT c.at FROM kin_record_changes c, json_each(c.fields_json) f
         WHERE c.org_id = r.org_id AND c.record_id = r.record_id
           AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
         ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt",
-      bank_entry.record_id AS "bankRecordId", bank_entry.date_at AS "bankDateAt"
+      bank_entry.record_id AS "bankEvidenceId", bank_entry.date_at AS "bankDateAt",
+      bank_entry.state AS "bankState"
     FROM kin_records r
     LEFT JOIN kin_records bank_entry ON bank_entry.org_id = r.org_id
       AND bank_entry.record_id = (SELECT l.target FROM kin_record_links l
         JOIN kin_records b ON b.org_id = l.org_id AND b.record_id = l.target
-          AND b.state <> 'dropped'
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id
           AND l.kind = 'record' AND l.relation = 'evidence' AND b.register_id = ${bank?.id ?? null}
-        ORDER BY l.created_at DESC, l.target DESC LIMIT 1)
+        ORDER BY b.state = 'dropped', l.created_at DESC, l.target DESC LIMIT 1)
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
     ORDER BY r.key`;
@@ -147,15 +152,24 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
       FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`).map((one) => [one.id, one.name]),
   );
-  type BankTotals = { bankDay: string; amounts: Map<string, bigint> };
+  type RepaidDay = {
+    amountMinor: bigint;
+    marks: Array<
+      Pick<(typeof rows)[number], "recordId" | "key" | "rev"> & {
+        amountMinor: number;
+        day: string;
+        bankRecordId: string | null;
+        hasBankEvidence?: true;
+      }
+    >;
+  };
   const payees = new Map<
     string,
     {
       name: string;
       id: string;
       ids: Array<string>;
-      repaid: Map<string, bigint>;
-      tied: Map<string, BankTotals>;
+      repaid: Map<string, RepaidDay>;
     }
   >();
   for (const row of rows) {
@@ -170,39 +184,38 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
           : (names.get(funding.personId) ?? "a former teammate"),
       id,
       ids: funding.personId === null ? [funding.unmatched!] : [],
-      repaid: new Map<string, bigint>(),
-      tied: new Map<string, BankTotals>(),
+      repaid: new Map<string, RepaidDay>(),
     };
     if (funding.state === "repaid" && row.linked === 0) {
       const markedDay = funding.repaidOn ?? dayIn(row.markedAt, zone);
       const at = `${row.currency} ${markedDay}`;
-      const minor = BigInt(row.minor);
-      payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + minor);
+      const repaid: RepaidDay = payee.repaid.get(at) ?? { amountMinor: 0n, marks: [] };
       const bankDay = row.bankDateAt === null ? null : dayIn(row.bankDateAt, zone);
-      if (row.bankRecordId !== null && bankDay === markedDay) {
-        const tied = payee.tied.get(row.bankRecordId) ?? {
-          bankDay,
-          amounts: new Map<string, bigint>(),
-        };
-        tied.amounts.set(at, (tied.amounts.get(at) ?? 0n) + minor);
-        payee.tied.set(row.bankRecordId, tied);
-      }
+      repaid.amountMinor += BigInt(row.minor);
+      repaid.marks.push({
+        recordId: row.recordId,
+        key: row.key,
+        rev: row.rev,
+        amountMinor: row.minor,
+        day: dayIn(row.paidAt, zone),
+        bankRecordId:
+          bankDay === markedDay && row.bankState !== "dropped" ? row.bankEvidenceId : null,
+        ...(row.bankEvidenceId === null ? {} : { hasBankEvidence: true }),
+      });
+      payee.repaid.set(at, repaid);
     }
     payees.set(id, payee);
   }
-  const total = ([at, minor]: [string, bigint]) => ({
-    currency: at.slice(0, at.indexOf(" ")),
-    day: at.slice(at.indexOf(" ") + 1),
-    amountMinor: Number(minor),
-  });
   return [...payees.values()].map((payee) => ({
     name: payee.name,
     id: payee.id,
     ids: payee.ids,
-    repaid: [...payee.repaid].map(total),
-    tied: [...payee.tied].flatMap(([bankRecordId, { bankDay, amounts }]) =>
-      [...amounts].map((entry) => ({ bankRecordId, bankDay, ...total(entry) })),
-    ),
+    repaid: [...payee.repaid].map(([at, { amountMinor, marks }]) => ({
+      currency: at.slice(0, at.indexOf(" ")),
+      day: at.slice(at.indexOf(" ") + 1),
+      amountMinor: Number(amountMinor),
+      marks,
+    })),
   }));
 });
 

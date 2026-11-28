@@ -33,7 +33,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
-import { answerShellChange, shellDecision } from "./changes.ts";
+import { answerShellChange, shellChangeLines, shellDecision } from "./changes.ts";
 import { propose } from "./mcp.ts";
 import * as KinShell from "./KinShell.ts";
 
@@ -479,13 +479,13 @@ it.effect("shows a company list as a section, docks it and turns it off, each on
       VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 1, '{"sensitive":false}')`;
     yield* turn(1);
     for (const [sections, message] of [
-      [[{ id: "deals", dock: true }], "Only a list section is put in the phone's dock here."],
+      [[{ id: "deals", dock: true }], "Only Money, Clients and Docs have a place in the dock."],
       [[{ id: "list:shelves" }], "There is no list shelves to show as a section."],
     ] as const)
       assert.include(yield* Effect.flip(propose(scope, { sections })), { message });
     const dock = { id: "list:stock", dock: true };
     assert.include(yield* Effect.flip(propose(scope, { sections: [dock] })), {
-      message: "The dock holds five places. Turn one off first.",
+      message: "The dock holds five places. Take one out of the dock first.",
     });
     assert.lengthOf(yield* cards, 0);
     const shown = yield* propose(scope, { sections: [{ id: "clients", on: false }, dock] });
@@ -517,5 +517,52 @@ it.effect("shows a company list as a section, docks it and turns it off, each on
     yield* turn(3);
     const back = yield* propose(scope, { sections: [{ id: "list:stock", on: true }] });
     assert.deepStrictEqual(back.proposed, ['Turn on the "Stock" section']);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(
+  (
+    [
+      ["money", "Money", undefined],
+      ["clients", 'Clients (called "Shippers" here)', "Shippers"],
+      ["docs", "Docs", undefined],
+    ] as const
+  ).flatMap(([id, title, name]) => {
+    const implicit = { id, on: true, dock: undefined, ...(name === undefined ? {} : { name }) };
+    const out = { ...implicit, dock: false };
+    const back = { ...implicit, dock: true };
+    return [
+      { id, before: implicit, after: out, expected: [`Take ${title} out of the phone's dock`] },
+      { id, before: out, after: back, expected: [`Show ${title} in the phone's dock`] },
+      { id, before: implicit, after: back, expected: [] },
+    ];
+  }),
+)("summarizes $id dock change from $before.dock to $after.dock", ({ before, after, expected }) =>
+  Effect.sync(() => assert.deepStrictEqual(shellChangeLines([before], [after]), expected)),
+);
+
+it.effect("uses the shell's built-in dock rules for a proposed change", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn(1);
+    const refused = yield* Effect.result(
+      propose(scope, { sections: [{ id: "deals", dock: false }] }),
+    );
+    assert.deepInclude(refused, { _tag: "Failure" });
+    if (refused._tag === "Failure")
+      assert.strictEqual(
+        refused.failure.message,
+        "Only Money, Clients and Docs have a place in the dock.",
+      );
+    const proposal = yield* propose(scope, { sections: [{ id: "money", dock: false }] });
+    assert.deepStrictEqual(proposal.proposed, ["Take Money out of the phone's dock"]);
+    assert.strictEqual((yield* KinShell.get(orgId)).rev, 0);
+    const [card] = yield* cards;
+    yield* answer(card!.widgetId, ownerId);
+    assert.deepInclude((yield* KinShell.get(orgId)).sections, {
+      id: "money",
+      on: true,
+      dock: false,
+    });
   }).pipe(Effect.provide(layer)),
 );

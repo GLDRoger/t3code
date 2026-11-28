@@ -12,6 +12,7 @@ import {
   ProviderInstanceId,
   ScheduledTaskId,
   AuthStandardClientScopes,
+  KinAgentId,
   KinChatRpcs,
   KinOrgId,
   type KinPushToken,
@@ -19,16 +20,25 @@ import {
   WsRpcGroup,
   WS_METHODS,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
+import * as HttpServer from "effect/http/HttpServer";
+import * as NetAddress from "effect/net/NetAddress";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Kin from "./layer.ts";
+import { layerKinRegistry, layerServerSettings } from "../server.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { KinIdentity } from "./chat/KinIdentity.ts";
+import { KinChatRepository } from "./chat/KinChatRepository.ts";
+import { KinChatService } from "./chat/KinChatService.ts";
 import { runKinMigrations } from "./persistence/KinMigrations.ts";
 import * as Logger from "effect/Logger";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
@@ -223,4 +233,43 @@ it.effect.each(["disabled", "invalid", "failed"] as const)(
         [],
       );
     }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect("carries the running server's saved progress setting in a chat backlog", () =>
+  Effect.gen(function* () {
+    const { services } = yield* Kin.KinServer;
+    assert(Option.isSome(services));
+    const { owner } = Context.get(services.value, KinIdentity);
+    const repository = Context.get(services.value, KinChatRepository);
+    const chats = Context.get(services.value, KinChatService);
+    const agentId = KinAgentId.make("lead");
+    yield* repository.insertAgent({
+      orgId: owner.orgId,
+      agentId,
+      ownerPersonId: owner.personId,
+      displayName: "Lead",
+      role: "lead",
+      createdAt: "1970-01-01T00:00:00.000Z",
+    });
+    const { chatId } = yield* chats.createDirect(owner, { orgId: owner.orgId, agentId });
+    const settings = yield* ServerSettingsService;
+    yield* settings.updateSettings({ kinClearUpdatesAfterReply: true });
+
+    const opened = yield* Stream.runHead(chats.subscribe(owner, { chatId }));
+    assert(Option.isSome(opened));
+    assert.strictEqual(opened.value._tag, "backlog");
+    assert.propertyVal(opened.value, "clearUpdates", true);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(layerKinRegistry, layerServerSettings).pipe(
+        Layer.provide(
+          Layer.mock(HttpServer.HttpServer)({
+            address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+          }),
+        ),
+        Layer.provide(dormantLeadDependencies),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
+    ),
+  ),
 );

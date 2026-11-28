@@ -2460,7 +2460,7 @@ export const redraftsSection = Effect.fn("KinQuestions.redraftsSection")(functio
     body: waiting
       .map(({ draft }) => {
         const party = draft.for === null ? "" : ` for ${draft.for.title} (${draft.for.key})`;
-        return `- ${draft.names.asker}'s ${DRAFT_WORDS[draft.kind]}${party}: its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on ${draft.names.owner}'s Approve card.`;
+        return `- ${draft.names.asker}'s ${DRAFT_WORDS[draft.kind]}${party}: its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on ${draft.names.owner}'s Approve card and tells ${draft.names.asker} itself, so nothing needs relaying to ${draft.names.asker}.`;
       })
       .join("\n"),
   };

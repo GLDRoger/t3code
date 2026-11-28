@@ -59,6 +59,7 @@ import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import * as Bills from "../work/bills.ts";
+import * as KinAttachmentStore from "../chat/KinAttachmentStore.ts";
 import { handlers as billHandlers } from "../work/mcp/billHandlers.ts";
 import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
@@ -126,7 +127,7 @@ const routineRuntime = Layer.mergeAll(
   KinWatchRounds.layer,
   KinRecommend.layer,
 ).pipe(
-  Layer.provideMerge(LeadDelivery.layer),
+  Layer.provideMerge(LeadDelivery.sweepLayer),
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
@@ -330,23 +331,27 @@ const runner = Layer.effectDiscard(
 );
 
 const ownerNotices = OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer));
-const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
+// Memory captures its sync hook when the service is built.
+export const memoryLayer = Memory.layer.pipe(
+  Layer.provide(ownerNotices),
+  Layer.provide(
+    FollowUps.rememberSnapshots.pipe(
+      Layer.provide(TriggerService.syncHooksLayer),
+      Layer.provide(TriggerService.layer),
+      Layer.provide(KinChatRepository.layer),
+    ),
+  ),
+);
 
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
+    Layer.provide(LeadDelivery.serviceLayer),
     Layer.provide(
       Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer, KinTurnContent.layer).pipe(
         Layer.provideMerge(KinChatRepository.layer),
       ),
     ),
     Layer.provide(ownerNotices),
-    Layer.provide(
-      FollowUps.rememberSnapshots.pipe(
-        Layer.provide(TriggerService.syncHooksLayer),
-        Layer.provide(TriggerService.layer),
-        Layer.provide(KinChatRepository.layer),
-      ),
-    ),
     Layer.provide(KinPersistence.layer),
     Layer.provide(GithubReaders.layer),
   );
@@ -368,7 +373,9 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers, { kin: true }),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers, { kin: true }),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers, { kin: true }),
-  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }).pipe(
+    Layer.provide(KinAttachmentStore.layer),
+  ),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers, {
     kin: true,
   }),

@@ -1,4 +1,5 @@
 import {
+  KinChatError,
   KinListId,
   KinOrgId,
   KinRecordId,
@@ -6,6 +7,8 @@ import {
   type KinListDefinition,
   type KinMoneySummary,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -24,8 +27,8 @@ import {
   kinCountryCardRegion,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
-import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
-import { kinListFilterParam, kinListQuery } from "./kinLists.ts";
+import { kinDatesMonth, kinMonthWindow, kinReadDates, kinZonedDayStart } from "./kinDates.ts";
+import { KIN_LIST_DEFAULT_FILTER, kinListFilterParam, kinListQuery } from "./kinLists.ts";
 import {
   KIN_MONEY_BLOCKS,
   kinCashEmpty,
@@ -275,6 +278,27 @@ describe("the Money summary", () => {
     ]);
   });
 
+  it("opens every expense from one row that says what went out this month", () => {
+    const expenses = { ...list("expenses"), name: "Expenses" as KinListDefinition["name"] };
+    const one = kinMoneyView(summary, [expenses]).expenses;
+    expect(one).toEqual({
+      label: "Expenses",
+      summary: "₹48,210 spent this month",
+      open: { list: "expenses", filter: KIN_LIST_DEFAULT_FILTER },
+    });
+    const spent = (total: KinMoneySummary["spent"]["thisMonth"]["total"]) =>
+      kinMoneyView(
+        { ...summary, spent: { ...summary.spent, thisMonth: { total, byCategory: [] } } },
+        [expenses],
+      ).expenses?.summary;
+    expect(spent([...inr(4_821_000), { minor: 12_000, currency: "USD" }])).toBe(
+      "₹48,210 and $120 spent this month",
+    );
+    expect(spent([])).toBe("Nothing spent this month");
+    // No Expenses list to open, no row.
+    expect(kinMoneyView(summary, [list("invoices")]).expenses).toBeNull();
+  });
+
   it("names and opens the company's own financial year", () => {
     const calendar = kinMoneyView(
       { ...summary, financialYear: "FY2026", financialYearStartMonth: 1 },
@@ -344,6 +368,17 @@ describe("the Money summary", () => {
 });
 
 describe("dates", () => {
+  it.each([
+    [new KinChatError({ reason: "not_allowed", message: "Money is off." }), "refused"],
+    [new Error("socket closed"), "failed"],
+  ])("distinguishes a Dates read failure: %s", async (error, tag) => {
+    const result = await kinReadDates(async () => AsyncResult.failure(Cause.fail(error)), {
+      orgId: KinOrgId.make("org-tidewater"),
+      ...kinMonthWindow("2026-12", "UTC"),
+    });
+    expect(result).toEqual({ _tag: tag });
+  });
+
   it("starts a month where the owner is, whatever zone the device is in", () => {
     expect(kinZonedDayStart("2026-11-01", "Asia/Kolkata").toISOString()).toBe(
       "2026-10-31T18:30:00.000Z",

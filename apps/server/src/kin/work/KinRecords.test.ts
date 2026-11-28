@@ -23,6 +23,8 @@ import {
   type KinTurnChanges,
   type KinRecordDetail,
   KinWakeupId,
+  type KinSearchInput,
+  type KinWorkHistoryItem,
   type KinWorkPrincipal,
   type MemoryItemHead,
   ProviderInstanceId,
@@ -31,6 +33,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -42,7 +45,6 @@ import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
@@ -91,13 +93,15 @@ import * as OwnerWork from "./ownerWork.ts";
 import { comment } from "./workComments.ts";
 import * as WorkComments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
-import { defineList, proposalFor, presetDefinition } from "./registers.ts";
+import { defineList, proposalFor, presetDefinition, presetList } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { turnChanges } from "../lead/turnChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 import { markQuotesSent } from "../connections/Sending.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
 const orgId = KinOrgId.make("org");
@@ -139,10 +143,11 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
+const sqlite = makeMigratedSqliteLayer();
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-records-" })),
   Layer.provideMerge(NodeServices.layer),
@@ -1856,6 +1861,7 @@ it.effect(
         "kin.work.summary",
         "kin.work.list",
         "kin.work.get",
+        "kin.work.looked",
         "kin.work.subscribe",
         "kin.work.create",
         "kin.work.assign",
@@ -1893,7 +1899,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 57);
+      assert.lengthOf(methods, 58);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -5000,14 +5006,635 @@ const places = (clients: number, docs: number, money: number) =>
 const flipped = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
   Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message]));
 
+it.effect("a member's client history uses the shared list's field permissions", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${ownerId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya' WHERE person_id = ${mateId}`;
+    yield* places(1, 0, 0);
+    const client = yield* OwnerClients.createParty([rhea], {
+      orgId,
+      name: "Juniper Cold Chain",
+      clientRequestId: "juniper",
+    });
+    const hidden = yield* OwnerClients.createProject([rhea], {
+      orgId,
+      party: client.key,
+      name: "Juniper Cold Chain private project",
+      sensitive: true,
+      clientRequestId: "juniper-private-project",
+    });
+    const privateFields = [
+      "confirmed",
+      "handedBack",
+      "alsoOn",
+      "dueAllDay",
+      "email",
+      "phone",
+      "address",
+    ];
+    const def = presetDefinition("expenses", "INR");
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'dispatches', 'Dispatches', 'DSP', 0, 0, ${JSON.stringify({
+        ...def,
+        fields: privateFields.map((key) => ({ key, label: key, type: "text", sensitive: true })),
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+    const row = yield* ownerTask("Juniper Cold Chain dispatch", {
+      list: "dispatches",
+      partyId: client.recordId,
+      owner: { _tag: "person", personId: mateId },
+    });
+    const fields = Object.fromEntries(privateFields.map((field) => [field, `Private ${field}`]));
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: row.key,
+      rev: row.rev,
+      title: "Juniper Cold Chain dispatch reviewed",
+      fields,
+    });
+    const input = { orgId, key: client.key };
+    const history = yield* OwnerClients.history([zoya], input);
+    const updateFields = (items: typeof history.items) =>
+      items.find((item) => item.record.key === row.key && item.kind === "updated")?.fields;
+    const ownerHistory = yield* OwnerClients.history([rhea], input);
+    assert.include(
+      ownerHistory.items.map((item) => item.record.key),
+      hidden.key,
+    );
+    assert.notInclude(
+      history.items.map((item) => item.record.key),
+      hidden.key,
+    );
+    assert.sameMembers(
+      updateFields(ownerHistory.items)!.map((field) => field.field),
+      ["title", ...privateFields],
+    );
+    const sheet = yield* OwnerWork.get([zoya], { orgId, key: row.key });
+    const sheetFields = sheet.changes.find((change) => change.kind === "updated")?.fields;
+    assert.deepStrictEqual(
+      sheetFields?.map((field) => field.field),
+      ["title"],
+    );
+    yield* places(1, 0, 1);
+    const withMoney = yield* OwnerClients.history([zoya], input);
+    assert.sameMembers(
+      updateFields(withMoney.items)!.map((field) => field.field),
+      ["title", "confirmed", "handedBack", "alsoOn", "dueAllDay"],
+    );
+    assert.deepStrictEqual(updateFields(history.items), sheetFields);
+  }).pipe(Effect.provide(layer)),
+);
+
+const TEAM_KEYS = [
+  "title",
+  "state",
+  "owner",
+  "alsoOn",
+  "due",
+  "dueAllDay",
+  "waitingOn",
+  "category",
+  "side",
+  "repo",
+  "notes",
+  "confirmed",
+  "handedBack",
+  "repeat",
+];
+
+it.effect("a member's client history and a project's week pass each line by the sheet's rule", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const [rhea, zoya] = [owner, mate];
+    yield* places(1, 0, 0);
+    yield* presetList(orgId, "invoices", 0);
+    const made = (input: KinRecords.CreateInput) =>
+      records.create(orgId, ownerWrites, input).pipe(Effect.map(({ row }) => row));
+    const byRhea = { _tag: "person", personId: ownerId } as const;
+    const client = yield* OwnerClients.createParty([rhea], {
+      orgId,
+      name: "Juniper Cold Chain",
+      clientRequestId: "juniper-sweep",
+    });
+    const contact = yield* made({
+      list: "contacts",
+      originKey: "arjun",
+      title: "Arjun",
+      owner: byRhea,
+      partyId: client.recordId,
+      fields: { email: "arjun@juniper.example" },
+    });
+    const project = yield* made({
+      list: "projects",
+      originKey: "juniper-dock",
+      title: "Juniper Cold Chain dock",
+      owner: byRhea,
+      partyId: client.recordId,
+      fields: { members: [`person:${mateId}`] },
+    });
+    const led = yield* made({
+      list: "projects",
+      originKey: "juniper-yard",
+      title: "Juniper Cold Chain yard",
+      owner: { _tag: "person", personId: mateId },
+      partyId: client.recordId,
+    });
+    const invoice = yield* made({
+      list: "invoices",
+      originKey: "juniper-invoice",
+      title: "Juniper Cold Chain reefer invoice",
+      owner: byRhea,
+      partyId: client.recordId,
+      sensitive: false,
+    });
+    const def = presetDefinition("expenses", "INR");
+    const teamList = (id: string, prefix: string, fields: ReadonlyArray<object>) =>
+      sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at,
+          definition_json)
+        VALUES (${orgId}, ${id}, ${id}, ${prefix}, 0, 0, ${JSON.stringify({
+          ...def,
+          fields,
+          team: true,
+          sensitive: false,
+          teamSince: 0,
+        })})`;
+    yield* teamList("dispatches", "DSP", [
+      ...TEAM_KEYS.filter((key) => key !== "title").map((key) => ({
+        key,
+        label: key,
+        type: "text",
+        sensitive: true,
+      })),
+      { key: "fee", label: "Fee", type: "money", sensitive: false },
+      { key: "email", label: "Email", type: "text", sensitive: true },
+      { key: "dock", label: "Dock", type: "text", sensitive: false },
+    ]);
+    yield* teamList(
+      "crates",
+      "CRT",
+      TEAM_KEYS.filter((key) => key !== "title").map((key) => ({
+        key,
+        label: key,
+        type: "text",
+        sensitive: false,
+      })),
+    );
+    const dispatch = yield* ownerTask("Juniper dispatch", {
+      list: "dispatches",
+      partyId: client.recordId,
+      projectId: project.recordId,
+    });
+    const crate = yield* ownerTask("Juniper crate", {
+      list: "crates",
+      partyId: client.recordId,
+    });
+    const every = [
+      ...TEAM_KEYS,
+      "fee",
+      "dock",
+      "email",
+      "phone",
+      "address",
+      "emails",
+      "phones",
+      "tags",
+      "role",
+      "source",
+      "terms",
+      "gstin",
+      "amount",
+      "billing",
+      "value",
+      "members",
+      "reserved",
+    ];
+    const rows = [client, contact, project, led, invoice, dispatch, crate];
+    for (const row of rows)
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json)
+        VALUES (${orgId}, ${row.recordId}, 99, 0, 'person', ${ownerId}, 'owner', 'updated',
+          ${JSON.stringify(every.map((field) => ({ field, from: null, to: `Private ${field}` })))})`;
+    const clientLines = ["address", "source", "tags", "role", "email", "phone", "emails", "phones"];
+    const lines = (items: ReadonlyArray<KinWorkHistoryItem>) =>
+      Object.fromEntries(
+        items
+          .filter((item) => item.kind === "updated" && item.fields.length > 3)
+          .map((item) => [item.record.key, item.fields.map((field) => field.field).toSorted()]),
+      );
+    const history = yield* OwnerClients.history([zoya], { orgId, key: client.key });
+    assert.deepStrictEqual(lines(history.items), {
+      [client.key]: [...TEAM_KEYS, ...clientLines].toSorted(),
+      [contact.key]: [...TEAM_KEYS, ...clientLines].toSorted(),
+      [project.key]: TEAM_KEYS.filter((key) => key !== "notes").toSorted(),
+      [led.key]: [...TEAM_KEYS].toSorted(),
+      [crate.key]: [...TEAM_KEYS].toSorted(),
+    });
+    assert.deepStrictEqual(
+      history.items
+        .filter((item) => item.record.key === dispatch.key && item.kind === "updated")
+        .map((item) => item.fields.map((field) => field.field)),
+      [["title"]],
+    );
+    assert.notInclude(
+      history.items.map((item) => item.record.key),
+      invoice.key,
+    );
+    for (const item of history.items) {
+      assert.deepStrictEqual(Object.keys(item).toSorted(), [
+        "at",
+        "by",
+        "fields",
+        "kind",
+        "record",
+        "seq",
+        "via",
+      ]);
+      assert.includeMembers(
+        ["key", "list", "listName", "recordId", "title"],
+        Object.keys(item.record),
+      );
+      for (const field of item.fields)
+        assert.deepStrictEqual(Object.keys(field).toSorted(), ["field", "from", "to"]);
+    }
+    const sheet = yield* OwnerClients.project([zoya], { orgId, key: project.key });
+    assert.strictEqual(sheet.project.notes, "");
+    assert.deepStrictEqual(
+      lines(sheet.changedThisWeek.items)[project.key],
+      TEAM_KEYS.filter((key) => key !== "notes").toSorted(),
+    );
+    const own = yield* OwnerWork.get([zoya], { orgId, key: project.key });
+    assert.notInclude(
+      own.changes.flatMap((change) => change.fields.map((field) => field.field)),
+      "notes",
+    );
+    const leading = yield* OwnerClients.project([zoya], { orgId, key: led.key });
+    assert.include(lines(leading.changedThisWeek.items)[led.key] ?? [], "notes");
+    const week = sheet.changedThisWeek.total;
+    for (const row of [project, led])
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json)
+        VALUES (${orgId}, ${row.recordId}, 100, 0, 'person', ${ownerId}, 'owner', 'updated',
+          ${JSON.stringify([{ field: "notes", from: null, to: `Price for ${row.key}` }])})`;
+    const after = yield* OwnerClients.project([zoya], { orgId, key: project.key });
+    assert.strictEqual(after.changedThisWeek.total, week);
+    assert.notInclude(JSON.stringify(after), `Price for ${project.key}`);
+    const clientPage = JSON.stringify(
+      yield* OwnerClients.history([zoya], { orgId, key: client.key }),
+    );
+    assert.notInclude(clientPage, `Price for ${project.key}`);
+    assert.include(clientPage, `Price for ${led.key}`);
+    assert.strictEqual(
+      (yield* OwnerClients.project([zoya], { orgId, key: led.key })).changedThisWeek.total,
+      leading.changedThisWeek.total + 1,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a member's client history lists a shared list's entry exactly when the member opens it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const [rhea, zoya] = [owner, mate];
+      yield* places(1, 0, 0);
+      const client = yield* OwnerClients.createParty([rhea], {
+        orgId,
+        name: "Juniper Cold Chain",
+        clientRequestId: "juniper-open",
+      });
+      const def = presetDefinition("expenses", "INR");
+      const list = (id: string, prefix: string, team: boolean) =>
+        sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at,
+          definition_json)
+        VALUES (${orgId}, ${id}, ${id}, ${prefix}, 0, 0, ${JSON.stringify({
+          ...def,
+          fields: [],
+          team,
+          sensitive: false,
+          teamSince: 5000,
+        })})`;
+      yield* list("dispatches", "DSP", true);
+      yield* list("parcels", "PCL", true);
+      const left = yield* ownerTask("Juniper project Zoya left", {
+        list: "projects",
+        partyId: client.recordId,
+        fields: { members: [`person:${mateId}`] },
+      });
+      const leads = yield* ownerTask("Juniper project Zoya leads", {
+        list: "projects",
+        partyId: client.recordId,
+        owner: { _tag: "person", personId: mateId },
+      });
+      const labelled = yield* OwnerClients.createProject([rhea], {
+        orgId,
+        party: client.key,
+        name: "Juniper Cold Chain private project",
+        sensitive: true,
+        clientRequestId: "juniper-open-private",
+      });
+      const entry = (title: string, extra: Partial<KinRecords.CreateInput>) =>
+        ownerTask(title, { partyId: client.recordId, ...extra });
+      const shared = yield* entry("Juniper shared dispatch", { list: "dispatches" });
+      const older = yield* entry("Juniper dispatch from before sharing", { list: "dispatches" });
+      const unshared = yield* entry("Juniper parcel", { list: "parcels" });
+      const inLeft = yield* entry("Juniper dispatch in a left project", {
+        list: "dispatches",
+        projectId: left.recordId,
+      });
+      const inLed = yield* entry("Juniper parcel in a led project", {
+        list: "parcels",
+        projectId: leads.recordId,
+      });
+      const inLabelled = yield* entry("Juniper dispatch in a private project", {
+        list: "dispatches",
+        projectId: labelled.recordId,
+      });
+      yield* sql`UPDATE kin_records SET created_at = 6000
+      WHERE record_id IN ${sql.in([shared.recordId, unshared.recordId, inLeft.recordId, inLed.recordId, inLabelled.recordId])}`;
+      yield* sql`UPDATE kin_registers SET definition_json = json_set(definition_json, '$.team', json('false'))
+      WHERE org_id = ${orgId} AND register_id = 'parcels'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.members', json('[]'))
+      WHERE record_id = ${left.recordId}`;
+      const entries = [
+        shared,
+        older,
+        unshared,
+        inLeft,
+        inLed,
+        inLabelled,
+        { key: labelled.key, title: "Juniper Cold Chain private project" },
+      ];
+      const listed = new Set(
+        (yield* OwnerClients.history([zoya], { orgId, key: client.key })).items.map(
+          (item) => item.record.key,
+        ),
+      );
+      const seen = [];
+      for (const one of entries)
+        seen.push([
+          one.title,
+          Exit.isSuccess(yield* Effect.exit(OwnerWork.get([zoya], { orgId, key: one.key }))),
+          listed.has(one.key),
+        ]);
+      assert.deepStrictEqual(seen, [
+        ["Invented Juniper shared dispatch", true, true],
+        ["Invented Juniper dispatch from before sharing", false, false],
+        ["Invented Juniper parcel", false, false],
+        ["Invented Juniper dispatch in a left project", true, true],
+        // A lead opens its project's entries; Clients still lists money only with Money on.
+        ["Invented Juniper parcel in a led project", true, false],
+        ["Invented Juniper dispatch in a private project", false, false],
+        ["Juniper Cold Chain private project", false, false],
+      ]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a member without Money finds no bill suggestion, by any word, closed or not", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const [rhea, zoya] = [owner, mate];
+    yield* places(1, 1, 0);
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya' WHERE person_id = ${mateId}`;
+    yield* presetList(orgId, "expenses", 0);
+    const client = yield* OwnerClients.createParty([rhea], {
+      orgId,
+      name: "Juniper Cold Chain",
+      clientRequestId: "juniper-bills",
+    });
+    const led = yield* ownerTask("Juniper project Zoya leads", {
+      list: "projects",
+      partyId: client.recordId,
+      owner: { _tag: "person", personId: mateId },
+    });
+    const bill = (originKey: string, extra: Partial<KinRecords.CreateInput> = {}) =>
+      records
+        .create(
+          orgId,
+          { actor: { _tag: "system" }, via: "owner", askedBy: mateId },
+          {
+            list: "expenses",
+            originKey: `bill:${originKey}`,
+            title: "Inkspot Cloud 2 Nov",
+            owner: { _tag: "person", personId: mateId },
+            state: "done",
+            amount: { minor: 425075, currency: "INR" },
+            confirmed: false,
+            sensitive: true,
+            notes: "Read by Kin from a photo Zoya added.",
+            fields: { vendor: "Inkspot Cloud" },
+            ...extra,
+          },
+        )
+        .pipe(Effect.map(({ row }) => row));
+    const member = yield* ownerTask("Juniper project Zoya is in", {
+      list: "projects",
+      partyId: client.recordId,
+      fields: { members: [`person:${mateId}`] },
+    });
+    const bills = [
+      yield* bill("plain"),
+      yield* bill("filed", { projectId: member.recordId, partyId: client.recordId }),
+    ];
+    const leads = yield* bill("led", { projectId: led.recordId, partyId: client.recordId });
+    const ask = (text: string, closed: boolean, more: Partial<KinSearchInput>) =>
+      OwnerDocs.search([zoya], { orgId, text, closed, ...more }).pipe(
+        Effect.map(({ hits }) => hits.map((hit) => hit.key)),
+      );
+    const sweep = Effect.gen(function* () {
+      const found = [];
+      for (const text of [
+        ...bills.map((one) => one.key),
+        "Inkspot",
+        "Inkspot Cloud",
+        "inkspot cloud 2 nov",
+        "4250.75",
+        "4,250.75",
+        "425075",
+        "photo Zoya added",
+      ])
+        for (const closed of [false, true])
+          for (const more of [{}, { kinds: ["expenses"] }, { everything: true }] as const)
+            found.push(
+              ...(yield* ask(text, closed, more)).filter((key) =>
+                bills.some((one) => one.key === key),
+              ),
+            );
+      return found;
+    });
+    assert.deepStrictEqual(yield* sweep, []);
+    // A project's lead opens its entries, money too (`legacyPersonSees`), and so finds them.
+    for (const closed of [false, true])
+      assert.deepStrictEqual(yield* ask("Inkspot", closed, { kinds: ["expenses"] }), [leads.key]);
+    assert.strictEqual((yield* OwnerWork.get([zoya], { orgId, key: leads.key })).key, leads.key);
+    yield* OwnerWork.decline([rhea], { orgId, key: leads.key, rev: leads.rev });
+    const owned = yield* OwnerDocs.search([rhea], {
+      orgId,
+      text: "Inkspot Cloud",
+      kinds: ["expenses"],
+    });
+    assert.sameDeepMembers(
+      owned.hits.map((hit) => [hit.key, hit.closed]),
+      bills.map((one) => [one.key, false]),
+    );
+    yield* places(1, 1, 1);
+    assert.deepStrictEqual(yield* sweep, []);
+    yield* places(1, 1, 0);
+    yield* OwnerWork.confirm([rhea], { orgId, key: bills[0]!.key, rev: bills[0]!.rev });
+    yield* OwnerWork.decline([rhea], { orgId, key: bills[1]!.key, rev: bills[1]!.rev });
+    assert.deepStrictEqual(yield* sweep, []);
+    const closed = yield* OwnerDocs.search([rhea], {
+      orgId,
+      text: "Inkspot Cloud",
+      kinds: ["expenses"],
+      closed: true,
+    });
+    assert.sameDeepMembers(
+      closed.hits.map((hit) => [hit.key, hit.closed]),
+      [...bills, leads].map((one) => [one.key, true]),
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "rows a member can't see change nothing on the client's page or its history's pages",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const [rhea, zoya] = [owner, mate];
+      yield* places(1, 1, 0);
+      yield* presetList(orgId, "invoices", 0);
+      yield* presetList(orgId, "expenses", 0);
+      const client = yield* OwnerClients.createParty([rhea], {
+        orgId,
+        name: "Juniper Cold Chain",
+        clientRequestId: "juniper-counts",
+      });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'dispatches', 'Dispatches', 'DSP', 0, 0, ${JSON.stringify({
+        ...presetDefinition("expenses", "INR"),
+        fields: [{ key: "confirmed", label: "Checked", type: "text", sensitive: true }],
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+      const project = yield* ownerTask("Juniper project Zoya is in", {
+        list: "projects",
+        partyId: client.recordId,
+        fields: { members: [`person:${mateId}`] },
+      });
+      const dispatch = yield* ownerTask("Juniper dispatch", {
+        list: "dispatches",
+        partyId: client.recordId,
+      });
+      for (const title of ["Juniper pallet count", "Juniper dock slot", "Juniper reefer check"])
+        yield* ownerTask(title, {
+          partyId: client.recordId,
+          projectId: project.recordId,
+          team: true,
+        });
+      const look = Effect.gen(function* () {
+        const {
+          seq: _seq,
+          asOf: _asOf,
+          ...page
+        } = yield* OwnerClients.party([zoya], {
+          orgId,
+          key: client.key,
+        });
+        const { seq: _historySeq, ...history } = yield* OwnerClients.history([zoya], {
+          orgId,
+          key: client.key,
+        });
+        const pages = [];
+        let cursor: string | undefined;
+        do {
+          const next = yield* OwnerClients.history([zoya], {
+            orgId,
+            key: client.key,
+            limit: 2,
+            ...(cursor === undefined ? {} : { cursor }),
+          });
+          assert.isAbove(next.items.length, 0);
+          pages.push(...next.items.map((item) => item.seq));
+          cursor = next.nextCursor ?? undefined;
+        } while (cursor !== undefined);
+        assert.deepStrictEqual(
+          pages,
+          history.items.map((item) => item.seq),
+        );
+        return { page, history, pages: Math.ceil(pages.length / 2) };
+      });
+      const before = yield* look;
+      const hidden = {
+        owner: { _tag: "person", personId: ownerId } as const,
+        partyId: client.recordId,
+      };
+      yield* records.create(orgId, ownerWrites, {
+        list: "invoices",
+        originKey: "juniper-invoice",
+        title: "Juniper Cold Chain reefer invoice",
+        sensitive: false,
+        amount: { minor: 9900000, currency: "INR" },
+        ...hidden,
+      });
+      yield* records.create(orgId, ownerWrites, {
+        list: "expenses",
+        originKey: "bill:juniper",
+        title: "Inkspot Cloud 2 Nov",
+        state: "done",
+        confirmed: false,
+        sensitive: true,
+        amount: { minor: 425075, currency: "INR" },
+        ...hidden,
+      });
+      yield* OwnerClients.createProject([rhea], {
+        orgId,
+        party: client.key,
+        name: "Juniper Cold Chain private project",
+        sensitive: true,
+        clientRequestId: "juniper-counts-private",
+      });
+      const fresh = yield* OwnerWork.get([rhea], { orgId, key: dispatch.key });
+      yield* OwnerWork.update([rhea], {
+        orgId,
+        key: dispatch.key,
+        rev: fresh.rev,
+        fields: { confirmed: "Checked by Rhea" },
+      });
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+        via, kind, fields_json)
+      VALUES (${orgId}, ${project.recordId}, 99, 0, 'person', ${ownerId}, 'owner', 'updated',
+        ${JSON.stringify([{ field: "notes", from: null, to: "Price agreed" }])})`;
+      const after = yield* look;
+      assert.isAbove(before.history.items.length, 4);
+      assert.deepStrictEqual(after, before);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a member sees a place only while it is on, and nothing of it while it is off", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
     const client = (yield* records.create(orgId, ownerWrites, {
       list: "clients",
       originKey: "client",
-      title: "Invented Acme",
+      title: "Juniper Cold Chain",
       owner: { _tag: "person", personId: ownerId },
       fields: { terms: "Invented net 30" },
     })).row;
@@ -5017,7 +5644,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       title: "Invented Priya",
       owner: { _tag: "person", personId: ownerId },
       partyId: client.recordId,
-      fields: { email: "priya@acme.example" },
+      fields: { email: "priya@juniper.example" },
     });
     yield* records.create(orgId, ownerWrites, {
       list: "clients",
@@ -5062,16 +5689,32 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     const parties = yield* OwnerClients.parties([mate], { orgId });
     assert.deepStrictEqual(
       parties.parties.map((party) => party.name),
-      ["Invented Acme"],
+      ["Juniper Cold Chain"],
     );
     assert.strictEqual(parties.parties[0]!.lastContactAt, null);
     const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
     assert.deepStrictEqual(
       page.contacts.map((one) => [one.name, one.email]),
-      [["Invented Priya", "priya@acme.example"]],
+      [["Invented Priya", "priya@juniper.example"]],
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES (${meera.personId}, ${orgId}, 'meera', 'Meera', 'co_owner', ${at})`;
+    yield* OwnerClients.updateContact([meera], {
+      orgId,
+      key: priya.row.key,
+      rev: priya.row.rev,
+      email: "dispatch@juniper.example",
+    });
+    const history = yield* OwnerClients.history([mate], { orgId, key: client.key });
+    assert.deepInclude(
+      history.items.find((item) => item.record.key === priya.row.key && item.kind === "updated"),
+      {
+        by: { _tag: "person", personId: meera.personId },
+        fields: [{ field: "email", from: "priya@juniper.example", to: "dispatch@juniper.example" }],
+      },
+    );
     // Search finds the contact with its client, whose page opens for it.
     assert.deepStrictEqual(
       (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
@@ -5110,7 +5753,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     yield* records.create(orgId, ownerWrites, {
       list: "projects",
       originKey: "acme project",
-      title: "Invented Acme app",
+      title: "Juniper Cold Chain app",
       owner: { _tag: "person", personId: mateId },
       partyId: client.recordId,
     });
@@ -5126,11 +5769,10 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     const named = yield* OwnerWork.get([mate], { orgId, key: priya.row.key });
     assert.strictEqual(named.title, "Invented Priya");
-    assert.notInclude(JSON.stringify(named), "priya@acme");
+    assert.notInclude(JSON.stringify(named), "priya@juniper");
     // Run 4: Money counted a lead's coming-up dates, then refused to list them. One read, one
     // rule: the list holds what the count counted, and not the owner's own dates. Money's dates
     // are money's: a task due as soon is on neither.
-    const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
       VALUES (${orgId}, 'dates', 'Dates', 'DT', 0, 0, ${JSON.stringify(presetDefinition("dates", "INR"))})`;
@@ -5164,6 +5806,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
 
 const bookings = { orgId, list: "bookings" };
 const bookingTime = Date.parse(at);
+const bookingLayer = layer.pipe(withFixtureClock(bookingTime));
 const arjun = mate;
 const zoya = { ...mate, personId: KinPersonId.make("zoya") };
 const meera = { ...mate, personId: KinPersonId.make("meera") };
@@ -5173,7 +5816,6 @@ const book = (title: string, extra: Partial<KinRecords.CreateInput> = {}) =>
 
 const bookingList = Effect.fn("KinRecordsTest.bookingList")(function* (sensitive = false) {
   yield* seed;
-  yield* TestClock.setTime(bookingTime);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_people SET display_name = CASE person_id WHEN ${ownerId} THEN 'Rhea'
     ELSE 'Arjun' END WHERE org_id = ${orgId}`;
@@ -5242,7 +5884,7 @@ it.effect(
         fourth.key,
         fifth.key,
       ]);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5268,7 +5910,7 @@ it.effect(
         (yield* OwnerDocs.search([arjun], { orgId, text: "booking" })).hits.map((hit) => hit.key),
         [visible.key],
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("keeps a project lead's legacy list fields and totals separate from the team grant", () =>
@@ -5331,7 +5973,7 @@ it.effect("keeps a project lead's legacy list fields and totals separate from th
     assert.deepStrictEqual(agentRows.records?.find((row) => row.key === opened.key)?.fields, {
       note: "Second",
     });
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("withholds money fields, history and totals from a teammate and their agent", () =>
@@ -5376,7 +6018,7 @@ it.effect("withholds money fields, history and totals from a teammate and their 
       fields: { note: "Calendula", price: amount, privateNote: "Concealed" },
     });
     assert.deepStrictEqual(money.totals?.total, [amount]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5414,7 +6056,7 @@ it.effect(
       assert.strictEqual(dates.dates.length, 1);
       assert.include(dates.dates[0], { key: record.key });
       assert.notProperty(dates.dates[0], "amount");
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a teammate's prompt withholds a team list entry's sensitive number", () =>
@@ -5455,7 +6097,7 @@ it.effect("a teammate's prompt withholds a team list entry's sensitive number", 
     assert.include(shared, row.title);
     assert.notInclude(shared, number);
     assert.include((yield* text(true)) ?? "", number);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5524,7 +6166,7 @@ it.effect(
         assert.include(yield* Effect.flip(LeadWork.update(scope, input)), {
           reason: "not_allowed",
         });
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("Work create accepts a custom list only while it is open to the team", () =>
@@ -5555,7 +6197,7 @@ it.effect("Work create accepts a custom list only while it is open to the team",
     assert.strictEqual((yield* addBooking("Team booking")).list, bookings.list);
     yield* setBookingTeam(false, 2);
     assert.strictEqual((yield* addBooking("Closed booking").pipe(Effect.result))._tag, "Failure");
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("refuses team flags from a teammate and for built-in or sensitive lists", () =>
@@ -5586,7 +6228,7 @@ it.effect("refuses team flags from a teammate and for built-in or sensitive list
       "invalid_state",
       "A sensitive list can't be opened to the team. Unmark it as sensitive first.",
     ]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5608,7 +6250,7 @@ it.effect(
       const newest = yield* book("New opening");
       assert.deepStrictEqual(yield* seen, [made.key, newest.key]);
       assert.lengthOf((yield* OwnerWork.list([owner], bookings)).records, 4);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("on a team list whoever holds an entry may still archive it or give it away", () =>
@@ -5656,7 +6298,7 @@ it.effect("on a team list whoever holds an entry may still archive it or give it
     assert.strictEqual((yield* flipped(give(zoya, zoya.personId)))[0], "not_allowed");
     assert.include(yield* drop(dev), { state: "dropped" });
     assert.strictEqual(held.can?.give, true);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a team list assigned to Money follows the company's Money section", () =>
@@ -5677,7 +6319,7 @@ it.effect("a team list assigned to Money follows the company's Money section", (
     assert.include(yield* Effect.flip(read), { reason: "not_found" });
     assert.lengthOf((yield* OwnerDocs.search([arjun], { orgId, text: "Appointment" })).hits, 0);
     assert.include(yield* Effect.flip(addBooking("Section off")), { reason: "not_allowed" });
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("member list reads build team register membership once in SQLite", () =>
@@ -5697,7 +6339,7 @@ it.effect("member list reads build team register membership once in SQLite", () 
     assert.deepStrictEqual(yield* query, [{ n: 0 }]);
     yield* storedTeamList();
     assert.deepStrictEqual(yield* query, [{ n: 1 }]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("keeps a list without team sharing under the existing row and Money rules", () =>
@@ -5719,7 +6361,7 @@ it.effect("keeps a list without team sharing under the existing row and Money ru
       }
       assert.lengthOf((yield* OwnerDocs.search([person], { orgId, text: "plain" })).hits, 0);
     }
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a record lists what links to it, of what the reader sees, newest first and capped", () =>

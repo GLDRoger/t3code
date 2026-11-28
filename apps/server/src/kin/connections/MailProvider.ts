@@ -16,16 +16,19 @@ export const MAIL_TOOL = {
   list: "mail_list_threads",
   search: "mail_search",
   read: "mail_read_thread",
+  saveAttachment: "mail_save_attachment",
   send: "mail_send",
   reply: "mail_reply",
   events: "calendar_list_events",
   event: "calendar_get_event",
   saveEvent: "calendar_save_event",
+  deleteEvent: "calendar_delete_event",
 } as const;
 export const MAIL_SEND_TOOL_NAMES: ReadonlySet<string> = new Set([
   MAIL_TOOL.send,
   MAIL_TOOL.reply,
   MAIL_TOOL.saveEvent,
+  MAIL_TOOL.deleteEvent,
 ]);
 /** Reads that answer for every account of a provider at once when the agent names the provider. */
 export const ACROSS_ACCOUNTS: ReadonlySet<string> = new Set([
@@ -81,6 +84,7 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
+    readonly authResults?: ReadonlyArray<string>;
     readonly automatedNotice?: true;
   }>;
   readonly calendar: ReadonlyArray<{
@@ -151,9 +155,17 @@ export type Sent = {
   readonly eventId: string | null;
 };
 
+export type SentMailHeader = {
+  readonly sentAt: number;
+  readonly to: ReadonlyArray<string>;
+  readonly cc: ReadonlyArray<string>;
+  readonly subject: string;
+};
+
 type Call<A> = Effect.Effect<A, KinGatewayError>;
 
 export type MailFile = {
+  readonly attachmentId?: string;
   readonly name: string;
   readonly type: string;
   readonly bytes: number | null;
@@ -161,7 +173,9 @@ export type MailFile = {
 
 /** One message as a vendor's mapping reads it. The shared tools see mail only through this. */
 export type MailMessage = {
+  readonly providerMessageId?: string;
   readonly threadId: string;
+  readonly webLink?: string;
   /** The sender as the mail shows it, such as `Ana <ana@example.com>`. */
   readonly from: string | null;
   readonly fromAddress: string | null;
@@ -186,6 +200,21 @@ export type MailMessage = {
   readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;
 };
 
+export const AGENDA_LIMIT = 300;
+
+export type MailAgendaWindow = { readonly from: string; readonly to: string };
+
+export type MailAgendaEvent = {
+  readonly id: string;
+  readonly title: string | null;
+  readonly start: string;
+  readonly end: string | null;
+  readonly allDay: boolean;
+  readonly zone: string | null;
+  readonly link: string | null;
+  readonly repeats: boolean;
+};
+
 export type MailCalendarEvent = {
   readonly eventId: string;
   readonly summary: string | null;
@@ -203,11 +232,22 @@ export type MailCalendarEvent = {
   readonly status: string | null;
   readonly notes: string;
   readonly meeting: string | null;
+  readonly recurrence: "single" | "occurrence" | "series" | null;
+  readonly revision: string | null;
+  readonly notifiesGuests: boolean;
   readonly updated: string | null;
 };
 
 /** Threads, newest first, each with its messages oldest first. */
 export type MailThreads = ReadonlyArray<ReadonlyArray<MailMessage>>;
+
+export type MailAttachment = {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly bytes: Uint8Array;
+  readonly from: string | null;
+  readonly date: string | null;
+};
 
 export type MailContext = {
   readonly http: HttpClient.HttpClient;
@@ -256,17 +296,27 @@ export interface MailVendor {
     readonly extra: Readonly<Record<string, string>>;
   };
   readonly canSend: (granted: string | undefined) => boolean;
+  readonly readsCalendar: (granted: string | undefined) => boolean;
   /** A page of threads: the inbox when `query` is null, else what the vendor's search found. */
   readonly threads: (
     context: MailContext,
     page: { readonly query: string | null; readonly max: number; readonly pageToken?: string },
   ) => Call<{ readonly threads: MailThreads; readonly nextPage: string | null }>;
   /** A thread's messages, oldest first, bodies included; none when the account hasn't it. */
+  readonly attachment: (
+    context: MailContext,
+    messageId: string,
+    attachmentId: string,
+  ) => Call<MailAttachment>;
   readonly thread: (
     context: MailContext,
     threadId: string,
     files: boolean,
   ) => Call<ReadonlyArray<MailMessage>>;
+  readonly agenda: (
+    context: Pick<MailContext, "http" | "token">,
+    window: MailAgendaWindow,
+  ) => Call<ReadonlyArray<MailAgendaEvent>>;
   readonly events: (
     context: MailContext,
     query: {
@@ -312,8 +362,10 @@ export interface MailVendor {
   readonly arrival: (context: MailContext, messageId: string) => Call<MailArrival | null>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
+  readonly sentSince: MailProvider["sentSince"];
   readonly sendMessage: MailProvider["sendMessage"];
   readonly saveEvent: MailProvider["saveEvent"];
+  readonly deleteEvent: MailProvider["deleteEvent"];
 }
 
 /**
@@ -323,7 +375,7 @@ export interface MailVendor {
  */
 export interface MailProvider {
   /** The connection preset this provider serves; also the name that reads every account. */
-  readonly preset: string;
+  readonly preset: KinOwnerClientService;
   readonly name: string;
   /** Shown on the send card: "Send this email from Gmail?". */
   readonly mailService: string;
@@ -340,7 +392,9 @@ export interface MailProvider {
   };
   /** Whether the granted scopes allow sending; an older sign-in may lack them. */
   readonly canSend: (granted: string | undefined) => boolean;
+  readonly readsCalendar: (granted: string | undefined) => boolean;
   /** Reads, and the tools that send (always Ask me), named as in MAIL_TOOL. */
+  readonly attachment: MailVendor["attachment"];
   readonly tools: ReadonlyArray<ListedTool>;
   readonly sendTools: ReadonlyArray<ListedTool>;
   /** The address the sign-in belongs to. */
@@ -350,6 +404,11 @@ export interface MailProvider {
     http: HttpClient.HttpClient,
     token: string,
   ) => Call<ReadonlyArray<KinMailAddress>>;
+  readonly agenda: (
+    http: HttpClient.HttpClient,
+    token: string,
+    window: MailAgendaWindow,
+  ) => Call<ReadonlyArray<MailAgendaEvent>>;
   /** Runs one read tool; every item says its account and which address received it. */
   readonly call: (
     http: HttpClient.HttpClient,
@@ -395,6 +454,12 @@ export interface MailProvider {
     mailbox: Mailbox,
     threadId: string,
   ) => Call<ReplyTarget>;
+  readonly sentSince: (
+    http: HttpClient.HttpClient,
+    token: string,
+    since: number,
+    max: number,
+  ) => Call<ReadonlyArray<SentMailHeader>>;
   /** Sends a whole RFC 822 message, in its thread when `threadId` is set. */
   readonly sendMessage: (
     http: HttpClient.HttpClient,
@@ -403,6 +468,18 @@ export interface MailProvider {
   ) => Call<Sent>;
   /** Adds or changes an event on the account's calendar and invites its guests. */
   readonly saveEvent: (http: HttpClient.HttpClient, token: string, event: MailEvent) => Call<Sent>;
+  readonly calendarEvent: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    calendarId: string,
+    eventId: string,
+  ) => Call<MailCalendarEvent>;
+  readonly deleteEvent: (
+    http: HttpClient.HttpClient,
+    token: string,
+    event: { readonly calendarId: string; readonly eventId: string; readonly revision: string },
+  ) => Call<Sent>;
   /** A calendar's name as the account shows it, or null when it has none. */
   readonly calendarName: (
     http: HttpClient.HttpClient,

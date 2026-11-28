@@ -10,12 +10,14 @@ import {
   type KinWidget,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -26,10 +28,17 @@ import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
+import {
+  KinDeferralGithubError,
+  KinDeferralGithubReader,
+  type KinDeferralGithubReaderShape,
+  type GithubLinkState,
+} from "../triggers/deferralGithub.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { turnSensitive } from "../work/sensitiveReads.ts";
 import * as Queue from "./KinEventQueue.ts";
 import * as RoutineContent from "./RoutineContent.ts";
-import { renderRoutine, ROUTINE_MAX_LINES } from "./routines.ts";
+import { renderRoutine, ROUTINE_MAX_LINES, type MorningFacts } from "./routines.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { agentId, orchestrationHarness, orgId, seed } from "./WakeupRunner.testkit.ts";
 
@@ -74,6 +83,7 @@ const EVIL_TITLE =
 
 interface FixtureOptions {
   readonly at?: number;
+  readonly linkReader?: KinDeferralGithubReaderShape;
   readonly truncatedRepos?: number;
   /** Runs inside the GitHub read, after the first lead lookup and before the write transaction. */
   readonly onGithubRead?: Effect.Effect<void, never, SqlClient.SqlClient>;
@@ -175,6 +185,12 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>, options: Fixt
       Layer.provide(memory),
       Layer.provideMerge(chat),
       Layer.provide(github),
+      Layer.provide(
+        Layer.succeed(
+          KinDeferralGithubReader,
+          options.linkReader ?? KinDeferralGithubReader.defaultValue(),
+        ),
+      ),
       Layer.provide(threads),
     );
     return WakeupRunner.layer.pipe(
@@ -310,6 +326,391 @@ const deferralCard: Setup = Effect.gen(function* () {
   yield* repo.insertWidget({ ...widget, audience: "chat" });
 }).pipe(Effect.orDie);
 
+const checkInLinks = [
+  "https://github.com/tidewater/app/pull/41",
+  "W-12",
+  "https://github.com/tidewater/app/issues/44",
+];
+const accountsCommitment: [string, string] = [
+  "commitments/com-accounts.md",
+  memoryFile("com-accounts", {
+    kind: "commitment",
+    title: "Rhea to sign in to the Accounts mailbox",
+    due: "2026-11-09T08:00Z",
+    recorded_at: "2026-11-05T00:30:00Z",
+    links: checkInLinks,
+  }),
+];
+
+const seedCheckIn = Effect.gen(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId}`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+    VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', 'member', ${timestamp})`;
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'Asia/Kolkata', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+  yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, account_label, created_at, updated_at, person_id)
+    VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL),
+      (${orgId}, 'rhea', 'google', 'Rhea mail', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'rhea@tidewater.example', 0, 0, 'owner'),
+      (${orgId}, 'zoya', 'google', 'Zoya mail', 'builtin', 'gmail.googleapis.com',
+      'oauth', 'closed', 'active', 'zoya@tidewater.example', 0, 0, 'zoya')`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+      owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+    VALUES (${orgId}, 'r-W-12', 'work', 'W-12', 'Invented site copy', 'done',
+      'person', 'owner', 'person', 'owner', 'o-W-12', 0, 0)`;
+});
+
+const readMorning = Effect.fn("test.readMorning")(function* (wakeupId?: string) {
+  const content = yield* RoutineContent.KinRoutineContent;
+  const facts = yield* content.morningFacts(orgId, agentId, wakeupId);
+  assert.isNotNull(facts);
+  return JSON.parse(facts) as MorningFacts;
+});
+
+it.effect("morning keeps the four-day-old commitment beside the live company mailbox", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const statements: Array<string> = [];
+      const transformer: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          statements.push(statement.compile()[0]);
+          return statement;
+        });
+      const facts = yield* readMorning().pipe(
+        Effect.provideService(Statement.CurrentTransformer, transformer),
+        Effect.provideService(Statement.SpanPropagationEnabled, true),
+      );
+      assert.lengthOf(statements, 13);
+      assert.include(facts.dueToday[0], {
+        title: "Rhea to sign in to the Accounts mailbox",
+        written: "Thu 5 Nov, 4 days ago",
+      });
+      assert.include(facts.now?.lines, "Accounts (accounts@tidewater.example): signed in");
+    }),
+  ),
+);
+
+it.effect("morning shows a company mailbox that needs signing in again", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE connection_id = 'accounts'`;
+      const facts = yield* readMorning();
+      assert.include(
+        facts.now?.lines ?? [],
+        "Accounts (accounts@tidewater.example): needs signing in again",
+      );
+    }),
+  ),
+);
+
+it.effect.each(["merged", "unavailable"] as const)(
+  "morning reports GitHub link state when the reader is %s",
+  (mode) =>
+    withFixture(
+      [accountsCommitment],
+      Effect.gen(function* () {
+        yield* seedCheckIn;
+        const facts = yield* readMorning();
+        assert.include(
+          facts.now?.lines ?? [],
+          mode === "merged"
+            ? "tidewater/app#41 by zoya-dev: merged"
+            : "https://github.com/tidewater/app/pull/41: Kin couldn't check it now",
+        );
+        if (mode === "merged")
+          assert.include(
+            facts.now?.lines,
+            "tidewater/app#44 by zoya-dev: open, assigned to zoya-dev",
+          );
+      }),
+      {
+        linkReader: {
+          readRepo: (id, repo, numbers) =>
+            mode === "unavailable"
+              ? Effect.fail(new KinDeferralGithubError({ orgId: id, reason: "unavailable" }))
+              : Effect.sync(() => {
+                  if (repo !== "tidewater/app") return new Map();
+                  assert.deepStrictEqual(numbers, [41, 44]);
+                  return new Map<number, Omit<GithubLinkState, "link">>([
+                    [41, { state: "merged", assignees: [], linkedPrs: [], author: "zoya-dev" }],
+                    [
+                      44,
+                      { state: "open", assignees: ["zoya-dev"], linkedPrs: [], author: "zoya-dev" },
+                    ],
+                  ]);
+                }),
+        },
+      },
+    ),
+);
+
+it.effect("morning shows the live state from a secondary link to Work", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const facts = yield* readMorning();
+      assert.include(facts.now?.lines ?? [], "W-12 Invented site copy: done");
+    }),
+  ),
+);
+
+it.effect("morning includes Rhea's mailbox and omits Zoya's mailbox", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const facts = yield* readMorning();
+      assert.include(facts.now?.lines ?? [], "Rhea mail (rhea@tidewater.example): signed in");
+      assert.notInclude(facts.now.lines.join("\n"), "zoya@tidewater.example");
+    }),
+  ),
+);
+
+it.effect("a teammate lead does not receive live state for a private record or a mailbox", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = 'W-12'`;
+      const owner = yield* readMorning("rhea-checkin");
+      assert.include(owner.now.lines, "W-12 Invented site copy: done");
+      assert.isTrue(yield* turnSensitive(orgId, "rhea-checkin"));
+      yield* sql`UPDATE kin_agents SET owner_person_id = 'zoya' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      const teammate = yield* readMorning();
+      assert.notProperty(teammate, "now");
+      assert.notProperty(teammate.dueToday[0], "written");
+    }),
+  ),
+);
+
+it.effect("a three-paragraph waiting message supplies a single short row to the agent", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      const chat = yield* Chat.KinChatService;
+      const day = "2026-11-08T18:45:00Z";
+      yield* chat.notice({
+        audience: "chat",
+        orgId,
+        chatId: KinChatId.make("owner-chat"),
+        messageId: KinMessageId.make("needs-rhea"),
+        body: "Pick the Tidewater launch day.\n\nReview the copy.\n\nApprove the design.",
+      });
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, reason, created_at)
+      VALUES ('waiting-rhea', ${orgId}, 'owner', 'owner-chat', 'needs-rhea', 'question', ${day})`;
+      const facts = yield* readMorning();
+      assert.deepStrictEqual(facts.waiting, [
+        {
+          title: "Pick the Tidewater launch day.",
+          note: "question, since Mon 9 Nov",
+          written: "Mon 9 Nov, today",
+          more: true,
+        },
+      ]);
+    }),
+  ),
+);
+
+it.effect(
+  "a co-owner's lead sees the company mailbox and its own, never the owner's or a teammate's",
+  () =>
+    withFixture(
+      [],
+      Effect.gen(function* () {
+        yield* seedCheckIn;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', 'co_owner', ${timestamp})`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+          auth, reach, state, account_label, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'meera', 'google', 'Meera mail', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'needs_sign_in', 'meera@tidewater.example', 0, 0, 'meera')`;
+        yield* sql`UPDATE kin_agents SET owner_person_id = 'meera' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        const facts = yield* readMorning();
+        assert.deepStrictEqual(facts.now.lines, [
+          "Accounts (accounts@tidewater.example): signed in",
+          "Meera mail (meera@tidewater.example): needs signing in again",
+          "https://github.com/acme/app/pull/7: Kin couldn't check it now",
+        ]);
+      }),
+    ),
+);
+
+it.effect("a member's lead gets no live state and marks nothing sensitive", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = 'W-12'`;
+      yield* sql`UPDATE kin_agents SET owner_person_id = 'zoya' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      const facts = yield* readMorning("zoya-checkin");
+      assert.notProperty(facts, "now");
+      assert.isFalse(yield* turnSensitive(orgId, "zoya-checkin"));
+    }),
+  ),
+);
+
+it.effect("a Work key in another company or no longer there adds no line and marks nothing", () =>
+  withFixture(
+    [
+      [
+        "commitments/com-keys.md",
+        memoryFile("com-keys", {
+          kind: "commitment",
+          title: "Check the other keys",
+          due: "2026-11-09T08:00Z",
+          recorded_at: "2026-11-08T00:30:00Z",
+          links: ["W-77", "W-99"],
+        }),
+      ],
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs VALUES ('other-org', 'Other', ${timestamp})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES ('other-org', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, sensitive)
+        VALUES ('other-org', 'r-W-77', 'work', 'W-77', 'Invented other secret', 'open',
+          'person', 'owner', 'person', 'owner', 'o-W-77', 0, 0, 1)`;
+      const facts = yield* readMorning("keys-checkin");
+      assert.notInclude(facts.now.lines.join("\n"), "W-77");
+      assert.notInclude(facts.now.lines.join("\n"), "W-99");
+      assert.isFalse(yield* turnSensitive(orgId, "keys-checkin"));
+    }),
+  ),
+);
+
+const agedItem = (id: string, recordedAt: string, due: string): [string, string] => [
+  `commitments/${id}.md`,
+  memoryFile(id, { kind: "commitment", title: id, due, recorded_at: recordedAt }),
+];
+const ages = (facts: MorningFacts) =>
+  Object.fromEntries(
+    [...facts.dueToday, ...facts.overdue].map((row) => [row.title, row.written ?? "none"]),
+  );
+
+it.effect("written ages by the owner's calendar day just after midnight in Kolkata", () =>
+  withFixture(
+    [
+      agedItem("late-sunday", "2026-11-08T18:29:00Z", "2026-11-09T08:00Z"),
+      agedItem("first-minute", "2026-11-08T18:30:00Z", "2026-11-09T08:00Z"),
+      agedItem("ahead", "2026-11-09T19:00:00Z", "2026-11-09T08:00Z"),
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      assert.deepStrictEqual(ages(yield* readMorning()), {
+        "late-sunday": "Sun 8 Nov, 1 day ago",
+        "first-minute": "Mon 9 Nov, today",
+        ahead: "Tue 10 Nov, in 1 day",
+      });
+    }),
+    { at: Date.parse("2026-11-08T18:31:00Z") },
+  ),
+);
+
+it.effect("written ages by calendar day across the end of summer time in London", () =>
+  withFixture(
+    [
+      agedItem("sat-late-bst", "2026-10-24T22:30:00Z", "2026-10-26T09:00Z"),
+      agedItem("sun-early-bst", "2026-10-24T23:30:00Z", "2026-10-26T09:00Z"),
+      agedItem("sun-late-gmt", "2026-10-25T23:59:00Z", "2026-10-26T09:00Z"),
+    ],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Europe/London' WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(ages(yield* readMorning()), {
+        "sat-late-bst": "Sat 24 Oct, 2 days ago",
+        "sun-early-bst": "Sun 25 Oct, 1 day ago",
+        "sun-late-gmt": "Sun 25 Oct, 1 day ago",
+      });
+    }),
+    { at: Date.parse("2026-10-26T00:30:00Z") },
+  ),
+);
+
+const hangStarted = Deferred.makeUnsafe<void>();
+it.effect("a GitHub read that never answers leaves the morning facts whole after its budget", () =>
+  withFixture(
+    [accountsCommitment],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const fiber = yield* readMorning().pipe(Effect.forkChild);
+      yield* Deferred.await(hangStarted);
+      yield* TestClock.adjust("10 seconds");
+      const facts = yield* Fiber.join(fiber);
+      assert.deepStrictEqual(facts.now.lines, [
+        "Accounts (accounts@tidewater.example): signed in",
+        "Rhea mail (rhea@tidewater.example): signed in",
+        "https://github.com/tidewater/app/pull/41: Kin couldn't check it now",
+        "https://github.com/tidewater/app/issues/44: Kin couldn't check it now",
+        "https://github.com/acme/app/pull/7: Kin couldn't check it now",
+        "W-12 Invented site copy: done",
+      ]);
+      assert.lengthOf(facts.dueToday, 1);
+    }),
+    {
+      linkReader: {
+        readRepo: () => Deferred.succeed(hangStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      },
+    },
+  ),
+);
+
+const githubCalls: Array<string> = [];
+it.effect("a company with nothing linked reads GitHub only for its reviews and adds one read", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seedCheckIn;
+      const statements: Array<string> = [];
+      const transformer: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          statements.push(statement.compile()[0]);
+          return statement;
+        });
+      yield* readMorning().pipe(
+        Effect.provideService(Statement.CurrentTransformer, transformer),
+        Effect.provideService(Statement.SpanPropagationEnabled, true),
+      );
+      assert.deepStrictEqual(githubCalls, ["acme/app 7"]);
+      assert.lengthOf(
+        statements.filter((statement) => statement.includes("kin_connections")),
+        1,
+      );
+      assert.lengthOf(statements, 12);
+    }),
+    {
+      linkReader: {
+        readRepo: (_org, repo, numbers) =>
+          Effect.sync(() => {
+            githubCalls.push(`${repo} ${numbers.join(",")}`);
+            return new Map();
+          }),
+      },
+    },
+  ),
+);
+
 it.effect(
   "a morning brief routine posts one server-written message with its card and no lead run",
   () =>
@@ -418,6 +819,45 @@ it.effect(
         assert.equal(result.eventState, "done");
         assert.deepStrictEqual(result.wakeups, [{ status: "completed", threadId: null }]);
       }),
+    ),
+);
+
+it.effect(
+  "a server-written morning brief keeps its waiting message whole and reads no live state",
+  () =>
+    withFixture(
+      [],
+      Effect.gen(function* () {
+        const whole = "Pick the Tidewater launch day.\n\nReview the copy.\n\nApprove the design.";
+        const result = yield* runRoutine(
+          routine("brief-waiting", "morning_brief"),
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* (yield* Chat.KinChatService).notice({
+              audience: "chat",
+              orgId,
+              chatId: KinChatId.make("owner-chat"),
+              messageId: KinMessageId.make("needs-owner"),
+              body: whole,
+            });
+            yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, reason, created_at)
+            VALUES ('waiting-owner', ${orgId}, 'owner', 'owner-chat', 'needs-owner', 'question', ${timestamp})`;
+            yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+              auth, reach, state, account_label, created_at, updated_at, person_id)
+            VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+              'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL)`;
+          }).pipe(Effect.orDie),
+        );
+        const card = decodeCard(result.widgets[0]?.state);
+        const waiting = card.rows.filter((row) => row.section === "waiting");
+        assert.deepStrictEqual(
+          waiting.map((row) => row.title),
+          ["Pick the Tidewater launch day. Review the copy. Approve the design."],
+        );
+        assert.notInclude(JSON.stringify(result.widgets), "written");
+        assert.notInclude(JSON.stringify(result.messages), "accounts@tidewater.example");
+      }),
+      { linkReader: { readRepo: () => Effect.die("a server-written brief read live state") } },
     ),
 );
 
@@ -786,68 +1226,93 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
   }),
 );
 
-it.effect("an evening summary that runs past its own day is not sent; its facts are untold", () =>
-  Effect.gen(function* () {
-    // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
-    yield* TestClock.setTime(now + 14 * 60 * 60_000);
-    yield* Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+it.effect.each([
+  { scenario: "alone", anotherFails: false },
+  { scenario: "beside a failing turn", anotherFails: true },
+])(
+  "an evening summary past its own day is skipped and its facts are untold ($scenario)",
+  ({ anotherFails }) =>
+    Effect.gen(function* () {
+      // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
+      yield* TestClock.setTime(now + 14 * 60 * 60_000);
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
           dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
         VALUES (${orgId}, 'Asia/Tokyo', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
-      const monday = "2026-11-09";
-      yield* (yield* Queue.KinEventQueue).enqueue(
-        decodeEvent({
-          _tag: "pulse",
-          orgId,
-          agentId,
-          eventId: "pulse-evening",
-          receivedAt: timestamp,
-          dedupeKey: `checkin:checkin-evening:${monday}`,
-          provenance: { _tag: "system" },
-          factKeys: [],
-          checkIn: {
-            scheduleId: "checkin-evening",
-            title: "Evening summary",
-            what: "Evening summary.",
-            slot: monday,
-            day: monday,
-          },
-        }),
-      );
-      yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        const monday = "2026-11-09";
+        yield* (yield* Queue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "pulse",
+            orgId,
+            agentId,
+            eventId: "pulse-evening",
+            receivedAt: timestamp,
+            dedupeKey: `checkin:checkin-evening:${monday}`,
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: "checkin-evening",
+              title: "Evening summary",
+              what: "Evening summary.",
+              slot: monday,
+              day: monday,
+            },
+          }),
+        );
+        yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
         VALUES (${orgId}, 'owner', 'task_late:r-W-1', 'pulse-evening', 'sig', ${now})`;
-      const fiber = yield* (yield* WakeupRunner.WakeupRunner)
-        .runOnce(orgId, agentId)
-        .pipe(Effect.forkChild);
-      yield* TestClock.adjust("20 seconds");
-      yield* Fiber.join(fiber);
-      assert.deepStrictEqual(
-        yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
-        [{ state: "done" }],
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
-        [{ status: "completed", threadId: null }],
-      );
-      assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
-    }).pipe(
-      Effect.provide(
-        WakeupRunner.layer.pipe(
-          Layer.provide(
-            Layer.succeed(RoutineContent.KinRoutineContent, {
-              prepare: () => Effect.succeed(null),
-              post: () => Effect.succeed(null),
-              morningFacts: () => Effect.succeed(null),
-              eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
+        if (anotherFails) {
+          yield* (yield* Queue.KinEventQueue).enqueue(
+            decodeEvent({
+              _tag: "pulse",
+              orgId,
+              agentId,
+              eventId: "pulse-other",
+              receivedAt: timestamp,
+              dedupeKey: "pulse-other",
+              provenance: { _tag: "system" },
+              factKeys: [],
             }),
+          );
+        }
+        const fiber = yield* (yield* WakeupRunner.WakeupRunner)
+          .runOnce(orgId, agentId)
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        yield* Fiber.join(fiber);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} AND event_id = 'pulse-evening'`,
+          [{ state: "expired" }],
+        );
+        if (anotherFails)
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId} AND event_id = 'pulse-other'`,
+            [{ state: "queued", attempts: 1 }],
+          );
+        else
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "completed", threadId: null }],
+          );
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
+      }).pipe(
+        Effect.provide(
+          WakeupRunner.layer.pipe(
+            Layer.provide(
+              Layer.succeed(RoutineContent.KinRoutineContent, {
+                prepare: () => Effect.succeed(null),
+                post: () => Effect.succeed(null),
+                morningFacts: () => Effect.succeed(null),
+                eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
+              }),
+            ),
+            Layer.provideMerge(orchestrationHarness({ failed: anotherFails })),
           ),
-          Layer.provideMerge(orchestrationHarness()),
         ),
-      ),
-    );
-  }),
+      );
+    }),
 );
 
 it("a clipped line never ends on half of an escape pair", () => {

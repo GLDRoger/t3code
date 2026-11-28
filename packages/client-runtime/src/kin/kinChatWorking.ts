@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { kinPlainText } from "./kinChatFeed.ts";
 import { kinPresenceLine } from "./kinLive.ts";
 
 /** Where a row in "Working now" leads: the chat's end, a card in it, or another chat. */
@@ -84,6 +85,7 @@ export function kinChatWorkingItems(input: {
   const agents = input.presence.flatMap((presence): ReadonlyArray<KinWorkingItem> => {
     if (presence.state === "seen") return [];
     const label = presence.label?.trim() || null;
+    const update = newestUpdate(input.messages, presence.wakeupId);
     const shown =
       presence.state === "stalled"
         ? { state: kinPresenceLine(presence, input.now)?.text ?? "No output", held: true }
@@ -94,7 +96,7 @@ export function kinChatWorkingItems(input: {
         kind: "agent",
         agentId: presence.agentId,
         name: name(presence.agentId),
-        doing: presence.state === "stalled" ? null : label,
+        doing: update ?? (presence.state === "stalled" ? null : label),
         ...shown,
         since: presence.startedAt,
         wakeupId: presence.wakeupId,
@@ -146,6 +148,19 @@ export function kinChatWorkingItems(input: {
     ];
   });
   return [...agents, ...handoffs, ...workers];
+}
+
+// The line's label is the host's fixed words; the turn's own progress update says more.
+function newestUpdate(messages: ReadonlyArray<KinMessage>, wakeupId: KinWakeupId | null) {
+  if (wakeupId === null) return null;
+  const update = messages.findLast(
+    (message) =>
+      message.progress === true &&
+      message.sourceWakeupId === wakeupId &&
+      message.status === "posted" &&
+      message.body.trim() !== "",
+  );
+  return update === undefined ? null : kinPlainText(update.body) || null;
 }
 
 /**

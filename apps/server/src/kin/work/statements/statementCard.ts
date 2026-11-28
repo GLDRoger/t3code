@@ -34,6 +34,7 @@ export type Review = {
   readonly statement: Statement;
   readonly format: string | null;
   readonly source: "file" | "agent";
+  readonly withheldTax?: string | undefined;
   readonly known: ReadonlyMap<number, KnownRow>;
   /** Every row not already explained in Bank transactions. */
   readonly matches: ReadonlyMap<number, RowMatch>;
@@ -63,25 +64,46 @@ const repaysNote = (repays: ReadonlyArray<{ readonly key: string }>) => {
     : `Marks ${repays.length} expenses repaid: ${repays[0]!.key} … ${repays.at(-1)!.key}`;
 };
 
-const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
-  option,
-  kind: candidate.kind,
-  key: candidate.key,
-  label: clamp(`${candidate.key} · ${candidate.title}`, 200),
-  ...(candidate.repays !== undefined
-    ? { note: repaysNote(candidate.repays) }
-    : candidate.fit === "tds" && candidate.tdsMinor !== undefined
-      ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
-      : candidate.fit === "part"
-        ? { note: "Part payment" }
-        : candidate.fit === "foreign"
-          ? { note: "Same amount in its own currency" }
-          : candidate.fit === "recorded"
-            ? { note: "Payment already recorded: this links the bank row to it" }
-            : candidate.fit === "open"
-              ? { note: OPEN_INVOICE_NOTE }
-              : {}),
-});
+const target = (
+  candidate: Candidate,
+  option: number,
+  currency: string,
+  withheldTax: string | undefined,
+): KinStatementTarget => {
+  const base = {
+    option,
+    kind: candidate.kind,
+    key: candidate.key,
+    label: clamp(`${candidate.key} · ${candidate.title}`, 200),
+  };
+  if (candidate.alreadyRepaid && candidate.repays !== undefined)
+    return {
+      ...base,
+      label: clamp(
+        `${candidate.repays.map((one) => one.key).join(", ")} · ${candidate.title}`,
+        200,
+      ),
+      note: clamp(candidate.why[0]!, 200),
+    };
+  return {
+    ...base,
+    ...(candidate.repays !== undefined
+      ? { note: repaysNote(candidate.repays) }
+      : candidate.fit === "tds" && candidate.tdsMinor !== undefined
+        ? {
+            note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "tax withheld by the client" : `${withheldTax} deducted`}`,
+          }
+        : candidate.fit === "part"
+          ? { note: "Part payment" }
+          : candidate.fit === "foreign"
+            ? { note: "Same amount in its own currency" }
+            : candidate.fit === "recorded"
+              ? { note: "Payment already recorded: this links the bank row to it" }
+              : candidate.fit === "open"
+                ? { note: OPEN_INVOICE_NOTE }
+                : {}),
+  };
+};
 
 /**
  * Rows this statement already recorded and an undo kept, such as a payment with a receipt: shown
@@ -104,7 +126,7 @@ export const rowsOf = (
   limit: number,
   held: Held = NONE,
 ) => {
-  const { statement } = review;
+  const { statement, withheldTax } = review;
   const currency = statement.currency;
   const all = sectionRows(review, section);
   const shown = (index: number) => {
@@ -126,14 +148,16 @@ export const rowsOf = (
       section === "matched"
         ? page.map(([index, match]) => ({
             ...shown(index),
-            target: target(match.candidates[0]!, 0, currency),
+            target: target(match.candidates[0]!, 0, currency, withheldTax),
           }))
         : [],
     choose:
       section === "choose"
         ? page.map(([index, match]) => ({
             ...shown(index),
-            options: match.candidates.map((one, option) => target(one, option, currency)),
+            options: match.candidates.map((one, option) =>
+              target(one, option, currency, withheldTax),
+            ),
           }))
         : [],
     unmatched:

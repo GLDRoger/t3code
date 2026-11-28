@@ -97,7 +97,7 @@ export const milestoneRisk = (input: {
 
 export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
   orgId: KinOrgId,
-  projectId: string,
+  project: { readonly projectId: string } | { readonly recordId: string },
   now: number,
   viewer: KinViewer,
 ) {
@@ -113,7 +113,8 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.due_at AS "dueAt",
       r.due_all_day AS "dueAllDay", r.rev
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'milestones'
-      AND r.project_id = ${projectId} AND ${seenBy(sql, viewer)}
+      AND ${"projectId" in project ? sql`r.project_id = ${project.projectId}` : sql`r.record_id = ${project.recordId}`}
+      AND ${seenBy(sql, viewer)}
     ORDER BY r.state = 'dropped', r.due_at IS NULL, r.due_at, r.key LIMIT 50`;
   if (rows.length === 0) return [];
   const headsUpDays = (yield* playbookThreshold(orgId, "milestone_heads_up_days")).value;
@@ -187,6 +188,7 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
   projectId: string,
   now: number,
   viewer: KinViewer,
+  showMoney: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<RecordRow>`${selectRecords(sql)}
@@ -194,7 +196,7 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
       AND r.project_id = ${projectId} AND r.state != 'dropped' AND ${seenBy(sql, viewer)}
       AND (r.state IN ${sql.in(OPEN)} OR r.date_at >= ${now - DAY_MS})
     ORDER BY r.date_at IS NULL, r.date_at, r.key LIMIT 10`;
-  return rows.map((row): KinRecord => toRecord(row, now));
+  return rows.map((row): KinRecord => toRecord(row, now, showMoney));
 });
 
 /**

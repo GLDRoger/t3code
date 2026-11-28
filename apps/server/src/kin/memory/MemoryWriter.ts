@@ -430,10 +430,10 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
   const locked = memory.withWriterLock;
-  const observedWrite = <A>(
+  const observedWrite = <A, E>(
     orgId: KinOrgId,
     operation: MemoryWriteOperation,
-    effect: Effect.Effect<A, Failure>,
+    effect: Effect.Effect<A, E>,
   ) => locked(orgId, observeMemoryWrite(recovery.writeEpisode, orgId, operation, effect));
   // Staged changes are per wake-up, so concurrent leads never share a session; the
   // git commit and push themselves stay serialized per repository under `locked`.
@@ -983,10 +983,10 @@ const make = Effect.gen(function* () {
       else items[index] = head;
       bodies.set(file, staged.body);
     }
-    const labelled = items.find((item) => item.id === fm.id);
+    const existing = items.find((item) => item.id === fm.id);
     if (
-      labelled !== undefined &&
-      labelled.sensitive !== false &&
+      existing !== undefined &&
+      existing.sensitive !== false &&
       fm.sensitive === false &&
       change.label !== "share"
     )
@@ -1079,6 +1079,8 @@ const make = Effect.gen(function* () {
             "sensitive",
             "shared_by",
           ]);
+          if (fm.sender_mail_voice !== true || source.saidBy === item.said_by)
+            mutable.add("sender_mail_voice");
           // What is no longer true stays so: no write, nor its replay at commit, brings it back.
           if (item.invalid_at === null) mutable.add("invalid_at");
           if (
@@ -1099,8 +1101,14 @@ const make = Effect.gen(function* () {
           reason: "Cannot replace a different item",
         });
     }
+    // An absent mark is reserved for older items that still use the mail keyword fallback.
+    const senderMailVoice =
+      fm.sender_mail_voice ??
+      existing?.sender_mail_voice ??
+      (existing === undefined && (fm.kind === "claim" || fm.kind === "person") ? false : undefined);
     const fields = {
       ...fm,
+      ...(senderMailVoice === undefined ? {} : { sender_mail_voice: senderMailVoice }),
       said_by: source.saidBy,
       source: source.source,
       source_event: change.sourceEventId,
@@ -1112,7 +1120,6 @@ const make = Effect.gen(function* () {
           : source.trust,
       review_by: fm.review_by,
     };
-    const existing = items.find((item) => item.id === fm.id);
     // A new item that says what someone said holds their words from the cited message; an
     // existing item keeps the quote, like the rest of its provenance, from when it was saved.
     if (!existing && fm.kind !== "deferral") {
@@ -1152,11 +1159,12 @@ const make = Effect.gen(function* () {
   });
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
-      report(
+      observedWrite(
         orgId,
-        wakeupId,
-        locked(
+        "stage-note",
+        report(
           orgId,
+          wakeupId,
           Effect.gen(function* () {
             const { ctx, state } = yield* session(orgId, wakeupId);
             yield* stageChange(orgId, wakeupId, ctx, state, change);
@@ -1164,18 +1172,18 @@ const make = Effect.gen(function* () {
         ),
       ),
     ),
-    appendJournal: Effect.fn("MemoryWriter.appendJournal")((orgId, wakeupId, lines) =>
-      locked(
-        orgId,
-        Effect.gen(function* () {
-          // Its journal is already written: lines that come after it have nowhere to go.
-          const key = sessionKey(orgId, wakeupId);
-          if (finished.has(key) && !sessions.has(key)) return;
-          const { state } = yield* session(orgId, wakeupId);
-          state.lines.push(...lines);
-        }),
-      ),
-    ),
+    appendJournal: Effect.fn("MemoryWriter.appendJournal")((orgId, wakeupId, lines) => {
+      const append = Effect.gen(function* () {
+        // Its journal is already written: lines that come after it have nowhere to go.
+        const key = sessionKey(orgId, wakeupId);
+        if (finished.has(key) && !sessions.has(key)) return;
+        const { state } = yield* session(orgId, wakeupId);
+        state.lines.push(...lines);
+      });
+      return lines.length === 0
+        ? locked(orgId, append)
+        : observedWrite(orgId, "stage-journal", append);
+    }),
     staged: Effect.fn("MemoryWriter.staged")((orgId, wakeupId) =>
       locked(
         orgId,
@@ -1285,9 +1293,7 @@ const make = Effect.gen(function* () {
                 for (const change of original)
                   yield* stageChange(orgId, wakeupId, ctx, state, change).pipe(
                     Effect.mapError((error) =>
-                      error._tag === "MemoryConflict" ||
-                      error._tag === "MemoryWriteRejected" ||
-                      error._tag === "MemoryDuplicateId"
+                      error._tag === "MemoryConflict" || error._tag === "MemoryWriteRejected"
                         ? new MemorySyncConflict({
                             orgId,
                             operation: "push",
@@ -1555,8 +1561,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     undoChange: Effect.fn("MemoryWriter.undoChange")((orgId, input) =>
-      locked(
+      observedWrite(
         orgId,
+        "undo",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           if (
@@ -1639,8 +1646,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     relabel: Effect.fn("MemoryWriter.relabel")((orgId, input) =>
-      locked(
+      observedWrite(
         orgId,
+        "sharing",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);
@@ -1686,62 +1694,61 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
-    retire: Effect.fn("MemoryWriter.retire")((orgId, input) =>
-      locked(
-        orgId,
-        Effect.gen(function* () {
-          const main = config.defaultBranch ?? "main";
-          const { writer } = yield* validate(orgId);
-          yield* refuseDuringPurge(orgId);
-          const repo = yield* repoFor(orgId);
-          // The nightly pass tells the owner nothing: it tries again the next night.
-          if (mainWrites === "refused")
-            return yield* input.by === "owner"
-              ? refuseMainWrite(orgId)
-              : new MemorySyncConflict({
-                  orgId,
-                  operation: "push",
-                  reason: "Memory writes to the default branch are refused",
-                });
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
-          const item = yield* memory.readItemQuietly(orgId, input.itemId);
-          const head = yield* branchHead(orgId, writer, main);
-          const headFiles = yield* filesAt(orgId, writer, head);
-          const current = headFiles.get(item.head.path);
-          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
-          const { frontMatter, body } = yield* parseFrontMatter(
-            orgId,
-            item.head.path,
-            current.toString("utf8"),
-          );
-          if (frontMatter.id !== input.itemId)
-            return yield* new MemoryNotFound({ orgId, id: input.itemId });
-          // First, so the team stops knowing it whatever the commit below does.
-          yield* endSharing(orgId, [input.itemId]);
-          const now = yield* Clock.currentTimeMillis;
-          if (endedBy(frontMatter, now)) return { retired: false };
-          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(now));
-          yield* ownerCommit(orgId, {
-            writer,
-            repoUrl: repo.repoUrl,
-            branch: main,
-            head,
-            headFiles,
-            files: new Map([
-              [item.head.path, render({ ...frontMatter, invalid_at: invalidAt }, body)],
-            ]),
-            message:
-              input.by === "owner"
-                ? `kin: owner forgets ${input.itemId}\n`
-                : `kin: nightly pass retires spent ${input.itemId}\n`,
-          });
-          return { retired: true };
-        }),
-      ),
-    ),
+    retire: Effect.fn("MemoryWriter.retire")((orgId, input) => {
+      const retire = Effect.gen(function* () {
+        const main = config.defaultBranch ?? "main";
+        const { writer } = yield* validate(orgId);
+        yield* refuseDuringPurge(orgId);
+        const repo = yield* repoFor(orgId);
+        // The nightly pass tells the owner nothing: it tries again the next night.
+        if (mainWrites === "refused")
+          return yield* input.by === "owner"
+            ? refuseMainWrite(orgId)
+            : new MemorySyncConflict({
+                orgId,
+                operation: "push",
+                reason: "Memory writes to the default branch are refused",
+              });
+        if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+        const item = yield* memory.readItemQuietly(orgId, input.itemId);
+        const head = yield* branchHead(orgId, writer, main);
+        const headFiles = yield* filesAt(orgId, writer, head);
+        const current = headFiles.get(item.head.path);
+        if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+        const { frontMatter, body } = yield* parseFrontMatter(
+          orgId,
+          item.head.path,
+          current.toString("utf8"),
+        );
+        if (frontMatter.id !== input.itemId)
+          return yield* new MemoryNotFound({ orgId, id: input.itemId });
+        // First, so the team stops knowing it whatever the commit below does.
+        yield* endSharing(orgId, [input.itemId]);
+        const now = yield* Clock.currentTimeMillis;
+        if (endedBy(frontMatter, now)) return { retired: false };
+        const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(now));
+        yield* ownerCommit(orgId, {
+          writer,
+          repoUrl: repo.repoUrl,
+          branch: main,
+          head,
+          headFiles,
+          files: new Map([
+            [item.head.path, render({ ...frontMatter, invalid_at: invalidAt }, body)],
+          ]),
+          message:
+            input.by === "owner"
+              ? `kin: owner forgets ${input.itemId}\n`
+              : `kin: nightly pass retires spent ${input.itemId}\n`,
+        });
+        return { retired: true };
+      });
+      return input.by === "owner" ? observedWrite(orgId, "forget", retire) : locked(orgId, retire);
+    }),
     restore: Effect.fn("MemoryWriter.restore")((orgId, input) =>
-      locked(
+      observedWrite(
         orgId,
+        "restore",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);

@@ -24,7 +24,7 @@ export function kinSettingsSectionIn(searchStr: string): string | null {
 }
 
 /** The settings-search id of the setting Settings opens at, or "". */
-const kinSettingsAtIn = (searchStr: string): string =>
+export const kinSettingsAtIn = (searchStr: string): string =>
   new URLSearchParams(searchStr).get(AT_PARAM) ?? "";
 
 /** The words Memory opens filtered to, the connection Connections opens at, or "". */

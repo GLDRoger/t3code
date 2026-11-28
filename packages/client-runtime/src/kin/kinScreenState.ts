@@ -19,10 +19,16 @@ import type { AsyncResult } from "effect/reactivity";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
-import { kinHostLink, type KinHost } from "./kinHost.ts";
+import { kinHostLink, type KinHost, type KinRouteHost } from "./kinHost.ts";
 import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
 import { kinTapText } from "./kinTap.ts";
-import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
+import {
+  kinCountedWaiting,
+  kinWaitingChat,
+  type KinInboxRow,
+  type KinInboxState,
+} from "./kinInboxModel.ts";
+import { kinWaitingAskHeld } from "./kinLive.ts";
 
 /** What a Kin screen reading the inbox shows. */
 export type KinInboxScreenState =
@@ -207,7 +213,7 @@ const emptyKinDirectory: KinDirectory = {
   retiredAgents: new Set(),
 };
 
-export function kinDirectory(host: KinHost): KinDirectory {
+export function kinDirectory(host: KinHost | KinRouteHost): KinDirectory {
   if (host._tag !== "host") return emptyKinDirectory;
   const { probe } = host;
   if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;
@@ -456,9 +462,9 @@ export const KIN_WAITS_FOR_COPY = {
 } as const;
 
 /** What a read-only row shows once opened: the draft's first lines, its answers, whose it is. */
-export function kinWaitsForDetail(item: KinWaitingItem): ReadonlyArray<string> {
+export function kinWaitsForDetail(item: KinWaitingItem, asking = false): ReadonlyArray<string> {
   if (item.waitsFor === undefined) return [];
-  const labels = item.ask?.options.map((option) => option.label) ?? [];
+  const labels = asking ? [] : (item.ask?.options.map((option) => option.label) ?? []);
   return [
     ...(item.excerpt === undefined ? [] : [item.excerpt]),
     ...(labels.length === 0 ? [] : [KIN_WAITS_FOR_COPY.answers(labels)]),
@@ -482,11 +488,13 @@ export interface KinWaitingBannerView {
 export function kinWaitingBannerView(
   waiting: ReadonlyArray<KinWaitingItem>,
   waitsFor: ReadonlyArray<{ readonly name: string; readonly items: ReadonlyArray<unknown> }> = [],
+  chats: ReadonlyArray<KinChatSummary> = [],
 ): KinWaitingBannerView | null {
   const others = waitsFor.filter((group) => group.items.length > 0);
   if (waiting.length === 0 && others.length === 0) return null;
+  const counted = kinCountedWaiting(waiting, chats);
   const counts = new Map<KinWaitingKind, number>();
-  for (const item of waiting) {
+  for (const item of counted) {
     const kind = kinWaitingKind(item);
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
@@ -494,17 +502,22 @@ export function kinWaitingBannerView(
   const parts = named.map(
     ([kind, count]) => `${count} ${WAITING_KIND_NOUNS[kind][count === 1 ? 0 : 1]}`,
   );
-  const rest = waiting.length - named.reduce((sum, [, count]) => sum + count, 0);
+  const rest = counted.length - named.reduce((sum, [, count]) => sum + count, 0);
   const theirs = others.map((group) => KIN_WAITS_FOR_COPY.inBanner(group.items.length, group.name));
-  const items = waiting.length === 1 ? "1 item" : `${waiting.length} items`;
+  const items = counted.length === 1 ? "1 item" : `${counted.length} items`;
   const mine =
-    waiting.length === 0
-      ? "nothing on you"
+    counted.length === 0
+      ? waiting.length === 0
+        ? "nothing on you"
+        : null
       : `${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
   return {
-    count: waiting.length,
+    count: counted.length,
     summary: [...parts, ...(rest > 0 ? [`${rest} more`] : []), ...theirs].join(" · "),
-    accessibilityLabel: [`Waiting on you, ${mine}`, ...theirs].join(". "),
+    accessibilityLabel: [
+      mine === null ? "Waiting on you" : `Waiting on you, ${mine}`,
+      ...theirs,
+    ].join(". "),
   };
 }
 
@@ -567,6 +580,7 @@ export interface KinWaitingRowView {
   readonly chatTitle: string;
   /** The message that asks, when the inbox carries it; items have no text of their own. */
   readonly text: string | null;
+  readonly asking: string | null;
   /** The first lines of what it asks about, such as a draft; null without them. */
   readonly excerpt: string | null;
   /** "Waits for Rhea Rao" on what waits on someone else: shown read-only, never answered here. */
@@ -579,7 +593,7 @@ export function kinWaitingRowView(
   chats: ReadonlyArray<KinChatSummary>,
   agentNames: ReadonlyMap<string, string>,
 ): KinWaitingRowView {
-  const chat = chats.find((held) => held.chatId === item.chatId);
+  const chat = kinWaitingChat(item, chats);
   const last = chat?.lastMessage ?? null;
   const message = last !== null && last.messageId === item.messageId ? last : null;
   return {
@@ -592,6 +606,7 @@ export function kinWaitingRowView(
       (message === null || message.status === "deleted" || message.body === ""
         ? null
         : message.body),
+    asking: kinWaitingAskHeld(item, chat?.activeWakeups) ? "Asking now…" : null,
     excerpt: item.excerpt ?? null,
     waitsFor: item.waitsFor === undefined ? null : KIN_WAITS_FOR_COPY.row(item.waitsFor.name),
     createdAt: item.createdAt,

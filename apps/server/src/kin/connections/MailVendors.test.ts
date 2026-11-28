@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
-import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
+import { type FakeMail, fileStore, makeFakeMail } from "./FakeMail.ts";
 import { MAIL_TOOL, type MailActivity, type Mailbox, type MailProvider } from "./MailProvider.ts";
 import type { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_PROVIDERS } from "./mailProviders.ts";
@@ -14,22 +17,45 @@ import { MAIL_PROVIDERS } from "./mailProviders.ts";
  * One table of cases, run through the fake mailbox against every mail vendor's mapping. A new
  * vendor passes this table before Kin offers it.
  */
-const OWNER = "owner@invented-co.example";
+const OWNER = "rhea+mail@invented-co.example";
 const BILLING = "billing@invented-co.example";
 const CLIENT = "Ana Client <ana@client.example>";
 const NOW = Date.parse("2026-11-16T09:00:00Z");
 const HOUR = 60 * 60 * 1000;
 const mailbox: Mailbox = { account: OWNER, addresses: [OWNER, BILLING] };
 
+const originalLink = (provider: MailProvider, message: { threadId: string; id: string }) =>
+  provider.preset === "google"
+    ? `https://mail.google.com/mail/?authuser=rhea%2Bmail%40invented-co.example#all/${message.threadId}`
+    : `https://outlook.office.com/mail/inbox/id/${message.id}`;
+
 type Run = {
   readonly provider: MailProvider;
   readonly fake: FakeMail;
   readonly http: HttpClient.HttpClient;
   readonly token: string;
+  readonly omitLinkId: () => void;
+  readonly requests: ReadonlyArray<URL>;
   readonly call: (
     tool: string,
     args?: Record<string, unknown>,
   ) => Effect.Effect<any, KinGatewayError>;
+};
+
+// What a vendor could send on an event though Dates never asks: none of it may come through.
+const UNASKED = {
+  description: "Private trip notes",
+  body: { contentType: "html", content: "Private trip notes" },
+  bodyPreview: "Private trip notes",
+  location: { displayName: "Private trip location" },
+  attendees: [{ email: "zoya@tidewater.example" }],
+  organizer: { email: "meera@tidewater.example" },
+  hangoutLink: "https://meet.google.com/abc-defg-hij",
+  conferenceData: { entryPoints: [{ uri: "https://meet.google.com/abc-defg-hij" }] },
+  onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/trip" },
+  attachments: [{ fileUrl: "https://drive.google.com/file/d/trip" }],
+  calendarId: "primary",
+  etag: '"3181161784712000"',
 };
 
 const harness = (provider: MailProvider) => {
@@ -40,15 +66,52 @@ const harness = (provider: MailProvider) => {
     name: "Invented Co",
     aliases: [BILLING],
   });
-  const fetch = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  let omitLinkId = false;
+  const handle = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  const requests: Array<URL> = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(new URL(url));
+    // Also exercise Kin's cancellation filter when Google sends a cancelled event.
+    if (url.searchParams.has("fields")) {
+      url.searchParams.set("showDeleted", "true");
+      url.searchParams.set("maxResults", "100");
+    }
+    const response = await handle(new Request(url, request));
+    const agenda =
+      url.searchParams.has("fields") ||
+      url.searchParams.get("$select")?.includes("originalStartTimeZone");
+    if (agenda && response.ok) {
+      const page = (await response.json()) as Record<string, Array<object> | undefined>;
+      for (const key of ["items", "value"])
+        page[key] = page[key]?.map((event) => ({ ...UNASKED, ...event }));
+      return Response.json(page);
+    }
+    if (!omitLinkId || !response.ok) return response;
+    const body = (await response.json()) as {
+      messages?: Array<Record<string, unknown>>;
+      value?: Array<Record<string, unknown>>;
+    };
+    for (const message of body.messages ?? body.value ?? [])
+      delete message[provider.preset === "google" ? "threadId" : "id"];
+    return Response.json(body);
+  };
   const layer = FetchHttpClient.layer.pipe(
     Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
   );
-  return { fake, layer };
+  return {
+    fake,
+    layer,
+    requests,
+    omitLinkId: () => {
+      omitLinkId = true;
+    },
+  };
 };
 
 const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, KinGatewayError>) => {
-  const { fake, layer } = harness(provider);
+  const { fake, layer, omitLinkId, requests } = harness(provider);
   return Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
     const token = `fake-at.1.${OWNER}`;
@@ -58,7 +121,7 @@ const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, Kin
         .pipe(
           Effect.map((result) => JSON.parse((result.content[0] as { readonly text: string }).text)),
         );
-    yield* body({ provider, fake, http, token, call });
+    yield* body({ provider, fake, http, token, call, omitLinkId, requests });
   }).pipe(Effect.provide(layer));
 };
 
@@ -84,7 +147,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
   [
     [
       "lists inbox threads newest first, once each, by the address that received them",
-      ({ fake, call }) =>
+      ({ fake, provider, call }) =>
         Effect.gen(function* () {
           const quote = fake.deliver({
             to: BILLING,
@@ -93,7 +156,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             body: "Can you send the quote?",
             at: NOW - 3 * HOUR,
           });
-          fake.deliver({
+          const latest = fake.deliver({
             to: BILLING,
             from: CLIENT,
             subject: "Re: Quote Q-7",
@@ -123,14 +186,15 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             ],
           );
           assert.strictEqual(listed.threads[1].preview, "Any news?");
+          assert.strictEqual(listed.threads[1].webLink, originalLink(provider, latest));
           assert.include(listed.threads[1].from, "ana@client.example");
         }),
     ],
     [
       "searches by sender and words",
-      ({ fake, call }) =>
+      ({ fake, provider, call }) =>
         Effect.gen(function* () {
-          fake.deliver({
+          const paid = fake.deliver({
             to: OWNER,
             from: CLIENT,
             subject: "Invoice",
@@ -149,11 +213,12 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             found.threads.map((one: any) => one.preview),
             ["Paid."],
           );
+          assert.strictEqual(found.threads[0].webLink, originalLink(provider, paid));
         }),
     ],
     [
-      "reads a thread oldest first, with each file's name, type and size",
-      ({ fake, call }) =>
+      "reads a thread oldest first, with each file's id, name, type and size",
+      ({ fake, call, provider }) =>
         Effect.gen(function* () {
           const first = fake.deliver({
             to: BILLING,
@@ -169,7 +234,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
               },
             ],
           });
-          fake.deliver({
+          const second = fake.deliver({
             to: BILLING,
             from: CLIENT,
             subject: "Re: Quote Q-7",
@@ -184,10 +249,37 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             thread.messages.map((one: any) => one.text),
             ["Here is the brief.", "And a question."],
           );
+          assert.strictEqual(thread.messages[0].messageId, first.id);
           assert.deepStrictEqual(thread.messages[0].attachments, [
-            { name: "brief.pdf", type: "application/pdf", bytes: 17 },
+            {
+              attachmentId: provider.preset === "google" ? "part:1" : `${first.id}-a0`,
+              name: "brief.pdf",
+              type: "application/pdf",
+              bytes: 17,
+            },
           ]);
           assert.include(thread.messages[0].to, BILLING);
+          assert.deepStrictEqual(
+            thread.messages.map((one: { webLink?: string }) => one.webLink),
+            [originalLink(provider, first), originalLink(provider, second)],
+          );
+        }),
+    ],
+    [
+      "omits the original mail link when the vendor supplies no id",
+      ({ fake, call, omitLinkId }) =>
+        Effect.gen(function* () {
+          const first = fake.deliver({
+            to: OWNER,
+            from: CLIENT,
+            subject: "Juniper Cold Chain review",
+            body: "Here is the brief.",
+            at: NOW - HOUR,
+          });
+          omitLinkId();
+          const thread = yield* call(MAIL_TOOL.read, { threadId: first.threadId });
+          assert.lengthOf(thread.messages, 1);
+          assert.notProperty(thread.messages[0], "webLink");
         }),
     ],
     [
@@ -349,6 +441,88 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
         }),
     ],
     [
+      "reads only Dates fields, retaining all-day dates, exclusive ends and valid links",
+      ({ provider, fake, http, token, requests }) =>
+        Effect.gen(function* () {
+          const link =
+            provider.preset === "google"
+              ? "https://calendar.google.com/calendar/event?eid=trip"
+              : "https://outlook.office.com/calendar/item/trip";
+          const event = {
+            account: OWNER,
+            id: "trip",
+            title: "Tidewater Freight trip",
+            start: Date.parse("2026-11-27T00:00:00Z"),
+            end: Date.parse("2026-11-30T00:00:00Z"),
+            updated: NOW,
+            guests: ["zoya@tidewater.example"],
+            notes: "Private trip notes",
+            location: "Private trip location",
+          };
+          fake.putEvent({ ...event, allDay: true, zone: "Asia/Kolkata", link, repeats: 2 });
+          fake.putEvent({ ...event, id: "cancelled", state: "cancelled" });
+          fake.putEvent({
+            ...event,
+            id: "timed",
+            title: "Tidewater Freight check-in",
+            start: event.start,
+            end: event.start + HOUR,
+            link: "http://calendar.example/timed",
+          });
+          fake.putEvent({
+            ...event,
+            id: "credentials",
+            start: event.start + 3 * HOUR,
+            link: "https://rhea:secret@calendar.example/trip",
+          });
+          const agenda = yield* provider.agenda(http, token, {
+            from: "2026-11-26T00:00:00.000Z",
+            to: "2026-12-02T00:00:00.000Z",
+          });
+          assert.deepStrictEqual(agenda, [
+            {
+              id: "trip_0",
+              title: event.title,
+              start: "2026-11-27",
+              end: "2026-11-30",
+              allDay: true,
+              zone: "Asia/Kolkata",
+              link,
+              repeats: true,
+            },
+            {
+              id: "timed",
+              title: "Tidewater Freight check-in",
+              start: "2026-11-27T00:00:00.000Z",
+              end: "2026-11-27T01:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+            {
+              id: "credentials",
+              title: event.title,
+              start: "2026-11-27T03:00:00.000Z",
+              end: "2026-11-30T00:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+          ]);
+          const projection = requests[0]?.searchParams.get(
+            provider.preset === "google" ? "fields" : "$select",
+          );
+          assert.strictEqual(
+            projection,
+            provider.preset === "google"
+              ? "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)"
+              : "id,subject,start,end,isAllDay,type,webLink,isCancelled,originalStartTimeZone",
+          );
+        }),
+    ],
+    [
       "reports new mail and changed, cancelled, deleted and recurring events since a time",
       ({ provider, fake, http, token }) =>
         Effect.gen(function* () {
@@ -490,4 +664,114 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
 
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
+
+  it.effect.each([
+    [
+      "a pass in the bounce address",
+      [
+        "mx.google.com; spf=pass (dmarc=pass+header.from=client.example@else.example); dmarc=fail header.from=client.example",
+      ],
+      "failed",
+    ],
+    [
+      "a pass in a quoted property",
+      ['mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=client.example"'],
+      "not checked",
+    ],
+    [
+      "only the lower header carries a claimed pass",
+      ["mx.google.com; none", "mx.example; dmarc=pass header.from=client.example"],
+      "not checked",
+    ],
+    [
+      "a DMARC pass for another domain",
+      ["mx.google.com; dmarc=pass header.from=else.example"],
+      "not checked",
+    ],
+    [
+      "SPF and DKIM both pass for an unrelated domain",
+      ["mx.google.com; dkim=pass header.d=else.example; spf=pass smtp.mailfrom=else.example"],
+      "not checked",
+    ],
+    [
+      "a Gmail-shaped DMARC pass",
+      [
+        "mx.google.com; dkim=pass header.i=@client.example; spf=pass smtp.mailfrom=ana@client.example; dmarc=pass (p=REJECT) header.from=client.example",
+      ],
+      "passed",
+    ],
+    [
+      "a Microsoft-shaped DMARC pass",
+      [
+        "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
+      ],
+      "passed",
+    ],
+  ] as const)("reports the sender check for %s", ([, authResults, verdict]) =>
+    run(provider, ({ fake, call }) =>
+      Effect.gen(function* () {
+        const message = fake.deliver({
+          from: CLIENT,
+          to: BILLING,
+          subject: "Quote Q-7",
+          body: "Can you send the quote?",
+          at: NOW - HOUR,
+          authResults,
+        });
+        const thread = yield* call(MAIL_TOOL.read, { threadId: message.threadId });
+        assert.strictEqual(thread.messages[0].senderCheck, verdict);
+      }),
+    ),
+  );
 });
+
+it.effect("reads and clears a provider failure from another fake using the same file", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "kin-fake-mail-" });
+    const file = path.join(dir, "kin-fake-mail.json");
+    const vendor = makeFakeMail(fileStore(file));
+    const writer = makeFakeMail(fileStore(file));
+    vendor.addAccount({ address: OWNER, provider: "google", name: "Tidewater Freight" });
+    const handle = vendor.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+    const read = () =>
+      Effect.promise(() =>
+        handle("https://www.googleapis.com/calendar/v3/calendars/primary/events?fields=items", {
+          headers: { Authorization: `Bearer fake-at.1.${OWNER}` },
+        }),
+      );
+    writer.failWith(OWNER.toUpperCase(), 429);
+    assert.strictEqual((yield* read()).status, 429);
+    writer.failWith(OWNER, null);
+    assert.strictEqual((yield* read()).status, 200);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("stops a start-ordered Google agenda after four pages of 100", () =>
+  run(MAIL_PROVIDERS.google, ({ provider, fake, http, token, requests }) =>
+    Effect.gen(function* () {
+      for (let index = 499; index >= 0; index--) {
+        const start = NOW + index * 60_000;
+        fake.putEvent({
+          account: OWNER,
+          id: `event_tidewater_${index}`,
+          title: "Tidewater Freight",
+          start,
+          end: start + 60_000,
+          updated: NOW,
+        });
+      }
+      const agenda = yield* provider.agenda(http, token, {
+        from: "2026-11-16T00:00:00Z",
+        to: "2026-11-17T00:00:00Z",
+      });
+      assert.lengthOf(requests, 4);
+      assert.lengthOf(agenda, 301);
+      assert.deepStrictEqual(
+        agenda.slice(0, 300).map(({ id }) => id),
+        Array.from({ length: 300 }, (_, index) => `event_tidewater_${index}`),
+      );
+    }),
+  ),
+);

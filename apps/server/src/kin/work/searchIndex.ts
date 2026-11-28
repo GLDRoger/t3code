@@ -1,5 +1,6 @@
-import { KIN_SENSITIVE_FIELDS, type KinDocKind } from "@t3tools/contracts";
+import { KIN_SENSITIVE_FIELDS, type KinDocKind, KinRecordKey } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
@@ -8,6 +9,28 @@ import * as SqlClient from "effect/sql/SqlClient";
  * of the fields that are sensitive whatever its label. Labels are read at query time, so changing
  * one needs no reindex. `kin_search_rows` gives each row an INTEGER PRIMARY KEY, which VACUUM keeps.
  */
+
+const isRecordKey = Schema.is(KinRecordKey);
+
+export const keysOfSearch = (text: string): ReadonlyArray<KinRecordKey> => {
+  const parts = /^#?([a-z][a-z0-9]*)(?:(?:-| +)(\d+))?$/i.exec(text.trim());
+  if (parts === null) return [];
+  const prefix = parts[1]!.toUpperCase();
+  const number = parts[2];
+  if (number !== undefined) {
+    const key = `${prefix}-${number}`;
+    return isRecordKey(key) ? [key] : [];
+  }
+  // A company's prefix can itself end in digits. Without a separator, try each valid split.
+  const tail = prefix.search(/\d+$/);
+  if (tail === -1) return [];
+  const keys: Array<KinRecordKey> = [];
+  for (let split = tail; split < prefix.length; split++) {
+    const key = `${prefix.slice(0, split)}-${prefix.slice(split)}`;
+    if (isRecordKey(key)) keys.push(key);
+  }
+  return keys;
+};
 
 const sensitiveField = (sql: SqlClient.SqlClient) =>
   sql.or([

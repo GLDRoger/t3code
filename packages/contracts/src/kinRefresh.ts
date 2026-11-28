@@ -32,6 +32,7 @@ export const KIN_REFRESH_TOPICS = [
   "imports",
   "stop",
   "watches",
+  "pins",
   "shell",
   "numbers",
 ] as const;
@@ -66,6 +67,8 @@ export const KinRefreshes = Schema.Struct({
   stop: Schema.optional(NonNegativeInt),
   /** What Kin keeps watch on and its looks (`kin.watches.*`). Absent from older hosts. */
   watches: Schema.optional(NonNegativeInt),
+  /** Live cards pinned in chats. Absent from older hosts. */
+  pins: Schema.optional(NonNegativeInt),
   shell: Schema.optional(NonNegativeInt),
   numbers: Schema.optional(NonNegativeInt),
   /**

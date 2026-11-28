@@ -18,7 +18,6 @@ import {
 import { kinCategoryLabel } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_DEFAULT_HOME_CURRENCY,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type EnvironmentId,
   type KinAttachment,
   type KinBillRow,
@@ -28,7 +27,10 @@ import { ChevronRightIcon, FileIcon, UploadIcon, XIcon } from "lucide-react";
 import { memo, useRef, useState } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
-import { openExpandedImagePreview } from "../components/chat/ExpandedImageDialog";
+import {
+  ExpandedImageDialogHost,
+  openExpandedImagePreview,
+} from "../components/chat/ExpandedImageDialog";
 import { normalizeComposerImageFileMimeType } from "../components/chat/composerAttachmentFiles";
 import type { ComposerFileAttachment, ComposerImageAttachment } from "../composerDraftStore";
 import { AttachmentImage } from "../components/media/AttachmentImage";
@@ -50,7 +52,7 @@ import {
   releaseAttachmentUpload,
   startAttachmentUpload,
 } from "../lib/attachmentUploadQueue";
-import { prepareImageForAttachment } from "../lib/imageCompression";
+import { prepareImageForBill } from "../lib/imageCompression";
 import { cn, randomUUID } from "../lib/utils";
 import { KinNewExpenseDialog } from "./KinMoneyForms";
 import { KinLoadFailed, KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
@@ -86,10 +88,9 @@ async function uploadBill(
       file,
     };
   } else {
-    const prepared = await prepareImageForAttachment(
-      normalizeComposerImageFileMimeType(file),
-      PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-    ).catch(() => null);
+    const prepared = await prepareImageForBill(normalizeComposerImageFileMimeType(file)).catch(
+      () => null,
+    );
     if (prepared === null || !prepared.ok)
       throw new Error(
         prepared?.ok === false && prepared.reason === "too-large"
@@ -476,6 +477,7 @@ function KinBillBatchReview(
   if (state._tag === "loading") return <Loading />;
   if (state._tag === "failed")
     return <KinLoadFailed what={KIN_BILLS.loadFailed} cause={state.cause} onRetry={refresh} />;
+  const previewKey = `kin-bills:${environmentId}:${props.batchId}`;
   const counts = batch?.states ?? kinBillCounts(rows);
   const canKeepAll = actions.allowed && kinBillsCanKeepAll(counts);
   const run = (view: KinBillRowView, action: KinBillAction) => {
@@ -535,7 +537,7 @@ function KinBillBatchReview(
             key={view.key}
             view={view}
             src={urls[index] ?? null}
-            previewKey={`kin-bills:${props.batchId}`}
+            previewKey={previewKey}
             canChange={actions.allowed}
             busy={actions.busy !== null}
             problem={actions.problem?.key === view.key ? actions.problem.text : null}
@@ -543,6 +545,7 @@ function KinBillBatchReview(
           />
         ))}
       </ul>
+      <ExpandedImageDialogHost threadKey={previewKey} />
       {byHand === null ? null : (
         <KinNewExpenseDialog
           {...props}

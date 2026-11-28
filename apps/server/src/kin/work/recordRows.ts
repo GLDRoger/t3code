@@ -42,7 +42,13 @@ import { keySentSql } from "../chat/keySent.ts";
 import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
 import { billedParty, billingClientFromProject } from "./billTo.ts";
 import { fieldList, fieldText, listNameOf, parseFields } from "./lists.ts";
-import { clientCreditSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
+import {
+  clientCreditSeenBy,
+  KIN_OWNER_LEVEL,
+  type KinViewer,
+  teamSeesField,
+  teamSeesProjectChange,
+} from "./teamView.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
@@ -517,7 +523,7 @@ const refOf = (recordId: string | null, key: string | null, title: string | null
     ? undefined
     : { recordId: KinRecordId.make(recordId), key, title: title as KinRecord["title"] };
 
-export const toRecord = (row: RecordRow, now: number): KinRecord => {
+export const toRecord = (row: RecordRow, now: number, showMoney = true): KinRecord => {
   const number = row.pullUrl === null ? undefined : pullNumber(row.pullUrl);
   const ref = refOf(row.partyId, row.partyKey, row.partyTitle);
   const party = ref === undefined ? undefined : { ...ref, kind: partyKind(row.partyCategory) };
@@ -559,7 +565,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(row.sensitive === 1 && row.markedBy !== null
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
-    ...moneyOf(row),
+    ...moneyOf(row, showMoney),
     ...listNameOf(row.registerId),
     ...stepsCount(row),
     ...(row.registerId === "work" && row.urgent === 1 ? { urgent: true as const } : {}),
@@ -638,8 +644,8 @@ const handedBackOf = (row: RecordRow) => {
 };
 
 /** Its amount, own date and repeat; in a defined list, the list, its category and a balance. */
-const moneyOf = (row: RecordRow) => {
-  const amount = amountOf(row);
+const moneyOf = (row: RecordRow, showMoney: boolean) => {
+  const amount = showMoney ? amountOf(row) : undefined;
   const repeat = repeatOf(row.repeatJson);
   const tds = row.withheld - (row.credited ?? 0);
   return {
@@ -787,24 +793,38 @@ export const wordsOf = Effect.fn("KinRecords.wordsOf")(function* (
   return { writers, madeBy };
 });
 
+export type ProjectHistory = "withoutNotes" | "team";
+
 const changesOf = Effect.fn("KinRecords.changesOf")(function* (
   orgId: KinOrgId,
   recordId: string,
   limit: number = KIN_RECORD_CHANGES_CAP,
+  projectHistory?: ProjectHistory,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<ChangeRow>`SELECT seq, at, actor_kind AS "actorKind",
       actor_id AS "actorId", via, kind, fields_json AS "fieldsJson"
-    FROM kin_record_changes WHERE org_id = ${orgId} AND record_id = ${recordId}
+    FROM kin_record_changes c WHERE org_id = ${orgId} AND record_id = ${recordId}
+    ${projectHistory === "team" ? sql`AND ${teamSeesProjectChange(sql)}` : sql``}
     ORDER BY seq DESC LIMIT ${limit}`;
-  return rows.map((row): StoredChange => ({
-    seq: row.seq,
-    at: iso(row.at),
-    by: actorOf(row.actorKind, row.actorId),
-    via: row.via,
-    kind: row.kind,
-    fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
-  }));
+  return rows.flatMap((row): ReadonlyArray<StoredChange> => {
+    const fields = parseChanges(row.fieldsJson).filter(({ field }) =>
+      projectHistory === "team"
+        ? teamSeesField(field, false)
+        : field.trim() !== "" && (projectHistory === undefined || field !== "notes"),
+    );
+    if (projectHistory !== undefined && row.kind === "updated" && fields.length === 0) return [];
+    return [
+      {
+        seq: row.seq,
+        at: iso(row.at),
+        by: actorOf(row.actorKind, row.actorId),
+        via: row.via,
+        kind: row.kind,
+        fields,
+      },
+    ];
+  });
 });
 
 const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
@@ -987,13 +1007,14 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   row: RecordRow,
   now: number,
   changeLimit?: number,
+  projectHistory?: ProjectHistory,
 ) {
   const orgId = row.orgId as KinOrgId;
   const reason = row.registerId === "work" ? parseFields(row.fieldsJson).reason : undefined;
   const checklist = stepsOf(row);
   return {
     ...toRecord(row, now),
-    notes: row.notes,
+    notes: projectHistory === undefined ? row.notes : "",
     source: {
       chatId: row.sourceChatId === null ? null : KinChatId.make(row.sourceChatId),
       messageId: row.sourceMessageId === null ? null : KinMessageId.make(row.sourceMessageId),
@@ -1008,7 +1029,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     ...(row.registerId === "work" ? { checklist } : {}),
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
-    changes: yield* changesOf(orgId, row.recordId, changeLimit),
+    changes: yield* changesOf(orgId, row.recordId, changeLimit, projectHistory),
     seq: yield* recordSeq(orgId, row.recordId),
     ...(isBuiltIn(row.registerId) ? {} : yield* definedDetail(row)),
     ...(yield* entryAfterReading(orgId, row.recordId).pipe(

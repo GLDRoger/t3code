@@ -139,6 +139,7 @@ const waitsForRow = {
   excerpt: "Workshop, 6 hours at the day rate",
   waitsFor: { personId: "person-2", name: "Rhea" },
 };
+const activeWakeup = { agentId: "agent-1", wakeupId: "wakeup-1" };
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
 const reaction = {
   orgId: "org-1",
@@ -201,6 +202,47 @@ const turnChange = {
   undoable: true,
   undone: false,
 };
+const pinId = "kin-chat-pin-8e592342";
+const pinsInput = { orgId: "kin-default", chatId: "kin-chat-13ad6ddc" };
+const pinMeta = { pinId, pinnedAt: at, pinnedBy: "Rhea" };
+const livePins = [
+  {
+    ...pinMeta,
+    _tag: "task",
+    key: "W-142",
+    title: "Check the cold room",
+    state: "open",
+    dueAt: at,
+    dueAllDay: true,
+    steps: { done: 2, total: 5 },
+    late: false,
+  },
+  {
+    ...pinMeta,
+    _tag: "project",
+    key: "P-73",
+    name: "Tidewater Freight",
+    state: "doing",
+    targetAt: at,
+    targetAllDay: false,
+    done: 7,
+    total: 12,
+    late: 2,
+  },
+  {
+    ...pinMeta,
+    _tag: "goal",
+    key: "G-22",
+    title: "Juniper Cold Chain rollouts",
+    state: "open",
+    measure: "manual",
+    unit: "rollouts",
+    current: 62,
+    target: 100,
+    dueOn: "2026-11-20",
+    behind: true,
+  },
+];
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
@@ -245,6 +287,7 @@ const samples = {
     sendCard,
     { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
     { ...sendCard, mayHaveGone: { tryId: "ask-1", at } },
+    { ...sendCard, action: "call", calendarDelete: true },
   ],
   KinChoiceCardState: [
     choice,
@@ -295,6 +338,7 @@ const samples = {
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
     { ...message, body: "", status: "deleted", withdrawn: { why: "The client paid", at } },
+    { ...message, progress: true },
   ],
   KinMessageWithdrawn: [
     { why: "The client paid", at },
@@ -321,11 +365,12 @@ const samples = {
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
     waitsForRow,
+    { ...waiting, ordinaryTurnAsk: activeWakeup },
   ],
   KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
   KinChatSummary: [
     summary,
-    { ...summary, lastMessage: null },
+    { ...summary, lastMessage: null, working: true, activeWakeups: [activeWakeup] },
     { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
   ],
   KinChatListEvent: [
@@ -337,6 +382,7 @@ const samples = {
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
     { _tag: "reset", lastSeq: 1 },
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
+    { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, clearUpdates: true },
     { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "message", message },
     { _tag: "widget", widget },
@@ -422,6 +468,17 @@ const samples = {
     { chatId: "chat-1", afterSeq: 0 },
     { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
   ],
+  KinChatPinId: [pinId],
+  KinChatPin: [
+    ...livePins,
+    { ...pinMeta, _tag: "gone" },
+    { _tag: "gone", pinId },
+    { _tag: "hidden", pinId },
+  ],
+  KinChatPinsInput: [pinsInput],
+  KinChatPinInput: [{ ...pinsInput, key: "P-73" }],
+  KinChatUnpinInput: [{ ...pinsInput, pinId }],
+  KinChatPinsResult: [{ pins: [] }, { pins: livePins }],
   KinChatHistoryInput: [{ chatId: "chat-1", beforeSeq: 2, limit: 100 }],
   KinChatHistoryResult: [
     { messages: [message], widgets: [widget], hasMore: false },
@@ -545,6 +602,26 @@ const decodeSend = Schema.decodeUnknownSync(Kin.KinMessagesSendInput);
 const decodeTurnChanges = Schema.decodeSync(Kin.KinTurnChanges);
 const decodeHistory = Schema.decodeSync(Kin.KinChatHistoryInput);
 
+const decodePin = Schema.decodeUnknownSync(Kin.KinChatPin);
+const encodePin = Schema.encodeSync(Kin.KinChatPin);
+
+it("encodes a hidden pin without source or author metadata", () => {
+  const value = {
+    _tag: "hidden",
+    pinId: "kin-chat-pin-8e592342",
+    title: "Juniper Cold Chain",
+    key: "P-5",
+    pinnedBy: "Rhea",
+    pinnedAt: at,
+    total: 73451,
+  };
+  const decoded = decodePin(value);
+  expect(encodePin(decoded)).toEqual({
+    _tag: "hidden",
+    pinId: value.pinId,
+  });
+});
+
 describe("Kin chat contracts", () => {
   it.each(Object.entries(samples))("round-trips %s", (name, values) => {
     const schema: Schema.Codec<unknown> = Kin[name as SchemaName];
@@ -658,7 +735,7 @@ describe("Kin chat contracts", () => {
 
   // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
   it("an older client still reads a waiting row and a card with the newer fields", () => {
-    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+    expect(decodeWaitingBefore({ ...waitsForRow, ordinaryTurnAsk: activeWakeup })).toStrictEqual(
       decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
     );
     const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;

@@ -43,7 +43,7 @@ export interface Observed {
  * A provider's test double for the conformance suite: it drives the provider's T3 seam, through
  * its descriptor's `install`, with a recording stand-in for the provider process.
  */
-export interface ProviderFake {
+export interface ProviderFake<Session extends Observed = Observed> {
   readonly driver: string;
   /** Models the provider runs, the first its default; one its catalog lacks, if it has a catalog. */
   readonly models: ReadonlyArray<string>;
@@ -53,5 +53,5 @@ export interface ProviderFake {
     readonly model: string;
     /** The host's environment, Kin's secrets included, as the provider would inherit it. */
     readonly environment: Readonly<Record<string, string>>;
-  }) => Effect.Effect<Observed, never, ServerConfig | FileSystem.FileSystem | Path.Path>;
+  }) => Effect.Effect<Session, never, ServerConfig | FileSystem.FileSystem | Path.Path>;
 }

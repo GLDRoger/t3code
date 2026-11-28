@@ -128,7 +128,7 @@
     "--color-primary-shadow": "#000000",
     "--color-secondary": "#111111",
     "--color-secondary-foreground": "#f5f5f5",
-    "--color-secondary-border": "#191919",
+    "--color-secondary-border": "#3e3e3e",
     "--color-switch-active-track": "#346bf1",
     "--color-switch-active-thumb": "#ffffff",
     "--color-switch-inactive-track": "#111111",

@@ -49,6 +49,7 @@ const memory = Layer.succeed(
         items: [],
         bodies: new Map(),
       }),
+    checkoutPaths: () => Effect.die("Unused"),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),

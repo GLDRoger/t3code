@@ -3,6 +3,7 @@ import {
   KIN_BILL_BATCH_CARD,
   KIN_DOC_CARD,
   KIN_HOST_TROUBLE_CARD,
+  KIN_MAIL_RULE_CARD_TYPE,
   KIN_MEMORY_CHANGES_CARD,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
@@ -30,6 +31,7 @@ import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
 import { kinHostTroubleCardView } from "./kinHostCare.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
+import { kinMailRuleCardView } from "./kinMailRules.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinZoneLabel } from "./kinTimeZone.ts";
 import {
@@ -101,6 +103,8 @@ export type KinCardView =
   | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
   /** Drawn with the reader's clock (`kinHostTroubleCardView`), so it carries the widget. */
   | { readonly kind: "host_trouble"; readonly widget: KinWidget }
+  /** Drawn with the reader's clock and level (`kinMailRuleCardView`), so it carries the widget. */
+  | { readonly kind: "mail_rule"; readonly widget: KinWidget }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -652,6 +656,10 @@ function kinLiveCardView(
       return kinHostTroubleCardView(widget, String) === null
         ? unknown(widget)
         : { kind: "host_trouble", widget };
+    case KIN_MAIL_RULE_CARD_TYPE:
+      return kinMailRuleCardView(widget, { nowMs: 0 }) === null
+        ? unknown(widget)
+        : { kind: "mail_rule", widget };
     default:
       return unknown(widget);
   }

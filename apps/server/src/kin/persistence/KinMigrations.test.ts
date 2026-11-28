@@ -1,4 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
+import { latestOwnTextAtSql } from "../chat/KinChatRepository.ts";
+import K001ChatCore from "./migrations/K001_ChatCore.ts";
+import K031LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
@@ -24,14 +26,13 @@ import K079ImportRuns from "./migrations/K079_ImportRuns.ts";
 import K088MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import K107Connections from "./migrations/K107_Connections.ts";
 import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
+import BillReadsMigration from "./migrations/K217_BillReads.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
+import BillCropsMigration from "./migrations/K236_BillCrops.ts";
+import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 
-import { assert, beforeAll, describe, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -43,6 +44,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { PreparedJson } from "../connections/Sending.ts";
 import { kinMigrations, runKinMigrations } from "./KinMigrations.ts";
 import * as KinPersistence from "./KinPersistence.ts";
+import { makeMigratedSqliteLayer } from "./migratedSqlite.testkit.ts";
 
 const decodePrepared = Schema.decodeSync(PreparedJson);
 
@@ -70,6 +72,7 @@ const tableNames = [
   "kin_card_plans",
   "kin_chat_levels",
   "kin_chat_members",
+  "kin_chat_pins",
   "kin_chats",
   "kin_client_touches",
   "kin_company_profile",
@@ -113,6 +116,9 @@ const tableNames = [
   "kin_lead_tool_calls",
   "kin_leads",
   "kin_list_proposals",
+  "kin_looks",
+  "kin_mail_rule_runs",
+  "kin_mail_rules",
   "kin_memory_heads",
   "kin_memory_labels",
   "kin_memory_reads",
@@ -368,42 +374,7 @@ const historyOf = (list: typeof kinMigrations) =>
   list.map(([migration_id, name]) => ({ migration_id, name }));
 const freshLayer = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 
-const tempDir = Effect.acquireRelease(
-  Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-migrations-"))),
-  (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-);
-
-// Migrating is most of a case's time, so each case opens its own copy of one migrated database.
-const migratedFile = Deferred.makeUnsafe<string>();
-beforeAll(() =>
-  Effect.gen(function* () {
-    const file = NodePath.join(yield* tempDir, "migrated.sqlite");
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`VACUUM INTO ${file}`;
-    }).pipe(Effect.provide(freshLayer));
-    yield* Deferred.succeed(migratedFile, file);
-  }),
-);
-
-// The one setting of the server's setup that changes what a case can write.
-const foreignKeysOn = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA foreign_keys = ON`;
-  }),
-);
-
-const layer = Layer.unwrap(
-  Effect.gen(function* () {
-    const file = NodePath.join(yield* tempDir, "kin.sqlite");
-    NodeFS.copyFileSync(yield* Deferred.await(migratedFile), file);
-    return Layer.provideMerge(
-      KinPersistence.layer,
-      Layer.provideMerge(foreignKeysOn, NodeSqliteClient.layer({ filename: file })),
-    );
-  }),
-);
+const layer = KinPersistence.layer.pipe(Layer.provideMerge(makeMigratedSqliteLayer()));
 
 const kinSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -606,6 +577,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_bill_reads_event" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
+          { name: "idx_kin_chat_pins_source" },
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_client_touches_party" },
           { name: "idx_kin_connection_calls_connection" },
@@ -625,6 +597,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_leads_org_domain" },
           { name: "idx_kin_messages_agent_thread" },
           { name: "idx_kin_messages_changes" },
+          { name: "idx_kin_messages_conversation" },
           { name: "idx_kin_offline_skips_at" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
@@ -675,6 +648,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
           { name: "idx_kin_troubles_open" },
+          { name: "idx_kin_waiting_message_id" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
@@ -704,6 +678,26 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_widgets_type_closed_at') ORDER BY seqno`,
           [{ name: "type" }, { name: "closed_at" }],
         );
+        const recentOwnText = latestOwnTextAtSql(
+          sql,
+          { orgId: sql`${"org_tidewater"}`, chatId: sql`${"chat"}`, personId: sql`${"person"}` },
+          "2026-11-27T10:00:00.000Z",
+          "2026-11-27T10:10:00.000Z",
+        );
+        const conversationPlan = yield* sql<{
+          detail: string;
+        }>`EXPLAIN QUERY PLAN ${recentOwnText}`;
+        assert.match(
+          conversationPlan[0]?.detail ?? "",
+          /SEARCH kin_messages USING INDEX idx_kin_messages_conversation .*created_at>\? AND created_at<\?/,
+        );
+        const waitingPlan = yield* sql<{ detail: string }>`
+          EXPLAIN QUERY PLAN
+          SELECT 1 FROM kin_waiting
+          WHERE org_id = 'org_tidewater' AND message_id = 'msg_01jkh000000000000000000000'
+            AND widget_id IS NULL AND resolved_at IS NOT NULL
+        `;
+        assert.match(waitingPlan[0]?.detail ?? "", /USING INDEX idx_kin_waiting_message_id/);
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_waiting_person_resolved_at') ORDER BY seqno`,
           [{ name: "person_id" }, { name: "resolved_at" }],
@@ -2357,6 +2351,146 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
+    "the bill crop migration adds nullable columns to the old bill table without changing its rows",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // K237 rebuilds lead deliveries, so its tables are here too.
+        yield* K001ChatCore;
+        yield* K031LeadDeliveries;
+        yield* BillReadsMigration;
+        yield* sql`CREATE TABLE kin_sql_migrations (migration_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
+        for (const [id, name] of kinMigrations.filter(([id]) => id <= 235))
+          yield* sql`INSERT INTO kin_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
+        file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id, widget_id,
+        added_by_person_id, added_at, state, read_json, record_id)
+        VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.png', 'image', 'image/png', 8,
+          'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'read', '{"amount":"1.00"}', 'expense')`;
+        const before = yield* sql`SELECT * FROM kin_bill_reads`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [236, "BillCrops"],
+          [237, "CardTapDeliveries"],
+        ]);
+        assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
+          { ...before[0], parent_sha256: null, cut_page: null, cut_box_json: null },
+        ]);
+        yield* sql`UPDATE kin_bill_reads SET parent_sha256 = 'parent', cut_page = 1,
+          cut_box_json = '[0,0,50,50]'`;
+        const cropped = yield* sql`SELECT * FROM kin_bill_reads`;
+        yield* BillCropsMigration;
+        assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, cropped);
+        assert.deepStrictEqual(yield* runKinMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("adds card taps to lead deliveries and preserves every legacy row byte for byte", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* K001ChatCore;
+      yield* K031LeadDeliveries;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org-tidewater', 'Tidewater Freight', '2026-11-27')`;
+      yield* sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B7', 'reminder', 'chief', 'direct', 'card-1',
+          'reminder', '{ "label": "Rhea" }', 'Rhea’s reminder', 100, 'pending', NULL, 7, 8),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B8', 'routine', 'chief', 'direct', 'card-2',
+          'routine', '{"items":[1,2]}', 'Routine', 200, 'delivered', 'message-2', 9, 10),
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1B9', 'scheduled_task', 'chief', 'direct', 'card-3',
+          'scheduled_task', '{"done":false}', 'Scheduled task', 300, 'fallback', NULL, 11, 12)`;
+      const rows = sql`SELECT *, hex(state_json) AS state_bytes, hex(fallback_body) AS body_bytes
+        FROM kin_lead_deliveries ORDER BY org_id, event_id`;
+      const before = yield* rows;
+      assert.lengthOf(before, 3);
+      const insertTap = sql`INSERT INTO kin_lead_deliveries VALUES
+        ('org-tidewater', '01KAZJ405NE9CCR3QZ4Q22M1BA', 'card_tap', 'chief', 'direct', 'card-4',
+          'choice', '{}', '', 400, 'pending', NULL, 13, 14)`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(insertTap)));
+      yield* sql.withTransaction(CardTapDeliveries);
+      assert.deepStrictEqual(yield* rows, before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master
+        WHERE tbl_name = 'kin_lead_deliveries' AND name = 'idx_kin_lead_deliveries_pending'`,
+        [{ name: "idx_kin_lead_deliveries_pending" }],
+      );
+      yield* insertTap;
+      assert.lengthOf(yield* rows, 4);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K231 and K235 keep arrival rows through upgrade and rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP TABLE IF EXISTS kin_mail_rules`;
+      yield* sql`DROP TABLE IF EXISTS kin_mail_rule_runs`;
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_history`;
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_mail`;
+      yield* sql`DROP INDEX IF EXISTS kin_arrivals_rule_playbook`;
+      const columns = [
+        "rule_id",
+        "rule_state",
+        "has_file",
+        "sender_check",
+        "rule_held_at",
+        "rule_hold_reason",
+        "rule_mail_key",
+        "rule_playbook_route",
+      ];
+      for (const name of columns) {
+        if (
+          (yield* sql`SELECT name FROM pragma_table_info('kin_arrivals') WHERE name = ${name}`)
+            .length
+        )
+          yield* sql`ALTER TABLE kin_arrivals DROP COLUMN ${sql(name)}`;
+      }
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Tidewater Freight', '2026-11-11')`;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES ('org', 'mail', 'google', 'Mail', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 1, 1)`;
+      yield* sql`INSERT INTO kin_arrivals
+        (org_id, arrival_id, connection_id, message_id, noticed_at, state)
+        VALUES ('org', 'arrival', 'mail', 'message', 1, 'settled')`;
+      const rows = sql`SELECT arrival_id, rule_id, rule_state, has_file, sender_check
+        FROM kin_arrivals`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
+      assert.deepStrictEqual(yield* rows, [
+        {
+          arrival_id: "arrival",
+          rule_id: null,
+          rule_state: null,
+          has_file: null,
+          sender_check: null,
+        },
+      ]);
+      yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what, agent_id,
+        chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at, updated_at)
+        VALUES ('org', 'rule', 'mail', '{}', 'File the bill.', 'finance', 'direct', 'rhea', 'tap',
+          'hash', 'on', 30, 1, 1)`;
+      yield* sql`UPDATE kin_arrivals SET rule_id = 'rule', rule_state = 'woke',
+        has_file = 1, sender_check = 'passed'`;
+      const invalid = yield* Effect.exit(sql`UPDATE kin_arrivals SET has_file = 2`);
+      assert.isTrue(Exit.isFailure(invalid));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
+      assert.deepStrictEqual(yield* rows, [
+        {
+          arrival_id: "arrival",
+          rule_id: "rule",
+          rule_state: "woke",
+          has_file: 1,
+          sender_check: "passed",
+        },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT state, fired, activation FROM kin_mail_rules`, [
+        { state: "on", fired: 0, activation: 1 },
+      ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
     "K206 adds an empty shell table for existing companies and keeps a stored shell on rerun",
     () =>
       Effect.gen(function* () {
@@ -3619,7 +3753,8 @@ const legacyBankAlerts = Effect.gen(function* () {
   yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
   yield* sql`DROP TABLE kin_bank_alerts`;
   yield* LegacyBankAlerts;
-  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
+  yield* sql`DROP TABLE IF EXISTS kin_looks`;
+  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 229`;
   yield* sql`INSERT INTO kin_orgs VALUES
     ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
   yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
@@ -3646,12 +3781,36 @@ const bankAlertIndexes = (sql: SqlClient.SqlClient) =>
     (SELECT group_concat(i.name, ',') FROM pragma_index_info(l.name) i) AS columns
     FROM pragma_index_list('kin_bank_alerts') l ORDER BY l.name`;
 
+it.effect("Looks upgrades K232 with one mark per org, person and record", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    yield* sql`DROP TABLE IF EXISTS kin_looks`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id > 232`;
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(233));
+    assert.deepStrictEqual(
+      yield* sql`PRAGMA table_info(kin_looks)`.pipe(
+        Effect.map((columns) =>
+          columns.map((column) => [column.name, column.type, column.notnull, column.pk]),
+        ),
+      ),
+      [
+        ["org_id", "TEXT", 1, 1],
+        ["person_id", "TEXT", 1, 2],
+        ["record_id", "TEXT", 1, 3],
+        ["looked_at", "INTEGER", 1, 0],
+      ],
+    );
+    assert.deepStrictEqual(yield* runKinMigrations(), []);
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
 it.effect("K229 carries only companies and endings with existing bank alerts", () =>
   Effect.gen(function* () {
     const sql = yield* legacyBankAlerts;
     const rows = yield* bankAlertRows(sql);
     const indexes = yield* bankAlertIndexes(sql);
-    assert.deepStrictEqual(yield* runKinMigrations(), [[229, "BankSenders"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(229));
     // Every old row and value survives the table rebuild, and so do the old indexes.
     assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
     assert.deepStrictEqual(

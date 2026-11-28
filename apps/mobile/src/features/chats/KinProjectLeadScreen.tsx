@@ -13,7 +13,6 @@ import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
-import { EmptyState } from "../../components/ui/EmptyState";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
@@ -21,7 +20,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinWorkProblemNotice } from "./components/KinWorkPieces";
+import { KinMissingLink, KinWorkProblemNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinProjectPage, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
@@ -52,10 +51,11 @@ export function KinProjectLeadScreen({ route }: StaticScreenProps<KinProjectLead
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {environmentId === null || orgId === null || key === null ? (
-            <EmptyState
-              variant="plain"
+            <KinMissingLink
               title="This link doesn't name a project"
-              detail="Open Work from your Kin chats."
+              kind="project"
+              environmentId={environmentId}
+              orgId={orgId}
             />
           ) : (
             <KinProjectLeadChoices environmentId={environmentId} orgId={orgId} projectKey={key} />

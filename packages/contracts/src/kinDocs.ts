@@ -92,6 +92,15 @@ export type KinDocProvenance = typeof KinDocProvenance.Type;
  * stored row and the file's own bytes, never from what the worker reported.
  */
 export const KinDocFile = Schema.Struct({
+  source: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literal("mail"),
+      from: Schema.NullOr(Schema.String),
+      date: Schema.NullOr(Schema.String),
+      untrusted: Schema.Literal(true),
+      privateTo: Schema.optional(KinPersonId),
+    }),
+  ),
   attachmentId: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
   mimeType: TrimmedNonEmptyString,
@@ -189,6 +198,7 @@ export const KinDocLatestSlim = Schema.Struct({
   kind: KinDocVersionKind,
   summary: KinText,
   provenance: Schema.Struct({ by: KinWorkActor }),
+  askedBy: Schema.optional(KinPersonId),
 });
 export type KinDocLatestSlim = typeof KinDocLatestSlim.Type;
 
@@ -215,6 +225,14 @@ export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
   /** The version shown: the latest unless one was asked for. */
   version: KinDocVersion,
+  lookedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  sinceLooked: Schema.optional(
+    Schema.Struct({
+      total: NonNegativeInt,
+      from: PositiveInt,
+      versions: Schema.Array(KinDocLatestSlim).check(Schema.isMaxLength(3)),
+    }),
+  ),
   body: KinText,
   outline: Schema.Array(KinDocSection),
   links: Schema.Array(KinRecordLink),
@@ -612,6 +630,7 @@ export const KinSearchHit = Schema.Struct({
   recordId: KinRecordId,
   key: Schema.Union([KinRecordKey, KinMemoryItemId]),
   kind: KinSearchKind,
+  bankTransaction: Schema.optional(Schema.Literal(true)),
   title: KinTrimmedText,
   /** A few plain words around the match; never markup. */
   snippet: KinText,

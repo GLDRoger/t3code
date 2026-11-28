@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { cappedText, encoded } from "../lead/quote.ts";
 import { tracked } from "../lead/tracked.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
 import { declineLine, givenDeclines } from "./declines.ts";
@@ -30,6 +31,7 @@ import * as KinPulse from "./KinPulse.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { inOwnerTime } from "./checkInSeeds.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { readNowState, RoutineHasNowState } from "./nowState.ts";
 import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
@@ -58,12 +60,16 @@ export const outsideText = (event: KinEvent) =>
 /** Under `PROMPT_HEADINGS.left`: lines someone left with an agent for this check-in (`kin_relay`). */
 export const LEFT_RULE =
   "Someone left these for the owner in another chat, to hear at this check-in rather than at once. Tell the owner each one once, among the rest: who it is from and what it says.";
+const CHECK_IN_NOW_RULE =
+  "`now` is what Kin holds as true at this moment, and a line someone wrote earlier carries its age in `written`: where the two disagree, go by `now`, leaving the old claim out or saying it has changed. Give each thing that needs the owner its own line, never two in one sentence or paragraph.";
 /** The morning check-in, which took over the morning brief's sections; the app greets above it. */
 export const MORNING_RULE =
   "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. The owner reads it as a page under a greeting the app writes, so write no greeting and put everything under headings, each on its own line: `## Needs you`, `## Money`, `## Clients`, `## Work`, `## Coming up`. Use only the ones you have something for, Needs you first, a few short lines under each, and tell every pulse fact under the heading it belongs to, as the pulse rule says. It is sent on a quiet morning too: when nothing here needs them, say so in a line under `## Needs you`, then `## Coming up` only if something is.";
 /** The evening check-in, which took over the evening summary's sections. */
 export const EVENING_RULE =
-  "This is the evening summary: the day as these facts have it, what got done, what moved or slipped, and what is still open and carries to tomorrow. A line marked done says a person or agent marked a task done: say it that way, naming who when the line does, and never retell the task's title as something that happened. Like the morning page it reads under a greeting the app writes, so write no greeting and put it under headings, each on its own line, a few short lines under each. `today` is Kin's own record of what happened in the company today, whatever an earlier message already told the owner: sum it up, and never call a day quiet or say nothing was done while it has lines. Anything else they were told today, tell again only where it changed.";
+  "This is the evening summary: the day as these facts have it, what got done, what moved or slipped, and what is still open and carries to tomorrow. A line marked done says a person or agent marked a task done: say it that way, naming who when the line does, and never retell the task's title as something that happened. Like the morning page it reads under a greeting the app writes, so write no greeting and put it under headings, each on its own line, a few short lines under each. `today` is Kin's own record of what happened in the company today, whatever an earlier message already told the owner: sum it up, and never call a day quiet or say nothing was done while it has lines. Anything else they were told today, tell again only where it changed." +
+  " " +
+  CHECK_IN_NOW_RULE;
 const SECTION_CAP = 30;
 const MAILED_SENSES = new Set<KinPulseFact["sense"]>(["invoice_overdue", "quote_unanswered"]);
 const CHECK_IN_CAP = 200;
@@ -105,11 +111,32 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const gone = wokeFor.filter((key) => !open.has(key));
   const setAside =
     tell === undefined ? [] : (yield* givenDeclines(input.orgId, input.now, tell)).map(declineLine);
-  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0)
-    return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const [checkInOwner] =
+    checkIn && !(yield* RoutineHasNowState)
+      ? yield* sql<{ id: string }>`SELECT a.owner_person_id AS id FROM kin_agents a
+        WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId} AND a.retired_at IS NULL
+          AND ${sql.literal(ownerLevelSql("a.org_id", "a.owner_person_id"))}`
+      : [];
+  const quiet =
+    (checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0;
+  if (quiet && checkInOwner === undefined) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
+  const zone = yield* ownerZone(input.orgId);
+  const now =
+    checkInOwner === undefined
+      ? undefined
+      : yield* readNowState({
+          orgId: input.orgId,
+          owner: KinPersonId.make(checkInOwner.id),
+          at: input.now,
+          zone,
+          links: [],
+          pulseRecords: [...new Set(shown.flatMap((fact) => fact.subject.recordId ?? []))],
+        });
+  if (quiet && now?.lines.length === 0) return undefined;
   // An overdue invoice or unanswered quote comes with the mail it went in, to reply in that thread.
   const mailed = new Map<string, SentMail>();
   for (const fact of shown)
@@ -138,7 +165,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
   const starts = yield* headStarts(input.orgId, shown, input.ownAccounts ?? []);
-  const zone = yield* ownerZone(input.orgId);
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
     : new Map<string, string>();
@@ -198,6 +224,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
   return {
+    ...(now === undefined ? {} : { now }),
     asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),

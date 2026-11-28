@@ -4,7 +4,8 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
+import { turnEventToolkit } from "../../lead/eventIds.ts";
 
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -51,7 +52,7 @@ const shows =
 const writes = "The same call again in this turn returns what it made.";
 
 /** Docs: what agents write for a reader and keep current. People read them; only agents write. */
-export const KinDocsToolkit = Toolkit.make(
+export const KinDocsToolkit = turnEventToolkit(
   Tool.make("doc_create", {
     ...shared,
     description: `Write a new doc (a plan, brief, runbook, statement of work, meeting notes or research) in markdown with ## headings, so it edits by section. File it: kind, and a client and project, or company true for the company's own; if you can't tell whose it is, ask in your reply and file it later with doc_move. links ties it to entries or docs. A post, mail or proposal to draft is one doc each, with draft. whatWeSell true starts the company's one What we sell doc (one ## per offering, with what it does, who it's for, its price and what it doesn't do as ### under it), or gives the existing one's key to change with doc_edit. ${shows} Returns its key and outline; the same call again in this turn returns it. Asked for a doc, reply in one short sentence on what you wrote: its card opens it. ${marked}`,

@@ -1,9 +1,11 @@
+import type { KinMailRules } from "./arrivals/KinMailRules.ts";
 import type * as Layer from "effect/Layer";
 import type { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import type { KinIdentity } from "./chat/KinIdentity.ts";
 import type { KinChatService } from "./chat/KinChatService.ts";
+import type { KinChatPins } from "./chat/pins.ts";
 import type { KinChatHub } from "./chat/KinChatHub.ts";
 import type { KinGroups } from "./chat/KinGroups.ts";
 import type { KinRefreshHub } from "./chat/KinRefreshHub.ts";
@@ -55,6 +57,7 @@ export type Services =
   | KinIdentity
   | KinDevClock
   | KinChatService
+  | KinChatPins
   | KinGroups
   | KinBudget
   | KinChatRepository
@@ -83,6 +86,7 @@ export type Services =
   | KinWorkspace
   | KinDocRenderer
   | KinToolchain
+  | KinMailRules
   | KinConnections
   | KinGitHubLogin
   | KinGitHubApp

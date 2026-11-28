@@ -9,50 +9,63 @@ import { claude } from "./claude.ts";
 
 const Runner = ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
 
+export const captureClaudeOptions = (
+  { thread, cwd, model, environment }: Parameters<ProviderFake["open"]>[0],
+  toolLookup = true,
+) =>
+  Effect.gen(function* () {
+    const original = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model,
+      },
+      nativeThreadId: "native",
+      resume: false,
+      cwd,
+      attachmentsDir: "/attachments",
+      environment,
+      ...(toolLookup
+        ? { mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1:3773/kin/mcp" } } }
+        : {}),
+    });
+    const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+    const base = Layer.succeed(
+      Runner,
+      Runner.of({
+        allocateSessionId: Effect.succeed("session"),
+        open: (input) =>
+          Effect.sync(() => opened.push(input.options)).pipe(
+            Effect.andThen(Effect.die("no Claude process in the fake")),
+          ),
+        forkSession: () => Effect.die("unused"),
+        subagentLaunchToolUseId: () => Effect.die("unused"),
+        subagentModel: () => Effect.succeed(null),
+        assertComplete: Effect.void,
+      }),
+    );
+    yield* Effect.gen(function* () {
+      yield* (yield* Runner)
+        .open({
+          threadId: ThreadId.make(thread),
+          providerSessionId: ProviderSessionId.make("session"),
+          options: original,
+        })
+        .pipe(Effect.exit);
+    }).pipe(Effect.provide(claude.install(base)), Effect.orDie);
+    const [options] = opened;
+    if (options === undefined) return yield* Effect.die("Claude did not open");
+    return { original, options };
+  });
+
 /** Claude's session is one options object; the fake records what Kin hands the SDK. */
 export const claudeFake: ProviderFake = {
   driver: claude.driver,
   // The second predates tool_reference blocks: Claude Code lists every tool for it itself.
   models: ["claude-opus-5-5", "claude-3-5-haiku"],
-  open: ({ thread, cwd, model, environment }) =>
+  open: (input) =>
     Effect.gen(function* () {
-      const original = ClaudeAdapterV2.makeClaudeQueryOptions({
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model,
-        },
-        nativeThreadId: "native",
-        resume: false,
-        cwd,
-        attachmentsDir: "/attachments",
-        environment,
-        mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1:3773/kin/mcp" } },
-      });
-      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
-      const base = Layer.succeed(
-        Runner,
-        Runner.of({
-          allocateSessionId: Effect.succeed("session"),
-          open: (input) =>
-            Effect.sync(() => opened.push(input.options)).pipe(
-              Effect.andThen(Effect.die("no Claude process in the fake")),
-            ),
-          forkSession: () => Effect.die("unused"),
-          subagentLaunchToolUseId: () => Effect.die("unused"),
-          subagentModel: () => Effect.succeed(null),
-          assertComplete: Effect.void,
-        }),
-      );
-      yield* Effect.gen(function* () {
-        yield* (yield* Runner)
-          .open({
-            threadId: ThreadId.make(thread),
-            providerSessionId: ProviderSessionId.make("session"),
-            options: original,
-          })
-          .pipe(Effect.exit);
-      }).pipe(Effect.provide(claude.install(base)), Effect.orDie);
-      const options = opened[0] ?? original;
+      const { original, options } = yield* captureClaudeOptions(input);
+      const { environment } = input;
       const settings = typeof options.settings === "object" ? options.settings : undefined;
       // A preset (or no list) is Claude Code's whole tool set, ToolSearch with it.
       const listed = Array.isArray(options.tools) ? options.tools : undefined;

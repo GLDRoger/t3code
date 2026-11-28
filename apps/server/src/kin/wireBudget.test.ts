@@ -6,6 +6,10 @@ import {
   KinAccessMeResult,
   KIN_REFRESH_TOPICS,
   KinAgentId,
+  KinDocsRpcs,
+  KinWorkLookedInput,
+  KinWorkRpcs,
+  KinChatPinsResult,
   KinChatHistoryResult,
   KinChatListEvent,
   KinChatSummary,
@@ -53,6 +57,7 @@ import {
   KinIdentityConfig,
   type PersonIdentity,
 } from "./chat/KinIdentity.ts";
+import * as Pins from "./chat/pins.ts";
 import * as RefreshHub from "./chat/KinRefreshHub.ts";
 import { environment } from "./chat/TaskCard.testkit.ts";
 import * as KinEventQueue from "./lead/KinEventQueue.ts";
@@ -66,6 +71,7 @@ import * as Docs from "./work/docs.ts";
 import * as Numbers from "./numbers/KinNumbers.ts";
 import * as Goals from "./work/goals.ts";
 import * as KinRecords from "./work/KinRecords.ts";
+import * as Clients from "./work/ownerClients.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
 import { demandOfTick, makeMoneyStream } from "./work/moneyStream.ts";
 import * as Money from "./work/ownerMoney.ts";
@@ -629,9 +635,79 @@ const numbersBytes = Effect.fn("KinWireBudget.numbers")(function* () {
   };
 });
 
+const looksBytes = Effect.fn("KinWireBudget.looks")(function* () {
+  const people = as(ownerId);
+  const editing = as(coOwnerId);
+  const project = yield* Clients.createProject(people, {
+    orgId,
+    name: "Tidewater Freight",
+    clientRequestId: "01KAK0XMVCXC4FF969979K33DA",
+  });
+  const task = yield* Work.create(people, {
+    orgId,
+    title: "Check the packing list",
+    project: project.key,
+    clientRequestId: "01KAK0XMVCXC4FF969979K33DB",
+  });
+  const doc = yield* Docs.create(
+    orgId,
+    ownerWriter,
+    {},
+    {
+      title: "Juniper Cold Chain packing list",
+      body: "Confirm the packing list.",
+      owner: ownerWriter.actor,
+      summary: "Created the packing list",
+      originKey: "wire-budget:looks",
+    },
+  );
+  const entry = Work.get(people, { orgId, key: task.key });
+  const document = OwnerDocs.get(people, { orgId, key: doc.row.key });
+  const page = Clients.project(people, { orgId, key: project.key });
+  const first = { entry: yield* entry, document: yield* document, project: yield* page };
+  const payload = { orgId, recordId: task.recordId, upTo: first.project.asOf };
+  for (const recordId of [task.recordId, first.document.recordId, project.recordId])
+    yield* Work.looked(people, { ...payload, recordId });
+  for (const notes of ["Check loading", "Update the label", "Verify the route", "Call the depot"]) {
+    yield* TestClock.adjust(1);
+    const { rev } = yield* Work.get(editing, { orgId, key: task.key });
+    yield* Work.update(editing, { orgId, key: task.key, rev, notes });
+    yield* Docs.edit(
+      orgId,
+      { ...ownerWriter, actor: { _tag: "person", personId: coOwnerId } },
+      {},
+      { key: doc.row.key },
+      { operations: [{ op: "append", text: notes }], summary: notes, originKey: `looks:${notes}` },
+    );
+  }
+  const current = { entry: yield* entry, document: yield* document, project: yield* page };
+  const schemas = {
+    entry: successOf(KinWorkRpcs, "kin.work.get"),
+    document: successOf(KinDocsRpcs, "kin.docs.get"),
+    project: successOf(KinWorkRpcs, "kin.work.project"),
+  };
+  expect(current.document.sinceLooked?.total).toBe(4);
+  expect(current.document.sinceLooked?.versions).toHaveLength(3);
+  expect(current.project.sinceLooked?.total).toBe(4);
+  expect(current.project.sinceLooked?.items).toHaveLength(3);
+  return {
+    "looks.entry.first.bytes": wireBytes(schemas.entry, first.entry),
+    "looks.entry.return.bytes": wireBytes(schemas.entry, current.entry),
+    "looks.doc.first.bytes": wireBytes(schemas.document, first.document),
+    "looks.doc.return.bytes": wireBytes(schemas.document, current.document),
+    "looks.project.first.bytes": wireBytes(schemas.project, first.project),
+    "looks.project.return.bytes": wireBytes(schemas.project, current.project),
+    "looks.write.bytes": wireBytes(KinWorkLookedInput, payload),
+  };
+});
+
 /** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
 const pinned = (chat: boolean) =>
-  Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
+  Object.fromEntries(
+    Object.entries(budget).filter(
+      ([key]) => (key.startsWith("chat.") || key.startsWith("pins.")) === chat,
+    ),
+  );
 
 const connections = Layer.mock(KinConnections)({
   mine: (_people, { orgId }) =>
@@ -681,6 +757,7 @@ withLayer(Layer.merge(layer, connections))("Kin wire budget", (it) => {
       Object.assign(measured, chatList());
       Object.assign(measured, yield* numbersBytes());
       Object.assign(measured, yield* accessBytes().pipe(Effect.provide(KinShell.layer)));
+      Object.assign(measured, yield* looksBytes());
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(
@@ -692,7 +769,12 @@ withLayer(Layer.merge(layer, connections))("Kin wire budget", (it) => {
 });
 
 // Chat on its own layer, without the records and pulse the reads above need.
-const chatLayer = Layer.mergeAll(Groups.layer, ChatService.layer, KinEventQueue.layer).pipe(
+const chatLayer = Layer.mergeAll(
+  Groups.layer,
+  ChatService.layer,
+  KinEventQueue.layer,
+  Pins.layer,
+).pipe(
   Layer.provideMerge(
     KinIdentity.layer.pipe(
       Layer.provide(
@@ -764,6 +846,7 @@ const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
       access,
       createdAt: at,
     });
+    yield* sql`UPDATE kin_people SET access = ${access} WHERE person_id = ${personId}`;
     return { _tag: "person" as const, orgId: chatOrg, personId };
   });
   const meera = yield* teammate("meera", "Meera", "co_owner");
@@ -799,9 +882,30 @@ const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
     ["coOwner", meera],
     ["member", zoya],
   ] as const;
+  const pins = yield* Pins.KinChatPins;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${chatOrg}, 'work', 'Work', 'W', 1, 0),
+           (${chatOrg}, 'projects', 'Projects', 'P', 1, 0),
+           (${chatOrg}, 'goals', 'Goals', 'G', 1, 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, origin_key, created_by_kind, created_at, updated_at, fields_json, due_at, due_all_day,
+      team_shared, steps_json)
+    VALUES (${chatOrg}, 'kin-record-cold-room', 'work', 'W-142', 'Check the cold room',
+      'person', ${owner.personId}, 'pin-cold-room', 'person', ${NOW}, ${NOW}, '{}', ${NOW}, 1, 1,
+      '[{"title":"Review the floor plan","done":true},{"title":"Book the cold room","done":false}]'),
+    (${chatOrg}, 'kin-record-freight', 'projects', 'P-3', 'Tidewater Freight',
+      'person', ${owner.personId}, 'pin-freight', 'person', ${NOW}, ${NOW},
+      ${JSON.stringify({ members: [`person:${zoya.personId}`] })}, ${NOW}, 0, 0, NULL),
+    (${chatOrg}, 'kin-record-hiring', 'goals', 'G-1', 'Juniper Cold Chain hires',
+      'person', ${owner.personId}, 'pin-hiring', 'person', ${NOW}, ${NOW},
+      '{"measure":"manual","target":"100","current":"62","unit":"hires"}', NULL, 0, 0, NULL)`;
+  const pinInput = { orgId: chatOrg, chatId: room.chatId };
+  for (const key of ["W-142", "P-3", "G-1"]) yield* pins.pin([owner], { ...pinInput, key });
   const measured: Record<string, number> = {};
   const watching = yield* Effect.forEach(viewers, ([name, viewer]) =>
     Effect.gen(function* () {
+      const pinRead = yield* pins.list([viewer], pinInput);
+      measured[`pins.${name}.read.bytes`] = wireBytes(KinChatPinsResult, pinRead);
       const inbox = yield* Stream.runHead(chats.subscribeChats([viewer], {})).pipe(
         Effect.map(Option.getOrThrow),
       );
@@ -864,7 +968,7 @@ const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
 
 withLayer(chatLayer)("Kin chat wire budget", (it) => {
   it.effect(
-    "the team room's list, history, backlog, card and reaction match kinWireBudget.json",
+    "the team room's list, history, pins, backlog, card and reaction match kinWireBudget.json",
     () =>
       Effect.gen(function* () {
         const measured = yield* Effect.scoped(chatBudget());

@@ -154,6 +154,7 @@ const make = Effect.gen(function* () {
     KinOrgId,
     { dreamId: string; signal: Deferred.Deferred<void>; claimed: boolean; decided: boolean }
   >();
+  const recovered = new Set<KinOrgId>();
   const fail = (orgId: KinOrgId) =>
     Effect.mapError(
       (cause: unknown) =>
@@ -277,24 +278,44 @@ const make = Effect.gen(function* () {
       yield* notices.notify({ orgId, branch, reason: "Dream failed three nights in a row" });
   });
 
-  const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (
+  const checkScratchParent = Effect.fn("DreamRunner.checkScratchParent")(function* (
+    dreams: string,
+  ) {
+    if ((yield* fs.realPath(dreams)) !== dreams)
+      return yield* Effect.die(new Error("The dreams folder is not a real directory"));
+  });
+
+  const removeCheckout = Effect.fn("DreamRunner.removeCheckout")(
+    function* (root: string) {
+      const parent = path.dirname(root);
+      if (!(yield* fs.exists(parent))) return;
+      yield* checkScratchParent(parent);
+      yield* fs.remove(root, { recursive: true, force: true });
+    },
+    Effect.ignoreCause({ log: true }),
+  );
+
+  const acquireCheckout = Effect.fn("DreamRunner.acquireCheckout")(function* (
     orgId: KinOrgId,
     dreamId: string,
+  ) {
+    const { writer } = yield* memory.ensureCheckouts(orgId);
+    const dreams = path.join(yield* fs.realPath(path.dirname(writer)), "dreams");
+    yield* fs.makeDirectory(dreams, { recursive: true });
+    yield* checkScratchParent(dreams);
+    const root = path.join(dreams, dreamId);
+    return yield* Effect.acquireRelease(
+      fs.makeDirectory(root).pipe(Effect.as(root)),
+      removeCheckout,
+    );
+  });
+
+  const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (
+    root: string,
     files: ReadonlyMap<string, Buffer>,
     material: DreamMaterial,
   ) {
-    const paths = yield* memory.ensureCheckouts(orgId);
-    const dreams = path.join(path.dirname(paths.writer), "dreams");
-    const root = path.join(dreams, dreamId);
-    const existing = yield* fs.lstat(dreams).pipe(Effect.option);
-    if (Option.isSome(existing)) {
-      if (existing.value.type !== "Directory")
-        return yield* Effect.die(new Error("The dreams folder is not a real directory"));
-      // Only this org's live dream uses `dreams/`; anything else was left by a crash.
-      for (const entry of yield* fs.readDirectory(dreams))
-        yield* fs.remove(path.join(dreams, entry), { recursive: true, force: true });
-    }
-    yield* fs.makeDirectory(path.join(root, scratch), { recursive: true });
+    yield* fs.makeDirectory(path.join(root, scratch));
     for (const [relative, bytes] of files) {
       const target = path.join(root, relative);
       yield* fs.makeDirectory(path.dirname(target), { recursive: true });
@@ -312,7 +333,6 @@ const make = Effect.gen(function* () {
       path.join(root, scratch, "material.json"),
       yield* encodeJson(material),
     );
-    return root;
   });
 
   const readCheckout = Effect.fn("DreamRunner.readCheckout")(function* (root: string) {
@@ -475,8 +495,9 @@ const make = Effect.gen(function* () {
         leftOut: [],
       } satisfies DreamOutcome;
     }
-    const root = yield* prepareCheckout(orgId, dreamId, files, material);
     return yield* Effect.gen(function* () {
+      const root = yield* acquireCheckout(orgId, dreamId);
+      yield* prepareCheckout(root, files, material);
       const turn = Effect.fn("DreamRunner.turn")(function* (
         name: "extract" | "resolve",
         model: ModelSelection,
@@ -631,7 +652,7 @@ const make = Effect.gen(function* () {
         dream: checked.dream,
         leftOut: checked.leftOut,
       } satisfies DreamOutcome;
-    }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
+    }).pipe(Effect.scoped);
   });
 
   const attempt = Effect.fn("DreamRunner.attempt")(function* (
@@ -722,6 +743,16 @@ const make = Effect.gen(function* () {
       branch: string;
     }>`SELECT dream_id AS "dreamId", branch FROM kin_dream_runs
       WHERE org_id = ${orgId} AND status = 'running' ORDER BY started_at, dream_id`;
+    const removeRecordedCheckout = Effect.fn("DreamRunner.removeRecordedCheckout")(
+      function* (dreamId: string) {
+        if (!/^dream_[0-9]{8}_[0-9a-hjkmnp-tv-z]{12}$/.test(dreamId)) return;
+        const { writer } = yield* memory.checkoutPaths(orgId);
+        const parent = path.dirname(writer);
+        if (!(yield* fs.exists(parent))) return;
+        yield* removeCheckout(path.join(yield* fs.realPath(parent), "dreams", dreamId));
+      },
+      Effect.ignoreCause({ log: true }),
+    );
     for (const row of rows) {
       if (live.get(orgId)?.dreamId === row.dreamId) continue;
       yield* settle(orgId, row.dreamId, row.branch, {
@@ -730,7 +761,15 @@ const make = Effect.gen(function* () {
         branch: row.branch,
         failures: ["The server restarted during the dream"],
       });
+      if (recovered.has(orgId)) yield* removeRecordedCheckout(row.dreamId);
     }
+    if (recovered.has(orgId)) return;
+    const finished = yield* sql<{
+      dreamId: string;
+    }>`SELECT dream_id AS "dreamId" FROM kin_dream_runs
+      WHERE org_id = ${orgId} AND status <> 'running' ORDER BY started_at, dream_id`;
+    for (const row of finished) yield* removeRecordedCheckout(row.dreamId);
+    recovered.add(orgId);
   });
 
   const ensureTriggers = Effect.fn("DreamRunner.ensureTriggers")(function* (orgId: KinOrgId) {

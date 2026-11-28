@@ -8,7 +8,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { unvoidEntry } from "../gendocs/numbering.ts";
-import { KinRecords } from "./KinRecords.ts";
+import { KinRecords, clientsPinned } from "./KinRecords.ts";
 import { parseFields, type FieldValue } from "./lists.ts";
 import { FUNDED_BY, REIMBURSEMENT } from "./reimbursement.ts";
 import { listDef } from "./registers.ts";
@@ -439,6 +439,8 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         yield* removeChunk(orgId, chunk, indexed);
         if (entry !== undefined) entry.done = Math.min(gone.length, index + CHUNK);
       }
+      if (gone.some((row) => row.registerId === "clients") && (yield* clientsPinned(sql, orgId)))
+        yield* (yield* KinRefreshObserver).touch(orgId, "pins");
       // A list's number series outlives it: defined again, the list carries on its numbers.
       for (const one of lists)
         if (one.action === "remove")

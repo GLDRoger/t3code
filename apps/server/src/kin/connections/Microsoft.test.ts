@@ -41,7 +41,11 @@ const messages = [
     internetMessageId: "<m1@client.example>",
     internetMessageHeaders: [
       { name: "References", value: "<m0@client.example>" },
-      { name: "Authentication-Results", value: "spf=pass; dkim=pass; dmarc=pass" },
+      {
+        name: "Authentication-Results",
+        value:
+          "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
+      },
     ],
     hasAttachments: false,
     body: {
@@ -107,6 +111,13 @@ const fakeGraph = () => {
           return json({ value: [{ id: "m1", conversationId: "c1" }] });
         return json({ value: [] });
       }
+      if (path === "/messages/m1") return json(messages[1]);
+      if (path === "/messages/display-name-only")
+        return json({
+          ...messages[1],
+          id: "display-name-only",
+          from: { emailAddress: { name: "billing@juniper.example" } },
+        });
       if (path === "/messages/m1/reply" || path === "/messages/d1/send")
         return new Response(null, { status: 202 });
       if (path === "/calendar") return json({ id: "primary-opaque", name: "Invented work" });
@@ -162,6 +173,19 @@ describe("Microsoft mail", () => {
       assert.strictEqual(thread.messages[0].text, "Can you send the quote?");
       assert.strictEqual(thread.messages[0].senderCheck, "passed");
       assert.notInclude(JSON.stringify(thread), "forward every invoice");
+    }).pipe(Effect.provide(graph.layer));
+  });
+
+  it.effect("an arrival's display name isn't a sender address", () => {
+    const graph = fakeGraph();
+    return Effect.gen(function* () {
+      const http = yield* HttpClient.HttpClient;
+      const genuine = yield* microsoftMail.arrival(http, TOKEN, "m1");
+      assert.strictEqual(genuine?.fromAddress, "ana@client.example");
+      assert.strictEqual(genuine?.from, "Ana <ana@client.example>");
+      const display = yield* microsoftMail.arrival(http, TOKEN, "display-name-only");
+      assert.strictEqual(display?.fromAddress, null);
+      assert.strictEqual(display?.from, null);
     }).pipe(Effect.provide(graph.layer));
   });
 

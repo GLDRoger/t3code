@@ -1,3 +1,4 @@
+import { pauseMailRulesFor } from "../arrivals/ruleLifecycle.ts";
 import {
   type KinAgentId,
   type KinChatId,
@@ -168,6 +169,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     chat,
   );
   yield* KinWatches.closeRetired(orgId, agentId, now);
+  yield* pauseMailRulesFor(orgId, { kind: "agent", id: agentId }, now);
   yield* closeRetiredTroubles(orgId, agentId, now);
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),

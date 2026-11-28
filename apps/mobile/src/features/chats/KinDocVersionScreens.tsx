@@ -29,7 +29,12 @@ import { SearchField } from "../../components/ui/SearchField";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { PatchDiffView } from "../review/PatchDiffView";
-import { KinWorkFrame, KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
+import {
+  KinMissingLink,
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { useKinOpenHit } from "./state/kinWorkLink";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinSearchHits } from "./KinDocsList";
@@ -45,16 +50,13 @@ const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
 
 type DocRoute = { readonly environmentId: string; readonly orgId: string; readonly doc: string };
 
-function docTarget(params: DocRoute) {
-  const environmentId = Option.getOrNull(decodeEnvironmentId(params.environmentId));
-  const orgId = Option.getOrNull(decodeOrgId(params.orgId));
-  const key = Option.getOrNull(decodeKey(params.doc));
-  return environmentId === null || orgId === null || key === null
-    ? null
-    : { environmentId, orgId, docKey: key };
+function docParams(params: DocRoute) {
+  return {
+    environmentId: Option.getOrNull(decodeEnvironmentId(params.environmentId)),
+    orgId: Option.getOrNull(decodeOrgId(params.orgId)),
+    docKey: Option.getOrNull(decodeKey(params.doc)),
+  };
 }
-
-const NO_DOC = { title: "This link doesn't name a doc", detail: "Open Docs from Work." };
 
 export type KinDocChangesParams = DocRoute & {
   /** The later version; the latest when absent. */
@@ -66,16 +68,23 @@ export type KinDocChangesParams = DocRoute & {
 /** What differs between two versions of a doc, in the app's own diff view. */
 export function KinDocChangesScreen({ route }: StaticScreenProps<KinDocChangesParams>) {
   const navigation = useNavigation();
-  const target = docTarget(route.params);
-  if (target === null)
+  const { environmentId, orgId, docKey } = docParams(route.params);
+  if (environmentId === null || orgId === null || docKey === null)
     return (
       <KinWorkFrame title="Changes" onClose={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...NO_DOC} />
+        <KinMissingLink
+          title="This link doesn't name a doc"
+          kind="doc"
+          environmentId={environmentId}
+          orgId={orgId}
+        />
       </KinWorkFrame>
     );
   return (
     <KinDocChanges
-      {...target}
+      environmentId={environmentId}
+      orgId={orgId}
+      docKey={docKey}
       to={kinDocVersionParam(route.params.to)}
       from={kinDocVersionParam(route.params.from)}
     />
@@ -218,14 +227,19 @@ const VERSION_ACTIONS = {
 /** Every version, newest first: who made it, when and why. A tap offers what can be done with it. */
 export function KinDocHistoryScreen({ route }: StaticScreenProps<DocRoute>) {
   const navigation = useNavigation();
-  const target = docTarget(route.params);
-  if (target === null)
+  const { environmentId, orgId, docKey } = docParams(route.params);
+  if (environmentId === null || orgId === null || docKey === null)
     return (
       <KinWorkFrame title={KIN_DOCS.history} onClose={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...NO_DOC} />
+        <KinMissingLink
+          title="This link doesn't name a doc"
+          kind="doc"
+          environmentId={environmentId}
+          orgId={orgId}
+        />
       </KinWorkFrame>
     );
-  return <KinDocHistory {...target} />;
+  return <KinDocHistory environmentId={environmentId} orgId={orgId} docKey={docKey} />;
 }
 
 function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey }) {
@@ -350,10 +364,11 @@ export function KinSearchScreen({ route }: StaticScreenProps<KinSearchParams>) {
   if (environmentId === null || orgId === null)
     return (
       <KinWorkFrame title={KIN_SEARCH.title} onClose={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't open anything"
-          detail="Open Work from your Kin chats."
+          kind={null}
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );

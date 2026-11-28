@@ -1,5 +1,6 @@
 import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
@@ -107,6 +108,26 @@ export const known = Effect.fn("KinArrivalStore.known")(function* (
   return new Set(rows.map((row) => row.messageId));
 });
 
+const encodeThreads = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+export const latestByThread = Effect.fn("KinArrivalStore.latestByThread")(function* (
+  orgId: KinOrgId,
+  connectionId: string,
+  threadIds: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const encoded = yield* encodeThreads(threadIds);
+  const rows = yield* sql<{ threadId: string; class: ArrivalClass; reason: string | null }>`
+    SELECT thread_id AS "threadId", class, reason FROM (
+      SELECT thread_id, class, reason, ROW_NUMBER() OVER (
+        PARTITION BY thread_id ORDER BY received_at DESC, noticed_at DESC, message_id DESC
+      ) AS rank
+      FROM kin_arrivals WHERE org_id = ${orgId} AND connection_id = ${connectionId}
+        AND class IS NOT NULL AND thread_id IN (SELECT value FROM json_each(${encoded}))
+    ) WHERE rank = 1`;
+  return new Map(rows.map((row) => [row.threadId, row]));
+});
+
 export type Parked = {
   readonly arrivalId: string;
   readonly messageId: string;
@@ -162,6 +183,8 @@ type Arrived = {
   readonly class: ArrivalClass;
   readonly reason: string;
   readonly needsLook: boolean;
+  readonly hasFile: boolean | null;
+  readonly senderCheck: "passed" | "failed" | "not checked" | null;
 };
 
 /** Only the first insert or transition out of parked claims a message. */
@@ -176,20 +199,23 @@ export const claim = Effect.fn("KinArrivalStore.claim")(function* (
   const outcome = arrived.needsLook ? null : "nothing";
   const settledAt = arrived.needsLook ? null : now;
   const reason = arrived.reason.slice(0, 200);
+  const hasFile = arrived.hasFile === null ? null : Number(arrived.hasFile);
   const made = parked
     ? yield* sql`UPDATE kin_arrivals SET thread_id = ${arrived.threadId},
           mail_key = ${arrived.mailKey}, from_address = ${arrived.fromAddress},
           received_at = ${arrived.receivedAt}, class = ${arrived.class},
+          has_file = ${hasFile}, sender_check = ${arrived.senderCheck},
           state = ${state},
           outcome = ${outcome}, reason = ${reason}, settled_at = ${settledAt}, retry_at = NULL
         WHERE org_id = ${orgId} AND arrival_id = ${arrived.arrivalId} AND state = 'parked'
         RETURNING arrival_id`
     : yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
           thread_id, mail_key, from_address, received_at, noticed_at, class, state, outcome,
-          reason, settled_at)
+          reason, settled_at, has_file, sender_check)
         VALUES (${orgId}, ${arrived.arrivalId}, ${arrived.connectionId}, ${arrived.messageId},
           ${arrived.threadId}, ${arrived.mailKey}, ${arrived.fromAddress}, ${arrived.receivedAt},
-          ${now}, ${arrived.class}, ${state}, ${outcome}, ${reason}, ${settledAt})
+          ${now}, ${arrived.class}, ${state}, ${outcome}, ${reason}, ${settledAt}, ${hasFile},
+          ${arrived.senderCheck})
         ON CONFLICT DO NOTHING RETURNING arrival_id`;
   return made.length > 0;
 });

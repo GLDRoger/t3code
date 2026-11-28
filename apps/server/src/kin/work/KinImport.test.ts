@@ -14,10 +14,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -34,6 +32,8 @@ import { KIN_OWNER_LEVEL } from "./teamView.ts";
 import { countedEntry } from "./recordRows.ts";
 import { presetList } from "./registers.ts";
 import { matchPartner, partnerPayees, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -50,14 +50,16 @@ const noteFile = Schema.decodeSync(KinAttachment)({
 const owner = { actor: { _tag: "person" as const, personId: ownerId }, via: "owner" as const };
 const me = { _tag: "person" as const, personId: ownerId };
 
+const sqlite = makeMigratedSqliteLayer();
 const layer = KinImport.layer.pipe(
   Layer.provideMerge(KinRecords.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-import-" })),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  withFixtureClock(NOW),
 );
 
 const countStatements = <A, E, R>(
@@ -78,7 +80,6 @@ const countStatements = <A, E, R>(
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* TestClock.setTime(NOW);
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
@@ -585,13 +586,29 @@ describe("KinImport", () => {
         fundedBy: "person:meera",
         reimbursement: "owed",
       });
+      const repaidAfter = (yield* records.get(orgId, repaid.key))!;
       assert.deepStrictEqual(yield* partnerPayees(orgId), [
         {
           id: "meera",
           name: "Meera",
           ids: [],
-          repaid: [{ currency: "INR", day: "2026-06-01", amountMinor: 420_000 }],
-          tied: [],
+          repaid: [
+            {
+              currency: "INR",
+              day: "2026-06-01",
+              amountMinor: 420_000,
+              marks: [
+                {
+                  recordId: repaidAfter.recordId,
+                  key: repaidAfter.key,
+                  rev: repaidAfter.rev,
+                  amountMinor: 420_000,
+                  day: "2026-05-20",
+                  bankRecordId: null,
+                },
+              ],
+            },
+          ],
         },
       ]);
       const owed = yield* partnersOwed(orgId, "INR");

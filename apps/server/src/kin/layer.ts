@@ -1,3 +1,7 @@
+import { mailRuleTap } from "./arrivals/mailRuleTap.ts";
+import { KinWidgetId } from "@t3tools/contracts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as MailRules from "./arrivals/KinMailRules.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -49,6 +53,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import type { ServerSettingsService } from "../serverSettings.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as SessionCarry from "./lead/sessionCarry.ts";
 import { KinSessionContext } from "./lead/turn/sessionContext.ts";
@@ -131,6 +136,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         (yield* KinRecords.KinRecords).changes(owner.orgId),
       );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+      yield* chat.attachMailRuleTap((input) => mailRuleTap(input).pipe(Effect.provide(services)));
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* chat.attachChoiceAnswers(
         (input) => answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
@@ -150,6 +156,17 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin couldn't settle sends cut off by a restart", Cause.pretty(cause)),
         ),
         Effect.forkIn(scope),
+      );
+      const connections = yield* Connections.KinConnections;
+      yield* (yield* Scheduler.Scheduler).register(
+        "kin-sent-look",
+        connections.lookInSent(owner.orgId, (card) =>
+          chat.setSendCard({
+            ...card,
+            orgId: owner.orgId,
+            widgetId: KinWidgetId.make(card.widgetId),
+          }),
+        ),
       );
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
@@ -238,6 +255,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
+        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         Layer.merge(KinShell.layer),
         Layer.merge(FollowUps.itemsLayer),
         Layer.merge(KinNumbers.layer),
@@ -257,6 +275,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
       ),
     ),
+    Layer.provide(Scheduler.layer),
     // Everything Kin builds above reads the time from here: a play-test's moved clock in dev.
     Layer.provide(DevClock.layer),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
@@ -339,8 +358,9 @@ const taskCardUpdater = Layer.unwrap(
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
   Layer.mergeAll(KinMcp.transport(base), KinTasksKeyMcp.layer, taskCardUpdater);
 
-export const mcpRegistryLayer = <E, R>(
+export const mcpRegistryLayer = <E, R, E2, R2>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
+  settings: Layer.Layer<ServerSettingsService, E2, R2>,
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
@@ -348,5 +368,6 @@ export const mcpRegistryLayer = <E, R>(
     Layer.provide(Layer.succeed(KinNewCompanyCountryUnset, true)),
     // The chat service takes this optionally, so the running server names it here.
     Layer.provide(KinAttachmentStore.layer),
+    Layer.provide(settings),
     Layer.provide(SqlitePersistence.layerConfig),
   );

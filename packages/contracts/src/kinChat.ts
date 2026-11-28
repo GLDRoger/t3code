@@ -348,6 +348,10 @@ export const KinMessage = Schema.Struct({
   ),
   // An agent's check-in or weekly brief, drawn as one; absent on everything else.
   form: Schema.optional(Schema.Literal("brief")),
+  // An agent's progress update during a turn whose reply still comes; absent on everything else.
+  progress: Schema.optional(Schema.Literal(true)),
+  // A plain kin_ask card in its own turn's chat, not the Team room or a confirmation.
+  ordinaryTurnAsk: Schema.optional(Schema.Boolean),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -389,6 +393,7 @@ export const KinNativeCardType = Schema.Literals([
   "form",
   "date",
   "choice",
+  "mail_rule",
 ]);
 export type KinNativeCardType = typeof KinNativeCardType.Type;
 
@@ -446,6 +451,8 @@ export const kinChoiceActionNote = (options: ReadonlyArray<KinChoiceOption>) => 
 };
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
+/** Reverses the settled action named by a choice card's outcome. */
+export const KIN_CHOICE_UNDO_ACTION = "undo";
 /**
  * Closes an open choice card without choosing, for the person it asks; posts nothing in the chat.
  * A Confirm card for something leaving the company (`send`) is never dismissed.
@@ -466,11 +473,14 @@ export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
 export const KinSendTry = Schema.Struct({
   tryId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   at: IsoDateTime,
+  seenInSentAt: Schema.optional(IsoDateTime),
 });
 export type KinSendTry = typeof KinSendTry.Type;
 export const KinSendCard = Schema.Struct({
   service: KinTrimmedText.check(Schema.isMaxLength(80)),
   action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** Deletion uses the plain call presentation on older clients, not the event-save wording. */
+  calendarDelete: Schema.optionalKey(Schema.Literal(true)),
   /** The address it goes from; on cards from before accounts, the signed-in account. */
   from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
   /** The From name shown beside the address, such as "Ana Rao". */
@@ -628,6 +638,14 @@ export const KinChoiceCardState = Schema.Struct({
       refused: Schema.optionalKey(Schema.Literal(true)),
       /** The outcome is all the settled card says: its detail is cleared. */
       alone: Schema.optionalKey(Schema.Literal(true)),
+      /** A settled action the original tapper or an owner can reverse from the card. */
+      undo: Schema.optionalKey(
+        Schema.Struct({
+          actionId: Schema.Literal(KIN_CHOICE_UNDO_ACTION),
+          label: KinTrimmedText.check(Schema.isMaxLength(80)),
+          line: KinText.check(Schema.isMaxLength(200)),
+        }),
+      ),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({
@@ -695,6 +713,12 @@ export const KinPresence = Schema.Struct({
   since: IsoDateTime,
 });
 export type KinPresence = typeof KinPresence.Type;
+const KinActiveWakeup = Schema.Struct({ agentId: KinAgentId, wakeupId: KinWakeupId });
+export const kinHasActiveWakeup = (
+  line: KinPresence,
+): line is KinPresence & typeof KinActiveWakeup.Type =>
+  line.wakeupId !== null && line.state !== "seen" && line.state !== "deferred";
+
 /** An agent reply still streaming. `text` in a backlog is the whole draft so far. */
 export const KinDraft = Schema.Struct({
   draftId: TrimmedNonEmptyString,
@@ -803,6 +827,8 @@ export const KinWaitingItem = Schema.Struct({
   question: Schema.optional(Schema.NullOr(KinTrimmedText)),
   /** Set while an agent's question on that card is open; absent from servers without it. */
   ask: Schema.optional(KinWaitingAsk),
+  /** The agent and source wake-up, only for an ordinary question card raised in its own turn. */
+  ordinaryTurnAsk: Schema.optional(KinActiveWakeup),
   /** What the waiting card is, when more than a question: a mail ready to send, a draft sent up. */
   card: Schema.optional(Schema.Literals(["mail", "draft"])),
   /** The first lines of what the card asks about, such as a draft or a doc; absent without one. */
@@ -843,6 +869,8 @@ export const KinChatSummary = Schema.Struct({
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
+  /** Active wakes in this chat; absent when none are known or from older hosts. */
+  activeWakeups: Schema.optional(Schema.Array(KinActiveWakeup)),
   /** The Team room has something the viewer hasn't read: a quiet dot, never a count. */
   fresh: Schema.optional(Schema.Boolean),
 });
@@ -878,10 +906,14 @@ export const KinChatStreamEvent = Schema.Union([
     readSeq: Schema.optional(NonNegativeInt),
     /** On a stream's first backlog: changes when what this reader may open as a link may have changed, so a client drops its cached links for the chat. Absent from older hosts. */
     accessStamp: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+    /** The host's setting: a turn's progress updates leave the feed once its reply is posted. Absent from older hosts. */
+    clearUpdates: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The first event can be a reset instead of a backlog; history needs the same running lines.
+    presence: Schema.optional(Schema.Array(KinPresence)),
     // The chat was cleared: nothing held from before is kept, drafts and reactions included.
     cleared: Schema.optional(Schema.Boolean),
     clearedSeq: Schema.optional(NonNegativeInt),
@@ -1171,6 +1203,71 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
   privateNow: Schema.optionalKey(Schema.Struct({ by: Schema.String })),
 }) {}
 
+export const KinChatPinId = TrimmedNonEmptyString.pipe(Schema.brand("KinChatPinId"));
+export type KinChatPinId = typeof KinChatPinId.Type;
+
+export const KIN_CHAT_PINS_MAX = 3;
+
+const KinChatPinState = Schema.Literals(["open", "doing", "waiting", "done", "dropped"]);
+const KinChatPinMeta = {
+  pinId: KinChatPinId,
+  pinnedAt: IsoDateTime,
+  pinnedBy: Schema.String,
+};
+export const KinChatPin = Schema.Union([
+  Schema.TaggedStruct("task", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    title: Schema.String,
+    state: KinChatPinState,
+    dueAt: Schema.NullOr(IsoDateTime),
+    dueAllDay: Schema.Boolean,
+    steps: Schema.optionalKey(Schema.Struct({ done: NonNegativeInt, total: PositiveInt })),
+    late: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("project", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    name: Schema.String,
+    state: KinChatPinState,
+    targetAt: Schema.NullOr(IsoDateTime),
+    targetAllDay: Schema.Boolean,
+    done: NonNegativeInt,
+    total: NonNegativeInt,
+    late: NonNegativeInt,
+  }),
+  Schema.TaggedStruct("goal", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    title: Schema.String,
+    state: Schema.Literals(["open", "done", "dropped"]),
+    measure: Schema.Literals(["clients_won", "tasks_done", "manual"]),
+    unit: Schema.optionalKey(Schema.String),
+    current: Schema.Finite,
+    target: Schema.Finite,
+    dueOn: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[1-9]\d{3}-\d{2}-\d{2}$/))),
+    behind: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("gone", {
+    pinId: KinChatPinId,
+    pinnedAt: Schema.optionalKey(IsoDateTime),
+    pinnedBy: Schema.optionalKey(Schema.String),
+  }),
+  Schema.TaggedStruct("hidden", { pinId: KinChatPinId }),
+]);
+export type KinChatPin = typeof KinChatPin.Type;
+
+export const KinChatPinsInput = Schema.Struct({ orgId: KinOrgId, chatId: KinChatId });
+export type KinChatPinsInput = typeof KinChatPinsInput.Type;
+export const KinChatPinInput = Schema.Struct({ ...KinChatPinsInput.fields, key: KinRefKey });
+export type KinChatPinInput = typeof KinChatPinInput.Type;
+export const KinChatUnpinInput = Schema.Struct({ ...KinChatPinsInput.fields, pinId: KinChatPinId });
+export type KinChatUnpinInput = typeof KinChatUnpinInput.Type;
+export const KinChatPinsResult = Schema.Struct({
+  pins: Schema.Array(KinChatPin).check(Schema.isMaxLength(KIN_CHAT_PINS_MAX)),
+});
+export type KinChatPinsResult = typeof KinChatPinsResult.Type;
+
 export const KIN_CHAT_WS_METHODS = {
   orgsList: "kin.orgs.list",
   chatsSubscribe: "kin.chats.subscribe",
@@ -1183,6 +1280,9 @@ export const KIN_CHAT_WS_METHODS = {
   chatWorking: "kin.chat.working",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
+  chatPins: "kin.chat.pins",
+  chatPin: "kin.chat.pin",
+  chatUnpin: "kin.chat.unpin",
   messagesSend: "kin.messages.send",
   messagesMarkRead: "kin.messages.markRead",
   widgetsAct: "kin.widgets.act",
@@ -1247,6 +1347,21 @@ export const KinChatRpcs = [
     success: KinChatHistoryResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatPins, {
+    payload: KinChatPinsInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatPin, {
+    payload: KinChatPinInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatUnpin, {
+    payload: KinChatUnpinInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(KIN_CHAT_WS_METHODS.messagesSend, {
     payload: KinMessagesSendInput,
     success: KinMessage,
@@ -1288,6 +1403,10 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatWorking]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
+  // Membership and visibility are checked per chat.
+  [KIN_CHAT_WS_METHODS.chatPins]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatPin]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatUnpin]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.widgetsAct]: AuthKinChatScope,

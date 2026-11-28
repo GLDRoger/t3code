@@ -17,10 +17,17 @@ import {
 } from "@t3tools/contracts";
 import type { AppServer, AppServerEvent } from "./appServer.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
-import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
+import {
+  CAPTION_PROMPT,
+  RESCUE_PROMPT,
+  UPDATES_RESCUE_PROMPT,
+} from "../../apps/server/src/kin/reply/classify.ts";
+import { UPDATE_REFUSALS, UPDATE_SHOWN } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import {
+  defaultReplyMock,
   deliveredText,
+  endsTurn,
   filledEvent,
   JUDGED_CALL_BYTES,
   kinDated,
@@ -235,6 +242,17 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
     )?.prompt;
   assert.isUndefined(mate(true));
   assert.equal(mate(false), RESCUE_PROMPT);
+  // An update is not the reply: a turn of only updates is asked for one.
+  const update = replyCall("kin_send", { text: "Reading the bank feed.", level: "update" });
+  const updated = (responses: Array<ReadonlyArray<ReturnType<typeof text>>>) =>
+    replyFollowUp(
+      { testCase: replyCase(asked), responses: [[use("kin_send")], ...responses], calls: [update] },
+      "",
+    )?.prompt;
+  assert.equal(updated([[]]), UPDATES_RESCUE_PROMPT);
+  assert.isUndefined(updated([[text("Orbit paid on 4 Nov.")]]));
+  assert.isFalse(endsTurn(update));
+  assert.isTrue(endsTurn(replyCall("kin_send", { text: "Orbit paid.", level: "now" })));
 });
 
 it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
@@ -472,6 +490,57 @@ it.each([
     ],
     ["#12 is ready to merge.", "#12 is now approved."],
   ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-signed-in-not-to-sign-in"],
+    [
+      "## Needs you\n- Book the Saturday reefer for Harborview, due today.",
+      "## Work\n- The Accounts mailbox is signed in now, so that note is done.",
+      "## Work\n- Accounts no longer needs signing in: it's signed in.",
+      "## Work\nThe Accounts mailbox is signed in, so the sign-in due today is covered.",
+      '## Work\nThe Accounts mailbox is signed in, so "Rhea to sign in to the Accounts mailbox" (due today) can be closed.',
+    ],
+    [
+      "## Needs you\n- Sign in to the Accounts mailbox (due today).",
+      "## Needs you\n- The Accounts mailbox needs you to sign in.",
+      "## Needs you\n- You still have to sign in to Accounts.",
+      "## Needs you\n- Accounts mailbox: sign in today.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-merged-not-needs-merge"],
+    [
+      "## Work\n- tidewater/app#41 is merged (Zoya), so it no longer needs your merge.",
+      "## Work\n- Zoya merged tidewater/app#41.",
+      "## Needs you\nNothing needs you this morning. tidewater/app#41, which was waiting on your merge, is already merged.",
+    ],
+    [
+      "## Needs you\n- tidewater/app#41 needs your merge.",
+      "## Needs you\n- Merge tidewater/app#41.",
+      "## Needs you\n- **Review and merge** tidewater/app#41.",
+      "## Needs you\n- tidewater/app#41 is waiting on your merge.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-three-needs-three-lines"],
+    [
+      "## Needs you\n- Approve quote Q-12 for Juniper Cold Chain ($8,400.00).\n- Meera asked for the November fuel surcharge figures before Monday.\n- Decide on the Pier 4 yard lease: renew for 12 months or let it end 2 Dec.",
+    ],
+    [
+      "## Needs you\n- Approve Q-12 for Juniper Cold Chain, and send Meera the fuel figures.\n- Decide on the Pier 4 lease.",
+      "## Needs you\nThree things wait on you: Juniper Cold Chain's quote Q-12, Meera's fuel surcharge figures and the Pier 4 lease renewal.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-signed-out-says-so-control"],
+    ["## Needs you\n- The Accounts mailbox needs signing in again in Settings › Connections."],
+    [
+      "## Needs you\n- The Accounts mailbox needs signing in again.\n\n## Work\n- Sign in to Accounts is still open.",
+    ],
+  ],
 ] as const)(
   "%s: textMustNot passes the right replies and fails the wrong",
   (file, ids, rights, wrongs) => {
@@ -685,6 +754,34 @@ it("grades the text that reached a person in each Kin reply voice", () => {
   assert.equal(
     deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Refused" }, true)] }, true),
     "The invoice is overdue.",
+  );
+  const update = replyCall("kin_send", { text: "Reading the invoices.", level: "update" });
+  assert.equal(deliveredText({ ...person, calls: [update] }, true), "The invoice is overdue.");
+});
+
+it("answers kin_send's update level as Kin's bridge does", () => {
+  const direct = 'Your reply goes to chat "direct-1", your direct chat with the owner.';
+  const mock = (prompt: string, text: string, calls: ReadonlyArray<unknown> = []) =>
+    defaultReplyMock(
+      { testCase: replyCase(prompt), responses: [], calls: calls as never },
+      "kin_send",
+      { text, level: "update" },
+    );
+  const asked = `${direct}\n${personQuote}`;
+  const shown = replyCall("kin_send", { text: "Reading the invoices.", level: "update" });
+  assert.equal(mock(asked, "Reading the invoices."), UPDATE_SHOWN);
+  assert.deepEqual(mock(asked, " Reading  the invoices. ", [shown]), {
+    $error: UPDATE_REFUSALS.same,
+  });
+  assert.deepEqual(mock(asked, "x".repeat(601)), { $error: UPDATE_REFUSALS["too long"] });
+  assert.deepEqual(mock(pulseQuote, "Reading the invoices."), { $error: UPDATE_REFUSALS.trigger });
+  assert.deepEqual(
+    mock(`Your reply goes to chat "g-1", the group "Studio team".\n${personQuote}`, "Reading."),
+    { $error: UPDATE_REFUSALS["not direct"] },
+  );
+  assert.deepEqual(
+    mock(asked, "Reading.", [replyCall("kin_send", { text: "Done.", level: "now" })]),
+    { $error: UPDATE_REFUSALS["already sent"] },
   );
 });
 

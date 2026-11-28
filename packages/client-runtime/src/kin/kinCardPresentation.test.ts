@@ -32,6 +32,8 @@ import {
   kinChoiceDismissible,
   kinChoiceDismissInput,
   kinChoiceUndoneLine,
+  kinChoiceUndoInput,
+  kinChoiceUndoOffer,
   kinChoiceClosedLine,
   createKinHeldPress,
   kinMailCancels,
@@ -64,7 +66,11 @@ import {
 } from "./kinChoicePresentation.ts";
 import { kinListedModelName } from "./kinLeadPresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
-import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
+import {
+  kinActionFailureNotice,
+  kinCardStatusAfter,
+  kinDeferralCountdown,
+} from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
 const taskState = (overrides: Record<string, unknown> = {}) => ({
@@ -175,6 +181,31 @@ describe("kinCardView", () => {
     expect(kinCardView(widget({ type: "deferral", state: deferral }), HOST, known()).kind).toBe(
       "deferral",
     );
+  });
+
+  it("draws a mail rule proposal with the reader's clock, and falls back on a bad one", () => {
+    const state = {
+      mailbox: { connectionId: "con_01JDCXB3M5N7P9Q2R4S6T8V0WX", label: "Accounts" },
+      lead: { agentId: "agt_01JDCX9P2W7R4KQ5M8T3V6YB1N", name: "Finance" },
+      match: {
+        from: [{ domain: "junipercold.example" }],
+        subjectHas: [],
+        withFile: true,
+        classes: null,
+      },
+      fromAscii: ["junipercold.example"],
+      what: "File the bill under Juniper Cold Chain.",
+      monthlyCap: 30,
+      contentSha256: "9f".repeat(32),
+      expiresAt: Date.UTC(2026, 10, 28, 12, 0),
+      decision: { status: "proposed" },
+    };
+    const card = widget({ type: "mail_rule", state });
+    expect(kinCardView(card, HOST, known())).toEqual({ kind: "mail_rule", widget: card });
+    expect(kinCardDraws(card, HOST, false)).toBe(true);
+    expect(
+      kinCardView(widget({ type: "mail_rule", state: { ...state, what: "" } }), HOST, known()).kind,
+    ).toBe("unknown");
   });
 
   it("ignores fields this build doesn't know", () => {
@@ -1131,15 +1162,35 @@ describe("choice cards", () => {
       mayHaveGone: tick,
     };
     const open = choice({ state: { ...choiceState(null), send } });
-    const line = kinMayHaveGoneLine(at);
+    const line = kinMayHaveGoneLine(tick);
     expect(open.send?.mayHaveGone).toEqual({ line, ...tick, confirmId: "option-1" });
     expect(kinSendTry(open)).toEqual(tick);
-    expect(kinMayHaveGoneLine(at, tried)).toBe(
+    expect(kinMayHaveGoneLine(tick, tried)).toBe(
       `An earlier try at this mail at ${formatKinWhen(tried, "time")} may already have gone. Check the account's sent mail before you confirm.`,
     );
-    expect(kinMayHaveGoneLine(at, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
+    expect(kinMayHaveGoneLine(tick, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
       `on ${formatKinWhen(tried, "dayTime")}`,
     );
+    // Kin found the mail in sent mail: the line says so and when it went; the tick still holds.
+    const seenInSentAt = "2026-11-08T09:04:30.000Z";
+    const seen = new Date(seenInSentAt);
+    const foundTry = { ...tick, seenInSentAt };
+    expect(kinMayHaveGoneLine(foundTry, tried)).toBe(
+      `This mail went at ${formatKinWhen(seen, "time")} and is in the account's sent mail; ticking and confirming sends a second copy.`,
+    );
+    expect(kinMayHaveGoneLine(foundTry, new Date(seen.getTime() + 3 * 86_400_000))).toContain(
+      `went on ${formatKinWhen(seen, "dayTime")}`,
+    );
+    const found = choice({
+      state: { ...choiceState(null), send: { ...send, mayHaveGone: foundTry } },
+    });
+    expect(found.send?.mayHaveGone).toEqual({
+      line: kinMayHaveGoneLine(foundTry),
+      ...tick,
+      confirmId: "option-1",
+    });
+    expect(kinSendTry(found)).toEqual(tick);
+    expect(kinSendCheckPending(found, null, "option-1")).toBe(true);
     expect(kinChoiceAccessibilityLabel(open, null)).toContain("may already have gone");
     // Confirm and Send edited wait for the tick; Cancel never does.
     expect(kinSendCheckPending(open, null, "option-1")).toBe(true);
@@ -1191,7 +1242,7 @@ describe("choice cards", () => {
     expect(refused).toEqual({ ...typing, problem: "Tick first.", mayHaveGone: later });
     const warned = kinSendEditWarned(plain, refused, tried);
     expect(warned.send?.mayHaveGone).toEqual({
-      line: kinMayHaveGoneLine(later.at, tried),
+      line: kinMayHaveGoneLine(later, tried),
       ...later,
       confirmId: null,
     });
@@ -1201,6 +1252,18 @@ describe("choice cards", () => {
       { revision: refused.revision, checkedSent: later },
     );
     expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
+    const refusedFound = kinSendEditRefused(
+      typing,
+      plain,
+      new KinChatError({
+        reason: "conflict",
+        message: "Tick first.",
+        mayHaveGone: { ...later, seenInSentAt },
+      }),
+    );
+    expect(kinSendEditWarned(plain, refusedFound, tried).send?.mayHaveGone?.line).toBe(
+      kinMayHaveGoneLine({ ...later, seenInSentAt }, tried),
+    );
   });
 
   it("posts one tap at a time, and binds a late refusal to the card the press carried", async () => {
@@ -1342,6 +1405,251 @@ describe("choice cards", () => {
     );
     expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
     expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
+  });
+
+  // A partner repayment Zoya marked from Finance's card: one Undo on the settled card.
+  const repaid = (outcome: Record<string, unknown> = {}, revision = 2) =>
+    choice({
+      revision,
+      closedAt: "2026-11-08T09:30:00.000Z",
+      state: {
+        ...choiceState({
+          optionId: "option-1",
+          personId: "zoya",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:30:00.000Z",
+        }),
+        question: "Does BNK-7 repay Meera Shah?",
+        options: [
+          { optionId: "option-1", label: "Mark repaid" },
+          { optionId: "option-2", label: "Not a repayment" },
+        ],
+        decidedBy: { personId: "zoya", name: "Zoya Sheikh" },
+        // An `undefined` here leaves the key out, as the host does.
+        outcome: Object.fromEntries(
+          Object.entries({
+            title: "Marked repaid",
+            text: "EXP-2 is repaid on 8 Nov by BNK-7, which is explained in Bank transactions.",
+            undo: {
+              actionId: "undo",
+              label: "Undo",
+              line: "Mark EXP-2 owed again and put BNK-7 back as it was",
+            },
+            ...outcome,
+          }).filter(([, value]) => value !== undefined),
+        ),
+      },
+    });
+  const zoya = KinPersonId.make("zoya");
+
+  it("offers a settled card's Undo to owners and co-owners only, and to nobody once undone", () => {
+    const card = repaid();
+    const line = "Mark EXP-2 owed again and put BNK-7 back as it was";
+    const offered = { label: "Undo", line, busy: false, disabled: false, notice: null };
+    const idle = { pending: null, status: null };
+    const as = (ownerLevel: boolean | undefined, canAct = true) =>
+      kinChoiceUndoOffer(card, { ownerLevel, canAct }, idle);
+    // An owner or co-owner sees it; a teammate does not, though Zoya marked it before a demotion.
+    expect(as(true)).toEqual(offered);
+    expect(as(false)).toBeNull();
+    // Until the viewer's kind is known every tap is offered, as on other cards: the host decides.
+    expect(as(undefined)).toEqual(offered);
+    // A device that may not act on this chat gets no button, an owner's either.
+    expect(as(true, false)).toBeNull();
+    // Undone, the host drops the Undo and says who did it.
+    const undone = repaid({
+      title: "Repayment undone",
+      text: "EXP-2 is owed again, and BNK-7 is back as it was in Bank transactions.",
+      undo: undefined,
+      undone: { personId: "rhea", name: "Rhea Rao", at: "2026-11-08T10:00:00.000Z" },
+    });
+    expect(kinChoiceUndoOffer(undone, { ownerLevel: true, canAct: true }, idle)).toBeNull();
+    expect(kinChoiceUndoneLine(undone, zoya, new Date("2026-11-08T12:00:00.000Z"))).toBe(
+      `Undone by Rhea Rao at ${formatKinWhen(new Date("2026-11-08T10:00:00.000Z"), "time")}.`,
+    );
+    // A card with no Undo offers none, today's cards too.
+    expect(
+      kinChoiceUndoOffer(repaid({ undo: undefined }), { ownerLevel: true, canAct: true }, idle),
+    ).toBeNull();
+    // The tap sends the card's Undo with no value, against the revision on screen.
+    expect(kinChoiceUndoInput(card, "undo-1")).toEqual({
+      widgetId: card.widgetId,
+      revision: 2,
+      actionId: "undo",
+      clientActionId: "undo-1",
+    });
+  });
+
+  it("posts Undo once, holds it until the host's card arrives, and says a refusal as the host does", async () => {
+    const card = repaid();
+    const posts: Array<unknown> = [];
+    const replies: Array<
+      (
+        result: AsyncResult.Success<unknown, unknown> | AsyncResult.Failure<unknown, unknown>,
+      ) => void
+    > = [];
+    const seen = { pending: [] as Array<string | null>, status: [] as Array<KinChoiceCardStatus> };
+    const taps = kinChoiceCardTaps();
+    const actions = (pending: string | null) =>
+      kinChoiceCardActions({
+        choice: card,
+        environmentId: "env" as EnvironmentId,
+        newId: () => `undo-${posts.length}`,
+        taps,
+        heldKey: kinSendEditHeldKey("env", zoya, card.widgetId),
+        state: {
+          pending,
+          switching: false,
+          editing: null,
+          editBusy: null,
+          editable: false,
+          ticked: null,
+          nowMs: posted,
+        },
+        commands: {
+          post: ({ input }) =>
+            new Promise((resolve) => {
+              posts.push(input);
+              replies.push(resolve);
+            }),
+          setSendFrom: () => Promise.reject(new Error("unused")),
+          sendEdited: () => Promise.reject(new Error("unused")),
+          saveEdited: () => Promise.reject(new Error("unused")),
+        },
+        set: {
+          pending: (pending) => seen.pending.push(pending),
+          lastStatus: (status) => seen.status.push(status),
+          switching: () => {},
+          switchProblem: () => {},
+          editBusy: () => {},
+          editing: () => {},
+          ack: () => {},
+          ticked: () => {},
+        },
+      });
+    const viewer = { ownerLevel: true, canAct: true };
+    const refuse = (reason: "invalid_state" | "not_allowed" | "widget_changed", message: string) =>
+      AsyncResult.failure<unknown, unknown>(Cause.fail(new KinChatError({ reason, message })));
+
+    // Refused because an expense changed since: the host's sentence, the button still there.
+    const first = actions(null).undo();
+    await actions("undo").undo();
+    expect(posts).toEqual([
+      { widgetId: card.widgetId, revision: 2, actionId: "undo", clientActionId: "undo-0" },
+    ]);
+    expect(seen.pending).toEqual(["undo"]);
+    expect(kinChoiceUndoOffer(card, viewer, { pending: "undo", status: null })).toMatchObject({
+      busy: true,
+      disabled: true,
+    });
+    const changed = "Nothing was undone. EXP-2 changed since the repayment was marked.";
+    replies.shift()!(refuse("invalid_state", changed));
+    await first;
+    const refused = seen.status.at(-1)!;
+    expect(refused).toEqual({
+      revision: 2,
+      optionId: "undo",
+      notice: { kind: "error", text: changed },
+      holding: false,
+    });
+    expect(kinChoiceUndoOffer(card, viewer, { pending: null, status: refused })).toEqual({
+      label: "Undo",
+      line: "Mark EXP-2 owed again and put BNK-7 back as it was",
+      busy: false,
+      disabled: false,
+      notice: { kind: "error", text: changed },
+    });
+
+    // Each other refusal reads as the host said it.
+    for (const [reason, message, kind] of [
+      ["not_allowed", "Only the owner or a co-owner can undo a repayment.", "error"],
+      ["invalid_state", "Nothing was undone. EXP-2 is no longer there.", "error"],
+      [
+        "invalid_state",
+        "Nothing was undone. EXP-2 was marked repaid again after this card.",
+        "error",
+      ],
+      ["invalid_state", "This action was already undone.", "error"],
+      ["widget_changed", "This card changed or was answered. Look at it again.", "stale"],
+    ] as const) {
+      const tap = actions(null).undo();
+      replies.shift()!(refuse(reason, message));
+      await tap;
+      expect(seen.status.at(-1)?.notice).toEqual({ kind, text: message });
+    }
+    // Behind the host, the card on screen takes no second Undo until its newer one arrives.
+    expect(
+      kinChoiceUndoOffer(card, viewer, { pending: null, status: seen.status.at(-1)! }),
+    ).toMatchObject({ disabled: true });
+
+    // Offline: the generic send failure, and the retry reuses the same client action id.
+    const offline = actions(null).undo();
+    replies.shift()!(AsyncResult.failure<unknown, unknown>(Cause.fail(new Error("socket closed"))));
+    await offline;
+    expect(seen.status.at(-1)?.notice).toEqual(kinActionFailureNotice(undefined));
+    const retry = actions(null).undo();
+    replies.shift()!(AsyncResult.success<unknown, unknown>(undefined));
+    await retry;
+    expect(posts.at(-1)).toEqual(posts.at(-2));
+    // Taken: the button waits, busy, for the host's undone card, which no longer offers it.
+    const taken = seen.status.at(-1)!;
+    expect(taken).toEqual({ revision: 2, optionId: "undo", notice: null, holding: true });
+    expect(kinChoiceUndoOffer(card, viewer, { pending: null, status: taken })).toMatchObject({
+      busy: true,
+      disabled: true,
+      notice: null,
+    });
+  });
+
+  it('sends an open card\'s option named "undo" as that option, never as an Undo', async () => {
+    const open = choice({
+      state: {
+        ...choiceState(),
+        options: [
+          { optionId: "undo", label: "Undo the merge" },
+          { optionId: "keep", label: "Keep it" },
+        ],
+      },
+    });
+    expect(open.undo).toBeNull();
+    const posts: Array<unknown> = [];
+    await kinChoiceCardActions({
+      choice: open,
+      environmentId: "env" as EnvironmentId,
+      newId: () => "tap-1",
+      taps: kinChoiceCardTaps(),
+      heldKey: kinSendEditHeldKey("env", zoya, open.widgetId),
+      state: {
+        pending: null,
+        switching: false,
+        editing: null,
+        editBusy: null,
+        editable: false,
+        ticked: null,
+        nowMs: posted,
+      },
+      commands: {
+        post: async ({ input }) => {
+          posts.push(input);
+          return AsyncResult.success(undefined);
+        },
+        setSendFrom: () => Promise.reject(new Error("unused")),
+        sendEdited: () => Promise.reject(new Error("unused")),
+        saveEdited: () => Promise.reject(new Error("unused")),
+      },
+      set: {
+        pending: () => {},
+        lastStatus: () => {},
+        switching: () => {},
+        switchProblem: () => {},
+        editBusy: () => {},
+        editing: () => {},
+        ack: () => {},
+        ticked: () => {},
+      },
+    }).press("undo");
+    expect(posts).toEqual([kinChoiceActInput(open, "undo", "tap-1")]);
   });
 });
 

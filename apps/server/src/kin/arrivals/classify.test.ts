@@ -16,6 +16,16 @@ const rows: ArrivalRows = {
         clientTitle: "Lumen Studio",
       },
     ],
+    [
+      "billing@lumen.example",
+      {
+        key: "CT-2",
+        title: "Lumen Billing",
+        clientId: "rec_lumen",
+        clientKey: "C-1",
+        clientTitle: "Lumen Studio",
+      },
+    ],
   ]),
   money: [
     { key: "INV-4", list: "invoices", number: "INV/26-27/004", unique: true },
@@ -87,7 +97,7 @@ describe("classify", () => {
         "f: a client contact, in any language",
         mail("Ana <ana@lumen.example>", {
           subject: "Пожалуйста, перенесите встречу на четверг",
-          authResults: ["mx.example; dkim=pass; spf=pass; dmarc=pass"],
+          authResults: ["mx.google.com; dmarc=pass (p=REJECT) header.from=lumen.example"],
         }),
         "client",
         "chief",
@@ -175,6 +185,38 @@ describe("classify", () => {
         "chief",
       ],
       [
+        "f: a billing address registered as a client contact",
+        mail("billing@lumen.example"),
+        "client",
+        "chief",
+      ],
+      [
+        "h: a receipt sender with no automation headers",
+        mail("receipts@shop.example", { subject: "Your receipt from Shop" }),
+        "automated",
+        undefined,
+      ],
+      [
+        "h: a billing sender reports a declined card",
+        mail("billing@vendor.example", { subject: "Card declined for your plan" }),
+        "automated_notice",
+        "finance",
+        "declined",
+      ],
+      [
+        "h: a billing sender reports a failed payment",
+        mail("billing@vendor.example", { subject: "Payment failed for your plan" }),
+        "automated_notice",
+        "chief",
+        "failed",
+      ],
+      [
+        "h: an order sender with a file",
+        mail("orders@shop.example", { hasFile: true }),
+        "automated_file",
+        undefined,
+      ],
+      [
         "i: our addresses only in Cc",
         mail("dev@partner.example", {
           to: ["meera@partner.example"],
@@ -196,6 +238,36 @@ describe("classify", () => {
         mail("arjun@ambermill.example"),
         "other",
         undefined,
+      ],
+      [
+        "b: digits before sign-in code",
+        mail("arjun@studio-nine.example", { subject: "482913 is your sign-in code" }),
+        "sign_in",
+        undefined,
+      ],
+      [
+        "b: digits before passcode",
+        mail("arjun@studio-nine.example", { subject: "482913 is your passcode" }),
+        "sign_in",
+        undefined,
+      ],
+      [
+        "b: digits after code",
+        mail("arjun@studio-nine.example", { subject: "Your code: 482913" }),
+        "sign_in",
+        undefined,
+      ],
+      [
+        "j: an invoice number far from the word code",
+        mail("arjun@studio-nine.example", { subject: "Invoice 4821 for the March code review" }),
+        "unknown_person",
+        "chief",
+      ],
+      [
+        "j: digits in a hyphenated project identifier",
+        mail("arjun@studio-nine.example", { subject: "Project PIN-2041 kickoff" }),
+        "unknown_person",
+        "chief",
       ],
       [
         "k: nothing matched (only Bcc'd)",
@@ -222,6 +294,33 @@ describe("classify", () => {
       classify(cases[3]![1], rows).reason,
       "This mail failed the sender checks for ana@lumen.example.",
     );
+  });
+
+  it.each([
+    [
+      "a pass in the bounce address before the receiver's failure",
+      [
+        "mx.google.com; spf=pass (dmarc=pass+header.from=lumen.example@else.example); dmarc=fail header.from=lumen.example",
+      ],
+    ],
+    [
+      "a pass inside a quoted property before the receiver's failure",
+      [
+        'mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=lumen.example"; dmarc=fail header.from=lumen.example',
+      ],
+    ],
+    [
+      "a lower header claims DMARC passed but the receiver has only an SPF softfail",
+      ["mx.google.com; spf=softfail", "mx.example; dmarc=pass header.from=lumen.example"],
+    ],
+    [
+      "DMARC passes for a different domain and the receiver reports a failed DKIM check",
+      ["mx.google.com; dmarc=pass header.from=else.example; dkim=fail header.d=lumen.example"],
+    ],
+  ])("classifies a known contact as failed checks when %s", (_name, authResults) => {
+    const found = classify(mail("ana@lumen.example", { authResults }), rows);
+    assert.strictEqual(found.class, "failed_checks");
+    assert.isUndefined(found.look?.clientId);
   });
 
   const noticeCases: ReadonlyArray<

@@ -76,6 +76,7 @@ import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
   defaultReplyMock,
+  endsTurn,
   fillKinRules,
   filledEvent,
   isKinCase,
@@ -1444,7 +1445,8 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy", appS
       const replayed =
         normalizeToolName(tool.name) === "orchestrator_capabilities"
           ? capabilities(sample, result)
-          : (sample.priorResults.get(prior) ?? result);
+          : (sample.priorResults.get(prior) ??
+            (typeof result === "string" ? fillKinRules(result) : result));
       const answer = toolResult(id, replayed);
       push("user", sample.priorErrors.has(prior) ? { ...answer, is_error: true } : answer);
     }
@@ -3549,7 +3551,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       !input &&
       uses.some((use) => {
         const call = calls.find((call) => call.id === use.id);
-        return call !== undefined && isReplyEnding(call.tool) && call.failed === false;
+        return call !== undefined && endsTurn(call);
       })
     ) {
       stopReason = "end_turn";

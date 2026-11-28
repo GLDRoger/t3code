@@ -67,6 +67,7 @@ import {
   kinVisualSources,
   type KinVisualSources,
 } from "../kin/chat/attachmentAccess.ts";
+import { KIN_MAIL_FILE_OWNER } from "../kin/chat/KinAttachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import { findThemeBackground } from "../environmentTheme.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -1079,9 +1080,11 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       ),
       Effect.orElseSucceed(() => Option.none()),
     );
+    const download =
+      claims.download || claims.attachmentId.toLowerCase().startsWith(`${KIN_MAIL_FILE_OWNER}-`);
     // Every HTML file of a Kin chat takes this path, so none is ever served under T3's policy.
     const kinVisual =
-      kinFile && claims.reader !== undefined && !claims.download && /\.html?$/i.test(attachmentPath)
+      kinFile && claims.reader !== undefined && !download && /\.html?$/i.test(attachmentPath)
         ? { ...(yield* kinVisualSources(claims.attachmentId)), reader: claims.reader }
         : undefined;
     return Option.isSome(info) && info.value.type === "File"
@@ -1089,7 +1092,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
           kind: "file",
           path: attachmentPath,
           ...(kinVisual === undefined ? {} : { kinVisual }),
-          ...(claims.download ? { download: true } : {}),
+          ...(download ? { download: true } : {}),
           ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
           ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),
           ...(claims.renderIntent === "mcp-app" ? { renderIntent: "mcp-app" as const } : {}),

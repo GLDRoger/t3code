@@ -9,7 +9,9 @@ import * as Schema from "effect/Schema";
 
 import {
   ACTIVITY_MAIL,
+  AGENDA_LIMIT,
   isPlainAddress,
+  type MailAgendaEvent,
   type MailArrival,
   type MailCalendarEvent,
   type MailContext,
@@ -18,7 +20,24 @@ import {
   type MailVendor,
 } from "./MailProvider.ts";
 import { htmlToText } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import {
+  agendaPages,
+  agendaTime,
+  agendaZone,
+  answeredWith,
+  attachmentBytes,
+  attachmentJsonLimit,
+  checkMailFile,
+  failure,
+  httpsLink,
+  mailDate,
+  mailFileMimeType,
+  mailFileType,
+  mailProvider,
+  unreached,
+  safeMailFileName,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 import { DAY_MS } from "../durations.ts";
 
@@ -46,8 +65,14 @@ const MICROSOFT_SCOPES = [
 // Microsoft names Graph scopes either bare or as full URIs, in any case.
 const scopeName = (scope: string) =>
   scope.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase();
+const scopesOf = (granted: string | undefined) =>
+  new Set((granted ?? "").split(/\s+/).map(scopeName));
+export const microsoftReadsCalendar = (granted: string | undefined) => {
+  const scopes = scopesOf(granted);
+  return scopes.has("calendars.read") || scopes.has("calendars.readwrite");
+};
 const canSend = (granted: string | undefined) => {
-  const scopes = new Set((granted ?? "").split(/\s+/).map(scopeName));
+  const scopes = scopesOf(granted);
   return MICROSOFT_SEND_SCOPES.every((scope) => scopes.has(scope.toLowerCase()));
 };
 
@@ -70,12 +95,14 @@ const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ?
 const odata = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 type Request = {
-  readonly method?: "GET" | "POST" | "PATCH";
+  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly revision?: string;
   readonly params?: Readonly<Record<string, string | undefined>>;
   readonly json?: unknown;
   /** A MIME message as Graph takes it: base64 in a text/plain body. */
   readonly mime?: string;
   readonly prefer?: string;
+  readonly limit?: ReturnType<typeof attachmentJsonLimit>;
 };
 
 /** One Graph call. */
@@ -98,6 +125,8 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
   if (params.length > 0) built = HttpClientRequest.setUrlParams(built, Object.fromEntries(params));
   if (request.prefer !== undefined)
     built = HttpClientRequest.setHeader(built, "prefer", request.prefer);
+  if (request.revision !== undefined)
+    built = HttpClientRequest.setHeader(built, "if-match", request.revision);
   if (request.json !== undefined) built = HttpClientRequest.bodyJsonUnsafe(built, request.json);
   if (request.mime !== undefined)
     built = HttpClientRequest.bodyText(
@@ -106,7 +135,7 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
       "text/plain",
     );
   const response = yield* http.execute(built).pipe(Effect.mapError(() => unreached(MICROSOFT)));
-  return yield* vendorAnswer(MICROSOFT, response);
+  return yield* vendorAnswer(MICROSOFT, response, request.limit);
 });
 
 const nextPage = (page: unknown) => text(field(page, "@odata.nextLink")) ?? null;
@@ -139,7 +168,7 @@ const bodyText = (message: unknown) => {
 };
 
 const SUMMARY =
-  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
+  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,webLink";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
 const automationOf = (message: unknown) => ({
   listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
@@ -152,8 +181,62 @@ const receivedOf = (message: unknown) => {
   const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
   return Number.isFinite(at) ? at : null;
 };
+const linkOf = (message: unknown) => {
+  const id = text(field(message, "id"));
+  const webLink = id ? httpsLink(text(field(message, "webLink"))) : null;
+  return webLink === null ? {} : { webLink };
+};
+const graphFile = (file: unknown) => {
+  const id = text(field(file, "id"));
+  const size = field(file, "size");
+  return {
+    name: text(field(file, "name")) ?? "",
+    type: mailFileMimeType(text(field(file, "contentType"))),
+    bytes: typeof size === "number" ? size : null,
+    ...(id === undefined || field(file, "@odata.type") !== "#microsoft.graph.fileAttachment"
+      ? {}
+      : { attachmentId: id }),
+  };
+};
+const attachmentOf: MailVendor["attachment"] = Effect.fn("KinMicrosoft.attachment")(
+  function* (context, messageId, attachmentId) {
+    const messageUrl = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
+    const fileUrl = `${messageUrl}/attachments/${encodeURIComponent(attachmentId)}`;
+    const listed = graphFile(
+      yield* api(context, fileUrl, {
+        params: { $select: "id,name,contentType,size" },
+        limit: { bytes: 64 * 1024, message: "Kin couldn't read that mail attachment." },
+      }),
+    );
+    const file = { ...listed, type: mailFileType(listed.name) };
+    if (file.attachmentId !== attachmentId)
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
+    const problem = checkMailFile(file);
+    if (problem !== undefined) return yield* problem;
+    const name = safeMailFileName(file.name);
+    const message = yield* api(context, messageUrl, {
+      params: { $select: "from,receivedDateTime" },
+    });
+    // Graph documents contentBytes on the plain GET; selecting a fileAttachment property isn't.
+    const content = yield* api(context, fileUrl, { limit: attachmentJsonLimit(name) });
+    const from = addressOf(field(message, "from"));
+    return {
+      name,
+      mimeType: file.type,
+      bytes: yield* attachmentBytes(text(field(content, "contentBytes")), file, "base64"),
+      from: from !== null && isPlainAddress(from) ? from : null,
+      date: mailDate(text(field(message, "receivedDateTime")) ?? null),
+    };
+  },
+);
+
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
+  providerMessageId: text(field(message, "id")) ?? "",
   threadId: text(field(message, "conversationId")) ?? "",
+  ...linkOf(message),
   from: nameOf(field(message, "from")),
   fromAddress: addressOf(field(message, "from")),
   to: recipients(message, "toRecipients"),
@@ -174,11 +257,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
       ? null
       : {
           text: bodyText(message),
-          attachments: list(field(files, "value")).map((file) => ({
-            name: text(field(file, "name")) ?? "",
-            type: text(field(file, "contentType")) ?? "unknown",
-            bytes: typeof field(file, "size") === "number" ? (field(file, "size") as number) : null,
-          })),
+          attachments: list(field(files, "value")).map(graphFile),
         },
 });
 
@@ -206,6 +285,19 @@ const instant = (value: unknown) => {
     ? `${dateTime.replace(/\.\d+$/, "")}Z`
     : dateTime;
 };
+const recurrenceOf = (event: unknown) => {
+  switch (field(event, "type")) {
+    case "singleInstance":
+      return "single";
+    case "occurrence":
+    case "exception":
+      return "occurrence";
+    case "seriesMaster":
+      return "series";
+    default:
+      return null;
+  }
+};
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
   summary: text(field(event, "subject")) ?? null,
@@ -227,7 +319,36 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   notes: bodyText(event),
   meeting: text(field(event, "onlineMeeting", "joinUrl")) ?? null,
   updated: text(field(event, "lastModifiedDateTime")) ?? null,
+  recurrence: recurrenceOf(event),
+  revision: text(field(event, "@odata.etag")) ?? null,
+  notifiesGuests: field(event, "isOrganizer") === true,
 });
+const agendaBoundary = (value: unknown, allDay: boolean) =>
+  agendaTime(
+    allDay ? text(field(value, "dateTime"))?.split("T")[0] : (instant(value) ?? undefined),
+    allDay,
+  );
+
+const agendaEvent = (event: unknown): ReadonlyArray<MailAgendaEvent> => {
+  const id = text(field(event, "id"));
+  const allDay = field(event, "isAllDay") === true;
+  const start = agendaBoundary(field(event, "start"), allDay);
+  if (!id || start === null || field(event, "isCancelled") === true) return [];
+  const recurrence = recurrenceOf(event);
+  return [
+    {
+      id,
+      title: text(field(event, "subject")) ?? null,
+      start,
+      end: agendaBoundary(field(event, "end"), allDay),
+      allDay,
+      zone: agendaZone(text(field(event, "originalStartTimeZone"))),
+      link: httpsLink(text(field(event, "webLink"))),
+      repeats: recurrence === "occurrence" || recurrence === "series",
+    },
+  ];
+};
+
 const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
 const UTC = 'outlook.timezone="UTC"';
@@ -262,7 +383,7 @@ const conversation = (context: MailContext, threadId: string, files: boolean) =>
             ? api(
                 context,
                 `${GRAPH}/messages/${encodeURIComponent(text(field(message, "id")) ?? "")}/attachments`,
-                { params: { $select: "name,contentType,size" } },
+                { params: { $select: "id,name,contentType,size" } },
               ).pipe(
                 Effect.orElseSucceed(() => undefined),
                 Effect.map((found) => messageOf(message, found)),
@@ -461,12 +582,14 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     Number.isNaN(receivedAt)
   )
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  const from = field(message, "from");
+  const fromAddress = addressOf(from);
   return {
     messageId,
     threadId,
     receivedAt,
-    from: nameOf(field(message, "from")),
-    fromAddress: addressOf(field(message, "from")),
+    from: fromAddress === null ? null : nameOf(from),
+    fromAddress,
     to: recipients(message, "toRecipients"),
     cc: recipients(message, "ccRecipients"),
     deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
@@ -520,6 +643,43 @@ const microsoftSendAs = Effect.fn("KinMicrosoft.sendAs")(function* (
 /** `In-Reply-To` of a message Kin built itself, which names the message the reply answers. */
 const inReplyToOf = (raw: string) =>
   /^In-Reply-To: *(\S+)\r?$/im.exec(raw.split(/\r?\n\r?\n/)[0] ?? "")?.[1] ?? null;
+
+const sentSince = Effect.fn("KinMicrosoft.sentSince")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  since: number,
+  max: number,
+) {
+  const answer = yield* api({ http, token }, `${GRAPH}/mailFolders/sentitems/messages`, {
+    params: {
+      $filter: `sentDateTime ge ${iso(since)}`,
+      $select: "subject,toRecipients,ccRecipients,sentDateTime",
+      $orderby: "sentDateTime desc",
+      $top: String(max),
+    },
+  });
+  const messages = field(answer, "value");
+  if (!Array.isArray(messages))
+    return yield* failure("protocol", "Outlook sent mail could not be listed.");
+  return yield* Effect.forEach(
+    messages.slice(0, max),
+    Effect.fnUntraced(function* (message: unknown) {
+      const sentAt = Date.parse(text(field(message, "sentDateTime")) ?? "");
+      if (
+        !Number.isFinite(sentAt) ||
+        !Array.isArray(field(message, "toRecipients")) ||
+        !Array.isArray(field(message, "ccRecipients"))
+      )
+        return yield* failure("protocol", "Outlook sent mail headers could not be read.");
+      return {
+        sentAt,
+        to: recipients(message, "toRecipients"),
+        cc: recipients(message, "ccRecipients"),
+        subject: text(field(message, "subject")) ?? "",
+      };
+    }),
+  );
+});
 
 /**
  * A new message goes through sendMail; a reply goes through the answered message's own reply,
@@ -627,6 +787,7 @@ const microsoft: MailVendor = {
     extra: { prompt: "select_account" },
   },
   canSend,
+  readsCalendar: microsoftReadsCalendar,
   threads: (context, page) => {
     const at = pageOr(
       page.pageToken,
@@ -650,7 +811,30 @@ const microsoft: MailVendor = {
       })),
     );
   },
+  attachment: attachmentOf,
   thread: conversation,
+  agenda: (context, { from, to }) =>
+    agendaPages((next) =>
+      api(context, next ?? `${GRAPH}/calendarView`, {
+        prefer: UTC,
+        ...(next === null
+          ? {
+              params: {
+                startDateTime: from,
+                endDateTime: to,
+                $top: String(AGENDA_LIMIT + 1),
+                $select:
+                  "id,subject,start,end,isAllDay,type,webLink,isCancelled,originalStartTimeZone",
+              },
+            }
+          : {}),
+      }).pipe(
+        Effect.map((page) => ({
+          events: list(field(page, "value")).flatMap(agendaEvent),
+          next: nextPage(page),
+        })),
+      ),
+    ),
   events: (context, query) => {
     const at = pageOr(query.pageToken, `${calendarBase(query.calendarId)}/calendarView`);
     return api(context, at.url, {
@@ -711,8 +895,14 @@ const microsoft: MailVendor = {
   arrival: arrivalOf,
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
+  sentSince,
   sendMessage,
   saveEvent,
+  deleteEvent: (http, token, { calendarId, eventId, revision }) =>
+    api({ http, token }, `${calendarBase(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+      revision,
+    }).pipe(Effect.as({ messageId: null, threadId: null, eventId })),
 };
 
 /** Outlook mail and calendar, for work or school and personal Microsoft accounts. */

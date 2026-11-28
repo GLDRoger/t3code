@@ -22,6 +22,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { factSig, markTold, settleCheckInTold, toldBy, untold } from "./told.ts";
+import * as BankSenders from "../work/statements/bankSenders.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 
 // Invented facts only.
@@ -53,6 +54,7 @@ it.effect.each([
   { body: "One decision is ready.", handle: true, kept: ["W-62"] },
   { body: undefined, handle: true, kept: [] },
   { body: undefined, bank: true, kept: [] },
+  { body: undefined, sending: true, kept: [] },
   // A line left with the agent for this check-in is told once it posts, then closed.
   { body: "W-62 is waiting. Meera moved the kickoff.", left: true, kept: ["W-62"] },
   { body: undefined, left: true, kept: [] },
@@ -86,6 +88,28 @@ it.effect.each([
         (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
         VALUES (${orgId}, 'invented-alert', 'invented-mail', 'invented-thread',
           ${MONDAY}, ${MONDAY}, 'unparsed')`;
+    const address = "notices@harborbank.example";
+    const senderFact = `bank_sender_waiting:${address}`;
+    if (row.sending === true) {
+      yield* BankSenders.noteCandidate(orgId, {
+        address,
+        bankName: "Harbor Bank",
+        accounts: ["4821"],
+        seenAt: MONDAY,
+        matchedFrom: "company_details",
+      });
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+        auth, reach, state, account_label, created_at, updated_at)
+        VALUES (${orgId}, 'invented-mail', 'google', 'Accounts', 'builtin', 'invented.example',
+          'oauth', 'closed', 'active', 'ops@tidewater.example', 0, 0)`;
+      yield* sql`INSERT INTO kin_bank_alerts
+        (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome, sender_address, account)
+        VALUES (${orgId}, 'invented-alert', 'invented-mail', 'invented-thread',
+          ${MONDAY}, ${MONDAY}, 'held', ${address}, '4821')`;
+      yield* sql`INSERT INTO kin_recommendations (org_id, rec_id, rule, subject, widget_id,
+        change_json, noticed, state, posted_at) VALUES (${orgId}, 'bank-rec', 'bank_sender',
+        ${address}, 'bank-card', '{}', '', 'open', ${MONDAY})`;
+    }
     const queue = (at: number) =>
       queueCheckIn({
         orgId,
@@ -122,7 +146,10 @@ it.effect.each([
     const [held] = yield* sql<{ holdId: string }>`SELECT hold_id AS "holdId" FROM kin_held_posts
       WHERE org_id = ${orgId}`;
     const leftKey = `left:${held?.holdId}`;
-    assert.include(yield* queue(MONDAY), { _tag: "queued", facts: row.bank ? 3 : 2 });
+    assert.include(yield* queue(MONDAY), {
+      _tag: "queued",
+      facts: row.bank || row.sending === true ? 3 : 2,
+    });
     const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at`;
     const eventId = event!.eventId;
@@ -165,21 +192,27 @@ it.effect.each([
     }
     const wakeupId = KinWakeupId.make(`wakeup-${eventId}`);
     const factKeys = yield* toldBy(orgId, [eventId]);
-    const body = row.bank
-      ? (yield* morningMoneyLines({
-          orgId,
-          now: MONDAY,
-          viewer: KIN_OWNER_LEVEL,
-          offeredFacts: factKeys,
-        }))[0]
-      : row.body;
+    const body =
+      row.bank || row.sending === true
+        ? (yield* morningMoneyLines({
+            orgId,
+            now: MONDAY,
+            viewer: KIN_OWNER_LEVEL,
+            offeredFacts: factKeys,
+          }))[0]
+        : row.body;
+    if (row.sending === true)
+      assert.strictEqual(
+        body,
+        `Kin is holding 1 mail from ${address} until you say whether it is Harbor Bank's alert address.`,
+      );
     const messageId = yield* leadWakeup({
       orgId,
       eventId,
       chatId,
       ...(body === undefined ? {} : { body }),
     });
-    if (row.bank)
+    if (row.bank || row.sending === true)
       yield* sql`UPDATE kin_messages SET client_message_id = ${`kin-money:${wakeupId}`}
         WHERE org_id = ${orgId} AND message_id = ${messageId}`;
     yield* sql`UPDATE kin_wakeups SET thread_id = 'thread-fixture'
@@ -224,9 +257,17 @@ it.effect.each([
       WHERE org_id = ${orgId} AND event_id = ${eventId}`;
     const kept = new Set(row.kept.map(keyOf));
     if (row.bank) kept.add(UNREADABLE_BANK_ALERTS_KEY);
+    if (row.sending === true) kept.add(senderFact);
     if (row.left === true && row.body !== undefined) kept.add(leftKey);
     assert.deepStrictEqual(yield* toldBy(orgId, [eventId]), kept);
-    assert.include(yield* queue(MONDAY + DAY), { _tag: "queued" });
+    if (row.sending === true)
+      yield* sql`INSERT INTO kin_bank_alerts
+        (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome, sender_address, account)
+        VALUES (${orgId}, 'second-alert', 'invented-mail', 'second-thread', ${MONDAY + HOUR},
+          ${MONDAY + HOUR}, 'held', ${address}, '4821')`;
+    assert.include(yield* queue(MONDAY + DAY - (row.sending === true ? HOUR : 0)), {
+      _tag: "queued",
+    });
     const next = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND tag = 'pulse' AND event_id <> ${eventId} ORDER BY queued_at`;
     const offered = yield* toldBy(
@@ -235,6 +276,19 @@ it.effect.each([
     );
     assert.isTrue(offered.has(keyOf("W-7")));
     assert.isFalse(offered.has(UNREADABLE_BANK_ALERTS_KEY));
+    if (row.sending === true) {
+      assert.isFalse(offered.has(senderFact));
+      yield* sql`UPDATE kin_bank_senders SET state = 'declined' WHERE org_id = ${orgId} AND address = ${address}`;
+      assert.deepStrictEqual(
+        yield* morningMoneyLines({
+          orgId,
+          now: MONDAY,
+          viewer: KIN_OWNER_LEVEL,
+          offeredFacts: new Set([senderFact]),
+        }),
+        [],
+      );
+    }
     // Told, it is closed; a check-in that posted nothing leaves it for the next one.
     assert.strictEqual(offered.has(leftKey), row.left === true && row.body === undefined);
     if (row.left === true)

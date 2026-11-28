@@ -25,6 +25,8 @@ import {
   instanceOf,
   isAlive,
   ORG,
+  parseSsListenerPids,
+  playwrightArtifactsDir,
   processTree,
   readJson,
   readSeed,
@@ -210,17 +212,22 @@ async function down(instance: Instance, wipe: boolean, quiet = false) {
     writeState(instance, { ...state, chrome: {}, metro: undefined });
   }
   if (wipe) NodeFS.rmSync(instance.home, { recursive: true, force: true });
+  else NodeFS.rmSync(playwrightArtifactsDir(instance), { recursive: true, force: true });
   if (!quiet) console.log(`down: stopped ${stopped} processes${wipe ? ", wiped state" : ""}`);
 }
 
 function listening(port: number | undefined): Array<number> {
   if (port === undefined) return [];
-  return NodeChildProcess.spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+  const lsof = NodeChildProcess.spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
     encoding: "utf8",
-  })
-    .stdout.split("\n")
-    .filter(Boolean)
-    .map(Number);
+  });
+  if (lsof.error !== undefined && "code" in lsof.error && lsof.error.code === "ENOENT") {
+    const ss = NodeChildProcess.spawnSync("ss", ["-H", "-ltnp", `sport = :${port}`], {
+      encoding: "utf8",
+    });
+    return parseSsListenerPids(ss.stdout ?? "");
+  }
+  return (lsof.stdout ?? "").split("\n").filter(Boolean).map(Number);
 }
 
 async function doctor(instance: Instance) {

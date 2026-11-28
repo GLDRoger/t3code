@@ -1,3 +1,4 @@
+import { makeKinMailRuleHandlers } from "./arrivals/rpcHandlers.ts";
 import { makeKinPeopleHandlers } from "./people/rpcHandlers.ts";
 import {
   AuthKinChatScope,
@@ -32,6 +33,8 @@ import { KinServer, type Services } from "./KinServer.ts";
 import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
+import { BankAlertReader } from "./work/statements/BankAlertReader.ts";
+import { makeKinBankSenderHandlers } from "./work/statements/bankSenderRpcHandlers.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinHostHandlers } from "./host/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
@@ -129,6 +132,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   session: AuthenticatedSession,
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
+  const bankReader = yield* Effect.serviceOption(BankAlertReader);
   const services = Option.flatMap(kin, (kin) => kin.services);
   const handlers = group.of({
     ...(yield* makeKinPeopleHandlers(session)),
@@ -142,9 +146,11 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinWorkHandlers(session)),
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
+    ...(yield* makeKinMailRuleHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
     ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
+    ...(yield* makeKinBankSenderHandlers(session)),
     ...(yield* makeKinHostHandlers(session)),
     ...(yield* makeKinWatchHandlers(session)),
   });
@@ -179,7 +185,13 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
               ),
             ),
           );
-          return reads ? NodeSqliteClient.readOnly(effect) : effect;
+          if (reads) return NodeSqliteClient.readOnly(effect);
+          if (
+            Option.isSome(bankReader) &&
+            (tag === "kin.widgets.act" || tag === "kin.bankSenders.add")
+          )
+            return Effect.provideService(effect, BankAlertReader, bankReader.value);
+          return effect;
         };
   }
   // Every entry keeps its handler's signature; only a refusal is added, typed as the group's error.

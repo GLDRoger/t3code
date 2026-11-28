@@ -11,15 +11,35 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
-import { connectionById } from "../connections/ConnectionRows.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
 import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
-import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
+import { mailLine } from "../pulse/outside.ts";
+import { sectionOnFor } from "../shell/KinShell.ts";
+import { normalizeAddress, quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
+import { companyRuleMailbox } from "./ruleAccess.ts";
+import { mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
+import {
+  playbookRoute,
+  routeLateRuleHolds,
+  takeHeldRulePlaybook,
+  wakePlaybookMail,
+  type PlaybookMail,
+} from "./rulePlaybook.ts";
+import {
+  activeRuleIds,
+  alreadyClaimedRuleMail,
+  claimRuleMail,
+  flushRuleMail,
+  matchingRules,
+} from "./ruleWake.ts";
 
 /** Each mailbox is read once a minute; a host with no public address can't be told sooner. */
 const FEED_EVERY_MS = MINUTE_MS;
@@ -51,7 +71,7 @@ export class KinArrivalFeed extends Context.Service<
   {
     /**
      * One read of one mailbox's change record. What it names that is new mail becomes one
-     * arrival, classified by code. Automated notices go through the outside watch's wake path.
+     * arrival, classified by code. Mail watches use the arrivals committed by that read.
      */
     readonly read: (
       orgId: KinOrgId,
@@ -65,7 +85,11 @@ const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const make = Effect.gen(function* () {
   const connections = yield* KinConnections;
   const queue = yield* KinEventQueue;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
+  // The scheduler's tick runs outside Kin's layers, so rule history moves use this one.
+  const refresh = yield* KinRefreshObserver;
 
   // Per-message work shares the mailbox read's span.
   const arrive = Effect.fnUntraced(function* (input: {
@@ -86,7 +110,8 @@ const make = Effect.gen(function* () {
         yield* ArrivalStore.settleNothing(orgId, arrivalId, classified.reason, now);
       return undefined;
     }
-    const from = arrival.fromAddress?.toLowerCase() ?? null;
+    const facts = mailRuleHeaderFacts(arrival);
+    const from = arrival.fromAddress?.toLowerCase() ?? facts.fromAddress;
     const mailKey = from === null ? null : ArrivalStore.mailKeyOf(orgId, from, arrival.internetId);
     const elsewhere = yield* ArrivalStore.recordedElsewhere(orgId, mailKey, arrivalId);
     const made = yield* ArrivalStore.claim(
@@ -102,6 +127,8 @@ const make = Effect.gen(function* () {
         class: classified.class,
         reason: elsewhere ? "also recorded in another connected mailbox" : classified.reason,
         needsLook: !elsewhere && classified.look !== undefined,
+        hasFile: facts.hasFile,
+        senderCheck: facts.senderCheck,
       },
       now,
       parked !== undefined,
@@ -109,7 +136,10 @@ const make = Effect.gen(function* () {
     if (!made) return undefined;
     return {
       arrivalId,
-      look: !elsewhere && classified.class === "automated_notice" ? classified.look : undefined,
+      class: classified.class,
+      look: elsewhere ? undefined : classified.look,
+      facts,
+      mailKey,
     };
   });
 
@@ -128,14 +158,19 @@ const make = Effect.gen(function* () {
         ...fresh.map((change) => change.messageId),
         ...parked.map((one) => one.messageId),
       ];
+      const startedOn =
+        messageIds.length === 0 ? new Set<string>() : yield* activeRuleIds(orgId, connectionId);
       const reads =
         messageIds.length === 0 ? [] : yield* connections.arrivals(orgId, connectionId, messageIds);
-      const recorded = yield* sql.withTransaction(
+      return yield* sql.withTransaction(
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
-          let connection: Effect.Success<ReturnType<typeof connectionById>>;
+          const connection = yield* companyRuleMailbox(orgId, connectionId);
+          let hiddenBankSenders: Set<string> | undefined;
           const recorded: Array<string> = [];
-          const notices: Array<Matched> = [];
+          const playbook = new Map<string, PlaybookMail>();
+          const ruleCandidates = new Set<string>();
+          const rules = yield* matchingRules(orgId, connectionId);
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
             const change = fresh[index];
@@ -182,46 +217,114 @@ const make = Effect.gen(function* () {
             });
             if (arrived === undefined) continue;
             recorded.push(arrived.arrivalId);
-            const { look } = arrived;
-            if (
-              look === undefined ||
-              typeof look.by !== "string" ||
-              notices.length >= NEW_SENDERS_PER_POLL
-            )
-              continue;
-            connection ??= yield* connectionById(orgId, connectionId);
-            if (connection === undefined) continue;
-            const mailbox = { account: connection.accountLabel, addresses: found.addresses };
-            const line = mailLine(connection.label, mailbox.account, {
-              ...result.arrival,
-              receivedBy: receivedAmong(mailbox, result.arrival.deliveredTo),
-            });
-            notices.push({
-              line: { ...line, matched: look.matched },
-              domain: look.by,
-              arrivalId: arrived.arrivalId,
-            });
+            const { class: mailClass, look } = arrived;
+            const arrivalId = arrived.arrivalId;
+            const quietBankSender =
+              look !== undefined &&
+              typeof look.by === "string" &&
+              (hiddenBankSenders ??= yield* quietBankSenderAddresses(
+                orgId,
+                yield* sectionOnFor(orgId, "money"),
+              )).size > 0 &&
+              hiddenBankSenders.has(normalizeAddress(result.arrival.fromAddress) ?? "");
+            const ordinary =
+              !quietBankSender &&
+              connection !== undefined &&
+              look !== undefined &&
+              typeof look.by === "string" &&
+              (mailClass === "unknown_person" ||
+                mailClass === "automated_notice" ||
+                mailClass === "client" ||
+                mailClass === "names_money")
+                ? {
+                    line: {
+                      ...mailLine(connection.label, connection.account, {
+                        ...result.arrival,
+                        receivedBy: receivedAmong(
+                          { account: connection.account, addresses: found.addresses },
+                          result.arrival.deliveredTo,
+                        ),
+                      }),
+                      matched: look.matched,
+                    },
+                    domain: look.by,
+                    ...(look.clientId === undefined ? {} : { clientId: look.clientId }),
+                    arrivalId,
+                    mailClass,
+                  }
+                : undefined;
+            if (ordinary !== undefined) playbook.set(arrivalId, ordinary);
+
+            // The oldest rule that runs on the mail claims it; else the oldest that holds it.
+            let runs: (typeof rules)[number]["rule"] | undefined;
+            let holds: typeof runs;
+            for (const { rule, filter } of rules) {
+              if (rule.state !== "on" && !startedOn.has(rule.ruleId)) continue;
+              const resultOfRule = matchMailRule(filter, {
+                ...arrived.facts,
+                connectionId,
+                class: mailClass,
+                subject: result.arrival.subject,
+              });
+              if (resultOfRule === "no_match") continue;
+              if (yield* alreadyClaimedRuleMail(rule, arrived.mailKey)) continue;
+              if (resultOfRule === "match") {
+                runs = rule;
+                break;
+              }
+              holds ??= rule;
+            }
+            if (runs !== undefined) {
+              yield* claimRuleMail(
+                runs,
+                arrivalId,
+                arrived.mailKey,
+                "match",
+                playbookRoute(ordinary),
+              );
+              ruleCandidates.add(arrivalId);
+            } else if (holds !== undefined) {
+              yield* claimRuleMail(holds, arrivalId, arrived.mailKey, "held_unverified", null);
+            }
           }
-          if (notices.length > 0)
-            yield* wakeMatches(orgId, now, notices).pipe(
-              Effect.provideService(KinEventQueue, queue),
-            );
-          if (found.gap !== null)
-            yield* ArrivalStore.gap(
-              orgId,
-              connectionId,
-              found.gap,
-              `Kin couldn't see mail between ${isoOf(found.gap.from)} and ${isoOf(found.gap.to)}`,
-            );
-          yield* connections.changesSeen(orgId, connectionId, found.cursor);
-          return recorded;
+          yield* flushRuleMail(rules, yield* Clock.currentTimeMillis).pipe(
+            Effect.provideService(KinEventQueue, queue),
+            Effect.provideService(KinChatRepository, repo),
+            Effect.provideService(KinChatHub, hub),
+          );
+          const held = yield* takeHeldRulePlaybook(orgId, connectionId, playbook);
+          const heldIds = new Set(held.map(({ arrivalId }) => arrivalId));
+          const eligible = [
+            ...held.filter(({ arrivalId }) => !playbook.has(arrivalId)),
+            ...Array.from(playbook.values()).filter(
+              ({ arrivalId }) => !ruleCandidates.has(arrivalId) || heldIds.has(arrivalId),
+            ),
+          ];
+          yield* wakePlaybookMail(orgId, now, eligible).pipe(
+            Effect.provideService(KinEventQueue, queue),
+          );
+          if (connection !== undefined) {
+            if (found.gap !== null)
+              yield* ArrivalStore.gap(
+                orgId,
+                connectionId,
+                found.gap,
+                `Kin couldn't see mail between ${isoOf(found.gap.from)} and ${isoOf(found.gap.to)}`,
+              );
+            yield* connections.changesSeen(orgId, connectionId, found.cursor);
+          }
+          return {
+            off: false,
+            more: connection !== undefined && found.more,
+            recorded,
+          } satisfies FeedRead;
         }),
       );
-      return { off: false, more: found.more, recorded } satisfies FeedRead;
     },
     (effect, _orgId, connectionId) =>
       effect.pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinRefreshObserver, refresh),
         Effect.mapError((cause) => new KinArrivalFeedError({ connectionId, cause })),
       ),
   );
@@ -241,6 +344,7 @@ const runtimeLayer = Layer.effectDiscard(
     const feed = yield* KinArrivalFeed;
     const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
+    const queue = yield* KinEventQueue;
     const due = new Map<string, { readonly at: number; readonly failures: number }>();
     let pruned = Number.NEGATIVE_INFINITY;
     yield* ticks.register(
@@ -253,6 +357,10 @@ const runtimeLayer = Layer.effectDiscard(
             Effect.catch((cause) => Effect.logWarning("Kin couldn't prune arrivals", { cause })),
           );
         }
+        yield* routeLateRuleHolds(now).pipe(
+          Effect.provideService(KinEventQueue, queue),
+          Effect.catch((cause) => Effect.logWarning("Kin couldn't route held mail", { cause })),
+        );
         // Scheduler maintenance: every org's live mail connections; each read is org-scoped.
         // A person's own mailbox is theirs alone (`turnMailbox.ts`): never read for the company.
         const rows = yield* sql<{ orgId: string; connectionId: string }>`SELECT org_id AS "orgId",

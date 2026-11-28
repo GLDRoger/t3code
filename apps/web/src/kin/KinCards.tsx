@@ -27,6 +27,7 @@ import {
   KIN_MAIL_CANCEL_UNDO_MS,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  kinChoiceUndoOffer,
   KIN_CHOICE_DISMISS_COPY,
   kinChoiceDismissedLine,
   kinChoiceClosedLine,
@@ -89,6 +90,12 @@ import {
   type KinDocCardView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  createKinMailRuleCardActions,
+  kinMailRuleCardView,
+  kinMailRuleListsAfterTurnOn,
+  type KinMailRuleCardAction,
+} from "@t3tools/client-runtime/kin/kinMailRules";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
@@ -141,6 +148,8 @@ import { KinChart } from "./KinChart";
 import { KinCountryCard } from "./KinCountryCard";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinHostTroubleCard } from "./KinHostTroubleCard";
+import { Breakable } from "./KinBreakable";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
@@ -240,6 +249,7 @@ export const KinCard = memo(function KinCard(props: {
           choice={view.choice}
           environmentId={props.environmentId}
           viewerPersonId={props.viewerPersonId}
+          ownerLevel={ownerLevel}
         />
       );
     case "country":
@@ -292,6 +302,16 @@ export const KinCard = memo(function KinCard(props: {
       return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
     case "host_trouble":
       return <KinHostTroubleCard widget={view.widget} environmentId={props.environmentId} />;
+    case "mail_rule":
+      return (
+        <KinMailRuleCard
+          widget={view.widget}
+          environmentId={props.environmentId}
+          viewerPersonId={props.viewerPersonId}
+          ownerLevel={ownerLevel}
+          readOnly={props.readOnly === true}
+        />
+      );
     case "missing":
       return (
         <CardFrame>
@@ -596,6 +616,8 @@ function KinChoiceCard(props: {
   readonly choice: KinChoiceCardView;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** Whether the viewer is owner-level, for a settled card's Undo; undefined until known. */
+  readonly ownerLevel: boolean | undefined;
 }) {
   const { choice, environmentId } = props;
   const nowMs = useNowMinuteMs();
@@ -630,31 +652,33 @@ function KinChoiceCard(props: {
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
+  const undoLineId = useId();
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
   // The tick answers the press on screen: the editor's for the words typed, else the card's.
   const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
   const checked = kinSendTicked(warnedView, ticked) !== null;
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
-    choice,
-    environmentId,
-    newId: randomUUID,
-    taps,
-    heldKey,
-    state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
-    commands: { post, setSendFrom, sendEdited, saveEdited },
-    set: {
-      pending: setPending,
-      lastStatus: setLastStatus,
-      switching: setSwitching,
-      switchProblem: setSwitchProblem,
-      editBusy: setEditBusy,
-      editing: setEditing,
-      ack: setAck,
-      ticked: setTicked,
-    },
-  });
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss, undo } =
+    kinChoiceCardActions({
+      choice,
+      environmentId,
+      newId: randomUUID,
+      taps,
+      heldKey,
+      state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
+      commands: { post, setSendFrom, sendEdited, saveEdited },
+      set: {
+        pending: setPending,
+        lastStatus: setLastStatus,
+        switching: setSwitching,
+        switchProblem: setSwitchProblem,
+        editBusy: setEditBusy,
+        editing: setEditing,
+        ack: setAck,
+        ticked: setTicked,
+      },
+    });
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
     else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
@@ -696,6 +720,11 @@ function KinChoiceCard(props: {
     kinMailCancels(choice, optionId) ? setAsking(optionId) : void press(optionId);
   const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
   const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
+  const undoOffer = kinChoiceUndoOffer(
+    choice,
+    { ownerLevel: props.ownerLevel, canAct },
+    { pending, status },
+  );
 
   if (phase === "dismissed" && dismissed !== null)
     return (
@@ -879,6 +908,24 @@ function KinChoiceCard(props: {
         </>
       )}
       {decided === null ? null : <p className="text-xs text-muted-foreground">{decided}</p>}
+      {undoOffer === null ? null : (
+        <div className="flex flex-col items-start gap-0.5 pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-describedby={undoLineId}
+            aria-busy={undoOffer.busy}
+            disabled={undoOffer.disabled}
+            onClick={() => void undo()}
+          >
+            {undoOffer.label}
+          </Button>
+          <p id={undoLineId} className="px-1 text-xs text-muted-foreground">
+            {undoOffer.line}
+          </p>
+          <CardNotice notice={undoOffer.notice} />
+        </div>
+      )}
       {undone === null ? null : <p className="text-xs text-muted-foreground">{undone}</p>}
     </CardFrame>
   );
@@ -1406,6 +1453,91 @@ function KinDeferralCard(props: {
               variant="outline"
               size="sm"
               aria-label={action.accessibilityLabel}
+              aria-busy={pending === action.id}
+              disabled={status?.holding === true || pending !== null}
+              onClick={() => void press(action.id)}
+            >
+              {action.label}
+            </Button>
+          ))}
+        </div>
+      )}
+    </CardFrame>
+  );
+}
+
+/** A lead's proposed mail rule: exactly what Turn on would store, and the tap that stores it. */
+function KinMailRuleCard(props: {
+  readonly widget: KinWidget;
+  readonly environmentId: EnvironmentId;
+  readonly viewerPersonId: KinPersonId | null;
+  readonly ownerLevel: boolean | undefined;
+  readonly readOnly: boolean;
+}) {
+  const { environmentId } = props;
+  const nowMs = useNowMinuteMs();
+  const canAct = useAtomValue(kinClient.widgetAction.permissionAtom(environmentId));
+  const post = useWidgetPost(environmentId);
+  const actions = useRef<ReturnType<typeof createKinMailRuleCardActions>>(null);
+  const [pending, setPending] = useState<KinMailRuleCardAction | null>(null);
+  const [lastStatus, setLastStatus] = useState<KinCardStatus | null>(null);
+  const card = kinMailRuleCardView(props.widget, {
+    nowMs,
+    ownerLevel: props.ownerLevel,
+    readOnly: props.readOnly,
+    viewerPersonId: props.viewerPersonId,
+  });
+  if (card === null) return null;
+  const status = visibleKinCardStatus(lastStatus, card.revision);
+
+  const press = async (actionId: KinMailRuleCardAction) => {
+    if (pending !== null) return;
+    if (actions.current === null)
+      actions.current = createKinMailRuleCardActions({
+        post,
+        newId: randomUUID,
+        onTurnedOn: () => {
+          for (const input of kinMailRuleListsAfterTurnOn(card))
+            appAtomRegistry.refresh(kinClient.mailRules({ environmentId, input }));
+        },
+      });
+    const next = await actions.current(card, actionId, () => {
+      setPending(actionId);
+      setLastStatus(null);
+    });
+    if (next === null) return;
+    setPending(null);
+    setLastStatus(next);
+  };
+
+  return (
+    <CardFrame eyebrow={card.eyebrow} label={card.accessibilityLabel}>
+      <p className="font-medium text-foreground">
+        <Breakable text={card.title} />
+      </p>
+      <dl className="flex flex-col gap-0.5 text-xs">
+        {card.facts.map((fact) => (
+          <div key={fact.label} className="flex flex-wrap gap-x-1.5">
+            <dt className="text-muted-foreground">{fact.label}</dt>
+            <dd className="text-foreground">{fact.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="flex flex-col gap-0.5">
+        <p className="text-xs text-muted-foreground">{card.whatLabel}</p>
+        <p className="whitespace-pre-wrap break-words text-foreground">{card.what}</p>
+      </div>
+      <p className="text-xs text-muted-foreground">{card.status}</p>
+      <CardNotice notice={status?.notice} />
+      {card.actions.length === 0 ? null : !canAct ? (
+        <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {card.actions.map((action, index) => (
+            <Button
+              key={action.id}
+              variant={index === 0 ? "default" : "outline"}
+              size="sm"
               aria-busy={pending === action.id}
               disabled={status?.holding === true || pending !== null}
               onClick={() => void press(action.id)}

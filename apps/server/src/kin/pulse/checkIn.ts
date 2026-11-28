@@ -30,7 +30,7 @@ import {
 import { dayIn } from "../work/money.ts";
 import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
+import { markMailLines, matchLines, outsideKey, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
 import { openDeclines, reserveDeclines } from "./declines.ts";
 import { leftOpen, reserveLeft } from "./leftForCheckIn.ts";
@@ -62,6 +62,7 @@ const OUTSIDE_CAP = 60;
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
 const EVENING = "checkin-evening";
+const CONVERSATION_HOLD_CAP_MS = 60 * MINUTE_MS;
 const WEEKDAYS = [1, 2, 3, 4, 5];
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 
@@ -274,9 +275,14 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const remaining = outside.filter(
     (line) => line.source !== "mail" || !handled.has(outsideKey(line)),
   );
-  const matched = yield* matchLines(orgId, remaining);
+  const matched = yield* matchLines(
+    orgId,
+    remaining.filter((line) => line.source === "calendar"),
+  );
   const byId = new Map(remaining.map((line) => [outsideKey(line), line]));
   for (const { line } of matched) byId.set(outsideKey(line), line);
+  const marked = yield* markMailLines(orgId, byId.values(), input.outside.mailThreads);
+  for (const line of marked) byId.set(outsideKey(line), line);
   const sent = [...byId.values()]
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
@@ -364,7 +370,18 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           ...(sent.length === 0 ? {} : { outside: sent }),
           ...(notListed > 0 ? { outsideNotListed: notListed } : {}),
         }),
-        notBefore === undefined ? undefined : { notBefore },
+        {
+          ...(notBefore === undefined ? {} : { notBefore }),
+          ...(day === undefined
+            ? {}
+            : {
+                // From when it first comes due: its minute, or the end of the quiet hours it waits out.
+                checkInPause: {
+                  until: (notBefore ?? at) + CONVERSATION_HOLD_CAP_MS,
+                  ...(input.scheduleId === EVENING ? { dayEndsAt: endOfDay(day, company) } : {}),
+                },
+              }),
+        },
       )
       .pipe(
         Effect.tap((result) =>

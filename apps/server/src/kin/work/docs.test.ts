@@ -7,6 +7,8 @@ import {
   KinChatError,
   KinChatId,
   KinDocsRpcs,
+  type KinDocDetail,
+  KinMemoryItemId,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -31,7 +33,9 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { keyHidden } from "./codingAgent.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
 import { sectionsOf } from "./docBody.ts";
@@ -49,8 +53,10 @@ import * as Work from "./ownerWork.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
+import { defineList, presetList } from "./registers.ts";
 import { search } from "./search.ts";
 import { indexRecord, indexStoredSteps } from "./searchIndex.ts";
+import { ensureBankList } from "./statements/bankList.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -362,6 +368,80 @@ it.effect(
       );
       assert.strictEqual(changed.version.version, 2);
     }).pipe(Effect.provide(layer)),
+);
+
+const lookedDoc = Effect.gen(function* () {
+  yield* seed;
+  const { row } = yield* newDoc("Juniper Cold Chain packing list.");
+  const { key } = row;
+  const people = [owner];
+  const ref = { orgId, key };
+  const read = OwnerDocs.get(people, ref);
+  const first = yield* read;
+  const edit = Effect.fn("test.editLookedDoc")(function* (originKey: string, forReader = false) {
+    yield* TestClock.adjust(1);
+    return yield* Docs.edit(
+      orgId,
+      agentWriter(lead),
+      forReader ? { answered: { messageId: "01KAK0XMVCXC4FF969979K33DC", author: owner } } : {},
+      { key },
+      { operations: [{ op: "append", text: originKey }], originKey, summary: originKey },
+    );
+  });
+  const seen = yield* edit("Checked the crate labels");
+  const upTo = "1970-01-01T00:00:00.001Z";
+  yield* Work.looked(people, { orgId, recordId: first.recordId, upTo });
+  const empty = yield* read;
+  yield* TestClock.adjust(1);
+  yield* OwnerDocs.restore(people, { ...ref, version: 1, latest: seen.version.version });
+  yield* edit("Added the delivery address", true);
+  yield* edit("Added cold storage instructions");
+  return {
+    first,
+    empty,
+    upTo,
+    latest: yield* read,
+    old: yield* OwnerDocs.get(people, { ...ref, version: 2 }),
+    keyed: yield* OwnerDocs.get(people, ref, { keyed: true }),
+  };
+});
+
+it.effect("a doc returns a mark only for a person's current read", () =>
+  Effect.gen(function* () {
+    const { first, empty, old, keyed, upTo } = yield* lookedDoc;
+    assert.isNull(first.lookedAt);
+    assert.strictEqual(empty.lookedAt, upTo);
+    assert.notProperty(empty, "sinceLooked");
+    for (const detail of [old, keyed]) {
+      assert.notProperty(detail, "lookedAt");
+      assert.notProperty(detail, "sinceLooked");
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  {
+    name: "the last version at the mark",
+    check: (summary: NonNullable<KinDocDetail["sinceLooked"]>) =>
+      assert.strictEqual(summary.from, 2),
+  },
+  {
+    name: "visible changes by others, including an agent for the reader",
+    check: (summary: NonNullable<KinDocDetail["sinceLooked"]>) => {
+      assert.strictEqual(summary.total, 2);
+      assert.deepStrictEqual(
+        summary.versions.map((version) => version.version),
+        [5, 4],
+      );
+      assert.strictEqual(summary.versions[1]?.askedBy, ownerId);
+    },
+  },
+] as const)("a doc summary gives $name", ({ check }) =>
+  Effect.gen(function* () {
+    const { latest } = yield* lookedDoc;
+    assert.isDefined(latest.sinceLooked);
+    check(latest.sinceLooked!);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a restore is a new version that brings the old text back, and is undoable", () =>
@@ -1526,6 +1606,808 @@ it.effect("one search finds entries and docs, and the team view hides what label
   }).pipe(Effect.provide(layer)),
 );
 
+const keySearchRows = [
+  ["expenses", "EXP", "EXP-25", "Reefer inspection", "done"],
+  ["invoices", "INV", "INV-31", "Freight billing", "dropped"],
+  ["subscriptions", "SUB", "SUB-4", "Dispatch software", "open"],
+  ["clients", "C", "C-6", "Juniper Cold Chain", "open"],
+  ["contacts", "CT", "CT-7", "Arjun", "open"],
+  ["projects", "P", "P-8", "Cold storage", "open"],
+  ["docs", "D", "D-18", "Handling guide", "dropped"],
+  ["work", "W", "W-3", "Rhea's loading plan", "open"],
+  ["dates", "DT", "DT-9", "Permit renewal", "open"],
+  ["quotes", "QT", "QT-11", "Packaging estimate", "open"],
+  ["receipts", "RCT", "RCT-12", "Deposit", "open"],
+  ["truck_checks", "TC2", "TC2-21", "Brake inspection", "open"],
+  ["deals", "DL", "DL-20", "Warehouse extension", "open"],
+] as const;
+
+const seedKeySearch = Effect.fn("KinDocsTest.seedKeySearch")(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+  yield* sql`UPDATE kin_people SET display_name = CASE person_id WHEN ${ownerId} THEN 'Rhea'
+      ELSE 'Zoya' END, sees_money = 0 WHERE org_id = ${orgId}`;
+  const bank = yield* ensureBankList(orgId, 0);
+  for (const [list, prefix, key, title, state] of [
+    ...keySearchRows,
+    [bank.id, bank.prefix, "BNK-16", "Fuel transfer", "open"],
+    ["work", "W", "W-10", "Top 10 routes", "open"],
+    ["work", "W", "W-11", "INV 2026 notes", "open"],
+    ["work", "W", "W-12", "EXP 25 discussion", "open"],
+    ["work", "W", "W-13", "EXP 25 summary", "done"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, ${list}, ${list}, ${prefix}, 0) ON CONFLICT DO NOTHING`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
+        sensitive, marked_by_person_id)
+      VALUES (${orgId}, ${key}, ${list}, ${key}, ${title}, ${state}, 'person', ${ownerId},
+        'person', ${ownerId}, ${key}, 0, 0, ${key === "W-3" || list === bank.id ? 1 : 0},
+        ${key === "W-3" ? ownerId : null})`;
+    yield* indexRecord(orgId, key);
+  }
+  yield* sql`UPDATE kin_registers SET archived_at = 1 WHERE org_id = ${orgId}
+    AND register_id IN ('truck_checks', ${bank.id})`;
+});
+
+it.effect(
+  "exact record identifiers lead Work search across lists without widening closed results",
+  () =>
+    Effect.gen(function* () {
+      yield* seedKeySearch();
+      const find = (text: string) =>
+        OwnerDocs.search([owner], { orgId, everything: true, text }).pipe(
+          Effect.map(({ hits }) => hits),
+        );
+      for (const text of ["EXP-25", "exp-25", "exp 25", "exp25", "#EXP-25", "  #eXp-25  "]) {
+        const hits = yield* find(text);
+        expect.soft(hits[0], text).toMatchObject({ key: "EXP-25", kind: "expenses", closed: true });
+        expect
+          .soft(
+            hits.map((hit) => hit.key),
+            text,
+          )
+          .not.toContain("W-13");
+      }
+      for (const [list, , key, , state] of keySearchRows) {
+        expect.soft((yield* find(key))[0], list).toMatchObject({
+          key,
+          closed: state !== "open" || list === "truck_checks",
+        });
+      }
+      expect.soft((yield* find("tc221"))[0]).toMatchObject({ key: "TC2-21" });
+      expect.soft((yield* find("BNK-16"))[0]).toMatchObject({
+        key: "BNK-16",
+        bankTransaction: true,
+        closed: true,
+      });
+      const archived = yield* OwnerDocs.search([owner], {
+        orgId,
+        everything: true,
+        text: "fuel transfer",
+        closed: true,
+      });
+      expect.soft(archived.hits[0]).toMatchObject({ key: "BNK-16", closed: true });
+      expect.soft((yield* find("EXP-2")).map((hit) => hit.key)).not.toContain("EXP-25");
+      for (const text of [
+        "reefer inspection",
+        "freight billing",
+        "handling guide",
+        "fuel transfer",
+      ]) {
+        expect.soft(yield* find(text), text).toEqual([]);
+      }
+      const scoped = yield* OwnerDocs.search([owner], { orgId, kinds: ["docs"], text: "EXP-25" });
+      expect.soft(scoped.hits).toEqual([]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("word search shows a bill suggestion until the expense is kept or dropped", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn("owner");
+    yield* presetList(orgId, "expenses", 0);
+    const records = yield* KinRecords.KinRecords;
+    const bill = (originKey: string) =>
+      records
+        .create(
+          orgId,
+          { actor: { _tag: "system" }, via: "owner" },
+          {
+            list: "expenses",
+            originKey: `bill:${originKey}`,
+            title: "Inkspot Cloud",
+            owner: { _tag: "person", personId: ownerId },
+            state: "done",
+            confirmed: false,
+            sensitive: true,
+            fields: { vendor: "Inkspot Cloud" },
+          },
+        )
+        .pipe(Effect.map(({ row }) => row));
+    const find = (text: string, closed = false) =>
+      OwnerDocs.search([owner], { orgId, kinds: ["expenses"], text, closed }).pipe(
+        Effect.map(({ hits }) => hits),
+      );
+    const suggestion = yield* bill("inkspot");
+    expect.soft((yield* find(suggestion.key))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: false,
+    });
+    expect.soft((yield* find("Inkspot Cloud"))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: false,
+    });
+    const agent = (closed = false) =>
+      LeadDocs.searchTool(scopeOf(lead), { text: "Inkspot Cloud", kinds: ["expenses"], closed });
+    expect.soft((yield* agent()).hits[0]).toMatchObject({ key: suggestion.key });
+    expect.soft((yield* agent(true)).hits[0]).not.toHaveProperty("closed");
+    yield* Work.confirm([owner], { orgId, key: suggestion.key, rev: suggestion.rev });
+    expect.soft(yield* find("Inkspot Cloud")).toEqual([]);
+    expect.soft((yield* find("Inkspot Cloud", true))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: true,
+    });
+    expect.soft((yield* agent(true)).hits[0]).toMatchObject({ key: suggestion.key, closed: true });
+
+    const dropped = yield* bill("inkspot-dropped");
+    yield* Work.decline([owner], { orgId, key: dropped.key, rev: dropped.rev });
+    expect.soft(yield* find("Inkspot Cloud")).toEqual([]);
+    expect
+      .soft((yield* find("Inkspot Cloud", true)).find((hit) => hit.key === dropped.key))
+      .toMatchObject({ closed: true });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an exact identifier takes the last slot over a memory word hit", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const itemId = KinMemoryItemId.make("search-memory");
+    const read = (text: string) =>
+      OwnerDocs.search([owner], { orgId, everything: true, text, limit: 1 });
+    expect((yield* read("EXP-25")).hits.map((hit) => hit.key)).toEqual(["EXP-25"]);
+    expect((yield* read("top 10")).hits.map((hit) => hit.key)).toEqual([itemId]);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layer,
+        Layer.mock(KinMemoryChanges)({
+          search: () =>
+            Effect.succeed([
+              {
+                itemId: KinMemoryItemId.make("search-memory"),
+                title: "Cold chain notes",
+                snippet: "Dispatch notes",
+                sensitive: false,
+                recordedAt: 0,
+                saidBy: "Rhea",
+                trust: "owner",
+                from: null,
+              },
+            ]),
+        }),
+      ),
+    ),
+  ),
+);
+
+it.effect("an unreadable identifier is indistinguishable from a missing one", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const zoya = { _tag: "person" as const, orgId, personId: mateId };
+    const find = (text: string, who = zoya) =>
+      OwnerDocs.search([who], { orgId, everything: true, text });
+    for (const key of ["EXP-25", "BNK-16", "W-3", "D-18"]) {
+      const missing = yield* find(key.replace(/\d+$/, "999"));
+      const denied = yield* find(key);
+      expect.soft((yield* find(key, owner)).hits[0], key).toMatchObject({ key });
+      expect.soft(denied.hits, key).toEqual([]);
+      expect.soft(JSON.stringify(denied), key).toBe(JSON.stringify(missing));
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("identifier-shaped words without a matching key still return ordinary hits", () =>
+  Effect.gen(function* () {
+    yield* seedKeySearch();
+    const results = yield* Effect.forEach(["INV 2026", "top 10"], (text) =>
+      OwnerDocs.search([owner], { orgId, everything: true, text }),
+    );
+    expect(results).toMatchInlineSnapshot(`
+      [
+        {
+          "asOf": "1970-01-01T00:00:00.000Z",
+          "hits": [
+            {
+              "closed": false,
+              "key": "W-11",
+              "kind": "work",
+              "recordId": "W-11",
+              "sensitive": false,
+              "snippet": "INV 2026 notes",
+              "title": "INV 2026 notes",
+              "updatedAt": "1970-01-01T00:00:00.000Z",
+            },
+          ],
+          "indexed": true,
+        },
+        {
+          "asOf": "1970-01-01T00:00:00.000Z",
+          "hits": [
+            {
+              "closed": false,
+              "key": "W-10",
+              "kind": "work",
+              "recordId": "W-10",
+              "sensitive": false,
+              "snippet": "Top 10 routes",
+              "title": "Top 10 routes",
+              "updatedAt": "1970-01-01T00:00:00.000Z",
+            },
+          ],
+          "indexed": true,
+        },
+      ]
+    `);
+  }).pipe(Effect.provide(layer)),
+);
+
+const arjunId = KinPersonId.make("person-5c1e9a7d");
+const meeraId = KinPersonId.make("person-9b04f2e6");
+const zoya = { _tag: "person" as const, orgId, personId: mateId };
+const arjun = { _tag: "person" as const, orgId, personId: arjunId };
+const meera = { _tag: "person" as const, orgId, personId: meeraId };
+
+/** `seedKeySearch` plus team lists, private rows, people's own entries and a second company. */
+const seedWhoSees = Effect.fn("KinDocsTest.seedWhoSees")(function* () {
+  yield* seedKeySearch();
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+      sees_money, sees_clients, sees_docs)
+    VALUES (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${at}, 'member', 1, 1, 1),
+      (${meeraId}, ${orgId}, 'meera', 'Meera', ${at}, 'co_owner', 0, 0, 0)`;
+  yield* sql`UPDATE kin_people SET access = 'member', sees_clients = 1, sees_docs = 0,
+      sees_money = 0 WHERE person_id = ${mateId}`;
+  const team = JSON.stringify({ team: true, sensitive: false, teamSince: 0 });
+  for (const [list, prefix, definition, archived] of [
+    ["yard_moves", "YM", team, null],
+    ["old_routes", "OR", team, 1],
+    ["salary_bands", "SB", "{}", null],
+    [
+      "loans",
+      "LN",
+      JSON.stringify({ team: true, sensitive: false, teamSince: 0, payments: true }),
+      null,
+    ],
+    ["exp_two", "EXP2", team, null],
+    ["milestones", "M", "{}", null],
+    ["goals", "G", "{}", null],
+  ] as const)
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, definition_json,
+        created_at, archived_at)
+      VALUES (${orgId}, ${list}, ${list}, ${prefix}, ${definition}, 0, ${archived})
+      ON CONFLICT DO NOTHING`;
+  const row = (
+    list: string,
+    key: string,
+    title: string,
+    more: {
+      readonly owner?: KinPersonId;
+      readonly sensitive?: 1;
+      readonly shared?: 1;
+      readonly fields?: object;
+      readonly notes?: string;
+      readonly state?: string;
+    } = {},
+  ) =>
+    sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, sensitive,
+        marked_by_person_id, team_shared, fields_json, notes)
+      VALUES (${orgId}, ${key}, ${list}, ${key}, ${title}, ${more.state ?? "open"}, 'person',
+        ${more.owner ?? ownerId}, 'person', ${more.owner ?? ownerId}, ${key}, 0, 0,
+        ${more.sensitive ?? 0}, ${more.sensitive === 1 ? ownerId : null}, ${more.shared ?? 0},
+        ${JSON.stringify(more.fields ?? {})}, ${more.notes ?? ""})`.pipe(
+      Effect.andThen(indexRecord(orgId, key)),
+    );
+  yield* row("yard_moves", "YM-1", "Gate 4 shuttle");
+  yield* row("yard_moves", "YM-2", "Night shift pay", { sensitive: 1 });
+  yield* row("old_routes", "OR-1", "Harbour loop");
+  yield* row("salary_bands", "SB-1", "Driver bands");
+  yield* row("salary_bands", "SB-2", "Shared band notes", { shared: 1 });
+  yield* row("loans", "LN-1", "Truck loan");
+  yield* row("exp_two", "EXP2-5", "Second expense list row");
+  yield* row("milestones", "M-5", "Dock handover", { shared: 1 });
+  yield* row("goals", "G-3", "On-time departures", { shared: 1 });
+  yield* row("goals", "G-4", "Margin target");
+  yield* row("expenses", "EXP-26", "Diesel paid by Zoya", {
+    fields: { paidBy: "person:mate", owedTo: "person:mate" },
+  });
+  yield* row("expenses", "EXP-27", "Shared tyre expense", { shared: 1 });
+  yield* row("clients", "C-5", "Private client", { sensitive: 1 });
+  yield* row("projects", "P-9", "Harbour expansion", {
+    fields: { members: ["person:mate"] },
+    notes: "Price 9000 credits, net 30 terms",
+  });
+  yield* row("docs", "D-19", "Rhea's own memo");
+  yield* row("docs", "D-21", "Shared yard rules", { shared: 1 });
+  for (const key of ["D-18", "D-19", "D-21"])
+    yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+        summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+      SELECT org_id, record_id, 1, 'Yard notes.', title, 'created', '', '[]', 'person',
+        ${ownerId}, 'owner', ${`v1:${key}`}, 0 FROM kin_records
+      WHERE org_id = ${orgId} AND key = ${key}`;
+  const listOf = (more: object) =>
+    JSON.stringify({
+      noun: "entry",
+      states: ["open", "done", "dropped"],
+      stateLabels: {},
+      defaultState: "open",
+      categories: [],
+      fields: [],
+      sensitive: false,
+      amount: false,
+      currency: "USD",
+      ...more,
+    });
+  for (const [list, more] of [
+    ["expenses", { sensitive: true, amount: true }],
+    ["salary_bands", {}],
+    ["yard_moves", { team: true, teamSince: 0 }],
+  ] as const)
+    yield* sql`UPDATE kin_registers SET definition_json = ${listOf(more)}
+      WHERE org_id = ${orgId} AND register_id = ${list}`;
+  // A page of Zoya's own tasks whose titles have every word of "EXP 25".
+  for (let n = 1; n <= 25; n++)
+    yield* row("work", `W-${100 + n}`, `EXP 25 load ${n}`, { owner: mateId });
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+    VALUES (${elsewhere}, 'expenses', 'expenses', 'EXP', 0)`;
+  for (const key of ["EXP-25", "EXP-77"])
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      VALUES (${elsewhere}, ${`other-${key}`}, 'expenses', ${key}, 'Other Co ledger line',
+        'person', ${ownerId}, 'person', ${ownerId}, ${`other-${key}`}, 0, 0)`;
+});
+
+/** Whether this person opens the record by going to it: Docs for a doc, else Work. */
+const opens = (who: typeof owner, key: string, docs: boolean) => {
+  const ref = { orgId, key: KinRecordKey.make(key) };
+  const title = docs
+    ? OwnerDocs.get([who], ref).pipe(Effect.map((read) => String(read.title)))
+    : Work.get([who], ref).pipe(Effect.map((read) => String(read.title)));
+  return Effect.orElseSucceed(title, () => undefined);
+};
+
+it.effect("an identifier finds a record only for the people who open it by going to it", () =>
+  Effect.gen(function* () {
+    yield* seedWhoSees();
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ key: string; registerId: string }>`SELECT key,
+        register_id AS "registerId" FROM kin_records WHERE org_id = ${orgId}
+        AND key NOT LIKE 'W-1__' ORDER BY key`;
+    const shownMore: Array<string> = [];
+    const notFound: Array<string> = [];
+    const found: Record<string, Array<string>> = {};
+    for (const [name, who] of [
+      ["Rhea", owner],
+      ["Meera", meera],
+      ["Arjun", arjun],
+      ["Zoya", zoya],
+    ] as const) {
+      for (const { key, registerId } of rows) {
+        const reply = yield* OwnerDocs.search([who], { orgId, everything: true, text: key });
+        const hit = reply.hits.find((one) => one.key === key);
+        const open = yield* opens(who, key, registerId === "docs");
+        if (hit !== undefined) (found[name] ??= []).push(key);
+        if (hit !== undefined && open === undefined) shownMore.push(`${name} ${key}`);
+        if (hit === undefined && open !== undefined) notFound.push(`${name} ${key}`);
+        if (hit !== undefined) {
+          expect.soft(reply.hits[0]?.key, `${name} ${key} leads`).toBe(key);
+          expect.soft(hit.title, `${name} ${key} title`).toBe(open);
+          expect.soft(hit.snippet, `${name} ${key} snippet`).toBe(hit.title);
+          expect.soft(Object.hasOwn(hit, "section"), `${name} ${key} section`).toBe(false);
+        }
+        if (open === undefined) {
+          // The same reply with the record's key gone: its presence must tell nothing.
+          yield* sql`UPDATE kin_records SET key = 'ZQ-99999' WHERE org_id = ${orgId}
+            AND key = ${key}`;
+          const gone = yield* OwnerDocs.search([who], { orgId, everything: true, text: key });
+          yield* sql`UPDATE kin_records SET key = ${key} WHERE org_id = ${orgId}
+            AND key = 'ZQ-99999'`;
+          expect.soft(JSON.stringify(reply), `${name} ${key} tells`).toBe(JSON.stringify(gone));
+        }
+      }
+    }
+    expect.soft(shownMore).toEqual([]);
+    expect.soft(notFound).toEqual([]);
+    expect.soft(found).toMatchInlineSnapshot(`
+      {
+        "Arjun": [
+          "C-6",
+          "CT-7",
+          "D-21",
+          "DL-20",
+          "EXP-27",
+          "EXP2-5",
+          "G-3",
+          "LN-1",
+          "M-5",
+          "OR-1",
+          "SB-2",
+          "YM-1",
+        ],
+        "Meera": [
+          "BNK-16",
+          "C-5",
+          "C-6",
+          "CT-7",
+          "D-18",
+          "D-19",
+          "D-21",
+          "DL-20",
+          "DT-9",
+          "EXP-25",
+          "EXP-26",
+          "EXP-27",
+          "EXP2-5",
+          "G-3",
+          "G-4",
+          "INV-31",
+          "LN-1",
+          "M-5",
+          "OR-1",
+          "P-8",
+          "P-9",
+          "QT-11",
+          "RCT-12",
+          "SB-1",
+          "SB-2",
+          "SUB-4",
+          "TC2-21",
+          "W-10",
+          "W-11",
+          "W-12",
+          "W-13",
+          "W-3",
+          "YM-1",
+          "YM-2",
+        ],
+        "Rhea": [
+          "BNK-16",
+          "C-5",
+          "C-6",
+          "CT-7",
+          "D-18",
+          "D-19",
+          "D-21",
+          "DL-20",
+          "DT-9",
+          "EXP-25",
+          "EXP-26",
+          "EXP-27",
+          "EXP2-5",
+          "G-3",
+          "G-4",
+          "INV-31",
+          "LN-1",
+          "M-5",
+          "OR-1",
+          "P-8",
+          "P-9",
+          "QT-11",
+          "RCT-12",
+          "SB-1",
+          "SB-2",
+          "SUB-4",
+          "TC2-21",
+          "W-10",
+          "W-11",
+          "W-12",
+          "W-13",
+          "W-3",
+          "YM-1",
+          "YM-2",
+        ],
+        "Zoya": [
+          "C-6",
+          "CT-7",
+          "DL-20",
+          "EXP2-5",
+          "LN-1",
+          "M-5",
+          "OR-1",
+          "P-9",
+          "YM-1",
+        ],
+      }
+    `);
+    const zoyaPage = yield* OwnerDocs.search([zoya], { orgId, everything: true, text: "EXP-25" });
+    expect.soft(zoyaPage.hits).toHaveLength(20);
+    const rheaPage = yield* OwnerDocs.search([owner], { orgId, everything: true, text: "EXP-25" });
+    expect.soft(rheaPage.hits[0]?.key).toBe("EXP-25");
+    expect.soft(rheaPage.hits).toHaveLength(20);
+    const zoyaProject = yield* OwnerDocs.search([zoya], { orgId, everything: true, text: "p9" });
+    expect.soft(JSON.stringify(zoyaProject.hits)).not.toContain("9000");
+    expect.soft(zoyaProject.hits[0]).toMatchObject({ key: "P-9", snippet: "Harbour expansion" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an identifier of another company, or of a list in a section turned off, finds nothing",
+  () =>
+    Effect.gen(function* () {
+      yield* seedWhoSees();
+      const sql = yield* SqlClient.SqlClient;
+      const keys = (who: typeof owner, text: string) =>
+        OwnerDocs.search([who], { orgId, everything: true, text }).pipe(
+          Effect.map(({ hits }) => hits.map((hit) => hit.key)),
+        );
+      expect.soft(yield* keys(owner, "EXP-77")).toEqual([]);
+      expect
+        .soft(
+          (yield* OwnerDocs.search([owner], {
+            orgId,
+            everything: true,
+            text: "EXP-25",
+          })).hits.filter((hit) => hit.title === "Other Co ledger line"),
+        )
+        .toEqual([]);
+      const off = (id: string) =>
+        sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+        VALUES (${orgId}, ${JSON.stringify([{ id, on: false }])}, 1, ${ownerId}, 0)
+        ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = rev + 1`.pipe(
+          Effect.andThen(KinShell.invalidate(orgId)),
+        );
+      const behind = {
+        money: ["EXP-25", "EXP-27", "SUB-4", "DT-9", "BNK-16", "LN-1", "RCT-12", "INV-31", "QT-11"],
+        clients: ["C-6", "CT-7", "P-8", "P-9", "M-5", "DL-20"],
+        deals: ["DL-20"],
+        invoices: ["INV-31", "QT-11"],
+      } as const;
+      for (const [section, listed] of Object.entries(behind)) {
+        yield* off(section);
+        for (const [name, who] of [
+          ["Rhea", owner],
+          ["Arjun", arjun],
+          ["Zoya", zoya],
+        ] as const)
+          for (const key of listed)
+            expect.soft(yield* keys(who, key), `${section} off: ${name} ${key}`).not.toContain(key);
+      }
+      yield* sql`DELETE FROM kin_company_shell WHERE org_id = ${orgId}`;
+      yield* KinShell.invalidate(orgId);
+      expect.soft(yield* keys(owner, "LN-1")).toEqual(["LN-1"]);
+      // Zoya's own task that Rhea labelled: Zoya opens it, and a teammate's search never shows it.
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, sensitive,
+        marked_by_person_id)
+      VALUES (${orgId}, 'W-200', 'work', 'W-200', 'Payroll prep', 'person', ${mateId}, 'person',
+        ${ownerId}, 'W-200', 0, 0, 1, ${ownerId})`;
+      expect
+        .soft((yield* Work.get([zoya], { orgId, key: KinRecordKey.make("W-200") })).key)
+        .toBe("W-200");
+      expect.soft(yield* keys(zoya, "W-200")).toEqual([]);
+      expect.soft(yield* keys(owner, "W-200")).toEqual(["W-200"]);
+      // With Clients off for Zoya alone, nothing behind it, and the reply as if it did not exist.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      for (const key of ["C-6", "CT-7", "DL-20"]) {
+        const reply = yield* OwnerDocs.search([zoya], { orgId, everything: true, text: key });
+        yield* sql`UPDATE kin_records SET key = 'ZQ-99999' WHERE org_id = ${orgId} AND key = ${key}`;
+        const gone = yield* OwnerDocs.search([zoya], { orgId, everything: true, text: key });
+        yield* sql`UPDATE kin_records SET key = ${key} WHERE org_id = ${orgId} AND key = 'ZQ-99999'`;
+        expect.soft(reply.hits, key).toEqual([]);
+        expect.soft(JSON.stringify(reply), key).toBe(JSON.stringify(gone));
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "identifier spellings stay exact: digits in a prefix, wildcards, quotes, long input",
+  () =>
+    Effect.gen(function* () {
+      yield* seedWhoSees();
+      const keys = (text: string) =>
+        OwnerDocs.search([owner], { orgId, everything: true, text }).pipe(
+          Effect.map(({ hits }) => hits.map((hit) => hit.key)),
+        );
+      expect.soft((yield* keys("exp25")).slice(0, 2)).toEqual(["EXP-25", "EXP2-5"]);
+      expect.soft((yield* keys("exp2 5"))[0]).toBe("EXP2-5");
+      expect.soft(yield* keys("exp-25")).not.toContain("EXP2-5");
+      for (const text of [
+        "EXP-25' OR '1'='1",
+        "' OR 1=1 --",
+        "EXP-2%",
+        "EXP-2_",
+        "%",
+        "_",
+        '"EXP-25"',
+        "EXP-25;",
+        "# EXP-25",
+        "EXP--25",
+        `EXP-${"9".repeat(196)}`,
+        `a${"1".repeat(199)}`,
+      ])
+        expect.soft(yield* keys(text), text).not.toContain("EXP-25");
+      for (const text of ["%", "_", "' OR '1'='1"])
+        expect
+          .soft((yield* Work.list([owner], { orgId, list: "expenses", text })).records, text)
+          .toEqual([]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "Work's and Docs' own boxes match an identifier inside their state and access filters",
+  () =>
+    Effect.gen(function* () {
+      yield* seedWhoSees();
+      const workKeys = (who: typeof owner, input: Omit<Parameters<typeof Work.list>[1], "orgId">) =>
+        Work.list([who], { orgId, ...input }).pipe(
+          Effect.map(({ records }) => records.map((record) => record.key)),
+          Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+        );
+      expect.soft(yield* workKeys(owner, { list: "expenses", text: "exp 25" })).toEqual(["EXP-25"]);
+      expect
+        .soft(yield* workKeys(owner, { list: "expenses", text: "exp 25", open: true }))
+        .toEqual([]);
+      expect.soft(yield* workKeys(zoya, { list: "expenses", text: "EXP-25" })).toEqual([]);
+      expect.soft(yield* workKeys(zoya, { list: "expenses", text: "EXP-26" })).toEqual([]);
+      expect.soft(yield* workKeys(zoya, { text: "w3" })).toEqual([]);
+      expect.soft(yield* workKeys(arjun, { list: "salary_bands", text: "sb1" })).toEqual([]);
+      expect.soft(yield* workKeys(arjun, { list: "salary_bands", text: "sb2" })).toEqual(["SB-2"]);
+      expect.soft(yield* workKeys(arjun, { list: "yard_moves", text: "ym2" })).toEqual([]);
+      const docKeys = (
+        who: typeof owner,
+        input: Omit<Parameters<typeof OwnerDocs.list>[1], "orgId">,
+      ) =>
+        OwnerDocs.list([who], { orgId, ...input }).pipe(
+          Effect.map(({ docs }) => docs.map((doc) => doc.key)),
+          Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+        );
+      expect.soft(yield* docKeys(owner, { text: "d18" })).toEqual([]);
+      expect.soft(yield* docKeys(owner, { text: "d18", archived: true })).toEqual(["D-18"]);
+      expect.soft(yield* docKeys(zoya, { text: "D-19" })).toEqual([]);
+      expect.soft(yield* docKeys(arjun, { text: "D-19" })).toEqual([]);
+      expect.soft(yield* docKeys(arjun, { text: "#d 21" })).toEqual(["D-21"]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent finds by identifier only what its seat reads, and never Bank transactions",
+  () =>
+    Effect.gen(function* () {
+      yield* seedWhoSees();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, 'statement_book', 'Bank transactions', 'BKS', 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, sensitive)
+      VALUES (${orgId}, 'BKS-1', 'statement_book', 'BKS-1', 'Card settlement', 'person',
+        ${ownerId}, 'person', ${ownerId}, 'BKS-1', 0, 0, 1)`;
+      const agentKeys = (text: string) =>
+        LeadDocs.searchTool(scopeOf(lead), { text }).pipe(
+          Effect.map(({ hits }) => hits.map((hit) => hit.key)),
+        );
+      yield* turn("owner");
+      for (const key of ["BNK-16", "BKS-1"])
+        expect.soft(yield* agentKeys(key), `owner's agent ${key}`).not.toContain(key);
+      // Kin's own list keeps its id when the owner renames it.
+      yield* sql`UPDATE kin_registers SET name = 'Statement lines', archived_at = NULL
+      WHERE org_id = ${orgId} AND register_id = 'bank_transactions'`;
+      yield* sql`UPDATE kin_records SET sensitive = 0, marked_by_person_id = NULL
+      WHERE org_id = ${orgId} AND key = 'BNK-16'`;
+      expect.soft(yield* agentKeys("BNK-16"), "renamed bank list").not.toContain("BNK-16");
+      expect.soft((yield* agentKeys("SUB-4"))[0]).toBe("SUB-4");
+      expect.soft((yield* agentKeys("W-3"))[0]).toBe("W-3");
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake'`;
+      yield* sql`DELETE FROM kin_events WHERE event_id = 'ask-event'`;
+      yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'wake'`;
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'ask'`;
+      yield* turn("mate", "shared");
+      const zoyaSees = yield* Effect.forEach(
+        [
+          "EXP-25",
+          "EXP-26",
+          "BNK-16",
+          "BKS-1",
+          "W-3",
+          "D-19",
+          "D-21",
+          "P-8",
+          "SB-1",
+          "SB-2",
+          "YM-2",
+        ],
+        (key) => agentKeys(key).pipe(Effect.map((found) => [key, found.includes(key)] as const)),
+      );
+      expect.soft(zoyaSees.filter(([, found]) => found)).toEqual([]);
+      expect.soft((yield* agentKeys("YM-1"))[0]).toBe("YM-1");
+      expect.soft((yield* agentKeys("P-9"))[0]).toBe("P-9");
+      // An identifier that matches no word still widens to any word, as a missing one does.
+      const widened = (text: string) =>
+        LeadDocs.searchTool(scopeOf(lead), { text }).pipe(Effect.map(({ widened }) => widened));
+      expect.soft(yield* widened("ym 1")).toBeUndefined();
+      expect.soft(yield* widened("ym 999")).toBe(yield* widened("ym 1"));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  ["Kin-created", false],
+  ["adopted", true],
+] as const)("Work search finds the %s bank entry only for readers of the list", ([, adopted]) =>
+  Effect.gen(function* () {
+    yield* seed;
+    if (adopted)
+      yield* defineList(
+        orgId,
+        {
+          _tag: "new",
+          id: "bank_ledger",
+          name: "Bank Transactions",
+          prefix: "BT",
+          definition: {
+            noun: "transaction",
+            states: ["open", "done", "dropped"],
+            stateLabels: {},
+            defaultState: "open",
+            categories: [],
+            fields: [],
+            sensitive: true,
+            amount: true,
+            currency: "USD",
+          },
+        },
+        0,
+      );
+    const bank = yield* ensureBankList(orgId, 0);
+    const list = bank.id;
+    const records = yield* KinRecords.KinRecords;
+    const { row } = yield* records.create(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      {
+        list,
+        originKey: "bank:687e47da73494428b040c719cccf531b",
+        title: "Juniper Cold Chain",
+        owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 23700, currency: "USD" },
+        sensitive: true,
+      },
+    );
+    const member = { _tag: "person" as const, orgId, personId: mateId };
+    const text = "Juniper Cold";
+    const input = { orgId, text, everything: true } as const;
+    assert.lengthOf((yield* Work.list([member], { orgId, list })).records, 0);
+    assert.lengthOf((yield* OwnerDocs.search([member], input)).hits, 0);
+    assert.lengthOf((yield* OwnerDocs.search([owner], { orgId, text, kinds: ["docs"] })).hits, 0);
+    assert.lengthOf((yield* Work.list([owner], { orgId, list })).records, 1);
+    const identifier = `#${row.key.toLowerCase().replace("-", " ")}`;
+    expect
+      .soft(
+        (yield* Work.list([owner], { orgId, list, text: identifier })).records.map(
+          (record) => record.key,
+        ),
+      )
+      .toEqual([row.key]);
+    assert.lengthOf((yield* Work.list([member], { orgId, list, text: identifier })).records, 0);
+    const findBankTitle = () =>
+      OwnerDocs.search([owner], input).pipe(
+        Effect.map(({ hits }) =>
+          hits.map((hit) => ({
+            key: hit.key,
+            bankTransaction: hit.kind === "memory" ? undefined : hit.bankTransaction,
+          })),
+        ),
+      );
+    const expected = [{ key: row.key, bankTransaction: true as const }];
+    assert.deepStrictEqual(yield* findBankTitle(), expected);
+    assert.strictEqual((yield* Work.get([owner], { orgId, key: row.key })).key, row.key);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DROP TABLE IF EXISTS kin_search`;
+    assert.deepStrictEqual(yield* findBankTitle(), expected);
+    assert.lengthOf((yield* OwnerDocs.search([member], input)).hits, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a search for a doc's kind finds every doc of that kind, singular or plural", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -2577,6 +3459,13 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       ),
       first.key,
     );
+    const identifier = `#${first.key.toLowerCase().replace("-", " ")}`;
+    expect
+      .soft((yield* OwnerDocs.list([mate], { orgId, text: identifier })).docs.map((doc) => doc.key))
+      .toEqual([first.key]);
+    expect
+      .soft((yield* LeadDocs.searchTool(scopeOf(lead), { text: identifier })).hits[0]?.key)
+      .toBe(first.key);
     // The page says who reads it: the owner is told it is hers too; she, that only she and owners.
     assert.deepStrictEqual((yield* OwnerDocs.get([owner], { orgId, key: first.key })).kindLabel, {
       reader: { name: "Mate" },

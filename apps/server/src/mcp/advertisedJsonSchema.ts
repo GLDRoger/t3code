@@ -11,6 +11,11 @@ export const AdvertisedDescriptions = Context.Service<ReadonlyArray<FieldSelecti
   "t3/mcp/AdvertisedDescriptions",
 );
 
+/** Input keys to omit from tool discovery. Use `records[].key` for a key in array items. */
+export const AcceptedUnadvertisedArguments = Context.Service<ReadonlyArray<string>>(
+  "t3/mcp/AcceptedUnadvertisedArguments",
+);
+
 type Json = unknown;
 type JsonObject = { [key: string]: Json };
 
@@ -199,6 +204,26 @@ export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: 
         described.has(key) ? property : bareShape(property),
       ]),
     );
+  }
+  const unadvertised = Context.getOrUndefined(tool.annotations, AcceptedUnadvertisedArguments);
+  for (const path of unadvertised ?? []) {
+    const [root = "", child] = path.split("[].");
+    const target =
+      child === undefined
+        ? schema
+        : ["properties", root, "items"].reduce<Json>(
+            (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
+            schema,
+          );
+    const key = child ?? root;
+    if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
+      throw new Error(`No object for ${tool.name} at ${path}.`);
+    delete target.properties[key];
+    if (Array.isArray(target.required)) {
+      const remaining = target.required.filter((name) => name !== key);
+      if (remaining.length === 0) delete target.required;
+      else target.required = remaining;
+    }
   }
   return schema as ReturnType<typeof Tool.getJsonSchema>;
 };

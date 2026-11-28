@@ -18,7 +18,13 @@ import { fold } from "../work/nameMatch.ts";
 import { countedEntry, owedInvoices, ownerZone } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { invoiceAsides } from "./invoiceAsides.ts";
-import { UNREADABLE_BANK_ALERTS_KEY, unreadableBankAlerts } from "./senses/bank.ts";
+import {
+  BANK_SENDER_WAITING,
+  bankBriefLine,
+  bankSenderWaiting,
+  UNREADABLE_BANK_ALERTS_KEY,
+  unreadableBankAlerts,
+} from "./senses/bank.ts";
 import { daysText, elapsed } from "./senses/shared.ts";
 import { thresholds, toMs } from "./thresholds.ts";
 
@@ -177,12 +183,21 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
   const bankLines: Array<string> = [];
   if (
     input.viewer._tag === "ownerLevel" &&
-    input.offeredFacts?.has(UNREADABLE_BANK_ALERTS_KEY) &&
+    input.offeredFacts !== undefined &&
     KinShell.sectionOn(shell, "money")
   ) {
-    const alert = yield* unreadableBankAlerts({ orgId, at: now, zone: yield* ownerZone(orgId) });
-    if (alert !== undefined && !saysName(null, alert.subject.title))
-      bankLines.push(`${alert.subject.title}. ${alert.consequence}`);
+    if (input.offeredFacts.has(UNREADABLE_BANK_ALERTS_KEY)) {
+      const alert = yield* unreadableBankAlerts({ orgId, at: now, zone: yield* ownerZone(orgId) });
+      const line = alert === undefined ? undefined : bankBriefLine(alert);
+      if (alert !== undefined && line !== undefined && !saysName(null, alert.subject.title))
+        bankLines.push(line);
+    }
+    if ([...input.offeredFacts].some((key) => key.startsWith(`${BANK_SENDER_WAITING}:`))) {
+      for (const fact of yield* bankSenderWaiting({ orgId, at: now })) {
+        const line = bankBriefLine(fact);
+        if (line !== undefined && input.offeredFacts.has(fact.key)) bankLines.push(line);
+      }
+    }
   }
   if (!KinShell.sectionOn(shell, "invoices")) return bankLines;
   const shown = <T>(

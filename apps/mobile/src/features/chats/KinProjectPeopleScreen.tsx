@@ -24,7 +24,6 @@ import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { EmptyState } from "../../components/ui/EmptyState";
 import { IconButton } from "../../components/ui/IconButton";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
@@ -36,7 +35,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { KinFoldSection, KinWorkProblemNotice } from "./components/KinWorkPieces";
+import { KinFoldSection, KinMissingLink, KinWorkProblemNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinProjectPage, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
@@ -205,10 +204,11 @@ export function KinProjectPeopleScreen({ route }: StaticScreenProps<KinProjectPe
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {environmentId === null || orgId === null || key === null ? (
-            <EmptyState
-              variant="plain"
+            <KinMissingLink
               title="This link doesn't name a project"
-              detail="Open Work from your Kin chats."
+              kind="project"
+              environmentId={environmentId}
+              orgId={orgId}
             />
           ) : (
             <KinProjectPeopleAdd environmentId={environmentId} orgId={orgId} projectKey={key} />

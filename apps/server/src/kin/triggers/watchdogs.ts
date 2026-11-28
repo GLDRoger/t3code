@@ -532,10 +532,13 @@ const make = Effect.gen(function* () {
   });
 
   const triggerReconcile = Effect.fn("KinWatchdogs.triggerReconcile")(function* (orgId: KinOrgId) {
-    // Re-arms open deferrals the cache hook missed; a failed read must not disarm everything.
-    yield* memory.query(orgId, {}, "triggers").pipe(
-      Effect.flatMap((items) => triggers.syncOrg(orgId, items)),
-      Effect.catch((cause) => Effect.logWarning("Kin trigger re-arm failed", { orgId, cause })),
+    // Keep a commit from syncing a newer head between the watchdog's read and re-arm.
+    yield* memory.withWriterLock(
+      orgId,
+      memory.query(orgId, {}, "triggers").pipe(
+        Effect.flatMap((items) => triggers.syncOrg(orgId, items)),
+        Effect.catch((cause) => Effect.logWarning("Kin trigger re-arm failed", { orgId, cause })),
+      ),
     );
   });
 

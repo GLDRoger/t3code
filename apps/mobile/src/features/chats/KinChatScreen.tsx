@@ -167,6 +167,7 @@ import {
   kinMayStopAgent,
   kinPresenceLine,
   kinPresenceNeedsClock,
+  kinLatestReadableSeq,
 } from "@t3tools/client-runtime/kin/kinLive";
 import {
   kinAgentAvatar,
@@ -211,6 +212,7 @@ import {
   FloatingWorkingControl,
 } from "../threads/floating-working-control";
 import { KinWorkingSheet, useKinWorkingStop } from "./components/KinWorkingSheet";
+import { KinChatPinsStrip, useKinChatPins } from "./components/KinChatPins";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -1007,12 +1009,21 @@ function KinChatFeed(props: {
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
   // A stand-in computer's chat says whose it is before anyone types into it, in its own room
-  // under the bar so it never covers a message.
+  // under the bar so it never covers a message. Pinned cards share that slot.
   const standIn = useKinStandIn(props.environmentId);
+  const pins = useKinChatPins({
+    environmentId: props.environmentId,
+    orgId: KinOrgId.make(props.orgId),
+    chatId: props.chatId,
+    personId: props.viewer.personId,
+    members: props.members,
+  });
   const barSpace = useBarOverlap();
-  const barOverlap = standIn === null ? barSpace : 0;
+  const hasTopSlot = standIn !== null || pins.visible;
+  const barOverlap = hasTopSlot ? 0 : barSpace;
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
-  const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
+  const ownMarkdownStyle = useMarkdownStyleIn(markdownStyle, "text-user-bubble-foreground");
+  const updateMarkdownStyle = useMarkdownStyleIn(markdownStyle, "text-foreground-muted");
   // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [actions, setActions] = useState<{ readonly messageId: string; readonly open: number }>({
@@ -1066,7 +1077,9 @@ function KinChatFeed(props: {
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
   const [follow, setFollow] = useState(() =>
-    initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
+    initialKinFeedFollow(
+      kinLatestReadableSeq(props.chat.value.messages, props.chat.value.presence),
+    ),
   );
 
   const live = props.chat.value;
@@ -1083,7 +1096,7 @@ function KinChatFeed(props: {
     heldLine,
     props.chatId,
     kinOwnReadSeq(live, viewerMemberId),
-    latestKinSeq(live.messages),
+    heldLine?.upTo ?? kinLatestReadableSeq(live.messages, live.presence),
   );
   if (newLine !== heldLine) setHeldLine(newLine);
   // Apart from `follow`, so a scroll recomputes only where the feed stands, not its rows.
@@ -1109,7 +1122,11 @@ function KinChatFeed(props: {
   });
   const { streamed, messages, widgets, pending, feedRows, rows, landIndex, openRow, earlierPage } =
     feed;
-  const { followsEnd, unseen } = kinChatFeedFollow(messages, follow, props.viewer.personId);
+  const { followsEnd, unseen } = kinChatFeedFollow(
+    feed.visibleMessages,
+    follow,
+    props.viewer.personId,
+  );
   const echoedKey = feed.echoed.join("\n");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees outbox entries once the stream carries their message
   useEffect(() => {
@@ -1488,6 +1505,7 @@ function KinChatFeed(props: {
         row={item}
         markdownStyle={markdownStyle}
         ownMarkdownStyle={ownMarkdownStyle}
+        updateMarkdownStyle={updateMarkdownStyle}
         direct={props.direct}
         onPressPreview={setPreviewFile}
         onOpenPerson={(personId) =>
@@ -1793,9 +1811,14 @@ function KinChatFeed(props: {
 
   return (
     <View className="flex-1">
-      {standIn === null ? null : (
-        <View className="px-4 pb-1" style={{ paddingTop: barSpace }}>
-          <KinStandInLine line={standIn} />
+      {!hasTopSlot ? null : (
+        <View style={{ paddingTop: barSpace }}>
+          {standIn === null ? null : (
+            <View className="px-4 pb-1">
+              <KinStandInLine line={standIn} />
+            </View>
+          )}
+          <KinChatPinsStrip pins={pins} />
         </View>
       )}
       {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- KinFeedScrollView is passed through the iOS-only spread below, as in the thread feed. */}
@@ -1847,6 +1870,7 @@ function KinChatFeed(props: {
           canReact,
           markdownStyle,
           ownMarkdownStyle,
+          updateMarkdownStyle,
         ]}
         estimatedItemSize={72}
         drawDistance={500}
@@ -2039,9 +2063,12 @@ function KinFeedMessageActions(props: {
 }
 
 /** The feed's markdown colours for text on T3's user bubble. */
-function useOwnBubbleMarkdownStyle(base: NativeMarkdownTextStyle): NativeMarkdownTextStyle {
+function useMarkdownStyleIn(
+  base: NativeMarkdownTextStyle,
+  colorClassName: string,
+): NativeMarkdownTextStyle {
   const text = String(
-    StyleSheet.flatten(useResolveClassNames("text-user-bubble-foreground"))?.color ?? base.color,
+    StyleSheet.flatten(useResolveClassNames(colorClassName))?.color ?? base.color,
   );
   return { ...base, color: text, strongColor: text };
 }

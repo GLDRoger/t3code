@@ -94,9 +94,19 @@ Init ==
   /\ twoRings = FALSE /\ early = FALSE /\ letGo = [m \in Msgs |-> FALSE]
   /\ trig = FALSE /\ voice = "text" /\ nudges = 0 /\ plain = FALSE
 
-\* The wake-up is over: what lived in its memory goes with it.
+(* The wake-up is over: what lived in its memory goes with it. What only a running wake-up reads,
+   and Claim sets afresh, is cleared too, so idle states that differ only in a finished turn's
+   leftovers are one state; no step, rule or fairness condition reads it while idle. *)
 TurnOver == held' = [m \in Msgs |-> FALSE] /\ ended' = "no" /\ stopping' = FALSE /\ sent' = FALSE
   /\ voice' = "text" /\ nudges' = 0
+  /\ covered' = [m \in Msgs |-> FALSE] /\ worked' = FALSE /\ promise' = "none"
+  /\ joined' = FALSE /\ noticed' = FALSE /\ aborted' = FALSE
+\* The part of the audience's record that outlives the wake-up.
+lasting == <<joins, moves, heldBack, toOld, demoted>>
+
+(* An event's new states. A settled event (done, failed, expired) is never claimed again, so its
+   attempt count is never read again: it is cleared, which merges states that differ only there. *)
+Ev(e) == ev' = e /\ tries' = [m \in Msgs |-> IF e[m] \in {"queued", "claimed"} THEN tries[m] ELSE 0]
 
 (* chat/KinChatService.ts sendClaimed → floor.open; lead/ChatWake.ts enqueues the wake event. *)
 PersonSends(m) ==
@@ -270,10 +280,10 @@ FloorCloses == Broken = "relay-through-floor" /\ floor = "open" /\ floor' = "clo
    own act, not an answer, so the model counts it on no message (`stopped` instead). *)
 PersonStops ==
   /\ wake = "running" /\ ended = "no" /\ ~stopping /\ Claimed # {}
-  /\ ev' = [m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]]
+  /\ Ev([m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]])
   /\ stopped' = [m \in Msgs |-> stopped[m] \/ m \in Claimed]
   /\ stopping' = TRUE
-  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
+  /\ UNCHANGED <<wake, covered, replies, answered, promise, notes, fails, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience,
                  held, ended, sent, voice, nudges, stopPosted, partial, twoRings, early, letGo, trig,
                  plain>>
@@ -352,7 +362,7 @@ Owed == {m \in Claimed : ~covered[m]}
    finish its reply"), which tellStopped posts after commit. The model counts that line on each
    expired ask. *)
 Expire(exp) ==
-  /\ ev' = [m \in Msgs |-> IF m \in exp THEN "expired" ELSE ev[m]]
+  /\ Ev([m \in Msgs |-> IF m \in exp THEN "expired" ELSE ev[m]])
   /\ fails' = [m \in Msgs |-> IF m \in exp /\ Broken # "join-expires-silently" THEN fails[m] + 1
                              ELSE fails[m]]
 
@@ -365,7 +375,7 @@ SomeoneJoins ==
   /\ wake = "running" /\ ~joined /\ joins < 2
   /\ joined' = TRUE /\ joins' = joins + 1
   /\ Expire({m \in Msgs : ev[m] = "queued"})
-  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
+  /\ UNCHANGED <<wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
                  noticed, aborted, moves, heldBack, toOld, demoted, turn, marks>>
 
@@ -378,12 +388,12 @@ JoinStops ==
   /\ joins < 2 /\ (wake = "idle" \/ ~joined)
   /\ joins' = joins + 1
   /\ LET exp == {m \in Msgs : ev[m] = "queued" \/ (ev[m] = "claimed" /\ ~answered[m])}
-     IN /\ ev' = [m \in Msgs |-> IF m \in exp THEN "expired"
-                                ELSE IF ev[m] = "claimed" THEN "done" ELSE ev[m]]
+     IN /\ Ev([m \in Msgs |-> IF m \in exp THEN "expired"
+                                ELSE IF ev[m] = "claimed" THEN "done" ELSE ev[m]])
         /\ fails' = [m \in Msgs |-> IF m \in exp /\ Broken # "join-expires-silently"
                                    THEN fails[m] + 1 ELSE fails[m]]
   /\ IF wake = "running" THEN joined' = TRUE /\ aborted' = TRUE ELSE UNCHANGED <<joined, aborted>>
-  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
+  /\ UNCHANGED <<wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
                  noticed, moves, heldBack, toOld, demoted, turn, marks>>
 
@@ -416,13 +426,13 @@ ReplyHeldBack ==
         /\ (\A m \in Claimed : moves[m] = 0 \/ Broken = "requeue-again")
        THEN /\ aborted' = TRUE
             /\ moves' = [m \in Msgs |-> IF m \in Claimed THEN moves[m] + 1 ELSE moves[m]]
-            /\ UNCHANGED <<ev, fails, heldBack>>
+            /\ UNCHANGED <<ev, tries, fails, heldBack>>
        ELSE /\ fails' = [m \in Msgs |-> IF m \in Owed THEN fails[m] + 1 ELSE fails[m]]
             /\ heldBack' = [m \in Msgs |-> heldBack[m] \/ m \in Owed]
-            /\ ev' = [m \in Msgs |-> IF m \in Claimed /\ ~answered[m] /\ Broken # "line-not-ended"
-                                     THEN "done" ELSE ev[m]]
+            /\ Ev([m \in Msgs |-> IF m \in Claimed /\ ~answered[m] /\ Broken # "line-not-ended"
+                                     THEN "done" ELSE ev[m]])
             /\ UNCHANGED <<aborted, moves>>
-  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged, lost,
+  /\ UNCHANGED <<wake, covered, replies, answered, promise, notes, thought, nudged, lost,
                  worked, floor, presence, restarts, shown, asked, twice, diagnostic, joined, joins,
                  toOld, demoted, turn, marks>>
 
@@ -473,7 +483,7 @@ RunCompletes ==
   /\ IF noticed \/ aborted
        \* A held-back reply, or a turn aborted for its audience (WakeupRunner skips `complete`
        \* for it, and its every post goes nowhere): no rescue, no other line.
-       THEN /\ ev' = IF aborted THEN Requeued ELSE Ended
+       THEN /\ Ev(IF aborted THEN Requeued ELSE Ended)
             /\ UNCHANGED <<asked, replies, answered, fails>>
        ELSE /\ asked' = [m \in Msgs |-> asked[m] \/ (m \in Due /\ Broken # "no-rescue")]
             /\ \/ /\ replies' = [m \in Msgs |-> IF m \in Due THEN replies[m] + 1 ELSE replies[m]]
@@ -481,12 +491,12 @@ RunCompletes ==
                   /\ UNCHANGED fails
                \/ /\ fails' = [m \in Msgs |-> IF m \in Due /\ ~shown[m] THEN fails[m] + 1 ELSE fails[m]]
                   /\ UNCHANGED <<replies, answered>>
-            /\ ev' = Ended
+            /\ Ev(Ended)
   /\ wake' = "idle"
   /\ presence' = IF Broken = "line-stays" THEN presence ELSE "off"
   /\ TurnOver
-  /\ UNCHANGED <<tries, covered, promise, notes, thought, nudged, lost, worked, floor, restarts, shown,
-                 twice, diagnostic, audience, marks>>
+  /\ UNCHANGED <<notes, thought, nudged, lost, floor, restarts, shown, twice, diagnostic, lasting,
+                 marks>>
 
 (* WakeupRunner.finishWakeup after a failed or timed-out run, once the flush posted what it held
    (`rescue: false`, so no rescue): something visible → each message with its reply posted is
@@ -499,29 +509,31 @@ RunCompletes ==
 RunFails ==
   /\ wake = "running" /\ ended = "failed" /\ Flushed
   /\ IF aborted
-       THEN /\ ev' = Requeued
-            /\ UNCHANGED <<tries, fails, notes>>
+       THEN /\ Ev(Requeued)
+            /\ UNCHANGED <<fails, notes>>
      ELSE IF worked
        THEN LET mark(m) == answered[m] /\ Broken # "partway-after-reply"
                 stranded == {m \in Claimed : ~mark(m)}
-            IN /\ ev' = [m \in Msgs |-> IF m \in Claimed THEN IF mark(m) THEN "done" ELSE "failed"
-                                         ELSE ev[m]]
+            IN /\ Ev([m \in Msgs |-> IF m \in Claimed THEN IF mark(m) THEN "done" ELSE "failed"
+                                         ELSE ev[m]])
                /\ fails' = [m \in Msgs |-> IF m \in stranded THEN fails[m] + 1 ELSE fails[m]]
                /\ notes' = [m \in Msgs |-> IF stranded = {} /\ m \in Claimed /\ promise = "open"
                                            THEN notes[m] + 1 ELSE notes[m]]
-               /\ UNCHANGED tries
-       ELSE /\ tries' = [m \in Msgs |-> IF m \in Claimed THEN tries[m] + 1 ELSE tries[m]]
-            /\ ev' = [m \in Msgs |-> IF m \in Claimed
+       ELSE /\ ev' = [m \in Msgs |-> IF m \in Claimed
                                      THEN IF tries[m] + 1 >= StartAttempts THEN "failed" ELSE "queued"
                                      ELSE ev[m]]
+            \* The try is counted; an event that failed for good is settled, as in `Ev`.
+            /\ tries' = [m \in Msgs |-> IF m \in Claimed
+                                        THEN IF tries[m] + 1 >= StartAttempts THEN 0 ELSE tries[m] + 1
+                                        ELSE tries[m]]
             /\ fails' = [m \in Msgs |-> IF m \in Claimed /\ tries[m] + 1 >= StartAttempts
                                         THEN fails[m] + 1 ELSE fails[m]]
             /\ UNCHANGED notes
   /\ wake' = "idle"
   /\ presence' = IF Broken = "line-stays" THEN presence ELSE "off"
   /\ TurnOver
-  /\ UNCHANGED <<covered, replies, answered, promise, thought, nudged, lost, worked, floor, restarts,
-                 shown, asked, twice, diagnostic, audience, marks>>
+  /\ UNCHANGED <<replies, answered, thought, nudged, lost, floor, restarts, shown, asked, twice,
+                 diagnostic, lasting, marks>>
 
 (* The run a person stopped ends interrupted: complete(stopped) journals each held slot "Not sent"
    and drops it, before any page, figure, promise, rescue or follow-up; `finish` marks what is
@@ -530,12 +542,12 @@ RunFails ==
 RunStopped ==
   /\ wake = "running" /\ ended = "interrupted"
   /\ Broken = "stop-flushes" => Flushed
-  /\ ev' = IF aborted THEN Requeued ELSE Ended
+  /\ Ev(IF aborted THEN Requeued ELSE Ended)
   /\ wake' = "idle"
   /\ presence' = IF Broken = "line-stays" THEN presence ELSE "off"
   /\ TurnOver
-  /\ UNCHANGED <<tries, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
-                 worked, floor, restarts, shown, asked, twice, diagnostic, audience, marks>>
+  /\ UNCHANGED <<replies, answered, notes, fails, thought, nudged, lost, floor, restarts, shown,
+                 asked, twice, diagnostic, lasting, marks>>
 
 (* Kin shuts down mid-turn. Run gone: WakeupRunner.cleanup(interrupted) →
    KinEventQueue.requeueUnfinished marks done the claimed events whose reply posted (replied_at)
@@ -549,22 +561,22 @@ RunStopped ==
 Restart ==
   /\ restarts < 1 /\ wake = "running"
   /\ restarts' = restarts + 1
-  /\ \/ /\ ev' = [m \in Msgs |-> IF m \in Claimed
-                                  THEN IF answered[m] /\ Broken # "requeue-replied" THEN "done"
-                                       ELSE "queued"
-                                  ELSE ev[m]]
+  /\ \/ /\ Ev([m \in Msgs |-> IF m \in Claimed
+                                 THEN IF answered[m] /\ Broken # "requeue-replied" THEN "done"
+                                      ELSE "queued"
+                                 ELSE ev[m]])
         /\ wake' = "idle" /\ presence' = "off"
         /\ TurnOver
-        /\ UNCHANGED covered
      \/ /\ ended # "no"
         \* The receipt is read back (`storedSend`); the variant forgets it, so the flush posts the
         \* text held beside the send.
         /\ covered' = IF Broken = "requeue-reposts" \/ (Broken = "send-forgotten-on-restart" /\ sent)
                       THEN [m \in Msgs |-> FALSE] ELSE covered
         /\ sent' = (sent /\ Broken # "send-forgotten-on-restart")
-        /\ UNCHANGED <<ev, wake, presence, held, ended, stopping, voice, nudges>>
-  /\ UNCHANGED <<tries, replies, answered, promise, notes, fails, thought, nudged, lost, worked,
-                 floor, shown, asked, twice, diagnostic, audience, marks>>
+        /\ UNCHANGED <<ev, tries, wake, presence, held, ended, stopping, voice, nudges, worked, promise,
+                       joined, noticed, aborted>>
+  /\ UNCHANGED <<replies, answered, notes, fails, thought, nudged, lost, floor, shown, asked, twice,
+                 diagnostic, lasting, marks>>
 
 Next ==
   \/ \E m \in Msgs : PersonSends(m) \/ TriggerFires(m) \/ Steer(m)

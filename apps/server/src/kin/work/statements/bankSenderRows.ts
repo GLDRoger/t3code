@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { MAIL_PRESETS } from "../../connections/mailProviders.ts";
 import { DAY_MS } from "../../durations.ts";
 
 export const normalizeAddress = (value: string | null | undefined) => {
@@ -16,6 +17,19 @@ export const normalizeAddress = (value: string | null | undefined) => {
     ? address
     : undefined;
 };
+
+export const quietBankSenderAddresses = Effect.fn("KinBankSenders.quietAddresses")(function* (
+  orgId: KinOrgId,
+  moneyOn: boolean,
+) {
+  if (moneyOn) return new Set<string>();
+  const rows = yield* list(orgId);
+  return new Set(
+    rows
+      .filter((row) => row.state === "candidate" || row.state === "approved")
+      .map((row) => row.address),
+  );
+});
 
 const ending = /^\d{4}$/;
 const AccountsJson = Schema.fromJsonString(
@@ -47,6 +61,8 @@ interface SenderRow {
   readonly decidedByPersonId: string | null;
   readonly decidedAt: number | null;
   readonly createdAt: number;
+  readonly decidedBy: string | null;
+  readonly recordedCount: number;
 }
 
 export interface ApprovedSender {
@@ -55,15 +71,25 @@ export interface ApprovedSender {
   readonly accounts: ReadonlyArray<string>;
 }
 
-export const list = Effect.fn("KinBankSenders.list")(function* (orgId: KinOrgId) {
+export const list = Effect.fn("KinBankSenders.rows")(function* (orgId: KinOrgId, settings = false) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<SenderRow>`SELECT address, bank_key AS "bankKey", bank_name AS "bankName",
     accounts_json AS "accountsJson", state, seen_count AS "seenCount",
     first_seen_at AS "firstSeenAt", last_seen_at AS "lastSeenAt",
     seen_accounts_json AS "seenAccountsJson", matched_from AS "matchedFrom",
     decided_by_person_id AS "decidedByPersonId", decided_at AS "decidedAt",
-    created_at AS "createdAt"
-    FROM kin_bank_senders WHERE org_id = ${orgId} ORDER BY address`;
+    created_at AS "createdAt",
+    ${
+      settings
+        ? sql`(SELECT p.display_name FROM kin_people p
+          WHERE p.org_id = s.org_id AND p.person_id = s.decided_by_person_id) AS "decidedBy",
+        (SELECT COUNT(DISTINCT a.record_id) FROM kin_bank_alerts a
+          WHERE a.org_id = s.org_id AND a.sender_address = s.address
+            AND a.outcome = 'recorded') AS "recordedCount"`
+        : sql`NULL AS "decidedBy", 0 AS "recordedCount"`
+    }
+    FROM kin_bank_senders s WHERE org_id = ${orgId}
+      ${settings ? sql`AND state <> 'removed'` : sql``} ORDER BY address`;
   return rows.map(({ accountsJson, seenAccountsJson, ...row }) => ({
     ...row,
     accounts: accountsOf(accountsJson),
@@ -145,4 +171,50 @@ export const pruneHeldAlerts = Effect.fn("KinBankSenders.pruneHeld")(function* (
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DELETE FROM kin_bank_alerts WHERE outcome = 'held'
     AND sent_at < ${now - HELD_ALERT_WINDOW}`;
+});
+
+export const BANK_SENDER_RULE = "bank_sender";
+
+export const companyAlertMailbox = (sql: SqlClient.SqlClient) =>
+  sql`c.person_id IS NULL AND c.state = 'active' AND c.removed_at IS NULL AND c.paused_at IS NULL
+    AND c.preset IN ${sql.in(MAIL_PRESETS)}`;
+
+const decodeHeldEnds = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
+export const liveHeldMail = Effect.fn("KinBankSenders.liveHeldMail")(function* (
+  orgId: KinOrgId,
+  now: number,
+  withEndings?: { readonly address?: string | undefined },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    address: string;
+    mailbox: string | null;
+    count: number;
+    first: number;
+    endings: string;
+  }>`
+    SELECT a.sender_address AS address, c.account_label AS mailbox,
+      COUNT(*) AS count, MIN(a.sent_at) AS first,
+      ${
+        withEndings === undefined
+          ? sql`'[]'`
+          : sql`json_group_array(DISTINCT COALESCE(a.reference, json_array(a.account) || ''))`
+      } AS endings
+    FROM kin_bank_alerts a
+    JOIN kin_connections c ON c.org_id = a.org_id AND c.connection_id = a.connection_id
+    WHERE a.org_id = ${orgId} AND a.outcome = 'held' AND a.sender_address IS NOT NULL
+      AND a.sent_at BETWEEN ${now - HELD_ALERT_WINDOW} AND ${now}
+      AND ${companyAlertMailbox(sql)}
+      ${withEndings?.address === undefined ? sql`` : sql`AND a.sender_address = ${withEndings.address}`}
+    GROUP BY a.sender_address, c.account_label ORDER BY a.sender_address, c.account_label`;
+  return rows.map(({ endings, ...row }) => ({
+    ...row,
+    endings:
+      withEndings === undefined
+        ? []
+        : Option.getOrElse(decodeHeldEnds(endings), () => []).flatMap(accountsOf),
+  }));
 });

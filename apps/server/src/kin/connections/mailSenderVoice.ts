@@ -74,7 +74,6 @@ export const mailSenderVoices = Effect.fn("KinConnections.mailSenderVoices")(
       const words = items.flatMap((item) => {
         const { head, body } = item;
         if (
-          (head.kind !== "claim" && head.kind !== "person") ||
           (head.trust !== "owner" && head.trust !== "member") ||
           head.said_by !== person.handle ||
           (head.shared_from !== undefined && head.shared_from.person !== person.personId) ||
@@ -82,6 +81,10 @@ export const mailSenderVoices = Effect.fn("KinConnections.mailSenderVoices")(
           !reaches(audience, item, labels)
         )
           return [];
+        // The speaker's own mark counts on any kind; agents often save a sign-off as a decision.
+        if (head.sender_mail_voice !== undefined)
+          return head.sender_mail_voice ? [mailWords(item)] : [];
+        if (head.kind !== "claim" && head.kind !== "person") return [];
         const search = [head.title, head.what, body].join("\n");
         return mail.test(search) && style.test(search) ? [mailWords(item)] : [];
       });

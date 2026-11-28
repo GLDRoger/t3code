@@ -14,6 +14,7 @@ import {
   type KinPartyKind,
   type KinPartyPage,
   type KinPartyRow,
+  KinPersonId,
   type KinProjectDetail,
   type KinProjectHealth,
   type KinProjectPage,
@@ -49,6 +50,7 @@ import {
   projectSpecChanges,
 } from "./projectSpine.ts";
 import {
+  allSeeMoney,
   crmSeenBy,
   crmSeesAs,
   KIN_OWNER_LEVEL,
@@ -56,6 +58,9 @@ import {
   personSees,
   personSeesAs,
   seenBy,
+  seesProjectTerms,
+  teamChangeFields,
+  teamSeesChange,
   type KinViewer,
 } from "./teamView.ts";
 import {
@@ -750,9 +755,7 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
   );
   const fields = parseFields(row.fieldsJson);
   // Someone in it who doesn't lead it gets no price or terms, which the notes often carry.
-  const leads =
-    viewer._tag === "ownerLevel" ||
-    viewer.people.every((one) => row.ownerKind === "person" && row.ownerId === one);
+  const leads = seesProjectTerms(viewer, row);
   const billing = leads ? fieldText(fields, "billing") : null;
   const value = leads ? fields.value : undefined;
   const day = (key: string) => {
@@ -799,13 +802,29 @@ const capped = Effect.fn("KinCrm.capped")(function* (
   return { records: rows.map((row) => toRecord(row, now)), total: count?.total ?? 0 };
 });
 
+const CLIENT_LINES = new Set([
+  "address",
+  "source",
+  "tags",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+]);
+
 /**
  * One timeline from the change logs of an anchor and everything pointing at it: a client's
  * contacts, projects and entries, or a project's entries. Newest first, before `beforeSeq`.
  */
 export const history = Effect.fn("KinCrm.history")(function* (
   anchor: RecordRow,
-  input: { readonly beforeSeq?: number; readonly sinceAt?: number; readonly limit: number },
+  input: {
+    readonly beforeSeq?: number;
+    readonly sinceAt?: number;
+    readonly excludeBy?: KinPersonId;
+    readonly limit: number;
+  },
   viewer: KinViewer,
   seen: typeof seenBy = seenBy,
 ) {
@@ -815,14 +834,20 @@ export const history = Effect.fn("KinCrm.history")(function* (
     listOf(anchor.registerId) === "projects"
       ? sql`r.project_id = ${anchor.recordId}`
       : sql`r.party_id = ${anchor.recordId}`;
+  const teammateProject = viewer._tag === "people" && listOf(anchor.registerId) === "projects";
+  const teammateClient = viewer._tag === "people" && anchor.registerId === "clients";
   const filter = sql.and([
     sql`r.org_id = ${orgId}`,
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
     seen(sql, viewer),
+    ...(teammateProject ? [teamSeesChange(sql, viewer)] : []),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
+    ...(input.excludeBy === undefined
+      ? []
+      : [sql`NOT (c.actor_kind = 'person' AND c.actor_id IS ${input.excludeBy})`]),
   ]);
   const from = sql`FROM kin_records r JOIN kin_record_changes c
     ON c.org_id = r.org_id AND c.record_id = r.record_id WHERE ${filter}`;
@@ -838,35 +863,53 @@ export const history = Effect.fn("KinCrm.history")(function* (
     key: string;
     title: string;
     registerId: string;
+    askedBy: string | null;
+    teamFields?: string | null;
+    total?: number;
   }>`SELECT c.seq, c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId", c.via, c.kind,
       c.fields_json AS "fieldsJson", r.record_id AS "recordId", r.key, r.title,
-      r.register_id AS "registerId"
+      r.register_id AS "registerId", c.asked_by_person_id AS "askedBy"
+      ${teammateProject || teammateClient ? sql`, ${teamChangeFields(sql, viewer)} AS "teamFields"` : sql``}
+      ${input.sinceAt === undefined ? sql`` : sql`, (SELECT COUNT(*) ${from}) AS total`}
     ${from} ORDER BY c.seq DESC LIMIT ${input.limit}`;
   const stages = rows.some((row) => row.registerId === "deals")
     ? (yield* stagesOf(orgId)).stages
     : [];
-  const items = rows.map((row): KinWorkHistoryItem => ({
-    seq: row.seq,
-    at: iso(row.at),
-    by: actorOf(row.actorKind, row.actorId),
-    via: row.via,
-    kind: row.kind,
-    fields: parseChanges(row.fieldsJson)
-      .filter((change) => change.field.trim() !== "")
-      // A deal's stage is the company's id; the line reads its name.
-      .map((change) =>
-        row.registerId === "deals" && change.field === "stage" ? stageLine(stages, change) : change,
-      ),
-    record: {
-      ...ref(row.recordId, row.key, row.title),
-      list: workListOf(row.registerId),
-      ...listNameOf(row.registerId),
-    },
-  }));
-  const total =
-    input.sinceAt === undefined
-      ? undefined
-      : ((yield* sql<{ total: number }>`SELECT COUNT(*) AS total ${from}`)[0]?.total ?? 0);
+  const items = rows.map((row): KinWorkHistoryItem => {
+    const allFields =
+      row.teamFields === undefined || (teammateClient && row.registerId === "deals");
+    const clientFields =
+      teammateClient && (row.recordId === anchor.recordId || row.registerId === "contacts");
+    const teamFields = row.teamFields?.split(",") ?? [];
+    return {
+      seq: row.seq,
+      at: iso(row.at),
+      by: actorOf(row.actorKind, row.actorId),
+      ...(input.excludeBy !== undefined && row.askedBy !== null
+        ? { askedBy: KinPersonId.make(row.askedBy) }
+        : {}),
+      via: row.via,
+      kind: row.kind,
+      fields: parseChanges(row.fieldsJson)
+        .filter((change) =>
+          allFields
+            ? change.field.trim() !== ""
+            : teamFields.includes(change.field) || (clientFields && CLIENT_LINES.has(change.field)),
+        )
+        // A deal's stage is the company's id; the line reads its name.
+        .map((change) =>
+          row.registerId === "deals" && change.field === "stage"
+            ? stageLine(stages, change)
+            : change,
+        ),
+      record: {
+        ...ref(row.recordId, row.key, row.title),
+        list: workListOf(row.registerId),
+        ...listNameOf(row.registerId),
+      },
+    };
+  });
+  const total = input.sinceAt === undefined ? undefined : (rows[0]?.total ?? 0);
   return { items, total };
 });
 
@@ -1025,16 +1068,16 @@ const pullNumber = (url: string) => {
   return found === undefined ? undefined : Number.parseInt(found, 10);
 };
 
-export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
+const projectTasks = (sql: SqlClient.SqlClient, row: RecordRow, viewer: KinViewer) =>
+  sql`r.org_id = ${row.orgId} AND r.register_id = 'work'
+    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewer)}`;
+
+export const projectCounts = Effect.fn("KinCrm.projectCounts")(function* (
   row: RecordRow,
   now: number,
-  seq: number,
   viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const orgId = row.orgId as KinOrgId;
-  const inProject = sql`r.org_id = ${orgId} AND r.register_id = 'work'
-    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewer)}`;
   const [counts] = yield* sql<{
     open: number | null;
     doing: number | null;
@@ -1046,7 +1089,28 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
       SUM(r.state = 'waiting') AS waiting, SUM(r.state = 'done') AS done,
       SUM(r.state = 'dropped') AS dropped,
       SUM(r.due_at IS NOT NULL AND r.due_at < ${now} AND r.state IN ${sql.in(OPEN)}) AS late
-    FROM kin_records r WHERE ${inProject}`;
+    FROM kin_records r WHERE ${projectTasks(sql, row, viewer)}`;
+  return {
+    open: counts?.open ?? 0,
+    doing: counts?.doing ?? 0,
+    waiting: counts?.waiting ?? 0,
+    done: counts?.done ?? 0,
+    dropped: counts?.dropped ?? 0,
+    late: counts?.late ?? 0,
+  };
+});
+
+export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
+  row: RecordRow,
+  now: number,
+  seq: number,
+  viewer: KinViewer,
+  look?: { readonly personId: KinPersonId; readonly mark: number },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const orgId = row.orgId as KinOrgId;
+  const inProject = projectTasks(sql, row, viewer);
+  const counts = yield* projectCounts(row, now, viewer);
   const since = yield* sql<{ recordId: string; since: number }>`SELECT r.record_id AS "recordId",
       ${waitingSince(sql, "r")} AS since
     FROM kin_records r WHERE ${inProject} AND r.state = 'waiting'
@@ -1088,30 +1152,31 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
   const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 }, viewer);
-  const milestones = yield* milestonesOf(orgId, row.recordId, now, viewer);
+  const sinceLooked =
+    look === undefined
+      ? undefined
+      : yield* history(row, { sinceAt: look.mark + 1, excludeBy: look.personId, limit: 3 }, viewer);
+  const milestones = yield* milestonesOf(orgId, { projectId: row.recordId }, now, viewer);
+  const showMoney = viewer._tag === "ownerLevel" || (yield* allSeeMoney(orgId, viewer.people));
   return {
     project: yield* projectDetail(row, now, viewer),
-    counts: {
-      open: counts?.open ?? 0,
-      doing: counts?.doing ?? 0,
-      waiting: counts?.waiting ?? 0,
-      done: counts?.done ?? 0,
-      dropped: counts?.dropped ?? 0,
-      late: counts?.late ?? 0,
-    },
+    counts,
     blocked: waiting.map(({ entry, since: at }) => {
-      const record = toRecord(entry, now);
+      const record = toRecord(entry, now, showMoney);
       const on: KinBlockedOn | null =
         record.waitingOn ??
         (record.party === undefined ? null : { _tag: "party" as const, ...record.party });
       return { record, on, since: iso(at) };
     }),
-    nextDue: next === undefined ? null : toRecord(next, now),
+    nextDue: next === undefined ? null : toRecord(next, now, showMoney),
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
+    ...(sinceLooked?.total
+      ? { sinceLooked: { items: sinceLooked.items, total: sinceLooked.total } }
+      : {}),
     milestones,
     people: yield* peopleOf(row, now, viewer),
-    meetings: yield* meetingsOf(orgId, row.recordId, now, viewer),
+    meetings: yield* meetingsOf(orgId, row.recordId, now, viewer, showMoney),
     specChanged: yield* projectSpecChanges(orgId, row.recordId, viewer),
     money: yield* moneyOf(orgId, row.recordId, viewer),
     seq,

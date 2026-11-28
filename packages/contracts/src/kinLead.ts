@@ -512,6 +512,7 @@ export const MemoryItemFrontMatter = Schema.Struct({
   // that they bear the item out. Server-written; absent before quotes and on unworded events.
   quote: Schema.optional(Schema.String),
   links: Schema.Array(Schema.String),
+  sender_mail_voice: Schema.optional(Schema.Boolean),
   // Whether only the owner's own turns may see the item. Absent on an item nobody has labelled
   // yet, which reads as sensitive.
   sensitive: Schema.optional(Schema.Boolean),
@@ -978,6 +979,13 @@ export const KinEvent = Schema.Union([
     outsideNotListed: Schema.optional(PositiveInt),
     // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
     arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+    rule: Schema.optional(
+      Schema.Struct({
+        ruleId: Schema.String.check(Schema.isMaxLength(128)),
+        manual: Schema.optional(Schema.Literal(true)),
+        activation: Schema.optional(PositiveInt),
+      }),
+    ),
     // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct
     // chat with this agent, `origin` naming them, so the turn is theirs alone. From stored rows.
     chatId: Schema.optional(KinChatId),
