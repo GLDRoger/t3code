@@ -551,6 +551,7 @@ const KIN_RPC_ACCESS = {
   "kin.billSenders.decline": "owner_level",
   "kin.billSenders.remove": "owner_level",
   "kin.billSenders.add": "owner_level",
+  "kin.billSenders.readSince": "owner_level",
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
@@ -685,6 +686,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.billSenders.decline": "kin-work",
   "kin.billSenders.remove": "kin-work",
   "kin.billSenders.add": "kin-work",
+  "kin.billSenders.readSince": "kin-work",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
   "kin.host.status": "kin-host",

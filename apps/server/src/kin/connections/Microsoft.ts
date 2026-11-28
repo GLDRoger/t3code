@@ -832,7 +832,7 @@ const microsoft: MailVendor = {
     return api(context, at.url, {
       params: at.first
         ? {
-            $select: SUMMARY,
+            $select: page.headersOnly ? "id,conversationId,from,receivedDateTime" : SUMMARY,
             // Several messages can share a conversation, so a page reads more than it shows.
             $top: String(Math.min(page.max * 3, 75)),
             ...(page.query === null

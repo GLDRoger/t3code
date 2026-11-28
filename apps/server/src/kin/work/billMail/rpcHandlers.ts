@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import type { AuthenticatedSession } from "../../../auth/EnvironmentAuth.ts";
 import { KinIdentity, type PersonIdentity } from "../../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../../KinServer.ts";
+import { readSince } from "./billCatchUp.ts";
 import * as BillSenders from "./billSenders.ts";
 
 const group = RpcGroup.make(...KinBillSenderRpcs);
@@ -44,5 +45,7 @@ export const makeKinBillSenderHandlers = Effect.fn("makeKinBillSenderHandlers")(
       run(orgId, (person) => BillSenders.decide(orgId, person.personId, address, "removed")),
     "kin.billSenders.add": ({ orgId, address }) =>
       run(orgId, (person) => BillSenders.add(orgId, person.personId, address)),
+    "kin.billSenders.readSince": ({ orgId, address, since }) =>
+      run(orgId, (person) => readSince(orgId, person.personId, address, since)),
   });
 });

@@ -190,6 +190,7 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     readonly labelIds?: string;
     readonly max: number;
     readonly pageToken?: string;
+    readonly headersOnly?: true;
   },
 ) {
   const page = yield* api(context, `${GMAIL}/threads`, {
@@ -197,27 +198,43 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     labelIds: params.labelIds,
     maxResults: String(params.max),
     pageToken: params.pageToken,
+    // Gmail's thread list carries each thread's snippet unless told otherwise.
+    fields: params.headersOnly ? "threads(id),nextPageToken" : undefined,
   });
   const threads = yield* threadsById(
     context,
     list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []),
+    false,
+    params.headersOnly,
   );
   return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
 });
 
-const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = false) =>
+const threadsById = (
+  context: MailContext,
+  ids: ReadonlyArray<string>,
+  watch = false,
+  headersOnly = false,
+) =>
   Effect.forEach(
     ids,
     (id) =>
       api(context, `${GMAIL}/threads/${encodeURIComponent(id)}`, {
         format: "metadata",
-        metadataHeaders: [
-          "From",
-          "Subject",
-          "Date",
-          ...RECIPIENT_HEADERS,
-          ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
-        ],
+        ...(headersOnly
+          ? {
+              fields: "messages(id,threadId,internalDate,payload(headers))",
+              metadataHeaders: ["From"],
+            }
+          : {
+              metadataHeaders: [
+                "From",
+                "Subject",
+                "Date",
+                ...RECIPIENT_HEADERS,
+                ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
+              ],
+            }),
       }).pipe(
         Effect.map((thread) =>
           list(field(thread, "messages")).map(messageOf(context.mailbox.account, false, watch)),
@@ -651,6 +668,7 @@ const google: MailVendor = {
     threadsOf(context, {
       ...(page.query === null ? { labelIds: "INBOX" } : { q: page.query }),
       max: page.max,
+      ...(page.headersOnly === true ? { headersOnly: true } : {}),
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
   attachment: attachmentOf,

@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { KinTrimmedText, NonNegativeInt } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinDay } from "./kinMoney.ts";
 
 const Address = KinTrimmedText.check(Schema.isMaxLength(254));
 const Row = Schema.Struct({
@@ -26,6 +27,7 @@ const methods = {
   decline: "kin.billSenders.decline",
   remove: "kin.billSenders.remove",
   add: "kin.billSenders.add",
+  readSince: "kin.billSenders.readSince",
 } as const;
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 const sender = Schema.Struct({ orgId: KinOrgId, address: Address });
@@ -44,6 +46,16 @@ export const KinBillSenderRpcs = [
     success: Schema.Union([Schema.Void, Schema.Struct({ message: Schema.String })]),
     error,
   }),
+  Rpc.make(methods.readSince, {
+    payload: Schema.Struct({ orgId: KinOrgId, address: Address, since: KinDay }),
+    success: Schema.Struct({
+      queued: NonNegativeInt,
+      older: Schema.Boolean,
+      stopped: Schema.optional(Schema.Literal(true)),
+      text: Schema.String.check(Schema.isMaxLength(500)),
+    }),
+    error,
+  }),
 ] as const;
 
 export const KIN_BILL_SENDER_RPC_SCOPES = {
@@ -52,4 +64,5 @@ export const KIN_BILL_SENDER_RPC_SCOPES = {
   [methods.decline]: AuthKinChatScope,
   [methods.remove]: AuthKinChatScope,
   [methods.add]: AuthKinChatScope,
+  [methods.readSince]: AuthKinChatScope,
 } as const;
