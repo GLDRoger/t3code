@@ -53,7 +53,7 @@ import * as Work from "./ownerWork.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
-import { defineList } from "./registers.ts";
+import { defineList, presetList } from "./registers.ts";
 import { search } from "./search.ts";
 import { indexRecord, indexStoredSteps } from "./searchIndex.ts";
 import { ensureBankList } from "./statements/bankList.ts";
@@ -1682,6 +1682,13 @@ it.effect(
         bankTransaction: true,
         closed: true,
       });
+      const archived = yield* OwnerDocs.search([owner], {
+        orgId,
+        everything: true,
+        text: "fuel transfer",
+        closed: true,
+      });
+      expect.soft(archived.hits[0]).toMatchObject({ key: "BNK-16", closed: true });
       expect.soft((yield* find("EXP-2")).map((hit) => hit.key)).not.toContain("EXP-25");
       for (const text of [
         "reefer inspection",
@@ -1694,6 +1701,63 @@ it.effect(
       const scoped = yield* OwnerDocs.search([owner], { orgId, kinds: ["docs"], text: "EXP-25" });
       expect.soft(scoped.hits).toEqual([]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("word search shows a bill suggestion until the expense is kept or dropped", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn("owner");
+    yield* presetList(orgId, "expenses", 0);
+    const records = yield* KinRecords.KinRecords;
+    const bill = (originKey: string) =>
+      records
+        .create(
+          orgId,
+          { actor: { _tag: "system" }, via: "owner" },
+          {
+            list: "expenses",
+            originKey: `bill:${originKey}`,
+            title: "Inkspot Cloud",
+            owner: { _tag: "person", personId: ownerId },
+            state: "done",
+            confirmed: false,
+            sensitive: true,
+            fields: { vendor: "Inkspot Cloud" },
+          },
+        )
+        .pipe(Effect.map(({ row }) => row));
+    const find = (text: string, closed = false) =>
+      OwnerDocs.search([owner], { orgId, kinds: ["expenses"], text, closed }).pipe(
+        Effect.map(({ hits }) => hits),
+      );
+    const suggestion = yield* bill("inkspot");
+    expect.soft((yield* find(suggestion.key))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: false,
+    });
+    expect.soft((yield* find("Inkspot Cloud"))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: false,
+    });
+    const agent = (closed = false) =>
+      LeadDocs.searchTool(scopeOf(lead), { text: "Inkspot Cloud", kinds: ["expenses"], closed });
+    expect.soft((yield* agent()).hits[0]).toMatchObject({ key: suggestion.key });
+    expect.soft((yield* agent(true)).hits[0]).not.toHaveProperty("closed");
+    yield* Work.confirm([owner], { orgId, key: suggestion.key, rev: suggestion.rev });
+    expect.soft(yield* find("Inkspot Cloud")).toEqual([]);
+    expect.soft((yield* find("Inkspot Cloud", true))[0]).toMatchObject({
+      key: suggestion.key,
+      closed: true,
+    });
+    expect.soft((yield* agent(true)).hits[0]).toMatchObject({ key: suggestion.key, closed: true });
+
+    const dropped = yield* bill("inkspot-dropped");
+    yield* Work.decline([owner], { orgId, key: dropped.key, rev: dropped.rev });
+    expect.soft(yield* find("Inkspot Cloud")).toEqual([]);
+    expect
+      .soft((yield* find("Inkspot Cloud", true)).find((hit) => hit.key === dropped.key))
+      .toMatchObject({ closed: true });
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("an exact identifier takes the last slot over a memory word hit", () =>
