@@ -3294,7 +3294,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ["google", ACCOUNTS],
     ["microsoft", HELLO],
   ] as const)(
-    "queues verified PDF mail from %s and keeps Money unchanged until Rhea keeps a bill",
+    "queues verified PDF mail from %s and counts it as To pay when Rhea keeps it",
     ([vendor, to]) => {
       const reads: Array<URL> = [];
       return setUp(
@@ -3346,9 +3346,16 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               },
             );
             yield* Bills.turnEnded(orgId, KinWakeupId.make(turn!.id));
-            const [expense] = yield* sql<{ confirmed: number; ownerId: string; note: string }>`
-          SELECT confirmed, owner_id AS "ownerId", notes AS note FROM kin_records WHERE register_id = 'expenses'`;
-            assert.include(expense, { confirmed: 0, ownerId: owner });
+            const [expense] = yield* sql<{
+              confirmed: number;
+              ownerId: string;
+              note: string;
+              state: string;
+              dateAt: number | null;
+            }>`
+          SELECT confirmed, owner_id AS "ownerId", notes AS note, state, date_at AS "dateAt"
+          FROM kin_records WHERE register_id = 'expenses'`;
+            assert.include(expense, { confirmed: 0, ownerId: owner, state: "open", dateAt: null });
             assert.match(
               expense!.note,
               /^Read by Kin from a mail from billing@inkspot\.example, received .+\.$/,
@@ -3365,16 +3372,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               assert.notInclude(text, billMail.subject);
               assert.notInclude(text, "Inkspot Billing Team");
             }
-            const spent = moneySummary(orgId, NOW, KIN_OWNER_LEVEL).pipe(
-              Effect.map((summary) => summary.spent.thisMonth.total),
-            );
-            assert.deepStrictEqual(yield* spent, []);
-            yield* Bills.keepRead(people(owner), {
+            const summary = moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+            const before = yield* summary;
+            assert.deepStrictEqual(before.spent.thisMonth.total, []);
+            assert.isUndefined(before.toPay);
+            const kept = yield* Bills.keepRead(people(owner), {
               orgId,
               batchId: row!.batchId,
               clientRequestId: "keep-mail",
             });
-            assert.deepStrictEqual(yield* spent, [{ minor: 1000, currency: "USD" }]);
+            assert.lengthOf(kept.kept, 1);
+            const after = yield* summary;
+            assert.deepStrictEqual(after.spent.thisMonth.total, []);
+            assert.deepStrictEqual(after.toPay?.total, [{ minor: 1000, currency: "USD" }]);
             const body = fake.deliver({ ...billMail, to, at: NOW + 2 });
             yield* readMail(box);
             yield* drain();

@@ -61,9 +61,11 @@ import * as LeadBills from "./leadBills.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { outlook } from "./moneyAnswers.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
-import { confirm, decline, update } from "./ownerWork.ts";
+import { confirm, decline, list as workList, update } from "./ownerWork.ts";
+import { partnersOwed } from "./partnersOwed.ts";
 import { defineList, PRESETS, presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 
@@ -272,6 +274,47 @@ const firstCut = Effect.gen(function* () {
   return { added, wakeupId, cut };
 });
 
+const mailedInvoice = Effect.gen(function* () {
+  const store = yield* AttachmentStore.KinAttachmentStore;
+  const sql = yield* SqlClient.SqlClient;
+  const bytes = new TextEncoder().encode("Invoice from Inkspot Cloud");
+  const id = yield* store.storeFile(bytes, "txt");
+  const added = yield* sql.withTransaction(
+    Bills.addMailBills({
+      orgId,
+      adder: rhea,
+      mail: { from: "billing@inkspot.example", at: Date.parse("2026-11-04T12:00:00Z") },
+      files: [
+        {
+          attachment: {
+            id,
+            type: "file",
+            name: "invoice.txt",
+            mimeType: "text/plain",
+            sizeBytes: bytes.length,
+          },
+          sha256: "2".repeat(64),
+        },
+      ],
+    }),
+  );
+  if (added._tag !== "added") return yield* Effect.die("No reader for the mailed invoice");
+  const { wakeupId } = yield* claimTurn(1);
+  yield* read({
+    bill: "B1",
+    vendor: "Inkspot Cloud",
+    date: "2026-11-03",
+    amount: "1180",
+    tax: "180",
+    currency: "INR",
+  });
+  yield* endTurn(wakeupId);
+  return added.batchId;
+});
+
+const expenseOf = (batchId: string) =>
+  Bills.list(as(rhea), { orgId, batchId }).pipe(Effect.map((view) => view.bills[0]!.expense!));
+
 describe("bills in bulk", () => {
   it.effect("quotes the body of a mail bill, refuses cutting and keeps a failed read visible", () =>
     Effect.gen(function* () {
@@ -360,6 +403,135 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a mailed invoice counts only as To pay after Keep and has no paid day", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const batchId = yield* mailedInvoice;
+      const expense = yield* expenseOf(batchId);
+      const totals = () =>
+        Effect.gen(function* () {
+          const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+          const page = yield* workList(as(rhea), { orgId, list: "expenses", totalsBy: "none" });
+          return {
+            spent: summary.spent.thisMonth.total,
+            spentThisFinancialYear: summary.spentThisFinancialYear,
+            toPay: summary.toPay,
+            expenses: page.totals?.total ?? [],
+            scheduled: (yield* outlook(orgId, NOW)).windows[0]?.expectedOut,
+            partners: yield* partnersOwed(orgId, "INR"),
+          };
+        });
+      const before = {
+        spent: [],
+        spentThisFinancialYear: [],
+        toPay: undefined,
+        expenses: [],
+        scheduled: [],
+        partners: [],
+      };
+      assert.deepStrictEqual(yield* totals(), before);
+      assert.notProperty(expense, "date");
+      assert.include(expense, { state: "open" });
+      assert.deepEqual(expense.tax, { minor: 18_000, currency: "INR" });
+      const kept = yield* confirm(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+      assert.include(kept, { state: "open", confirmed: true });
+      assert.notProperty(kept, "dateAt");
+      const money = [{ minor: 118_000, currency: "INR" }];
+      assert.deepStrictEqual(yield* totals(), {
+        ...before,
+        toPay: { total: money, dueSoon: [], bills: 1, dueSoonBills: 0, lateBills: 0 },
+        expenses: money,
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([undefined, "2026-11-24"])(
+    "a mailed invoice marked Paid uses the tap day or the owner's date (%s)",
+    (dateAt) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const batchId = yield* mailedInvoice;
+        const expense = yield* expenseOf(batchId);
+        const kept = yield* confirm(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+        const tap = Date.parse("2026-11-28T20:00:00Z");
+        yield* TestClock.setTime(tap);
+        const paid = yield* update(as(rhea), {
+          orgId,
+          key: expense.key,
+          rev: kept.rev,
+          state: "done",
+          ...(dateAt === undefined ? {} : { dateAt, dateAllDay: true }),
+        });
+        assert.include(paid, { state: "done", dateAllDay: true });
+        assert.strictEqual((yield* expenseOf(batchId)).date, dateAt ?? "2026-11-29");
+        const summary = yield* moneySummary(orgId, tap, KIN_OWNER_LEVEL);
+        assert.isUndefined(summary.toPay);
+        assert.deepStrictEqual(summary.spent.thisMonth.total, [
+          { minor: 118_000, currency: "INR" },
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "declining a mailed invoice drops it and reopening restores the To-pay suggestion",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const batchId = yield* mailedInvoice;
+        const expense = yield* expenseOf(batchId);
+        const dropped = yield* decline(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+        assert.include(dropped, { state: "dropped", confirmed: false });
+        assert.notProperty(dropped, "dateAt");
+        const reopened = yield* update(as(rhea), {
+          orgId,
+          key: expense.key,
+          rev: dropped.rev,
+          state: "open",
+        });
+        assert.include(reopened, { state: "open", confirmed: false });
+        assert.notProperty(reopened, "dateAt");
+        assert.isUndefined((yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL)).toPay);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Keep all keeps a photo Paid and a mailed invoice To pay in a mixed batch", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const batchId = yield* mailedInvoice;
+      const photo = yield* addPage(yield* upload("harbor-power.png", "Harbor Power"));
+      const { wakeupId } = yield* claimTurn(2);
+      yield* read({
+        bill: "B1",
+        vendor: "Harbor Power",
+        date: "2026-11-07",
+        amount: "450",
+        currency: "INR",
+      });
+      yield* endTurn(wakeupId);
+      // Intake posts separate cards for mail and uploads. Put both rows in one batch for Keep all.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_bill_reads SET batch_id = ${batchId}, position = 1
+        WHERE org_id = ${orgId} AND batch_id = ${photo.batchId}`;
+      const [mail, uploadRow] = (yield* Bills.list(as(rhea), { orgId, batchId })).bills;
+      const kept = yield* Bills.keepRead(as(rhea), { orgId, batchId, clientRequestId: "both" });
+      assert.deepStrictEqual(kept, {
+        kept: [mail!.expense!.key, uploadRow!.expense!.key],
+        skipped: [],
+      });
+      const after = (yield* Bills.list(as(rhea), { orgId, batchId })).bills;
+      assert.deepStrictEqual(
+        after.map((bill) => [bill.state, bill.expense?.state, bill.expense?.date]),
+        [
+          ["kept", "open", undefined],
+          ["kept", "done", "2026-11-07"],
+        ],
+      );
+      const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(summary.spent.thisMonth.total, [{ minor: 45_000, currency: "INR" }]);
+      assert.deepStrictEqual(summary.toPay?.total, [{ minor: 118_000, currency: "INR" }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a single bill preserves the original row, expense and card bytes", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -387,6 +559,7 @@ describe("bills in bulk", () => {
       yield* endTurn(wakeupId);
       const [row] = yield* billRows;
       const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+      assert.strictEqual(bill!.expense?.date, "2026-11-03");
       assert.strictEqual(
         JSON.stringify(row),
         JSON.stringify({
