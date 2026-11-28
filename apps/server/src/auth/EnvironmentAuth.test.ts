@@ -16,6 +16,7 @@ import * as ServerConfig from "../config.ts";
 import { makeDpopKey } from "./dpop.testkit.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { layerKinAuthTest } from "../kin/auth/ProofKeySessions.testkit.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 
 import * as ServerSecretStore from "./ServerSecretStore.ts";
@@ -421,6 +422,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
             (yield* serverAuth.listPairingLinks()).some((link) => link.connectDeviceRequest),
           ).toBe(false);
         }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
+    it.effect("a blocked key's exchange writes no trusted-device row", () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const sessions = yield* SessionStore.SessionStore;
+        const blocked = makeDpopKey();
+        const allowed = makeDpopKey();
+        const paired = yield* sessions.issue({ proofKeyThumbprint: blocked.thumbprint });
+        expect(yield* sessions.revoke(paired.sessionId)).toBe(true);
+        expect(yield* auth.listConnectDevices()).toEqual([]);
+
+        const exchange = (proofKeyThumbprint: string, requireApproval: boolean) =>
+          auth
+            .issueConnectCredential({ proofKeyThumbprint, requireApproval })
+            .pipe(
+              Effect.flatMap(({ credential }) =>
+                auth.exchangeBootstrapCredentialForAccessToken(
+                  credential,
+                  undefined,
+                  requestMetadata,
+                  { proofKeyThumbprint },
+                ),
+              ),
+            );
+        expect((yield* exchange(blocked.thumbprint, false).pipe(Effect.flip))._tag).toBe(
+          "ServerAuthInvalidCredentialError",
+        );
+        expect(yield* auth.listConnectDevices()).toEqual([]);
+
+        yield* exchange(allowed.thumbprint, false);
+        yield* exchange(allowed.thumbprint, true);
+        expect(
+          (yield* auth.listConnectDevices()).map((device) => device.proofKeyThumbprint),
+        ).toEqual([allowed.thumbprint]);
+      }).pipe(Effect.provide(layerKinAuthTest("kin-blocked-connect-"))),
     );
 
     it.effect("renews a pairing-link DPoP session in place while its device keeps using it", () =>

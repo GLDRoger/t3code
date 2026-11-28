@@ -19,6 +19,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../config.ts";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../../auth/SessionStore.ts";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import { SessionHooks } from "./sessionHooks.ts";
@@ -34,7 +36,7 @@ const makeLayer = (enabled: boolean) =>
       ),
     ),
     Layer.provideMerge(Sqlite.layerConfig),
-    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
   );
 const layer = makeLayer(true);
 const kinOffCli = <A, E, R>(runtime: Layer.Layer<A, E, R>) =>
@@ -409,6 +411,48 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         expect(
           yield* sql`SELECT consumed_at FROM kin_auth_key_repairs WHERE pairing_link_id = 'A'`,
         ).toEqual([{ consumed_at: null }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Kin and T3 revoke the same session and publish the same removal", () =>
+    Effect.gen(function* () {
+      const kin = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const target = yield* kin.issue({ proofKeyThumbprint: "phone" });
+      const other = yield* kin.issue({ proofKeyThumbprint: "desktop" });
+      const state = sql`SELECT session_id, revoked_at FROM auth_sessions ORDER BY session_id`;
+      const snapshot = (store: SessionStore.SessionStore["Service"]) =>
+        Effect.gen(function* () {
+          yield* store.markConnected(target.sessionId);
+          const changes = yield* Queue.unbounded<SessionStore.SessionCredentialChange>();
+          yield* store.streamChanges.pipe(
+            Stream.runForEach((change) => Queue.offer(changes, change)),
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          expect(yield* store.revoke(target.sessionId)).toBe(true);
+          expect(yield* store.revoke(target.sessionId)).toBe(false);
+          expect((yield* store.verify(target.token).pipe(Effect.flip))._tag).toBe(
+            "SessionTokenRevokedError",
+          );
+          expect((yield* store.verify(other.token)).sessionId).toBe(other.sessionId);
+          expect(yield* Queue.take(changes)).toEqual({
+            type: "clientRemoved",
+            sessionId: target.sessionId,
+          });
+          return yield* state;
+        }).pipe(Effect.scoped);
+
+      const plain = yield* SessionStore.SessionStore.pipe(
+        Effect.flatMap(snapshot),
+        Effect.provide(
+          SessionStore.layer.pipe(
+            Layer.provide(ServerEnvironment.layerIdentity),
+            Layer.provide(ServerSecretStore.layer),
+          ),
+        ),
+      );
+      yield* sql`UPDATE auth_sessions SET revoked_at = NULL WHERE session_id = ${target.sessionId}`;
+      expect(yield* snapshot(kin)).toEqual(plain);
     }).pipe(Effect.provide(layer)),
   );
 

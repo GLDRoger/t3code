@@ -42,6 +42,7 @@ import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as Deals from "../work/deals.ts";
 import * as Clients from "../work/ownerClients.ts";
 import * as Records from "../work/KinRecords.ts";
@@ -161,6 +162,41 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
       (one) => one.sessionId === second.key.sessionId,
     );
     assert.isNull(unrecorded?.lastUsedAt);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a key made before the cut-off no longer verifies and keys at or after it still do", () =>
+  Effect.gen(function* () {
+    const cutOff = Date.parse("2026-11-23T21:12:12.000Z");
+    yield* TestClock.setTime(cutOff - 1);
+    const { orgId, zoya } = yield* team;
+    const sessions = yield* SessionStore;
+    const sql = yield* SqlClient.SqlClient;
+    const verify = (secret: string) =>
+      sessions.verify(secret).pipe(Effect.provideService(TasksKeyAudience, true));
+
+    const old = yield* TasksKeys.issue(zoya.app, { orgId });
+    yield* TestClock.setTime(cutOff);
+    const atCutOff = yield* TasksKeys.issue(zoya.app, { orgId });
+    yield* TestClock.setTime(cutOff + 1);
+    const newer = yield* TasksKeys.issue(zoya.app, { orgId });
+    yield* verify(old.secret);
+
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 242`;
+    yield* runKinMigrations();
+
+    const result = yield* verify(old.secret).pipe(Effect.result);
+    assert.strictEqual(result._tag, "Failure");
+    if (result._tag === "Failure")
+      assert.strictEqual(result.failure._tag, "SessionTokenRevokedError");
+    assert.isTrue(Option.isNone(yield* TasksKeys.admit(old.secret)));
+    assert.strictEqual((yield* admitted(atCutOff.secret)).sessionId, atCutOff.key.sessionId);
+    assert.strictEqual((yield* admitted(newer.secret)).sessionId, newer.key.sessionId);
+    assert.strictEqual((yield* sessions.verify(zoya.token)).sessionId, zoya.app.sessionId);
+    assert.deepStrictEqual(
+      (yield* TasksKeys.list(zoya.app, { orgId })).keys.map((key) => key.sessionId),
+      [atCutOff.key.sessionId, newer.key.sessionId],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

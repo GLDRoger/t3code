@@ -1655,6 +1655,7 @@ describe("Kin migrations", () => {
         assert.deepInclude(yield* kinHistory, { migration_id: 186, name: "TasksKeysWithoutMaker" });
 
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 186`;
+        const createdAt = Date.parse("2026-11-28T00:00:00.000Z");
         for (const [sessionId, madeBy, revokedAt] of [
           ["unrecorded", null, null],
           ["made", "phone", null],
@@ -1662,7 +1663,7 @@ describe("Kin migrations", () => {
         ] as const)
           yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at,
             expires_at, revoked_at, made_by_session_id)
-          VALUES (${sessionId}, 'org', 'zoya', 'Invented laptop', 1, 2, ${revokedAt}, ${madeBy})`;
+          VALUES (${sessionId}, 'org', 'zoya', 'Invented laptop', ${createdAt}, ${createdAt + 1}, ${revokedAt}, ${madeBy})`;
         const keys = sql<{ sessionId: string; revoked: number; revokedAt: number | null }>`SELECT
           session_id AS "sessionId", revoked_at IS NOT NULL AS revoked, revoked_at AS "revokedAt"
         FROM kin_tasks_keys ORDER BY session_id`;
@@ -2377,6 +2378,7 @@ describe("Kin migrations", () => {
           [237, "CardTapDeliveries"],
           [238, "BillSenders"],
           [239, "BillMail"],
+          [242, "RevokeLegacyTasksKeys"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
           {
@@ -2449,7 +2451,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.pdf', 'file', 'application/pdf',
           8, 'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting')`;
       const before = yield* sql`SELECT * FROM kin_bill_reads`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(239));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: null, mail_at: null },
       ]);
@@ -2457,8 +2459,8 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_bill_mail
         (org_id, connection_id, message_id, address, state, next_at, queued_at)
         VALUES ('org', 'box', 'message', 'billing@inkspot.example', 'waiting', 2, 2)`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 239`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(239));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: "billing@inkspot.example", mail_at: 2 },
       ]);

@@ -1138,6 +1138,7 @@ export const make = Effect.gen(function* () {
         requestMetadata,
         ...(requestedScopes !== undefined ? { requestedScopes } : {}),
       }).pipe(
+        Effect.tap((grant) => kinHooks.checkExchange(input?.proofKeyThumbprint, grant)),
         // Every T3 Connect key that gets in is remembered, so turning approval on later
         // keeps the devices already in use and lists them for review.
         Effect.tap((grant) =>
@@ -1149,7 +1150,6 @@ export const make = Effect.gen(function* () {
         ),
         Effect.flatMap((grant) =>
           Effect.gen(function* () {
-            yield* kinHooks.checkExchange(input?.proofKeyThumbprint, grant);
             const grantedScopes =
               requestedScopes === undefined
                 ? grant.scopes
