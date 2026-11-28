@@ -33,6 +33,7 @@ const on = (day: number) => `2026-11-${String(day).padStart(2, "0")}`;
 const ms = (day: number) => Date.parse(`${on(day)}T12:00:00Z`);
 const range = { from: on(1), through: on(28) };
 const marker = "OUTSIDE PRINTED TEXT MARKER";
+const isCheckInput = Schema.is(MoneyInCheckInput);
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
   requestNamespace: "fixture",
@@ -471,7 +472,7 @@ it.effect(
       ] as const)
         assert.strictEqual((yield* Effect.flip(checkMoneyIn(org, input, now))).message, message);
       // A name, not a key, still reaches the refusal that says what to pass.
-      assert.isTrue(Schema.is(MoneyInCheckInput)({ ...range, client: "Juniper" }));
+      assert.isTrue(isCheckInput({ ...range, client: "Juniper" }));
     }).pipe(Effect.provide(layer)),
 );
 
