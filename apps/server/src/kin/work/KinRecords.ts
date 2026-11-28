@@ -195,6 +195,7 @@ import {
   personSees,
   legacySeenBy,
   listMoneySeenBy,
+  notesSeenBy,
   viewerOfPeople,
   ROOM_LISTS,
   teamSeesField,
@@ -4220,7 +4221,9 @@ const make = Effect.gen(function* () {
     const text = input.text?.trim().toLowerCase();
     if (text !== undefined && text !== "") {
       const keys = keysOfSearch(text);
-      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0
+      const viewer = queryViewer(input);
+      const notes = viewer === undefined ? sql`r.notes` : notesSeenBy(sql, viewer);
+      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(${notes}), ${text}) > 0
         ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`);
     }
     return sql.and(where);

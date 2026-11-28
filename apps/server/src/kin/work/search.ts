@@ -25,6 +25,7 @@ import {
   leadsEntryProject,
   leadsProject,
   listMoneySeenBy,
+  notesSeenBy,
   ownMoneyDraft,
   privateListField,
   seenBy,
@@ -366,12 +367,7 @@ const teamSearchText = (sql: SqlClient.SqlClient, viewer: KinViewer, shared = fa
   const projectLead = leadsProject(sql, viewer);
   const notes = shared
     ? sql`r.notes`
-    : sql`CASE
-        WHEN r.register_id = 'projects' AND NOT ${projectLead} THEN ''
-        WHEN r.register_id = 'clients' AND NOT ${clients} THEN ''
-        WHEN r.register_id = 'docs' THEN ''
-        ELSE r.notes
-      END`;
+    : sql`CASE WHEN r.register_id = 'docs' THEN '' ELSE ${notesSeenBy(sql, viewer)} END`;
   const listFields = sql`COALESCE((SELECT group_concat(j.value, ' ')
     FROM json_each(r.fields_json) j
     JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id

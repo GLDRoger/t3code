@@ -6003,6 +6003,45 @@ for (const indexed of [true, false]) {
     gatedWorkSearch(indexed, text);
 }
 
+it.effect("a teammate's list and record_query words match only what the page shows them", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const sql = yield* SqlClient.SqlClient;
+    const client = yield* ownerTask("Juniper Cold Chain", {
+      list: "clients",
+      notes: "Copper almanac",
+    });
+    const project = yield* ownerTask("Tidewater Freight", {
+      list: "projects",
+      partyId: client.recordId,
+      notes: "Quillfern fuel clause at 18,500 per run",
+      fields: { members: [`person:${mateId}`] },
+    });
+    const task = yield* ownerTask("Depot review", {
+      projectId: project.recordId,
+      notes: "Pallet ledger",
+      owner: { _tag: "person", personId: mateId },
+    });
+    yield* turn("mate", "shared");
+    const scope = scopeOf(lead);
+    const screen = (list: string, text: string) =>
+      OwnerWork.list([mate], { orgId, list, text }).pipe(Effect.map(keysOf));
+    const tool = (list: string, text: string) =>
+      LeadWork.query(scope, { list, text }).pipe(Effect.map(keysOf));
+    for (const find of [screen, tool]) {
+      assert.deepStrictEqual(yield* find("projects", "Tidewater"), [project.key]);
+      assert.deepStrictEqual(yield* find("projects", "Quillfern"), []);
+      assert.deepStrictEqual(yield* find("work", "Pallet"), [task.key]);
+    }
+    yield* sql`UPDATE kin_records SET owner_id = ${mateId} WHERE record_id = ${project.recordId}`;
+    for (const find of [screen, tool]) {
+      assert.deepStrictEqual(yield* find("projects", "Quillfern"), [project.key]);
+      assert.deepStrictEqual(yield* find("clients", "Juniper"), [client.key]);
+      assert.deepStrictEqual(yield* find("clients", "almanac"), []);
+    }
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
 it.effect("refuses a shared list's unreadable field on the screen and in a teammate turn", () =>
   Effect.gen(function* () {
     yield* bookingList();

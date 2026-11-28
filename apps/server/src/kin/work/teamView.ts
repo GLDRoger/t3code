@@ -1669,6 +1669,16 @@ export const clientsPlaceSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) 
     ? sql`1 = 1`
     : sql.and(viewer.people.map((person) => placeOn(sql, person, "sees_clients")));
 
+/** `r`'s notes as its page shows them: a project's to its lead, a client's with Clients on. */
+export const notesSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`r.notes`
+    : sql`CASE
+        WHEN r.register_id = 'projects' AND NOT ${leadsProject(sql, viewer)} THEN ''
+        WHEN r.register_id = 'clients' AND NOT ${clientsPlaceSeenBy(sql, viewer)} THEN ''
+        ELSE r.notes
+      END`;
+
 /**
  * A field of `c` (`f`) a teammate reads: a list's private one stays out without Money
  * (`listEntryFor`), and a project's notes unless they lead it (`projectDetail`).
