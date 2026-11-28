@@ -1,5 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures read a batch's day against a fixed now.
 import {
+  KinBillsKeepReadChanged,
+  KinChatError,
   parseKinMoney,
   type KinAttachment,
   type KinBillBatchSummary,
@@ -8,12 +10,17 @@ import {
   type KinRecordKey,
   type KinWidget,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_BILLS,
   kinBillBatchCardView,
   kinBillBatchSentence,
+  kinBillCardButtons,
+  kinBillCardKeep,
+  kinBillReader,
   kinBillExpenseStart,
   kinBillFileRefusal,
   kinBillFixInput,
@@ -191,6 +198,16 @@ describe("a bill on the review list", () => {
     expect(money({ amount: "1200.50", currency: "PKR" })).toEqual(["1200.50 PKR", null]);
     expect(money({ amount: "€20", currency: "INR" })).toEqual(["€20 INR", null]);
     expect(money({ amount: "  " })).toEqual([null, null]);
+    // Kin took the company's currency where none was printed: said beside the figures.
+    expect(view.currencyNote).toBeNull();
+    expect(
+      kinBillRowView(row({ read: { amount: "800", currency: "INR", currencyAssumed: true } }))
+        .currencyNote,
+    ).toBe("No currency printed: read as INR");
+    expect(
+      kinBillRowView(row({ read: { amount: "12", currency: "AED", currencyAssumed: true } }))
+        .currencyNote,
+    ).toBe("No currency printed: read as AED");
   });
 
   it("shows a kept or dropped bill as its expense stands, and one still to keep as read", () => {
@@ -837,6 +854,11 @@ describe("a batch", () => {
       text: "Reading 12 bills: 4 done.",
       reading: true,
       progress: "4 of 12",
+      // An older host draws none of these: the card is its sentence and Review.
+      totals: [],
+      needs: [],
+      needsMore: null,
+      keepable: null,
     });
     expect(kinBillBatchCardView(card({ status: "done", done: 12 }))?.progress).toBeNull();
     // Held by the reader's daily limit: the host's sentence says so, and no count looks alive.
@@ -849,6 +871,142 @@ describe("a batch", () => {
     ).toMatchObject({ text: paused, reading: true, progress: null });
     // Reading goes on: the field is gone and the count is back.
     expect(kinBillBatchCardView(card({ status: "reading" }))?.progress).toBe("4 of 12");
+  });
+});
+
+const KEEPABLE = { count: 41, revision: "0123456789abcdef01234567" };
+const doneCard = (state: Record<string, unknown> = {}) =>
+  ({
+    orgId: "org",
+    type: "bill_batch",
+    state: {
+      text: "48 bills from 17 photos: 41 read cleanly, 7 need you.",
+      batchId: "b-1",
+      status: "done",
+      total: 17,
+      done: 17,
+      counts: { read: 41, duplicate: 1, unreadable: 6, already: 0 },
+      addedBy: "p-rhea",
+      totals: [
+        {
+          currency: "INR",
+          categories: [
+            { category: "Meals", amount: "4320" },
+            { category: "Travel", amount: "1150.50" },
+            { category: "No category", amount: "300" },
+          ],
+        },
+        { currency: "USD", categories: [{ category: "Software", amount: "49.00" }] },
+      ],
+      needs: [
+        { name: "Photo 3, bill 2", reason: "no date printed." },
+        { name: "Photo 7, bill 1", reason: "two different totals." },
+      ],
+      needsMore: 2,
+      keepable: KEEPABLE,
+      ...state,
+    },
+  }) as unknown as KinWidget;
+
+describe("the bills card in chat", () => {
+  it("says the host's totals per currency, its needs by name, and what is left for Review", () => {
+    const view = kinBillBatchCardView(doneCard());
+    expect(view).toMatchObject({
+      text: "48 bills from 17 photos: 41 read cleanly, 7 need you.",
+      totals: ["Meals ₹4,320 · Travel ₹1,150.50 · No category ₹300", "Software $49"],
+      needs: ["Photo 3, bill 2: no date printed.", "Photo 7, bill 1: two different totals."],
+      needsMore: "And 2 more in Review.",
+      keepable: KEEPABLE,
+    });
+    expect(kinBillBatchCardView(doneCard({ needsMore: 1 }))?.needsMore).toBe(
+      "And 1 more in Review.",
+    );
+    expect(kinBillBatchCardView(doneCard({ needsMore: 0 }))?.needsMore).toBeNull();
+    // A refund leaves a category below zero; a figure that won't read stays as sent.
+    expect(
+      kinBillBatchCardView(
+        doneCard({
+          totals: [{ currency: "EUR", categories: [{ category: "Office", amount: "-12.5" }] }],
+        }),
+      )?.totals,
+    ).toEqual(["Office −€12.50"]);
+  });
+
+  it("offers Keep to the owners while it can, and Review to them always", () => {
+    const owner = { ownerLevel: true, canKeep: true };
+    const view = (state: Record<string, unknown> = {}) => kinBillBatchCardView(doneCard(state))!;
+    expect(kinBillCardButtons(view(), owner)).toEqual({
+      keep: "Keep all 41 that read cleanly",
+      review: true,
+    });
+    expect(kinBillCardButtons(view({ keepable: { ...KEEPABLE, count: 1 } }), owner).keep).toBe(
+      "Keep 1 that read cleanly",
+    );
+    // Nothing clean, still reading, or drawn by an older host: Review alone.
+    for (const state of [
+      { keepable: { ...KEEPABLE, count: 0 } },
+      { status: "reading" },
+      { keepable: undefined },
+    ])
+      expect(kinBillCardButtons(view(state), owner)).toEqual({ keep: null, review: true });
+    // A device that may not keep, and a teammate: no Keep; a teammate no Review either.
+    expect(kinBillCardButtons(view(), { ownerLevel: true, canKeep: false }).keep).toBeNull();
+    expect(kinBillCardButtons(view(), { ownerLevel: false, canKeep: true })).toEqual({
+      keep: null,
+      review: false,
+    });
+  });
+
+  it("says the card is stale by the host's tag, and any other failure in the usual words", async () => {
+    const failing = (error: unknown) => async () => AsyncResult.failure(Cause.fail(error)) as never;
+    expect(
+      await kinBillCardKeep({
+        online: () => true,
+        send: failing(new KinBillsKeepReadChanged({ message: "changed" })),
+      }),
+    ).toEqual({ _tag: "stale", text: KIN_BILLS.card.stale });
+    expect(KIN_BILLS.card.stale).toBe("These bills changed since this card was drawn: look again.");
+    // The words alone are not the tag.
+    expect(
+      await kinBillCardKeep({
+        online: () => true,
+        send: failing(
+          new KinChatError({
+            reason: "not_allowed",
+            message: "These bills changed since this card was drawn: look again.",
+          }),
+        ),
+      }),
+    ).toMatchObject({ _tag: "failed" });
+    expect(
+      await kinBillCardKeep({ online: () => false, send: failing(new Error("never sent")) }),
+    ).toMatchObject({ _tag: "failed", text: expect.stringMatching(/./) });
+    expect(
+      await kinBillCardKeep({
+        online: () => true,
+        send: async () => AsyncResult.success({ kept: [], skipped: [] }) as never,
+      }),
+    ).toEqual({ _tag: "kept" });
+  });
+});
+
+describe("where bills are added", () => {
+  it("goes to the agent that reads them, as the host picks it", () => {
+    const lead = (agentId: string, domain: string, retired?: string) => ({
+      agentId,
+      name: agentId,
+      domain,
+      ...(retired === undefined ? {} : { retired }),
+    });
+    const sales = lead("Harbor Sales", "growth");
+    const chief = lead("Chief of staff", "chief-of-staff");
+    const finance = lead("Books", "finance");
+    expect(kinBillReader([sales, chief, finance])).toBe(finance);
+    // No Finance: the Chief of staff, never an agent whose name only sounds like money.
+    expect(kinBillReader([lead("Money matters", "growth"), chief])).toBe(chief);
+    expect(kinBillReader([lead("Books", "finance", "2026-11-01"), sales, chief])).toBe(chief);
+    expect(kinBillReader([sales])).toBe(sales);
+    expect(kinBillReader([])).toBeNull();
   });
 });
 

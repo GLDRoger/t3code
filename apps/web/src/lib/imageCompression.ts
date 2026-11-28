@@ -796,6 +796,38 @@ async function encodeBillPhoto(
   return { ok: false, reason: "too-large" };
 }
 
+/** A photo again as a JPEG at `quality`, its long edge at most `maxEdge`; null keeps every pixel. */
+export async function reencodePhoto(
+  file: File,
+  quality: number,
+  maxEdge: number | null,
+): Promise<File | null> {
+  if (!canRecompress()) return null;
+  let bitmap: ImageBitmap | undefined;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const longest = Math.max(bitmap.width, bitmap.height);
+    const scale = maxEdge === null || longest <= maxEdge ? 1 : maxEdge / longest;
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const target = createCanvas(width, height, await readImageColorSpace(file));
+    if (!target) return null;
+    target.context.imageSmoothingQuality = "high";
+    target.context.drawImage(bitmap, 0, 0, width, height);
+    const blob = await encodeCanvas(target.canvas, quality, "image/jpeg");
+    return blob === null
+      ? null
+      : new File([blob], fileNameForMimeType(file.name || "image", "image/jpeg"), {
+          type: "image/jpeg",
+          lastModified: file.lastModified,
+        });
+  } catch {
+    return null;
+  } finally {
+    bitmap?.close();
+  }
+}
+
 export async function prepareImageForBill(file: File): Promise<CompressImageFileResult> {
   if (file.size > MAX_COMPRESSIBLE_SOURCE_BYTES) return { ok: false, reason: "too-large" };
   if (isHeicImageFile(file)) return queueHeicImage(() => convertHeicImage(file, () => {}, true));

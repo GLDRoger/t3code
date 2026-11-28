@@ -3,7 +3,11 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
-import { KIN_BILLS, type KinBillBatchCardView } from "@t3tools/client-runtime/kin/kinBills";
+import {
+  KIN_BILLS,
+  kinBillCardButtons,
+  type KinBillBatchCardView,
+} from "@t3tools/client-runtime/kin/kinBills";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
@@ -135,6 +139,7 @@ import { environmentCatalog } from "../connection/catalog";
 import { KinConfirm } from "./KinConfirm";
 import { ApproveOnPhone } from "./ApproveOnPhone";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
+import { useKinBillCardKeep } from "./useKinBills";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -541,8 +546,8 @@ function KinDocCard(props: {
 }
 
 /**
- * Bills added in bulk: the host's own sentence and, while Kin reads, how far it got; once done,
- * Review opens the batch's list under Money. Nothing is kept from the card itself.
+ * Bills added in chat: the host's sentence, its totals by currency and the bills that need the
+ * person by name; Keep keeps exactly the clean set the card shows, and Review opens the batch.
  */
 function KinBillBatchCard(props: {
   readonly bills: KinBillBatchCardView;
@@ -550,6 +555,11 @@ function KinBillBatchCard(props: {
   readonly ownerLevel: boolean;
 }) {
   const { bills } = props;
+  const keep = useKinBillCardKeep(props.environmentId, bills);
+  const buttons = kinBillCardButtons(bills, {
+    ownerLevel: props.ownerLevel,
+    canKeep: keep.allowed,
+  });
   return (
     <CardFrame label={`${KIN_BILLS.added}: ${bills.text}`}>
       <div className="flex items-baseline justify-between gap-3">
@@ -559,21 +569,51 @@ function KinBillBatchCard(props: {
         )}
       </div>
       <p className="text-foreground">{bills.text}</p>
-      {bills.reading || !props.ownerLevel ? null : (
-        <div>
-          <Button
-            size="xs"
-            variant="outline"
-            render={
-              <Link
-                to="/kin/$environmentId/$orgId/money"
-                params={{ environmentId: props.environmentId, orgId: bills.orgId }}
-                search={{ bills: bills.batchId }}
-              />
-            }
-          >
-            {KIN_BILLS.review}
-          </Button>
+      {bills.totals.map((line) => (
+        <p key={line} className="text-foreground tabular-nums">
+          {line}
+        </p>
+      ))}
+      {bills.needs.length === 0 && bills.needsMore === null ? null : (
+        <ul className="flex flex-col gap-0.5 text-muted-foreground">
+          {bills.needs.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+          {bills.needsMore === null ? null : <li>{bills.needsMore}</li>}
+        </ul>
+      )}
+      {buttons.keep === null && !buttons.review ? null : (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-2">
+            {buttons.keep === null ? null : (
+              <Button
+                disabled={keep.busy || keep.stale}
+                aria-busy={keep.busy}
+                onClick={() => void keep.keep()}
+              >
+                {buttons.keep}
+              </Button>
+            )}
+            {buttons.review ? (
+              <Button
+                variant="outline"
+                render={
+                  <Link
+                    to="/kin/$environmentId/$orgId/money"
+                    params={{ environmentId: props.environmentId, orgId: bills.orgId }}
+                    search={{ bills: bills.batchId }}
+                  />
+                }
+              >
+                {KIN_BILLS.review}
+              </Button>
+            ) : null}
+          </div>
+          {buttons.keep === null || keep.problem === null ? null : (
+            <p role="alert" className="text-xs text-destructive-foreground">
+              {keep.problem}
+            </p>
+          )}
         </div>
       )}
     </CardFrame>

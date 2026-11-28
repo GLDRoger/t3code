@@ -187,6 +187,7 @@ import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
+import { kinPickPhotosAtom } from "@t3tools/client-runtime/kin/kinDraft";
 import { Skeleton } from "../components/ui/skeleton";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -1519,6 +1520,8 @@ function KinComposer(props: {
   const pending = useAtomValue(pendingAtom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
   const files = useKinComposerAttachments({ environmentId, draftKey });
+  const pickPhotos = useAtomValue(kinPickPhotosAtom(draftKey));
+  const pickedOnArrival = () => appAtomRegistry.set(kinPickPhotosAtom(draftKey), false);
   const [sending, setSending] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const length = text.trim().length;
@@ -1732,6 +1735,7 @@ function KinComposer(props: {
                     <KinAttachButton
                       addComposerAttachments={(picked) => files.add(picked)}
                       focusComposer={() => textareaRef.current?.focus()}
+                      pickOnArrival={{ ask: pickPhotos, asked: pickedOnArrival }}
                     />
                   ) : null}
                 </div>

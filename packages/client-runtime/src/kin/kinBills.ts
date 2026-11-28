@@ -3,6 +3,7 @@ import {
   KIN_BILL_BATCH_CARD,
   KinBillBatchCard,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  formatKinMoney,
   formatKinWhen,
   kinCurrency,
   kinWhenFormat,
@@ -21,9 +22,11 @@ import {
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 
-import { kinCategoryLabel, kinMoneyText } from "./kinLists.ts";
+import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { kinCategoryLabel, kinListSend, kinMoneyText } from "./kinLists.ts";
 
 /**
  * Bills added in bulk, as both apps show them: the words, what each bill offers by its state, the
@@ -142,6 +145,20 @@ export const KIN_BILLS = {
     detail: "Only the owner or a co-owner adds and keeps bills.",
   },
   more: "Show more",
+  /** The card in Finance's chat; its sentence, totals and needs are the host's own. */
+  card: {
+    keep: (count: number) =>
+      count === 1 ? "Keep 1 that read cleanly" : `Keep all ${count} that read cleanly`,
+    more: (count: number) =>
+      count === 1 ? "And 1 more in Review." : `And ${count} more in Review.`,
+    stale: "These bills changed since this card was drawn: look again.",
+  },
+  /** What Money's Add › Bills readies in the chat with the agent that reads bills. */
+  composer: "Bills to add",
+  /** A company with no live agent: no chat to add bills in. */
+  noReader: "There's no agent to add bills with yet.",
+  /** Beside a bill's figures when its currency was not printed and Kin took the company's. */
+  currencyAssumed: (currency: string) => `No currency printed: read as ${currency}`,
   /** The host's own words on the expense a mailed bill becomes. */
   fromMail: (address: string, date: string) =>
     `Read by Kin from a mail from ${address}, received ${date}.`,
@@ -222,6 +239,8 @@ export interface KinBillRowView {
   readonly label: string;
   readonly tone: KinBillTone;
   readonly fields: ReadonlyArray<KinBillField>;
+  /** "No currency printed: read as INR" beside figures read in a currency Kin assumed. */
+  readonly currencyNote: string | null;
   readonly problem: string | null;
   readonly actions: ReadonlyArray<KinBillAction>;
   /** The expense made for it, which Keep, Edit, Drop and its link act on. */
@@ -393,9 +412,13 @@ export function kinBillRowView(
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
-  const fields =
-    kinBillExpenseFields(row, options.categoryLabel) ??
-    kinBillFields(row.read, options.categoryLabel);
+  const expenseFields = kinBillExpenseFields(row, options.categoryLabel);
+  const fields = expenseFields ?? kinBillFields(row.read, options.categoryLabel);
+  const currency = blank(row.read.currency);
+  const currencyNote =
+    expenseFields === null && row.read.currencyAssumed === true && currency !== null
+      ? KIN_BILLS.currencyAssumed(currency)
+      : null;
   const problem =
     row.state !== "unreadable" || row.problem === COULD_NOT_READ
       ? null
@@ -432,6 +455,7 @@ export function kinBillRowView(
     label,
     tone: TONE[row.state],
     fields,
+    currencyNote,
     problem,
     actions: actionsOf(row),
     expense: row.expense === undefined ? null : { key: row.expense.key, rev: row.expense.rev },
@@ -442,6 +466,7 @@ export function kinBillRowView(
       kinBillName(row),
       label,
       ...read,
+      ...(currencyNote === null ? [] : [currencyNote]),
       ...(problem === null ? [] : [problem]),
       ...(mailLine === null ? [] : [mailLine.slice(0, -1)]),
     ].join(". "),
@@ -589,15 +614,33 @@ export interface KinBillBatchCardView {
   readonly reading: boolean;
   /** "12 of 50" while Kin reads; null once done, and while reading waits (`text` says so). */
   readonly progress: string | null;
+  /** One line per currency, categories as the host named and ordered them. */
+  readonly totals: ReadonlyArray<string>;
+  /** "Photo 3, bill 2: no date printed.", at most five. */
+  readonly needs: ReadonlyArray<string>;
+  readonly needsMore: string | null;
+  /** The clean set as the host drew it, sent back as is with Keep; null from an older host. */
+  readonly keepable: { readonly count: number; readonly revision: string } | null;
 }
 
 const decodeCard = Schema.decodeUnknownOption(KinBillBatchCard);
+
+/** A bare decimal the host added up, in its currency's own format; as sent when it won't read. */
+function kinBillCardAmount(amount: string, currency: string) {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(amount);
+  const { decimals } = kinCurrency(currency);
+  const fraction = match?.[3] ?? "";
+  if (match === null || fraction.length > decimals) return `${amount} ${currency}`;
+  const minor = BigInt(`${match[2]}${fraction.padEnd(decimals, "0")}`);
+  return formatKinMoney(match[1] === "-" ? -minor : minor, currency, { minus: "−" });
+}
 
 export function kinBillBatchCardView(widget: KinWidget): KinBillBatchCardView | null {
   if (widget.type !== KIN_BILL_BATCH_CARD) return null;
   const card = decodeCard(widget.state);
   if (Option.isNone(card)) return null;
-  const { text, status, done, total, batchId, pausedUntil } = card.value;
+  const { text, status, done, total, batchId, pausedUntil, totals, needs, needsMore, keepable } =
+    card.value;
   return {
     orgId: widget.orgId,
     batchId,
@@ -607,7 +650,88 @@ export function kinBillBatchCardView(widget: KinWidget): KinBillBatchCardView | 
       status === "reading" && pausedUntil === undefined
         ? `${Math.min(done, total)} of ${total}`
         : null,
+    totals: (totals ?? []).flatMap((group) =>
+      group.categories.length === 0
+        ? []
+        : [
+            group.categories
+              .map((one) => `${one.category} ${kinBillCardAmount(one.amount, group.currency)}`)
+              .join(" · "),
+          ],
+    ),
+    needs: (needs ?? []).map((one) => `${one.name}: ${one.reason}`),
+    needsMore: needsMore === undefined || needsMore === 0 ? null : KIN_BILLS.card.more(needsMore),
+    keepable:
+      keepable === undefined ? null : { count: keepable.count, revision: keepable.revision },
   };
+}
+
+/**
+ * The card's buttons for this viewer: Review for whoever reviews bills, Keep once reading is done
+ * and the host drew a clean set. The host decides again on the tap.
+ */
+export function kinBillCardButtons(
+  card: KinBillBatchCardView,
+  viewer: {
+    /** The owner or a co-owner; unknown counts as one, as Review always has. */
+    readonly ownerLevel: boolean;
+    /** This device may keep bills. */
+    readonly canKeep: boolean;
+  },
+) {
+  const count = card.keepable?.count ?? 0;
+  return {
+    keep:
+      viewer.ownerLevel && viewer.canKeep && !card.reading && count > 0
+        ? KIN_BILLS.card.keep(count)
+        : null,
+    review: viewer.ownerLevel,
+  };
+}
+
+const keepReadChanged = (cause: unknown) =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "_tag" in cause &&
+  cause._tag === "KinBillsKeepReadChanged";
+
+/** One Keep tap from the card: kept, refused as stale by the host's tag, or failed in the usual words. */
+export async function kinBillCardKeep(input: {
+  readonly online: () => boolean;
+  readonly send: () => Promise<AtomCommandResult<unknown, unknown>>;
+}): Promise<
+  { readonly _tag: "kept" } | { readonly _tag: "stale" | "failed"; readonly text: string }
+> {
+  let stale = false;
+  const outcome = await kinListSend({
+    online: input.online,
+    send: async () => {
+      const result = await input.send();
+      // The tag is gone once the failure is put in words: read it first.
+      if (AsyncResult.isFailure(result)) stale = keepReadChanged(squashAtomCommandFailure(result));
+      return result;
+    },
+  });
+  if (outcome.ok) return { _tag: "kept" };
+  return stale
+    ? { _tag: "stale", text: KIN_BILLS.card.stale }
+    : { _tag: "failed", text: outcome.problem };
+}
+
+/**
+ * The agent bills are added with, as the host's `billReader` picks it: the live Finance agent,
+ * else the Chief of staff, else the first live agent.
+ */
+export function kinBillReader<Lead extends { readonly domain: string; readonly retired?: unknown }>(
+  leads: ReadonlyArray<Lead>,
+): Lead | null {
+  const live = leads.filter((lead) => lead.retired === undefined);
+  return (
+    live.find((lead) => lead.domain === "finance") ??
+    live.find((lead) => lead.domain === "chief-of-staff") ??
+    live[0] ??
+    null
+  );
 }
 
 // Adding: choose, upload each, then one add

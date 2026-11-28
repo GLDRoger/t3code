@@ -39,6 +39,10 @@ const state = vi.hoisted(() => ({
   } | null>,
   /** How each save is answered, in the same way. */
   saveAnswers: [] as Array<{ reason: "widget_changed"; message: string } | null>,
+  /** Each Keep from a bills card, as sent, and how each is answered once `keepGate` opens. */
+  kept: [] as Array<Record<string, unknown>>,
+  keepAnswers: [] as Array<"kept" | "changed" | "refused">,
+  keepGate: null as Promise<void> | null,
 }));
 
 vi.mock(import("~/state/use-atom-command"), async () => {
@@ -52,6 +56,20 @@ vi.mock(import("~/state/use-atom-command"), async () => {
           | KinConnectionSaveEditedInput
           | KinWidgetsActInput;
       }) => {
+        if (command.label === "kin:bills:keepRead") {
+          state.kept.push(value.input as never);
+          await state.keepGate;
+          const answer = state.keepAnswers.shift() ?? "kept";
+          if (answer === "kept") return AsyncResult.success({ kept: [], skipped: [] });
+          const { KinBillsKeepReadChanged } = await import("@t3tools/contracts");
+          return AsyncResult.failure(
+            Cause.fail(
+              answer === "changed"
+                ? new KinBillsKeepReadChanged({ message: "The clean set changed." })
+                : new KinChatError({ reason: "invalid_state", message: "Kin is busy." }),
+            ),
+          );
+        }
         if (command.label === "kin:widget:act" && "actionId" in value.input) {
           state.acted.push(value.input);
           return AsyncResult.success({});
@@ -85,6 +103,7 @@ vi.mock(import("./kinClient"), async () => {
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
       connectionSendEdited: { label: "kin:connection:sendEdited", permissionAtom: () => canEdit },
       connectionSaveEdited: { label: "kin:connection:saveEdited", permissionAtom: () => canEdit },
+      billsKeepRead: { label: "kin:bills:keepRead", permissionAtom: () => allowed },
     },
     // Imported by the pages a card can open; no test here reaches them.
     refreshKinAgents: () => {},
@@ -100,6 +119,10 @@ vi.mock(import("../connection/catalog"), async () => {
   } as never;
 });
 vi.mock(import("./useKinOwnerLevel"), () => ({ useKinOwnerLevelKnown: () => true }) as never);
+vi.mock(import("./useKinHost"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  kinHostConnected: () => true,
+}));
 vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 }) as never);
 
 function setup() {
@@ -109,6 +132,9 @@ function setup() {
   state.acted.length = 0;
   state.answers.length = 0;
   state.saveAnswers.length = 0;
+  state.kept.length = 0;
+  state.keepAnswers.length = 0;
+  state.keepGate = null;
   kinSendEditHold(kinSendEditHeldKey("env-1", KinPersonId.make("rhea"), "choice:m1"), null);
 }
 
@@ -700,6 +726,121 @@ describe("a leaver's card", () => {
     await expect.element(page.getByText(closed)).toBeVisible();
     await expect
       .element(page.getByRole("button", { name: "Leave them as they are" }))
+      .not.toBeInTheDocument();
+  });
+});
+
+// Tidewater Freight's bills, read in Rhea's chat with Finance.
+const bills = (state: Record<string, unknown> = {}, revision = 3): KinWidget =>
+  ({
+    orgId: KinOrgId.make("org-1"),
+    chatId: "finance-rhea",
+    widgetId: "bills:b-1",
+    messageId: "m9",
+    widgetClass: "native",
+    type: "bill_batch",
+    revision,
+    state: {
+      text: "48 bills from 17 photos: 41 read cleanly, 7 need you.",
+      batchId: "b-1",
+      status: "done",
+      total: 17,
+      done: 17,
+      counts: { read: 41, duplicate: 1, unreadable: 6, already: 0 },
+      addedBy: "rhea",
+      totals: [
+        {
+          currency: "INR",
+          categories: [
+            { category: "Meals", amount: "4320" },
+            { category: "No category", amount: "300" },
+          ],
+        },
+      ],
+      needs: [{ name: "Photo 3, bill 2", reason: "no date printed." }],
+      needsMore: 6,
+      keepable: { count: 41, revision: "0123456789abcdef01234567" },
+      ...state,
+    },
+    source: null,
+    feed: null,
+    awaiting: [],
+    pinnedAt: null,
+    closedAt: null,
+    updatedAt: "2026-11-19T09:00:00.000Z",
+  }) as never;
+
+describe("the bills card's Keep", () => {
+  const keep = (count = 41) =>
+    page.getByRole("button", { name: `Keep all ${count} that read cleanly` });
+
+  it("keeps the set the card holds, once for two quick taps", async () => {
+    setup();
+    let open = () => {};
+    state.keepGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    await using _screen = await render(view(bills()));
+    await expect.element(page.getByText("Meals ₹4,320 · No category ₹300")).toBeVisible();
+    await expect.element(page.getByText("Photo 3, bill 2: no date printed.")).toBeVisible();
+    await expect.element(page.getByText("And 6 more in Review.")).toBeVisible();
+    const button = keep().element() as HTMLButtonElement;
+    button.click();
+    button.click();
+    open();
+    await expect.element(keep()).toBeEnabled();
+    expect(state.kept).toEqual([
+      {
+        orgId: "org-1",
+        batchId: "b-1",
+        clientRequestId: expect.any(String),
+        expect: { count: 41, revision: "0123456789abcdef01234567" },
+      },
+    ]);
+  });
+
+  it("says the bills changed and waits for the card to be drawn again; any other failure can be tried again", async () => {
+    setup();
+    state.keepAnswers.push("changed");
+    await using screen = await render(view(bills()));
+    await userEvent.click(keep());
+    const stale = page.getByText("These bills changed since this card was drawn: look again.");
+    await expect.element(stale).toBeVisible();
+    await expect.element(keep()).toBeDisabled();
+    // The host draws the card again: a new set, and Keep for it.
+    await screen.rerender(
+      view(bills({ keepable: { count: 40, revision: "fedcba9876543210fedcba98" } }, 4)),
+    );
+    await expect.element(stale).not.toBeInTheDocument();
+    state.keepAnswers.push("refused");
+    await userEvent.click(keep(40));
+    await expect.element(page.getByText("Kin is busy.")).toBeVisible();
+    await expect.element(keep(40)).toBeEnabled();
+    // Tried again, the same snapshot is the same request.
+    await userEvent.click(keep(40));
+    await expect.element(page.getByText("Kin is busy.")).not.toBeInTheDocument();
+    expect(state.kept.map((input) => input.clientRequestId)).toEqual([
+      expect.any(String),
+      state.kept[2]!.clientRequestId,
+      state.kept[1]!.clientRequestId,
+    ]);
+    expect(state.kept[0]!.clientRequestId).not.toBe(state.kept[1]!.clientRequestId);
+  });
+
+  it("offers Review alone on a card an older host drew, and while it reads", async () => {
+    setup();
+    await using screen = await render(view(bills({ keepable: undefined })));
+    await expect.element(page.getByRole("link", { name: "Review" })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: /that read cleanly$/ }))
+      .not.toBeInTheDocument();
+    await screen.rerender(
+      view(bills({ status: "reading", text: "Reading 17 photos: 30 bills read so far." })),
+    );
+    await expect.element(page.getByText("Reading 17 photos: 30 bills read so far.")).toBeVisible();
+    await expect.element(page.getByRole("link", { name: "Review" })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: /that read cleanly$/ }))
       .not.toBeInTheDocument();
   });
 });

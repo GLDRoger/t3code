@@ -33,7 +33,9 @@ import { useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
-import { KinAddBillsDialog } from "./KinBills";
+import { toastManager } from "../components/ui/toast";
+import { useKinBillReader } from "./useKinBills";
+import { useKinOpenBillsChat } from "./useKinOpenChat";
 import { KinChart } from "./KinChart";
 import { KinCountryFirst } from "./KinCountryFirst";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
@@ -269,9 +271,18 @@ function MoneyScreen(props: MoneyProps) {
   const canInvoice =
     useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
-  const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.environmentId));
+  const reader = useKinBillReader(props);
+  const openBills = useKinOpenBillsChat();
+  // Bills are added in the chat with the agent that reads them.
+  const canBills =
+    useAtomValue(kinClient.billsAdd.permissionAtom(props.environmentId)) && reader != null;
+  const addBills = async () => {
+    if (reader == null) return;
+    const problem = await openBills(props.environmentId, props.orgId, reader.agentId);
+    if (problem !== null) toastManager.add({ type: "error", title: problem });
+  };
   const [adding, setAdding] = useState<
-    "goal" | "budget" | "receipt" | "invoice" | "expense" | "bills" | null
+    "goal" | "budget" | "receipt" | "invoice" | "expense" | null
   >(null);
   const scope = useKinViewerScope(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
@@ -317,9 +328,7 @@ function MoneyScreen(props: MoneyProps) {
                 {KIN_MONEY_FORMS.expense.add}
               </MenuItem>
             ) : null}
-            {canBills ? (
-              <MenuItem onClick={() => setAdding("bills")}>{KIN_BILLS.add}</MenuItem>
-            ) : null}
+            {canBills ? <MenuItem onClick={() => void addBills()}>{KIN_BILLS.add}</MenuItem> : null}
             {goals.canSave ? (
               <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
             ) : null}
@@ -380,19 +389,6 @@ function MoneyScreen(props: MoneyProps) {
         <KinNewInvoiceDialog {...props} onClose={() => setAdding(null)} />
       ) : adding === "expense" ? (
         <KinNewExpenseDialog {...props} onClose={() => setAdding(null)} />
-      ) : adding === "bills" ? (
-        <KinAddBillsDialog
-          {...props}
-          onReview={(batchId) => {
-            setAdding(null);
-            props.onBills(batchId);
-          }}
-          onOpenKey={(key) => {
-            setAdding(null);
-            props.onOpenKey(key);
-          }}
-          onClose={() => setAdding(null)}
-        />
       ) : null}
       {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </>

@@ -98,11 +98,3 @@ export function kinExpenseStartOf(params: KinExpenseNewParams): {
         : { attachmentId: receipt, name: text(params.receiptName) ?? receipt },
   };
 }
-
-/** Picked files as the add takes them; a photo taken with the camera gets a name of its own. */
-export const kinBillChoices = <
-  F extends { readonly id: string; readonly name: string; readonly mimeType: string },
->(
-  picked: ReadonlyArray<F>,
-) =>
-  picked.map((source) => ({ id: source.id, name: source.name, mimeType: source.mimeType, source }));

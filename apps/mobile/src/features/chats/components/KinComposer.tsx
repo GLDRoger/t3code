@@ -74,6 +74,8 @@ import { Chip } from "../../../components/ui/Chip";
 import { kinDraftKey } from "../state/kinDraftKey";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
+import { fitKinChatPhotos } from "../kinChatPhotoFit";
+import { kinPickPhotosAtom } from "@t3tools/client-runtime/kin/kinDraft";
 
 // The native editor has no intrinsic height: it grows with its text from one line to four.
 // iOS reports at most four lines of content, so a taller cap would never turn scrolling on.
@@ -217,6 +219,20 @@ export function KinComposer({
   });
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
   const hasAttachments = draft.attachments.length > 0;
+  // Photos that can't go together even re-encoded: said until the set in the box changes.
+  const [tooLarge, setTooLarge] = useState<{ readonly ids: string; readonly text: string } | null>(
+    null,
+  );
+  const attachmentIds = draft.attachments.map((attachment) => attachment.id).join(",");
+  const tooLargeText = tooLarge !== null && tooLarge.ids === attachmentIds ? tooLarge.text : null;
+  // Money's Add › Bills opens this chat to pick its photos here.
+  const pickPhotos = useAtomValue(kinPickPhotosAtom(draftKey));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens the system photo picker once, when a screen asked for it and attaching is possible
+  useEffect(() => {
+    if (!pickPhotos || !canAttach) return;
+    appAtomRegistry.set(kinPickPhotosAtom(draftKey), false);
+    void attach.onPickDraftMedia();
+  }, [pickPhotos, canAttach, draftKey, attach]);
   const uploading =
     hasAttachments &&
     composerAttachmentsStillUploading({
@@ -246,6 +262,7 @@ export function KinComposer({
     !voice.blocksSubmission &&
     !sending &&
     !uploading &&
+    tooLargeText === null &&
     uploadBlock === null &&
     (!hasAttachments || props.connected);
   const hint = tooLong
@@ -255,11 +272,13 @@ export function KinComposer({
       )
     : full
       ? KIN_COMPOSER_COPY.tooMany
-      : uploadBlock !== null
-        ? `${uploadBlock}.`
-        : hasAttachments && !props.connected
-          ? "Attachments send once the server is connected."
-          : null;
+      : tooLargeText !== null
+        ? tooLargeText
+        : uploadBlock !== null
+          ? `${uploadBlock}.`
+          : hasAttachments && !props.connected
+            ? "Attachments send once the server is connected."
+            : null;
 
   /** The uploads the host already holds for this draft, as the references a message carries. */
   const uploadedAttachments = async (
@@ -267,11 +286,17 @@ export function KinComposer({
   ): Promise<ReadonlyArray<KinAttachment> | null> => {
     if (attachments.length === 0) return [];
     setSending(true);
+    const fitted = await fitKinChatPhotos(attachments);
+    if (fitted._tag === "tooLarge") {
+      setSending(false);
+      setTooLarge({ ids: attachments.map((one) => one.id).join(","), text: fitted.text });
+      return null;
+    }
     const prepared = await settlePromise(() =>
       Effect.runPromise(
         prepareTurnAttachments({
           environmentId: props.environmentId,
-          attachments,
+          attachments: fitted.attachments,
           supportsImageUploads: true,
           uploadAttachment: (attachment) =>
             uploadComposerAttachmentShared(props.environmentId, attachment),
@@ -293,7 +318,7 @@ export function KinComposer({
       const { id, name, mimeType, sizeBytes } = uploaded;
       return [{ type: uploaded.type, id, name, mimeType, sizeBytes }];
     });
-    return references.length === attachments.length ? references : null;
+    return references.length === fitted.attachments.length ? references : null;
   };
 
   const send = async () => {

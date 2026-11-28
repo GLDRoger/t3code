@@ -7,5 +7,6 @@ export const {
   useKinBillBatch,
   useKinBillActions,
   useKinBillFix,
-  useKinBillsAdd,
+  useKinBillCardKeep,
+  useKinBillReader,
 } = makeKinBillsHooks(kinHookApp);

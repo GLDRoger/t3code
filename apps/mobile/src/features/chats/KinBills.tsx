@@ -9,16 +9,13 @@ import {
   KIN_BILLS,
   kinBillBatchSentence,
   kinBillExpenseStart,
+  kinBillFileRefusal,
   kinBillFixStart,
   kinBillName,
   kinBillReviewCounts,
   kinBillRowViews,
-  kinBillsButton,
   kinBillsCanKeepAll,
-  kinBillsOutcome,
   kinBillsUnreadAgain,
-  kinBillUploadBatch,
-  kinBillUploadText,
   type KinBillAction,
   type KinBillField,
   type KinBillRowView,
@@ -30,11 +27,9 @@ import {
   KIN_DEFAULT_HOME_CURRENCY,
   KinOrgId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  type KinAttachment,
 } from "@t3tools/contracts";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { Image as ExpoImage } from "expo-image";
-import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { memo, useEffect, useRef, useState } from "react";
@@ -47,7 +42,6 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
-import { IconButton } from "../../components/ui/IconButton";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
@@ -55,27 +49,23 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
+  convertPastedImagesToAttachments,
   createComposerFileAttachment,
-  pickComposerFiles,
-  pickComposerMedia,
-  type DraftComposerAttachment,
 } from "../../lib/composerImages";
-import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAssetUrl } from "../../state/assets";
-import { uploadComposerAttachmentShared } from "../../state/composer-attachment-uploads";
 import { KinAddressSentence } from "./components/KinSenderAddress";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
-import { createBillPhotoAttachment, preparePickedBillPhoto } from "./kinBillPhoto";
 import { forgetKinSharedFile } from "./kinSharedFileInbox";
 import type { KinSharedFile } from "./state/kinSharedFile";
-import { kinBillChoices, kinBillFixParamsOf, kinExpenseParamsOfBill } from "./state/kinBillsPick";
+import { kinBillFixParamsOf, kinExpenseParamsOfBill } from "./state/kinBillsPick";
 import { useKinHomeCurrency, useKinLists, kinListsOf } from "./state/useKinMoney";
 import {
   useKinBillActions,
   useKinBillBatch,
   useKinBillBatches,
-  useKinBillsAdd,
+  useKinBillReader,
 } from "./state/useKinBills";
+import { useKinOpenBillsChat } from "./state/useKinOpenChat";
 import type { KinWorkTarget } from "./state/useKinWork";
 
 export type KinBillsAddParams = {
@@ -101,47 +91,10 @@ const targetOf = (params: KinBillsAddParams): KinWorkTarget | null => {
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 };
 
-/** One bill's bytes through the composer's upload path; the host claims it on the add. */
-async function uploadBill(
-  environmentId: EnvironmentId,
-  draft: DraftComposerAttachment,
-  name: string,
-): Promise<KinAttachment> {
-  const id = await Effect.runPromise(uploadComposerAttachmentShared(environmentId, draft));
-  const { mimeType, sizeBytes } = draft;
-  return draft.type === "image"
-    ? { type: "image", id, name, mimeType, sizeBytes }
-    : { type: "file", id, name, mimeType, sizeBytes };
-}
-
-/** A photo of a bill from the camera. */
-async function takeBillPhoto(number: number) {
-  const picker = await import("expo-image-picker");
-  const allowed = await picker.requestCameraPermissionsAsync();
-  if (!allowed.granted) return { photo: null, error: KIN_BILLS.cameraRefused };
-  const endHandoff = beginForegroundHandoff();
-  let taken: Awaited<ReturnType<typeof picker.launchCameraAsync>>;
-  try {
-    taken = await picker.launchCameraAsync({ mediaTypes: ["images"], quality: 1, base64: false });
-  } finally {
-    endHandoff();
-  }
-  const asset = taken.canceled ? undefined : taken.assets[0];
-  if (asset === undefined) return { photo: null, error: null };
-  try {
-    const photo = await createBillPhotoAttachment({
-      uri: asset.uri,
-      name: asset.fileName ?? `bill-photo-${number}.jpg`,
-      mimeType: asset.mimeType,
-    });
-    const extension = photo.mimeType === "image/jpeg" ? "jpg" : photo.mimeType.split("/")[1];
-    return { photo: { ...photo, name: `bill-photo-${number}.${extension}` }, error: null };
-  } catch (cause) {
-    return { photo: null, error: cause instanceof Error ? cause.message : KIN_BILLS.uploadFailed };
-  }
-}
-
-/** Money's Add › Bills on the phone: from the photo library, files or the camera, then one add. */
+/**
+ * A photo or PDF shared into Kin from another app: it goes in the box of the chat bills are added
+ * in, as a picked one would, with "Bills to add" ready to send. The old Add bills screen is gone.
+ */
 export function KinBillsAddScreen({ route }: StaticScreenProps<KinBillsAddParams>) {
   const navigation = useNavigation();
   const target = targetOf(route.params);
@@ -156,215 +109,67 @@ export function KinBillsAddScreen({ route }: StaticScreenProps<KinBillsAddParams
     file === undefined
       ? null
       : { uri: file, name: fileName ?? "file", mimeType: fileType ?? "application/octet-stream" };
-  return <AddBills {...target} shared={shared} />;
+  return <OpenBillsChat {...target} shared={shared} />;
 }
 
-/** A shared file as the picker hands one over; the system's copy goes once Kin holds its own. */
-async function sharedBill(shared: KinSharedFile) {
+/** A shared file as the chat's own picker hands one over; the system's copy goes once Kin holds its own. */
+async function sharedAttachment(shared: KinSharedFile) {
   try {
+    const refused = kinBillFileRefusal(shared);
+    if (refused !== null) return { attachment: null, error: refused };
     if (shared.mimeType.startsWith("image/")) {
-      const bill = await createBillPhotoAttachment(shared);
-      return { bill: { ...bill, name: shared.name }, error: null };
+      const { attachments, error } = await convertPastedImagesToAttachments({ uris: [shared.uri] });
+      const [photo] = attachments;
+      return photo === undefined
+        ? { attachment: null, error: error ?? KIN_BILLS.uploadFailed }
+        : { attachment: { ...photo, name: shared.name }, error: null };
     }
-    const bill = await createComposerFileAttachment({
+    const attachment = await createComposerFileAttachment({
       uri: shared.uri,
       name: shared.name,
       mimeType: shared.mimeType,
       sizeBytes: null,
       maxBytes: clampFileAttachmentUploadBytes(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
     });
-    return { bill, error: null };
+    return { attachment, error: null };
   } catch (cause) {
-    return { bill: null, error: cause instanceof Error ? cause.message : null };
+    return {
+      attachment: null,
+      error: cause instanceof Error ? cause.message : KIN_BILLS.uploadFailed,
+    };
   } finally {
     await forgetKinSharedFile(shared.uri);
   }
 }
 
-function AddBills(props: KinWorkTarget & { readonly shared: KinSharedFile | null }) {
+function OpenBillsChat(props: KinWorkTarget & { readonly shared: KinSharedFile | null }) {
   const navigation = useNavigation();
-  const { environmentId } = props;
-  const adding = useKinBillsAdd<DraftComposerAttachment>(props, (draft, name) =>
-    uploadBill(environmentId, draft, name),
-  );
-  const [picking, setPicking] = useState<string | null>(null);
-  const took = useRef(false);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the file another app shared into Kin from disk, once, as a pick would
+  const reader = useKinBillReader(props);
+  const openBills = useKinOpenBillsChat();
+  const [failed, setFailed] = useState<string | null>(null);
+  const opened = useRef(false);
+  const { environmentId, orgId, shared } = props;
+  const problem = reader === null ? KIN_BILLS.noReader : failed;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the file another app shared into Kin from disk once the agents are known, then leaves for that agent's chat
   useEffect(() => {
-    if (props.shared === null || took.current) return;
-    took.current = true;
-    void sharedBill(props.shared).then(({ bill, error }) => {
-      if (bill !== null) adding.choose(kinBillChoices([bill]));
-      setPicking(error);
-    });
-  }, [props.shared, adding]);
-  const { state } = adding;
-  const busy = state.phase !== "choosing";
-  const button = kinBillsButton(state);
-  const outcome = kinBillsOutcome(state);
-  const held = state.files.filter(
-    (file) =>
-      file.upload._tag !== "added" &&
-      file.upload._tag !== "already" &&
-      file.upload._tag !== "refused",
-  ).length;
-  const review = (batch: string) =>
-    navigation.dispatch(
-      StackActions.replace("KinBills", {
-        environmentId: String(environmentId),
-        orgId: String(props.orgId),
-        batch,
-      }),
-    );
-  const openExpense = (task: string) =>
-    navigation.dispatch(
-      StackActions.replace("KinWorkItem", {
-        environmentId: String(environmentId),
-        orgId: String(props.orgId),
-        task,
-      }),
-    );
-  const take = async (from: "library" | "files" | "camera") => {
-    setPicking(null);
-    if (from === "camera") {
-      const taken = await takeBillPhoto(state.files.length + 1);
-      if (taken.photo !== null) adding.choose(kinBillChoices([taken.photo]));
-      return setPicking(taken.error);
-    }
-    const picked =
-      from === "library"
-        ? await pickComposerMedia({
-            existingCount: held,
-            preparePhoto: createBillPhotoAttachment,
-          }).then((result) => ({
-            files: result.attachments,
-            error: result.error,
-          }))
-        : await pickComposerFiles({ existingCount: held, preparePhoto: preparePickedBillPhoto });
-    if (picked.files.length > 0) adding.choose(kinBillChoices(picked.files));
-    setPicking(picked.error);
-  };
-  const send = async () => {
-    const done = await adding.send();
-    if (done?.close === true && done.review !== null) review(done.review);
-  };
-  const problem = state.problem ?? picking;
+    if (reader == null || opened.current) return;
+    opened.current = true;
+    void (async () => {
+      const taken = shared === null ? null : await sharedAttachment(shared);
+      if (taken !== null && taken.attachment === null) return setFailed(taken.error);
+      const refused = await openBills(environmentId, orgId, reader.agentId, {
+        replace: true,
+        ...(taken?.attachment == null ? {} : { attachments: [taken.attachment] }),
+      });
+      if (refused !== null) setFailed(refused);
+    })();
+  }, [reader, shared, environmentId, orgId, openBills]);
   return (
-    <KinWorkFrame
-      title={KIN_BILLS.title}
-      showTop={problem}
-      onClose={() => {
-        if (!busy) navigation.goBack();
-      }}
-      confirm={{
-        label: button.label,
-        onPress: () => void send(),
-        loading: busy,
-        disabled: button.disabled,
-      }}
-    >
-      <Text textRole="footnote" className="px-2 text-foreground-muted">
-        {KIN_BILLS.hint}
-      </Text>
-      {problem === null ? null : <Notice message={problem} tone="danger" />}
-      <ListSection>
-        <ListRow
-          icon="photo"
-          label={KIN_BILLS.photoLibrary}
-          disabled={busy}
-          onPress={() => void take("library")}
-        />
-        <ListRow
-          icon="folder"
-          label={KIN_BILLS.files}
-          disabled={busy}
-          onPress={() => void take("files")}
-        />
-        <ListRow
-          icon="camera"
-          label={KIN_BILLS.takePhoto}
-          disabled={busy}
-          onPress={() => void take("camera")}
-        />
-      </ListSection>
-      {state.files.length === 0 ? null : (
-        <ListSection title={KIN_BILLS.chosen}>
-          {state.files.map((file) => {
-            const wrong = file.upload._tag === "failed" || file.upload._tag === "refused";
-            const removable =
-              !busy &&
-              file.upload._tag !== "added" &&
-              file.upload._tag !== "already" &&
-              file.upload._tag !== "uploading";
-            const earlier = kinBillUploadBatch(file.upload);
-            return (
-              <View
-                key={file.id}
-                className="min-h-12 flex-row items-center gap-3 bg-grouped-card px-4 py-2"
-              >
-                <ChosenThumb draft={file.source} />
-                <View className="flex-1 gap-0.5">
-                  <Text textRole="body" numberOfLines={1} className="text-foreground">
-                    {file.name}
-                  </Text>
-                  <Text
-                    textRole="footnote"
-                    className={wrong ? "text-danger-foreground" : "text-foreground-muted"}
-                  >
-                    {kinBillUploadText(file.upload)}
-                  </Text>
-                </View>
-                {earlier === null ? null : (
-                  <Button
-                    size="compact"
-                    tone="text"
-                    label={KIN_BILLS.review}
-                    accessibilityLabel={`${KIN_BILLS.review} ${file.name}`}
-                    disabled={busy}
-                    onPress={() => review(earlier)}
-                  />
-                )}
-                {removable ? (
-                  <IconButton
-                    icon="xmark"
-                    accessibilityLabel={`${KIN_BILLS.remove} ${file.name}`}
-                    onPress={() => adding.remove(file.id)}
-                  />
-                ) : null}
-              </View>
-            );
-          })}
-        </ListSection>
-      )}
-      {outcome === null || (outcome.lines.length === 0 && outcome.dropped.length === 0) ? null : (
-        <View className="gap-1 px-2" accessibilityLiveRegion="polite">
-          {outcome.lines.map((line) => (
-            <Text key={line} textRole="footnote" className="text-foreground-muted">
-              {line}
-            </Text>
-          ))}
-          {outcome.dropped.map((one) => (
-            <View key={one.key} className="gap-1">
-              <Text textRole="footnote" className="text-foreground-muted">
-                {one.text}
-              </Text>
-              <Button
-                size="compact"
-                tone="text"
-                label={KIN_BILLS.open(one.expense)}
-                disabled={busy}
-                onPress={() => openExpense(one.expense)}
-              />
-            </View>
-          ))}
-        </View>
-      )}
-      {outcome?.review == null ? null : (
-        <Button
-          tone="secondary"
-          label={KIN_BILLS.review}
-          onPress={() => review(outcome.review ?? "")}
-        />
+    <KinWorkFrame title={KIN_BILLS.title} onClose={() => navigation.goBack()}>
+      {problem === null ? (
+        <KinWorkLoading label="Opening the chat" />
+      ) : (
+        <Notice message={problem} tone="danger" />
       )}
     </KinWorkFrame>
   );
@@ -686,26 +491,6 @@ function BillThumb(props: {
   );
 }
 
-/** A chosen photo from its file on the phone, before it is sent; a PDF as its icon. */
-function ChosenThumb(props: { readonly draft: DraftComposerAttachment }) {
-  const { draft } = props;
-  return (
-    <View className="size-10 items-center justify-center overflow-hidden rounded-lg border border-border bg-subtle-strong">
-      {draft.type === "image" ? (
-        <ExpoImage
-          source={{ uri: draft.previewUri }}
-          style={{ width: 40, height: 40 }}
-          contentFit="cover"
-          recyclingKey={draft.id}
-          accessibilityIgnoresInvertColors
-        />
-      ) : (
-        <SymbolView name="doc.text" size={18} tintColorClassName="accent-icon-muted" />
-      )}
-    </View>
-  );
-}
-
 /** One bill: its file, what was read in fixed places, its state and its taps. */
 const BillRow = memo(function BillRow(props: {
   readonly view: KinBillRowView;
@@ -755,6 +540,11 @@ const BillRow = memo(function BillRow(props: {
             </View>
           ))}
         </View>
+        {view.currencyNote === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {view.currencyNote}
+          </Text>
+        )}
         {view.mailLine === null ? null : (
           <KinAddressSentence
             text={view.mailLine}

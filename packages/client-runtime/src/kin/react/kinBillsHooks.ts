@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  EnvironmentId,
   KinAttachment,
   KinBillBatchSummary,
   KinBillRead,
@@ -12,11 +13,14 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useRef, useState } from "react";
 
 import {
+  kinBillCardKeep,
+  kinBillReader,
   kinBillsAddingStart,
   kinBillsKeptAll,
   kinBillsOutcome,
   kinBillsSend,
   kinBillsStep,
+  type KinBillBatchCardView,
   type KinBillRowView,
   type KinBillsEvent,
 } from "../kinBills.ts";
@@ -307,5 +311,73 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
     };
   }
 
-  return { useKinBillBatches, useKinBillBatch, useKinBillActions, useKinBillFix, useKinBillsAdd };
+  /**
+   * Keep from the card in chat: exactly the set the card holds (`expect`), one request per tap.
+   * A transport retry of the same snapshot reuses its id. Once the host says the set changed,
+   * Keep waits for the card's next drawing; the card itself says what was kept.
+   */
+  function useKinBillCardKeep(environmentId: EnvironmentId, card: KinBillBatchCardView) {
+    const allowed = useAtomValue(kinClient.billsKeepRead.permissionAtom(environmentId));
+    const keepRead = useAtomCommand(kinClient.billsKeepRead, { reportFailure: false });
+    const ids = useRef(new Map<string, string>());
+    const sending = useRef(false);
+    const [busy, setBusy] = useState(false);
+    const [said, setSaid] = useState<{
+      readonly revision: string;
+      readonly stale: boolean;
+      readonly text: string;
+    } | null>(null);
+    const expect = card.keepable;
+    // A word about an earlier drawing of the card is no longer true of this one.
+    const shown = said !== null && said.revision === expect?.revision ? said : null;
+    return {
+      allowed,
+      busy,
+      stale: shown?.stale === true,
+      problem: shown?.text ?? null,
+      keep: async () => {
+        if (expect === null || sending.current || shown?.stale === true) return;
+        sending.current = true;
+        setBusy(true);
+        setSaid(null);
+        const snapshot = `${card.batchId}:${expect.count}:${expect.revision}`;
+        const clientRequestId = ids.current.get(snapshot) ?? newId();
+        ids.current.set(snapshot, clientRequestId);
+        const outcome = await kinBillCardKeep({
+          online: () => kinHostConnected(environmentId),
+          send: () =>
+            keepRead({
+              environmentId,
+              input: { orgId: card.orgId, batchId: card.batchId, clientRequestId, expect },
+            }),
+        });
+        sending.current = false;
+        setBusy(false);
+        if (outcome._tag !== "failed") ids.current.delete(snapshot);
+        if (outcome._tag !== "kept")
+          setSaid({
+            revision: expect.revision,
+            stale: outcome._tag === "stale",
+            text: outcome.text,
+          });
+      },
+    };
+  }
+
+  /** The agent bills are added with, once the company's agents are read; null with none. */
+  function useKinBillReader({ environmentId, orgId }: KinScreenTarget) {
+    const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+    if (!AsyncResult.isSuccess(result)) return undefined;
+    return kinBillReader(result.value.leads);
+  }
+
+  return {
+    useKinBillBatches,
+    useKinBillBatch,
+    useKinBillActions,
+    useKinBillFix,
+    useKinBillsAdd,
+    useKinBillCardKeep,
+    useKinBillReader,
+  };
 }

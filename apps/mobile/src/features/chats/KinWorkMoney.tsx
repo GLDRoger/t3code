@@ -45,6 +45,7 @@ import {
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import * as Dialog from "../../components/ui/Dialog";
 import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -70,6 +71,8 @@ import { cn } from "../../lib/cn";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
+import { useKinBillReader } from "./state/useKinBills";
+import { useKinOpenBillsChat } from "./state/useKinOpenChat";
 import { KinChooseCountry } from "./components/KinCountryFirst";
 import { useKinIsOwnerLevel, useKinPlaceReach, useKinViewerScope } from "./state/kinChatOnly";
 import {
@@ -130,6 +133,8 @@ function AreaFrame(props: {
     kinClient.workNewExpense.permissionAtom(props.target.environmentId),
   );
   const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.target.environmentId));
+  const reader = useKinBillReader(props.target);
+  const openBills = useKinOpenBillsChat();
   const base = {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
@@ -168,14 +173,20 @@ function AreaFrame(props: {
               onPress: () => agent.ask("Log an expense: "),
             },
           ]),
-    ...(canBills
+    // Bills are added in the chat with the agent that reads them.
+    ...(canBills && reader != null
       ? [
           {
             id: "bills",
             title: KIN_BILLS.add,
             subtitle: KIN_BILLS.addDetail,
             icon: "photo" as const,
-            onPress: () => navigation.navigate("KinBillsAdd", base),
+            onPress: () =>
+              void openBills(props.target.environmentId, props.target.orgId, reader.agentId).then(
+                (problem) => {
+                  if (problem !== null) Dialog.alert(problem);
+                },
+              ),
           },
         ]
       : []),

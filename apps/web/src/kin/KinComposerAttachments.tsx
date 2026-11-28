@@ -3,6 +3,7 @@ import { fileAttachmentTooLargeMessage } from "@t3tools/client-runtime/state/att
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  isProviderSendTurnSupportedImageMimeType,
   type EnvironmentId,
   type KinAttachment,
 } from "@t3tools/contracts";
@@ -49,7 +50,12 @@ import {
   startAttachmentUpload,
   useAttachmentUploadStore,
 } from "../lib/attachmentUploadQueue";
-import { inheritComposerImageThumbnail, prepareImageForAttachment } from "../lib/imageCompression";
+import {
+  inheritComposerImageThumbnail,
+  prepareImageForAttachment,
+  reencodePhoto,
+} from "../lib/imageCompression";
+import { KIN_PHOTO_FIT, kinPhotosFit } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import { randomUUID } from "../lib/utils";
 import { useServerConfigs } from "../state/entities";
 import { kinClient } from "./kinClient";
@@ -126,6 +132,45 @@ export function useKinComposerAttachments(input: {
       cancelled = true;
     };
   }, [draft.images, target]);
+
+  /**
+   * New photos with those already in the box, under the message's image cap: re-encoded when
+   * together they would pass it (`kinPhotosFit`), or null when even that can't fit them.
+   */
+  const fitPhotos = async (
+    images: ReadonlyArray<ComposerImageAttachment>,
+  ): Promise<ReadonlyArray<ComposerImageAttachment> | null> => {
+    const current = store().getComposerDraft(target);
+    const held = [...(current?.images ?? []), ...(current?.files ?? [])]
+      .filter(
+        (one) => one.type === "image" || isProviderSendTurnSupportedImageMimeType(one.mimeType),
+      )
+      .reduce((sum, one) => sum + one.sizeBytes, 0);
+    const fitted = await kinPhotosFit({
+      items: images.map((image) => ({
+        source: image,
+        bytes: image.sizeBytes,
+        longEdge: null,
+        reencode: image.mimeType !== "image/gif",
+      })),
+      cap: KIN_PHOTO_FIT.cap - held,
+      encode: async (image, step) => {
+        const file = await reencodePhoto(image.file, step.quality, step.maxEdge);
+        if (file === null) return null;
+        inheritComposerImageThumbnail(image.file, file);
+        const photo: ComposerImageAttachment = {
+          ...image,
+          name: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+          previewUrl: URL.createObjectURL(file),
+          file,
+        };
+        return { photo, bytes: file.size };
+      },
+    });
+    return fitted._tag === "fits" ? fitted.items : null;
+  };
 
   const add = async (files: ReadonlyArray<File>): Promise<boolean> => {
     if (!canPost || files.length === 0) return false;
@@ -220,9 +265,15 @@ export function useKinComposerAttachments(input: {
     }
     // A placeholder removed from the strip meanwhile stays removed.
     const kept = removePreparingComposerImages(target, new Set(placeholders.map(({ id }) => id)));
-    const images = prepared.filter((image) => kept.has(image.id));
+    const fitted = await fitPhotos(prepared.filter((image) => kept.has(image.id)));
+    if (fitted === null) {
+      for (const image of prepared) URL.revokeObjectURL(image.previewUrl);
+      setError(KIN_PHOTO_FIT.tooLarge);
+      return added;
+    }
+    const images = [...fitted];
     const stored = new Set(store().addImages(target, images));
-    for (const image of prepared) {
+    for (const image of new Set([...prepared, ...images])) {
       if (stored.has(image.id))
         startAttachmentUpload({ environmentId, image, draftTarget: target });
       else URL.revokeObjectURL(image.previewUrl);
@@ -393,8 +444,18 @@ const noCopy = () => Promise.resolve();
 export function KinAttachButton(props: {
   readonly addComposerAttachments: (files: File[]) => Promise<boolean>;
   readonly focusComposer: () => void;
+  /** Opens the file picker once on arrival, as Money's Add › Bills asks. */
+  readonly pickOnArrival?: { readonly ask: boolean; readonly asked: () => void };
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const ask = props.pickOnArrival?.ask === true;
+  const asked = props.pickOnArrival?.asked;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens the browser's file picker once, when the screen that opened this chat asked for it
+  useEffect(() => {
+    if (!ask) return;
+    asked?.();
+    input.current?.click();
+  }, [ask, asked]);
   return (
     <>
       <ComposerAttachInput

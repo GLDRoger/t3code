@@ -1,4 +1,9 @@
-import { kinAskDraft, kinReadiedDraftAtom } from "@t3tools/client-runtime/kin/kinDraft";
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
+import {
+  kinAskDraft,
+  kinPickPhotosAtom,
+  kinReadiedDraftAtom,
+} from "@t3tools/client-runtime/kin/kinDraft";
 import { kinPendingRefAtom, kinPendingRefKey } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinAgentChatProblem } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -42,13 +47,28 @@ export function useKinOpenAgentChat() {
     orgId: KinOrgId,
     agentId: KinAgentId,
     draft?: string,
+    /** Readies the chat's box further before it opens. */
+    ready?: (chatId: KinChatId) => void,
   ) => {
     const result = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
       environmentId,
       input: { orgId, agentId },
     });
     if (result._tag !== "Success") return kinAgentChatProblem(squashAtomCommandFailure(result));
+    ready?.(result.value.chatId);
     openChat(environmentId, orgId, result.value.chatId, draft);
     return null;
   };
+}
+
+/**
+ * Adding bills: the viewer's chat with the agent that reads them, made the first time, with
+ * "Bills to add" in its box and its file picker opening. Nothing is sent until the person sends it.
+ */
+export function useKinOpenBillsChat() {
+  const openAgentChat = useKinOpenAgentChat();
+  return (environmentId: EnvironmentId, orgId: KinOrgId, agentId: KinAgentId) =>
+    openAgentChat(environmentId, orgId, agentId, KIN_BILLS.composer, (chatId) =>
+      appAtomRegistry.set(kinPickPhotosAtom(kinDraftKey(environmentId, orgId, chatId)), true),
+    );
 }

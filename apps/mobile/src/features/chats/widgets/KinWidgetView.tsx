@@ -136,7 +136,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return (
         <KinBillBatchCard
           bills={view.bills}
-          environmentId={String(props.environmentId)}
+          environmentId={props.environmentId}
           ownerLevel={access === null || kinOwnerLevel(access)}
         />
       );

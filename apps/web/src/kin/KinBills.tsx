@@ -694,6 +694,9 @@ const BillRow = memo(function BillRow(props: {
             </div>
           ))}
         </dl>
+        {view.currencyNote === null ? null : (
+          <p className="text-xs text-muted-foreground">{view.currencyNote}</p>
+        )}
         {view.mailLine === null ? null : (
           <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{view.mailLine}</p>
         )}

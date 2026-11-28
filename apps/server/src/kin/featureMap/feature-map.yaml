@@ -352,7 +352,7 @@ features:
     phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [bills_add, bill_read, bill_cut]
-    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list. A photo or page holding several bills is cut into pieces, and each piece is read as its own bill.
+    note: The batch's card says what was read, the totals by category in each currency and the bills that need the person by name; Keep all keeps exactly the clean set it shows, and its Review opens the batch's list. It says when the reader's daily limit pauses reading. A photo or page holding several bills is cut into pieces, and each piece is read as its own bill.
     proof:
       - apps/server/src/kin/work/bills.test.ts
       - packages/client-runtime/src/kin/kinBills.test.ts
@@ -690,14 +690,14 @@ features:
   - id: bills-add
     name: Add many bills at once, as photos or PDFs
     tab: money
-    web: [money, menu:Add, dialog:Add bills]
-    phone: [tab:money, menu:Add, KinBillsAdd]
-    form: true
+    web: [money, menu:Add, chat]
+    phone: [tab:money, menu:Add, KinChat]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file. A file added before says so, with a link to its expense when that was dropped; a dismissed one is read again.
+    note: Add › Bills opens the chat with the agent that reads bills (Finance, else the Chief of staff) with "Bills to add" in its box and the photo picker open; nothing goes until the person sends it. A photo or PDF shared into Kin from another app lands in the same box. Photos that together pass a message's image cap are re-encoded before they upload. Each bill Kin reads becomes a suggested expense with its file, and the batch's card keeps every bill that read cleanly in one tap.
     proof:
       - packages/client-runtime/src/kin/kinBills.test.ts
-      - apps/web/src/kin/KinBills.browser.test.tsx
+      - packages/client-runtime/src/kin/kinPhotoFit.test.ts
+      - apps/web/src/kin/KinCards.browser.test.tsx
       - apps/server/src/kin/work/bills.test.ts
 
   - id: bills-review
@@ -706,7 +706,7 @@ features:
     web: [money, "?bills"]
     phone: [tab:money, KinList, KinBills]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file and everything read. Read the unread again asks for every bill reading again can change. A bill that came by mail says from which address and the day it arrived.
+    note: Reached from Expenses' Bills added and the batch's card in chat. Enter by hand opens New expense with the bill's file and everything read. Read the unread again asks for every bill reading again can change. A bill that came by mail says from which address and the day it arrived.
     proof:
       - packages/client-runtime/src/kin/kinBills.test.ts
       - apps/web/src/kin/KinBills.browser.test.tsx
@@ -1896,6 +1896,7 @@ features:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 
 unlisted:
+  "phone:KinBillsAdd": Where a photo or PDF shared into Kin lands; it opens the chat bills are added in at once.
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.

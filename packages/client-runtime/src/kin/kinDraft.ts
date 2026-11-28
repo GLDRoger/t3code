@@ -42,6 +42,11 @@ export const kinAskDraft = <Ref>(
   };
 };
 
+/** Per chat box: open the photo picker once the box is on screen (Money's Add › Bills). */
+export const kinPickPhotosAtom = Atom.family((draftKey: string) =>
+  Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel(`kin:pick-photos:${draftKey}`)),
+);
+
 /** Per chat box: the words the last Ask readied there, so the next Ask replaces them untouched. */
 export const kinReadiedDraftAtom = Atom.family((draftKey: string) =>
   Atom.make<string | null>(null).pipe(Atom.keepAlive, Atom.withLabel(`kin:readied:${draftKey}`)),
