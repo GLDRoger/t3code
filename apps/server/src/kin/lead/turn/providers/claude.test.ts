@@ -32,7 +32,7 @@ import {
   OWNER_SEAT_OFF,
 } from "./claude.ts";
 import { captureClaudeOptions } from "./claude.testkit.ts";
-import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
+import { BILLS_SEAT_INSTRUCTIONS, kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { KinShellStartup } from "../shellStartup.ts";
 import { KinSessionContext } from "../sessionContext.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
@@ -511,7 +511,7 @@ it.effect.each([
       assert.deepStrictEqual(sharedRest, confinedBaseline);
       for (const [seat, expectedPrompt] of [
         [reviewOpened, REVIEW_SEAT_INSTRUCTIONS],
-        [billsOpened, kinInstructions("confined", "claudeAgent", false)],
+        [billsOpened, BILLS_SEAT_INSTRUCTIONS],
       ] as const) {
         const { hooks, ...rest } = seat ?? lead;
         assert.deepStrictEqual(rest, {
@@ -594,10 +594,10 @@ it.effect.each([
         yield* Effect.promise(() => hookDenial(reviewOpened, "WebSearch", { query: "tiles" })),
         "This review has no web search.",
       );
-      // Bills from outside: Kin's confined instructions without web search, and no built-in.
+      // Bills from outside: the bills seat's own short instructions, and no built-in.
       assert.deepStrictEqual(billsOpened?.systemPrompt, {
         type: "custom",
-        prompt: kinInstructions("confined", "claudeAgent", false),
+        prompt: BILLS_SEAT_INSTRUCTIONS,
         snapshot: false,
       });
       assert.deepStrictEqual(billsOpened?.tools, ["ToolSearch"]);

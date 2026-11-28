@@ -59,6 +59,7 @@ import { offTurnTexts } from "./senses/numbers.ts";
 import { wakeHeldUntil } from "./prepareWake.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { repaidShortLine } from "./senses/bank.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
@@ -3392,6 +3393,27 @@ describe("KinPulse", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it("a short repayment's line names what is still owed, four keys at most", () => {
+    const line = (keys: ReadonlyArray<string>) =>
+      repaidShortLine({
+        key: "BNK-14",
+        amountMinor: 4_000_00,
+        currency: "INR",
+        date: "2026-11-20",
+        partner: "Meera Rao",
+        owedMinor: 23_500_00,
+        owedKeys: keys,
+      });
+    assert.strictEqual(
+      line(["EXP-31"]),
+      "BNK-14, ₹4,000 paid 20 Nov, names Meera Rao and may not match what is still owed to Meera Rao: EXP-31 (₹23,500 over 1 expense). Not checked, so Kin marks nothing; the owner or a co-owner marks what it repaid on that expense in Money.",
+    );
+    assert.include(
+      line(["EXP-1", "EXP-2", "EXP-3", "EXP-4", "EXP-5", "EXP-6"]),
+      ": EXP-1, EXP-2, EXP-3, EXP-4 and 2 more (₹23,500 over 6 expenses).",
+    );
+  });
+
   it.effect(
     "a debit that pays a partner back exactly wakes Finance once; a short one is a line",
     () =>
@@ -3453,11 +3475,11 @@ describe("KinPulse", () => {
         // One that doesn't add up is told once, as a line: Kin marks nothing and offers no card.
         const short = facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!;
         // Kin hasn't looked at what it repaid, so the line says so instead of reading as a finding.
-        assert.include(short.consequence, "not checked");
+        assert.include(short.consequence, "Not checked");
         assert.notInclude(short.consequence, "doesn't add up");
         assert.deepInclude(short, {
           consequence:
-            "BNK-11, ₹9,000 paid 25 Nov, names Meera and may not match their oldest owed expenses (₹12,400 over 3 expenses): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.",
+            "BNK-11, ₹9,000 paid 25 Nov, names Meera and may not match what is still owed to Meera: EXP-4, EXP-7 and EXP-9 (₹12,400 over 3 expenses). Not checked, so Kin marks nothing; the owner or a co-owner marks what it repaid on those expenses in Money.",
           actor: { _tag: "agent", agentId: finance },
           wake: "brief",
         });

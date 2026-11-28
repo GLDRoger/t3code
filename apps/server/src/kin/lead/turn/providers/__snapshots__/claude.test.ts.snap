@@ -1,8 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`every seat's options match Kin byte for byte > bills 1`] = `"ae2c8c0f02058541e85788a8b2f45fb5ec312c905110dd16388444c545fa0616"`;
+exports[`every seat's options match Kin byte for byte > bills 1`] = `"46a15de66b84756a9bd624b07154e4597f718e367c2407c134bbc3a00e8165ab"`;
 
-exports[`every seat's options match Kin byte for byte > bills without lookup 1`] = `"30a3e21d0cc4529505f6c9c0d55a15d9887faa008b8b879cd7acc365272d800b"`;
+exports[`every seat's options match Kin byte for byte > bills without lookup 1`] = `"cb5394c4dfee139a410fc9195a6eaf10d9cb3d14108bdac1f30c18aaaf6481c3"`;
 
 exports[`every seat's options match Kin byte for byte > delegated 1`] = `"6ff331cfcc606ad6340307392fd9c85ca6df62845e3968169e4107937583d91f"`;
 

@@ -7,7 +7,7 @@ import {
   KinOrgId,
   kinProviderFacts,
   type KinProviderLimit,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -32,7 +32,12 @@ import { KIN_PROVIDERS } from "./providers.ts";
 import { acpFake, antigravityFake, makeAcpFake } from "./providers/acp.testkit.ts";
 import { claudeFake } from "./providers/claude.testkit.ts";
 import { codexFake } from "./providers/codex.testkit.ts";
-import { CONFINED_WEB_SEARCH, kinInstructions } from "./session.ts";
+import {
+  BILLS_SEAT_INSTRUCTIONS,
+  CONFINED_WEB_SEARCH,
+  kinInstructions,
+  leadThreadInstructions,
+} from "./session.ts";
 
 /** Every registered provider has a fake; a provider without one fails here, not in production. */
 const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake, acpFake, antigravityFake];
@@ -325,6 +330,31 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         assert.notStrictEqual(yield* asked(admitted.askShell), "allowed");
         assert.notStrictEqual(yield* asked(admitted.askRead), "allowed");
       }).pipe(Effect.provide(layer(`kin-conformance-shared-${driver}-`))),
+  );
+
+  it.effect(
+    "a bills thread: the bills seat's own short instructions, while a lead's and a shared chat's stay Kin's whole instructions",
+    () =>
+      Effect.gen(function* () {
+        const bills = yield* open(fake, "kin-shared:bills:tech");
+        assert.isTrue(bills.changed);
+        assert.strictEqual(bills.instructions, BILLS_SEAT_INSTRUCTIONS);
+        assert.isBelow(new TextEncoder().encode(bills.instructions).byteLength, 1000);
+        assert.isFalse(bills.builtins);
+        assert.isFalse(bills.webSearch);
+        assert.strictEqual(
+          leadThreadInstructions(ThreadId.make("kin-shared:bills:tech"), driver),
+          BILLS_SEAT_INSTRUCTIONS,
+        );
+        assert.strictEqual(
+          (yield* open(fake, "kin:tech")).instructions,
+          kinInstructions("owner", driver),
+        );
+        assert.strictEqual(
+          (yield* open(fake, "kin-shared:tech")).instructions,
+          kinInstructions("confined", driver),
+        );
+      }).pipe(Effect.provide(layer(`kin-conformance-bills-${driver}-`))),
   );
 
   it.effect(
