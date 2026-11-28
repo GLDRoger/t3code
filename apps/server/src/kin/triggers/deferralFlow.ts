@@ -65,7 +65,7 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
-  askText,
+  askCopy,
   decisionActions,
   deferralFingerprint,
   deferralLead,
@@ -730,10 +730,11 @@ const make = Effect.gen(function* () {
         });
         const post = Effect.fn("KinDeferralFlow.post")(function* (state: KinDeferralCard) {
           const chatId = yield* cardChat(orgId, item);
-          yield* cards.write({ orgId, itemId, state, chatId, now });
+          yield* cards.write({ orgId, itemId, state, chatId, now, saidBy: item?.said_by });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
-          yield* post(card("asked", askText({ dueAt, now, clock, startable, why })));
+          const copy = askCopy({ dueAt, now, clock, startable, why });
+          yield* post({ ...card("asked", copy.text), ...copy });
           yield* setState("asked");
         });
 
@@ -756,13 +757,14 @@ const make = Effect.gen(function* () {
           else if (!step.grace && (run.state === "armed" || late > LATE_NOTE_MS)) {
             // No heads-up was shown, or it was shown too long ago: give the grace from now.
             const graceEnd = now + GRACE_MS;
-            yield* post(
-              card(
+            yield* post({
+              ...card(
                 "heads_up",
                 `Starting ${title} at ${ownerTime(graceEnd, now, clock)}.${lateNote(dueAt, now, clock)}`,
                 graceEnd,
               ),
-            );
+              ...(now - dueAt > LATE_NOTE_MS ? { lateSince: iso(dueAt) } : {}),
+            });
             yield* sql`UPDATE kin_triggers SET next_run_at = ${graceEnd},
               updated_at = max(updated_at, ${now})
               WHERE org_id = ${orgId} AND trigger_id = ${deferralTriggerId(itemId, "due")}

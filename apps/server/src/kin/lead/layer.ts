@@ -11,6 +11,7 @@ import * as HostBackupCheck from "../host/backupCheck.ts";
 import * as RunningSpend from "../host/runningSpend.ts";
 import * as OfflineCatchUp from "../host/offlineCatchUp.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
+import { KinDeferralGithubReader } from "../triggers/deferralGithub.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -261,14 +262,16 @@ const runner = Layer.effectDiscard(
     // A deferral card's decision tap reads its committed item through this runtime's memory.
     const chat = yield* Effect.serviceOption(KinChatService);
     if (Option.isSome(chat))
-      yield* chat.value.attachDeferralItems((orgId, itemId) =>
-        memory.readItemQuietly(orgId, itemId, "triggers").pipe(
-          Effect.asSome,
-          Effect.catchTags({
-            MemoryNotFound: () => Effect.succeedNone,
-            MemoryDuplicateId: () => Effect.succeedNone,
-          }),
-        ),
+      yield* chat.value.attachDeferralItems(
+        (orgId, itemId) =>
+          memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+            Effect.asSome,
+            Effect.catchTags({
+              MemoryNotFound: () => Effect.succeedNone,
+              MemoryDuplicateId: () => Effect.succeedNone,
+            }),
+          ),
+        yield* KinDeferralGithubReader,
       );
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter({
@@ -340,7 +343,6 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     ),
     Layer.provide(ownerNotices),
     Layer.provide(KinPersistence.layer),
-    Layer.provide(GithubReaders.layer),
   );
 
 // TRIG-15: memory writes to the default branch land through PRs, as Kin's GitHub App where it is
@@ -395,7 +397,7 @@ const toolkit = LeadMemory.layer.pipe(
 
 export const layer = withServices(
   Layer.merge(runner, ChatWake.layer).pipe(Layer.provide(ReplyBridge.layer)),
-).pipe(Layer.provide(memoryLayer));
+).pipe(Layer.provide(memoryLayer), Layer.provide(GithubReaders.layer));
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
   Layer.provideMerge(Workspace.layer),
@@ -523,7 +525,11 @@ const configured = <R, R2>(
   withoutMemory: Layer.Layer<never, never, R2>,
 ) => {
   const withMemory = (config: ReturnType<typeof MemoryConfig.layer>) =>
-    entry.pipe(Layer.provide(memoryLayer), Layer.provide(config));
+    entry.pipe(
+      Layer.provide(memoryLayer),
+      Layer.provide(GithubReaders.layer),
+      Layer.provide(config),
+    );
   type WithMemory = ReturnType<typeof withMemory>;
   type Runtime = Layer.Layer<never, Layer.Error<WithMemory>, Layer.Services<WithMemory> | R2>;
   const selected = Effect.gen(function* () {

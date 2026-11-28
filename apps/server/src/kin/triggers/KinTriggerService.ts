@@ -5,7 +5,6 @@ import {
   KinOrgId,
   KinTriggerSchedule,
   KinTriggerSubject,
-  KinWidgetId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -29,14 +28,19 @@ import {
   DeferralSnapshot,
   deferralSnapshot,
   deferralTriggerId,
-  deferralWidgetId,
   planDeferral,
   makeDeferralCards,
+  memoryCloseReason,
   promiserLead,
   type DeferralPhase,
   type DeferralPlan,
 } from "./deferrals.ts";
-import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
+import {
+  type GithubLinkState,
+  KinDeferralGithubReader,
+  readGithubLinks,
+  readGithubLinkSets,
+} from "./deferralGithub.ts";
 import { askerOf, cardChatFor, sharedChatOf, wordsReadable } from "./deferralOrigin.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
@@ -138,8 +142,6 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Effect.serviceOption(KinChatHub);
-  const publish = (event: Parameters<KinChatHub["Service"]["publish"]>[0]) =>
-    Option.isSome(hub) ? sql.afterCommit(hub.value.publish(event)) : Effect.void;
   const cards = yield* makeDeferralCards;
   const scheduled = Effect.fn("KinTriggerService.syncScheduled")(
     function* (orgId: KinOrgId, items: ReadonlyArray<SyncItem>, complete: boolean) {
@@ -244,21 +246,8 @@ const make = Effect.gen(function* () {
     timeZone: string,
     now: number,
   ) {
-    if (!plan.armed || plan.dueAt === null || item === undefined) {
-      const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
-      const existing = yield* repo.getWidget({ orgId, widgetId });
-      if (Option.isNone(existing) || existing.value.closedAt !== null) return;
-      const at = iso(now);
-      const widget = yield* repo.updateWidget({
-        ...existing.value,
-        // Closing writes no words.
-        audience: "chat",
-        expectedRevision: existing.value.revision,
-        closedAt: at,
-        updatedAt: at,
-      });
-      return yield* publish({ type: "widget.updated", orgId, widget });
-    }
+    if (!plan.armed || plan.dueAt === null || item === undefined)
+      return yield* cards.close({ orgId, itemId, now, closed: memoryCloseReason(item) });
     // A shared chat's own reminder shows there, with who asked, so its people can see and stop it.
     const own = plan.onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
     const askedBy = own === undefined ? undefined : yield* askerOf(sql, orgId, item.said_by);
@@ -288,7 +277,15 @@ const make = Effect.gen(function* () {
       if (chatId === null)
         yield* Effect.logWarning("Deferral chat is not in its organization", { orgId, itemId });
     }
-    yield* cards.write({ orgId, itemId, state, chatId, now });
+    yield* cards.write({
+      orgId,
+      itemId,
+      state,
+      chatId,
+      now,
+      saidBy: item.said_by,
+      sharedReminder: own !== undefined,
+    });
   });
 
   const apply = Effect.fn("KinTriggerService.apply")(function* (
@@ -467,6 +464,7 @@ export const syncHooksLayer = Layer.effect(
   Memory.MemorySyncHooks,
   Effect.gen(function* () {
     const service = yield* KinTriggerService;
+    const githubReader = yield* KinDeferralGithubReader;
     const syncedHeads = new Map<KinOrgId, string>();
     const failedAttempts = new Map<KinOrgId, { head: string; count: number }>();
     return {
@@ -483,6 +481,7 @@ export const syncHooksLayer = Layer.effect(
             })),
           )
           .pipe(
+            Effect.provideService(KinDeferralGithubReader, githubReader),
             Effect.tap(() =>
               Effect.sync(() => {
                 syncedHeads.set(orgId, snapshot.head);

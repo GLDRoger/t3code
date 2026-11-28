@@ -264,3 +264,42 @@ describe("Kin lead contracts", () => {
     expect(() => Schema.decodeSync(codec)(value)).toThrow();
   });
 });
+
+const decodeCard = Schema.decodeUnknownSync(Kin.KinDeferralCard);
+describe("KinDeferralCard across app versions", () => {
+  // The struct as it was before `note`, `lateSince` and `closed`: what an older app decodes with.
+  const { note: _note, lateSince: _late, closed: _closed, ...before } = Kin.KinDeferralCard.fields;
+  const decodeOlder = Schema.decodeUnknownSync(Schema.Struct(before));
+  const older = {
+    itemId: "item-1",
+    title: "Chase the Tidewater Freight invoice",
+    dueAt: at,
+    onDue: "start",
+    text: "Due at 5:30 am. Tap Monday to move it, or Cancel. This was due at 5:30 am.",
+    phase: "asked",
+    actions: ["monday", "cancel"],
+    askedBy: { personId: "meera", name: "Meera" },
+  };
+  const newer = {
+    ...older,
+    note: "Tap Monday to move it, or Cancel.",
+    lateSince: at,
+    closed: "cancelled",
+  };
+
+  it("an older app decodes a newer server's card, ignoring the new fields", () => {
+    expect(decodeOlder(newer)).toEqual(older);
+  });
+
+  it("a newer app decodes an older server's card without them", () => {
+    const card = decodeCard(older);
+    expect(card).toEqual(older);
+    expect(card.note ?? card.lateSince ?? card.closed).toBeUndefined();
+  });
+
+  it("a newer app decodes each close reason and nothing else", () => {
+    for (const closed of ["cancelled", "undone", "started", "done"])
+      expect(decodeCard({ ...newer, closed }).closed).toBe(closed);
+    expect(() => decodeCard({ ...newer, closed: "superseded" })).toThrow();
+  });
+});
