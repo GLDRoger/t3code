@@ -16,7 +16,7 @@ export const redactSecretArguments = (value: unknown, depth = 0): unknown => {
   const next = Object.fromEntries(
     Object.entries(value).map(([key, nested]) => {
       const kept =
-        isSecretKey(key) && nested !== null && nested !== undefined
+        isSecretKey(key) && nested !== null && nested !== undefined && typeof nested !== "boolean"
           ? REDACTED
           : redactSecretArguments(nested, depth + 1);
       if (kept !== nested) changed = true;
