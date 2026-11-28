@@ -829,6 +829,7 @@ const make = Effect.gen(function* () {
             inChat,
           });
           yield* setState("reminded");
+          yield* cards.close({ orgId, itemId, now, closed: undefined, fired: true });
         }
         yield* inbox.markConsumed(orgId, [fire.fireId]);
         return false;

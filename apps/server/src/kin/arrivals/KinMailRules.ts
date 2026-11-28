@@ -244,6 +244,7 @@ const make = Effect.gen(function* () {
   const markCardsRemoved = Effect.fn("KinMailRules.markCardsRemoved")(function* (
     { orgId, ruleId }: KinMailRuleRef,
     removedAt: string,
+    monthlyCap: number,
   ) {
     const cards = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
       FROM kin_widgets WHERE org_id = ${orgId} AND type = ${KIN_MAIL_RULE_CARD_TYPE}
@@ -260,7 +261,7 @@ const make = Effect.gen(function* () {
         ...card,
         audience: "chat",
         expectedRevision: card.revision,
-        state: { ...state, decision: { ...state.decision, removedAt } },
+        state: { ...state, monthlyCap, decision: { ...state.decision, removedAt } },
         updatedAt: removedAt,
       });
       yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
@@ -282,7 +283,7 @@ const make = Effect.gen(function* () {
       const reason = state === "paused" ? "paused" : "removed";
       yield* holdRuleMail(input.orgId, [input.ruleId], "held_paused", reason, now);
       yield* stopQueuedRuleMail(input.orgId, [input.ruleId], reason, now);
-      if (state === "removed") yield* markCardsRemoved(input, iso(now));
+      if (state === "removed") yield* markCardsRemoved(input, iso(now), row.monthlyCap);
       yield* refresh.touch(input.orgId, "connections");
     }
     return yield* view(input);

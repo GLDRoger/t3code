@@ -162,6 +162,7 @@ import BillSenders from "./migrations/K238_BillSenders.ts";
 import BillMail from "./migrations/K239_BillMail.ts";
 import RemovedRuleCards from "./migrations/K240_RemovedRuleCards.ts";
 import BillPreviewIds from "./migrations/K241_BillPreviewIds.ts";
+import RemovedRuleLimits from "./migrations/K242_RemovedRuleLimits.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -405,6 +406,7 @@ const migrations = {
   "239_BillMail": BillMail,
   "240_RemovedRuleCards": RemovedRuleCards,
   "241_BillPreviewIds": BillPreviewIds,
+  "242_RemovedRuleLimits": RemovedRuleLimits,
 };
 const loader = Migrator.fromRecord(migrations);
 

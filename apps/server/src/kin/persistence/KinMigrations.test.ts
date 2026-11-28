@@ -2366,9 +2366,9 @@ describe("Kin migrations", () => {
         yield* BillReadsMigration;
         yield* sql`CREATE TABLE kin_sql_migrations (migration_id INTEGER PRIMARY KEY,
         name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
-        // K240 reads mail rules, which this cut-down database otherwise lacks.
+        // The removed-rule migrations read mail rules, absent in this cut-down database.
         yield* sql`CREATE TABLE kin_mail_rules (org_id TEXT, rule_id TEXT, state TEXT,
-          updated_at INTEGER)`;
+          updated_at INTEGER, monthly_cap INTEGER NOT NULL CHECK (monthly_cap BETWEEN 1 AND 1000))`;
         for (const [id, name] of kinMigrations.filter(([id]) => id <= 235))
           yield* sql`INSERT INTO kin_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
         yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
@@ -2384,6 +2384,7 @@ describe("Kin migrations", () => {
           [239, "BillMail"],
           [240, "RemovedRuleCards"],
           [241, "BillPreviewIds"],
+          [242, "RemovedRuleLimits"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
           {
@@ -2448,7 +2449,10 @@ describe("Kin migrations", () => {
         const ids = sql<{ org: string; attachment: string; preview: string | null }>`
           SELECT org_id AS org, attachment_id AS attachment, preview_id AS preview
           FROM kin_bill_reads ORDER BY org_id, sha256`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [241, "BillPreviewIds"],
+          [242, "RemovedRuleLimits"],
+        ]);
         assert.deepStrictEqual(yield* ids, [
           { org: "org-ambermill", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
           {
@@ -2469,7 +2473,10 @@ describe("Kin migrations", () => {
         yield* sql`UPDATE kin_bill_reads SET preview_id = NULL WHERE org_id = 'org-tidewater'`;
         const held = yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`;
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 241`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[241, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [241, "BillPreviewIds"],
+          [242, "RemovedRuleLimits"],
+        ]);
         assert.deepStrictEqual(
           yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`,
           held,
@@ -2571,12 +2578,13 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [240, "RemovedRuleCards"],
         [241, "BillPreviewIds"],
+        [242, "RemovedRuleLimits"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads ORDER BY sha256`, [
         { ...before[0], preview_id: billPhotoPreviewId(photo) },
         { ...before[1], preview_id: null },
       ]);
-      assert.deepStrictEqual(kinMigrations.at(-1), [241, "BillPreviewIds"]);
+      assert.deepStrictEqual(kinMigrations.at(-1), [242, "RemovedRuleLimits"]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

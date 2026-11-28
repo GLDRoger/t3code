@@ -128,11 +128,13 @@ import {
 } from "../triggers/deferralGithub.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
+import { settleStandingReminder } from "../triggers/standingReminder.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { answerShellChange } from "../shell/changes.ts";
 import { KinRefreshHub, KinRefreshObserver, KinWorkRefresh } from "./KinRefreshHub.ts";
+import { replaceSystemNotice } from "./systemNotice.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
 import { withLinks } from "./messageLinks.ts";
@@ -293,6 +295,9 @@ export class KinChatService extends Context.Service<
       readonly chatId: KinChatId;
       readonly eventIds: ReadonlyArray<KinEventId>;
     }) => Effect.Effect<void, ServiceError>;
+    readonly replaceSystemNotice: (
+      input: Parameters<typeof replaceSystemNotice>[0],
+    ) => Effect.Effect<void, ServiceError>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
       readonly orgId: KinOrgId;
@@ -1739,6 +1744,16 @@ const make = Effect.gen(function* () {
           message: "Too late to undo: Kin already acted on this deferral.",
         });
       const at = yield* now;
+      if (card.onDue === "remind")
+        yield* settleStandingReminder(
+          { orgId: identity.orgId, widgetId: widget.widgetId, at },
+          "undone",
+        ).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, repo),
+          Effect.provideService(Hub.KinChatHub, hub),
+          Effect.mapError(dismissError),
+        );
       const closed = yield* repo.updateWidget({
         ...widget,
         // A tap's results are the card's own words, shown to whoever may tap it.
@@ -1798,7 +1813,9 @@ const make = Effect.gen(function* () {
       if (reminder !== null) {
         const state = yield* ReminderCard.applyReminderTap(widget, reminder, nowMs).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(cardTapError),
+          Effect.provideService(Repository.KinChatRepository, repo),
+          Effect.provideService(Hub.KinChatHub, hub),
+          Effect.mapError(dismissError),
         );
         applied = state === null ? null : { state, closed: false };
       } else if (scheduled !== null)
@@ -3012,6 +3029,16 @@ const make = Effect.gen(function* () {
         yield* hub.publish({ type: "message.changed", orgId, message });
       }
     }, transaction),
+    replaceSystemNotice: Effect.fn("KinChatService.replaceSystemNotice")(
+      function* (input: Parameters<typeof replaceSystemNotice>[0]) {
+        yield* replaceSystemNotice(input);
+      },
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(Repository.KinChatRepository, repo),
+      Effect.provideService(Hub.KinChatHub, hub),
+      Effect.mapError(dismissError),
+      transaction,
+    ),
     notice: Effect.fn("KinChatService.notice")(function* (input) {
       yield* requireRecord(repo.getChat(input));
       if (input.waitingFor !== undefined)

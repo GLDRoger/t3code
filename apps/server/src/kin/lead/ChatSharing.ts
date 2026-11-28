@@ -19,6 +19,7 @@ import type * as Statement from "effect/sql/Statement";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { historyFloor } from "../chat/sharing.ts";
+import { standingReminderBody } from "../triggers/standingReminder.ts";
 import { abortChatTurns } from "./Audience.ts";
 import { didVisibleWork } from "./KinEventQueue.ts";
 import { cardAudience } from "./LeadDelivery.ts";
@@ -284,7 +285,7 @@ const standingCard = (type: string, state: unknown) => {
   if (type === "deferral")
     return {
       state: { ...state, title: "", text: "" },
-      body: `A reminder ${who} asked for is set.`,
+      body: standingReminderBody(who),
     };
   if (type === "scheduled_task")
     return {
@@ -313,9 +314,12 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
   const [chat] = yield* sql<{ from: number | null }>`
     SELECT ${historyFloor(sql, input.orgId, input.chatId)} AS "from"`;
   if (chat === undefined || chat.from === null) return;
-  const rows = yield* sql<{ widgetId: string; type: string; body: string }>`
-    SELECT w.widget_id AS "widgetId", w.type, m.body FROM kin_widgets w
+  const rows = yield* sql<{ widgetId: string; type: string; body: string; beforeSharing: number }>`
+    SELECT w.widget_id AS "widgetId", w.type, m.body,
+      m.seq < c.shared_from_seq AS "beforeSharing"
+    FROM kin_widgets w
     JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
     WHERE w.org_id = ${input.orgId} AND w.chat_id = ${input.chatId} AND w.closed_at IS NULL
       AND m.seq < ${chat.from} AND w.type NOT IN ('approval', 'task')
     ORDER BY m.seq, w.widget_id`;
@@ -340,11 +344,17 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
     ) {
       const to = standing === undefined ? lead.ownerChatId : KinChatId.make(input.chatId);
       // A fresh line per floor: a later join re-anchors it again.
+      const messageId = KinMessageId.make(`${row.widgetId}:moved:${chat.from}`);
+      // The original reminder stays behind the first join's history floor.
+      const bareReminder =
+        standing !== undefined && row.type === "deferral" && row.beforeSharing === 1;
+      if (bareReminder && Option.isSome(yield* repo.getMessage({ orgId: input.orgId, messageId })))
+        continue;
       const line = yield* repo.insertMessage({
         orgId: input.orgId,
         chatId: to,
         audience,
-        messageId: KinMessageId.make(`${row.widgetId}:moved:${chat.from}`),
+        messageId,
         author: { _tag: "system" },
         kind: "system",
         body: standing?.body ?? row.body,
@@ -359,6 +369,10 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
         createdAt: at,
         editedAt: null,
       });
+      if (bareReminder) {
+        yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: line });
+        continue;
+      }
       yield* sql`UPDATE kin_widgets SET chat_id = ${to}, message_id = ${line.messageId}
         WHERE org_id = ${input.orgId} AND widget_id = ${widgetId}`;
       yield* sql`UPDATE kin_waiting SET chat_id = ${to}
