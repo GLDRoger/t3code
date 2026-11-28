@@ -2174,6 +2174,8 @@ const commitDirectly = (
     readonly remove?: ReadonlyArray<string>;
     /** A history of its own, as a replaced or recovered branch has. */
     readonly orphan?: boolean;
+    /** The commit's parents in place of the branch's head, as a merge has. */
+    readonly parents?: ReadonlyArray<string>;
   },
   date?: string,
 ) =>
@@ -2211,7 +2213,9 @@ const commitDirectly = (
     const commit = yield* git([
       "commit-tree",
       yield* git(["write-tree"]),
-      ...(change.orphan === true ? [] : ["-p", before]),
+      ...(change.orphan === true
+        ? []
+        : (change.parents ?? [before]).flatMap((parent) => ["-p", parent])),
       "-m",
       "direct",
     ]);
@@ -2541,13 +2545,28 @@ it.effect("a shadow commit at the cut-over's own second stays off the default br
   landingFixture(({ bare }) =>
     Effect.gen(function* () {
       const writer = yield* Writer.MemoryWriter;
+      yield* said("m-early", "2026-10-30T00:00:00.000Z");
       yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
       yield* wokeBeforeCutOver(writer, "wake0");
-      // K035 ran at 12:42:41; this commit's second is the same one.
+      // K035 ran at 12:42:41; this commit's second is the same one. Its note cites the owner's
+      // message from before then, so only the cut-off holds it.
       yield* commitDirectly(
         bare,
         Memory.shadowBranch(agentId),
-        { add: { "people/same-second.md": personNote("same-second", "Said that second").content } },
+        {
+          add: {
+            "people/same-second.md": fixtureItem({
+              id: "same-second",
+              kind: "person",
+              title: "Said that second",
+              due: null,
+              on_due: undefined,
+              review_by: null,
+              links: ["person:same-second"],
+              source: "kin:chat:owner-chat:message:m-early",
+            }),
+          },
+        },
         "2026-11-10T12:42:41Z",
       );
 
@@ -2903,5 +2922,176 @@ it.effect("pull-request mode with a memory repo off GitHub skips landing quietly
         assert.lengthOf(notices, count);
       }),
     { offGitHubPullRequests: true },
+  ),
+);
+
+// A shadow note citing the owner's message `m1` in their chat with the lead.
+const cited = (id: string, title: string, extra: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id,
+    kind: "person",
+    title,
+    due: null,
+    on_due: undefined,
+    review_by: null,
+    links: [`person:${id}`],
+    source: "kin:chat:owner-chat:message:m1",
+    ...extra,
+  });
+
+it.effect("a shadow note whose id only a held-back note would free stays behind too", () =>
+  landingFixture(({ bare, setLevel }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake0", personNote("a", "A, as Memory has it"));
+      yield* writer.stage(orgId, "wake0", personNote("b", "B, as Memory has it"));
+      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      setLevel("L0");
+      yield* writer.stage(orgId, "wake1", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake1");
+      // `people/a.md` now holds `b`, which clashes, so Memory's `a` stays and `people/c.md` clashes.
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/a.md": cited("b", "B, as the shadow has it"),
+            "people/c.md": cited("a", "A, moved by the shadow"),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/alex.md");
+      assert.notInclude(tree, "people/c.md");
+      yield* memory.syncCheckout(orgId);
+      for (const [id, title] of [
+        ["a", "A, as Memory has it"],
+        ["b", "B, as Memory has it"],
+      ] as const)
+        assert.strictEqual(
+          (yield* memory.readItem(orgId, KinMemoryItemId.make(id))).head.title,
+          title,
+        );
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/a.md: It clashes with another note in Memory, so Kin left it out.\n- people/c.md: It clashes with another note in Memory, so Kin left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect(
+  "a shadow note with the id of a note only the reader's lenient parse loads stays behind",
+  () =>
+    landingFixture(({ bare }) =>
+      Effect.gen(function* () {
+        const writer = yield* Writer.MemoryWriter;
+        const memory = yield* Memory.Memory;
+        yield* said("m1", "2026-10-30T00:00:00.000Z");
+        yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+        yield* wokeBeforeCutOver(writer, "wake0");
+        // An older note whose quote isn't text: reads drop the quote and still load it.
+        yield* commitDirectly(bare, "main", {
+          add: {
+            "people/legacy.md": cited("legacy", "Legacy, as Memory has it", { quote: [1, 2] }),
+          },
+        });
+        yield* commitDirectly(
+          bare,
+          Memory.shadowBranch(agentId),
+          { add: { "people/legacy-copy.md": cited("legacy", "Legacy, as the shadow has it") } },
+          preCutOver,
+        );
+
+        yield* writer.landShadows(orgId);
+        const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+        assert.include(tree, "people/alex.md");
+        assert.notInclude(tree, "people/legacy-copy.md");
+        yield* memory.syncCheckout(orgId);
+        assert.strictEqual(
+          (yield* memory.readItem(orgId, KinMemoryItemId.make("legacy"))).head.title,
+          "Legacy, as Memory has it",
+        );
+      }),
+    ),
+);
+
+it.effect("a retry after a landing the remote took marks it and brings back nothing removed", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/sam.md": cited("sam", "Sam runs billing", { quote: FIXTURE_QUOTE }),
+            "people/broken.md": "Not a note\n",
+          },
+        },
+        preCutOver,
+      );
+      // The remote takes the landing, then the transaction that marks it fails.
+      yield* sql.unsafe(`CREATE TRIGGER no_mark BEFORE INSERT ON kin_memory_heads
+        WHEN NEW.branch LIKE 'kin/shadow-landed/%' BEGIN SELECT RAISE(ABORT, 'no mark'); END`);
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      assert.notInclude(yield* bare(["show", "main:people/sam.md"]), FIXTURE_QUOTE);
+      assert.deepStrictEqual(yield* landedMarks, []);
+      assert.deepStrictEqual(yield* toldOwner, []);
+      yield* sql.unsafe("DROP TRIGGER no_mark");
+      yield* memory.syncCheckout(orgId);
+      // Before the retry, someone removes a landed note from Memory.
+      yield* commitDirectly(bare, "main", { remove: ["people/alex.md"] });
+      const removed = yield* bare(["rev-parse", "main"]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), removed);
+      assert.deepStrictEqual(yield* landedMarks, [`kin/shadow-landed/${agentId}`]);
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/broken.md: It couldn't be read.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a shadow whose history crosses the default branch's twice lands nothing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // Each branch merges the other's tip in turn: a criss-cross, with two best bases.
+      yield* commitDirectly(bare, shadow, { add: { "rules.md": "Shadow rules\n" } }, preCutOver);
+      yield* commitDirectly(bare, "main", { add: { "rules.md": "Default rules\n" } });
+      const fromShadow = yield* bare(["rev-parse", shadow]);
+      const fromMain = yield* bare(["rev-parse", "main"]);
+      yield* commitDirectly(bare, shadow, { parents: [fromShadow, fromMain] }, preCutOver);
+      yield* commitDirectly(bare, "main", { parents: [fromMain, fromShadow] });
+      assert.lengthOf((yield* bare(["merge-base", "--all", "main", shadow])).split("\n"), 2);
+      const before = yield* bare(["rev-parse", "main"]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), before);
+      assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/alex.md");
+      assert.deepStrictEqual(yield* landedMarks, []);
+    }),
   ),
 );
