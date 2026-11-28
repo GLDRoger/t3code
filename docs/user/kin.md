@@ -347,7 +347,8 @@ the `[mcp_servers.kin]` section and add the `http_headers` line Kin shows instea
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
-keys were tied to a device has ended; make a new one.
+keys were tied to a device, or before they could do what their person can, has ended; make a new
+one.
 
 ## Clients and projects
 
