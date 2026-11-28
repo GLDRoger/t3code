@@ -5289,7 +5289,9 @@ it.effect.each([
           AND status = 'posted' ORDER BY message_id`;
         const beforeUndo = yield* posted;
         const before = `${debit.key}, ₹450 paid 15 Nov, names Zoya Rao and adds up exactly to their oldest owed expense: ${expense.key}. It isn't marked repaid until it is confirmed on a card.`;
-        const after = `${before} The repayment mark was undone.`;
+        const after = `${before} The repayment mark was undone, so this expense is owed again.`;
+        const noCard = `${after} No repayment card is open, so nothing lets the owner or a co-owner mark it again until one is offered.`;
+        const openCard = `${after} The open repayment card still offers it, so a second card would only repeat it.`;
         yield* TestClock.adjust(60_000);
         yield* press();
         assert.deepStrictEqual(yield* posted, beforeUndo);
@@ -5299,7 +5301,7 @@ it.effect.each([
           assert.isTrue(next.ok, JSON.stringify(next.value));
           assert.deepStrictEqual(
             [firstLine, yield* promptFact(), yield* tick()],
-            [`${after} No repayment card is open.`, `${after} A repayment card is open.`, []],
+            [noCard, openCard, []],
           );
           return;
         }
@@ -5309,7 +5311,7 @@ it.effect.each([
           assert.isFalse(refused.ok);
           assert.deepStrictEqual(
             [firstLine, yield* promptFact(), yield* tick(), yield* posted],
-            [`${after} No repayment card is open.`, undefined, [], beforeUndo],
+            [noCard, undefined, [], beforeUndo],
           );
           return;
         }
@@ -5352,12 +5354,12 @@ it.effect.each([
           rounds.push({ line: yield* promptFact(), woken: yield* tick() });
         }
         assert.deepStrictEqual(rounds, [
-          { line: `${after} No repayment card is open.`, woken: [factKey] },
-          { line: `${after} A repayment card is open.`, woken: [] },
+          { line: noCard, woken: [factKey] },
+          { line: openCard, woken: [] },
           ...(change === "undone a second time"
             ? [
-                { line: `${after} No repayment card is open.`, woken: [factKey] },
-                { line: `${after} No repayment card is open.`, woken: [] },
+                { line: noCard, woken: [factKey] },
+                { line: noCard, woken: [] },
               ]
             : []),
         ]);

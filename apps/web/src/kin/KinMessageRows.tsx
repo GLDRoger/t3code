@@ -2,6 +2,7 @@ import {
   kinBodyMarkdown,
   kinChangedMark,
   kinMessageLabel,
+  kinNoteMarkdown,
   kinWithdrawnLine,
   kinPlainText,
   type KinFeedRow,
@@ -604,9 +605,19 @@ export function KinSystemRow(props: {
 }) {
   const open = props.open ?? null;
   const discussion = props.discussion ?? null;
+  const linked = kinNoteMarkdown(props.body);
   return (
     <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-2 px-8 py-1">
-      <p className="text-center text-xs text-muted-foreground">{props.body}</p>
+      {linked === null ? (
+        <p className="text-center text-xs text-muted-foreground">{props.body}</p>
+      ) : (
+        <ChatMarkdown
+          text={linked}
+          cwd={undefined}
+          parseRawHtml={false}
+          className="w-auto text-center text-xs text-muted-foreground"
+        />
+      )}
       {open === null ? null : (
         <Button
           size="xs"

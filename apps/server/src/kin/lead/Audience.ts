@@ -498,7 +498,8 @@ export const OTHERS_CHAT = "You read only chats everyone you are working for her
 export const AUDIENCE_MOVED =
   "Someone else joined this chat while you were working, so nothing was sent.";
 /** The one line a tool refused in a chat other people can read answers with. */
-export const SHARED_REFUSAL = "I can't do that in a chat other people can read.";
+export const SHARED_REFUSAL =
+  "Nothing was done or saved: other people read this chat, and this needs a chat only the owner and co-owners read.";
 /** Why a full session's hook refused a shell, edit, web or sub-agent call: the model reads it. */
 export const SESSION_REFUSAL = {
   shared:

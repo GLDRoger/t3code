@@ -1,19 +1,21 @@
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import type { ChatAttachment } from "@t3tools/contracts";
+import { type ChatAttachment, KinEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import { resolveAttachmentPath } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as KinAttachmentStore from "../../chat/KinAttachmentStore.ts";
 import { pdf } from "../../work/statements/statementPdf.testkit.ts";
-import { KinTurnContent, pageImageId, TURN_TEXT_CHARS } from "./content.ts";
+import { billPhotoMode, KinTurnContent, pageImageId, TURN_TEXT_CHARS } from "./content.ts";
 import { PDF_PAGE_IMAGES } from "./pdfPageImages.ts";
 
+const decodeEvent = Schema.decodeUnknownSync(KinEvent);
 const file = (id: string, name: string, mimeType: string, sizeBytes = 1): ChatAttachment => ({
   type: "file",
   id,
@@ -342,3 +344,40 @@ it.effect("a stored PDF that Kin deletes takes the page images a turn drew of it
     );
   }).pipe(Effect.provide(layer("kin-turn-content-remove-"))),
 );
+
+it("a bills turn queued before photos were prepared up front still prepares its own", () => {
+  const bills = (eventId: string, marked: boolean) =>
+    decodeEvent({
+      _tag: "bills.read",
+      orgId: "org",
+      agentId: "finance",
+      eventId,
+      receivedAt: "2026-11-27T12:00:00.000Z",
+      dedupeKey: null,
+      provenance: { _tag: "system" },
+      chatId: "rhea-finance",
+      batchId: "b-1",
+      bills: ["a".repeat(64)],
+      ...(marked ? { photosPrepared: true } : {}),
+    });
+  const message = decodeEvent({
+    _tag: "chat.message",
+    orgId: "org",
+    agentId: "finance",
+    eventId: "said",
+    receivedAt: "2026-11-27T12:00:00.000Z",
+    dedupeKey: "said",
+    provenance: { _tag: "human", personId: "rhea", memberId: "rhea-member" },
+    chatId: "rhea-finance",
+    messageId: "said",
+  });
+  assert.deepStrictEqual(
+    [
+      [bills("new", true)],
+      [bills("old", false)],
+      [bills("new", true), bills("old", false)],
+      [bills("new", true), message],
+    ].map(billPhotoMode),
+    [true, "legacy", "legacy", false],
+  );
+});

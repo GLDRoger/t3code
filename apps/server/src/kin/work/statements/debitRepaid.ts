@@ -27,7 +27,7 @@ export type RepaidMatch = {
   readonly debit: OpenDebit;
   readonly partner: { readonly id: string; readonly name: string };
   readonly owedMinor: bigint;
-  readonly owedCount: number;
+  readonly owedKeys: ReadonlyArray<string>;
   readonly repays: ReadonlyArray<RepaidItem> | undefined;
   readonly marked: string | undefined;
   readonly expense?: {
@@ -143,7 +143,7 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
         debit,
         partner: { id, name },
         owedMinor: partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n),
-        owedCount: partner.owed.length,
+        owedKeys: partner.owed.map((one) => one.key),
         repays: exact,
         marked,
         noLine:

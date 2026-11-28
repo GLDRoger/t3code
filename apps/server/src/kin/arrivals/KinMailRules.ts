@@ -1,5 +1,8 @@
 import {
+  KIN_MAIL_RULE_CARD_TYPE,
   KinChatError,
+  KinMailRuleCardState,
+  type KinWidgetId,
   KinMailRuleCreateInput,
   type KinMailRuleMatch,
   type KinMailRule,
@@ -15,12 +18,15 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
@@ -77,6 +83,8 @@ const decodeMatch = Schema.decodeUnknownOption(MatchJson);
 const decodeRefs = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 const isChatError = Schema.is(KinChatError);
 const isCreate = Schema.is(KinMailRuleCreateInput);
+const decodeCard = Schema.decodeUnknownEffect(KinMailRuleCardState);
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 type People = ReadonlyArray<PersonIdentity>;
 type Method<Input, Result> = (people: People, input: Input) => Effect.Effect<Result, KinChatError>;
@@ -100,8 +108,9 @@ export class KinMailRules extends Context.Service<
   }
 >()("t3/kin/arrivals/KinMailRules") {}
 
-type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month" | "setterDemoted"> & {
+type RuleRow = Omit<KinMailRule, "match" | "atLimit" | "month" | "setterDemoted" | "lastRanAt"> & {
   readonly demoted: 0 | 1;
+  readonly lastStartedAt: number | null;
   readonly matchJson: string;
   readonly contentHash: string;
   readonly month: string | null;
@@ -132,6 +141,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const connections = yield* KinConnections;
   const queue = yield* KinEventQueue;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
   // Read once here: a caller's context, such as an RPC's, holds only the no-op default.
   const refresh = yield* KinRefreshObserver;
   const zoneFor = (orgId: KinOrgId) =>
@@ -155,7 +166,11 @@ const make = Effect.gen(function* () {
       AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} THEN 1 ELSE 0 END AS demoted,
     r.content_sha256 AS "contentHash", r.state, r.paused_why AS "pausedWhy",
     r.monthly_cap AS "monthlyCap", r.month, r.fired, r.last_wake_at AS "lastWakeAt",
-    r.created_at AS "createdAt", r.updated_at AS "updatedAt"
+    r.created_at AS "createdAt", r.updated_at AS "updatedAt",
+    (SELECT MAX(w.started_at) FROM kin_mail_rule_runs run
+      JOIN kin_wakeups w ON w.org_id = run.org_id AND w.wakeup_id = run.wakeup_id
+      WHERE run.org_id = r.org_id AND run.rule_id = r.rule_id AND run.outcome IS NOT 'held'
+    ) AS "lastStartedAt"
     FROM kin_mail_rules r LEFT JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = r.said_by`;
   const one = Effect.fn("KinMailRules.one")(function* ({ orgId, ruleId }: KinMailRuleRef) {
     const [row] = yield* sql<RuleRow>`${rules} WHERE r.org_id = ${orgId} AND r.rule_id = ${ruleId}`;
@@ -174,12 +189,14 @@ const make = Effect.gen(function* () {
       sourceEvent: _sourceEvent,
       activation: _activation,
       demoted,
+      lastStartedAt,
       ...view
     } = row;
     return {
       ...view,
       // The wake's own check (`ruleSetter`): on the team, not owner level.
       ...(demoted === 1 ? { setterDemoted: true as const } : {}),
+      ...(lastStartedAt === null ? {} : { lastRanAt: iso(lastStartedAt) }),
       match,
       wordingChanged: match === null,
       ...monthlyMailRuleLimit(row, at, zone),
@@ -235,6 +252,31 @@ const make = Effect.gen(function* () {
     return yield* view({ orgId, ruleId });
   }, transaction);
 
+  const markCardsRemoved = Effect.fn("KinMailRules.markCardsRemoved")(function* (
+    { orgId, ruleId }: KinMailRuleRef,
+    removedAt: string,
+  ) {
+    const cards = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
+      FROM kin_widgets WHERE org_id = ${orgId} AND type = ${KIN_MAIL_RULE_CARD_TYPE}
+        AND json_extract(state_json, '$.decision.status') = 'on'
+        AND json_extract(state_json, '$.decision.ruleId') = ${ruleId}
+        AND json_extract(state_json, '$.decision.removedAt') IS NULL`;
+    for (const { widgetId } of cards) {
+      const found = yield* repo.getWidget({ orgId, widgetId });
+      if (Option.isNone(found)) continue;
+      const card = found.value;
+      const state = yield* decodeCard(card.state);
+      if (state.decision.status !== "on") continue;
+      const widget = yield* repo.updateWidget({
+        ...card,
+        audience: "chat",
+        expectedRevision: card.revision,
+        state: { ...state, decision: { ...state.decision, removedAt } },
+        updatedAt: removedAt,
+      });
+      yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+    }
+  });
   const turnOff = Effect.fn("KinMailRules.turnOff")(function* (
     people: People,
     input: KinMailRuleRef,
@@ -251,6 +293,7 @@ const make = Effect.gen(function* () {
       const reason = state === "paused" ? "paused" : "removed";
       yield* holdRuleMail(input.orgId, [input.ruleId], "held_paused", reason, now);
       yield* stopQueuedRuleMail(input.orgId, [input.ruleId], reason, now);
+      if (state === "removed") yield* markCardsRemoved(input, iso(now));
       yield* refresh.touch(input.orgId, "connections");
     }
     return yield* view(input);

@@ -64,7 +64,8 @@ export function filePreviewName(source: FilePreviewItem): string {
       ? name
       : uriName && extension.test(uriName)
         ? uriName
-        : name.replace(/\./g, "_");
+        : // The viewer's title, as stored: iOS reads an image's type from its bytes, not a dot.
+          name;
   return Array.from(filename, (character) =>
     character.charCodeAt(0) < 32 || "/:\\".includes(character) ? "_" : character,
   ).join("");

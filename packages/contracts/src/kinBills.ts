@@ -189,6 +189,7 @@ export const KinBillRow = Schema.Struct({
       receivedAt: IsoDateTime,
     }),
   ),
+  preview: Schema.optional(KinFileRef),
   state: KinBillState,
   read: KinBillRead,
   /** In plain words, what could not be read. */

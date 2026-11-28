@@ -22,6 +22,7 @@ import {
   kinTurnFiles,
   replyFollowUp,
   shownText,
+  writtenText,
 } from "./kin.ts";
 import {
   answerToolCall,
@@ -231,6 +232,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
   return {
     calls,
     text: shownText(sample.responses),
+    wroteText: writtenText(sample.responses),
     ...kinDelivery(sample),
     stopReason,
     finalText,

@@ -12,7 +12,6 @@ import * as MemoryCache from "./MemoryCache.ts";
 import {
   KinChatError,
   MemoryItemFrontMatter,
-  RepoSlug,
   type KinAgentId,
   type KinChatId,
   type KinMemoryItemId,
@@ -61,6 +60,7 @@ import { deletedQuotes } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
+import { asPersonWaits } from "../triggers/deferralGithub.ts";
 import {
   memoryWriteFailure,
   observeMemoryWrite,
@@ -312,7 +312,6 @@ export class MemoryWriter extends Context.Service<
     readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
-const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = [
   "objectives",
@@ -363,6 +362,8 @@ const make = Effect.gen(function* () {
   const app = yield* gitHubApp;
   const cache = yield* MemoryCache.MemoryCache;
   const pullRequests = yield* Effect.serviceOption(MemoryPullRequests);
+  // Pull request mode saves the default branch locally without pushing it.
+  // The lander stays idle when there is no GitHub target, so no pull request is attempted.
   const mainWrites = Option.isSome(pullRequests)
     ? "pull_request"
     : config.directMainPush === true
@@ -787,16 +788,6 @@ const make = Effect.gen(function* () {
       return yield* new MemoryConfigError({ orgId, operation: "writer", reason: "Unknown org" });
     return repo;
   });
-  // Checked before committing: a commit no PR could ever land would only sit on this server.
-  const refuseOffGitHub = Effect.fn("MemoryWriter.refuseOffGitHub")(function* (orgId: KinOrgId) {
-    const repo = yield* repoFor(orgId);
-    if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo))
-      return yield* new MemorySyncConflict({
-        orgId,
-        operation: "push",
-        reason: "The memory repo is not on GitHub, so Kin cannot open its PR",
-      });
-  });
   const refuseMainWrite = Effect.fn("MemoryWriter.refuseMainWrite")(function* (orgId: KinOrgId) {
     const reason =
       "Memory writes to the default branch land through a pull request, which isn't set up here (TRIG-15); this one was not committed";
@@ -874,6 +865,7 @@ const make = Effect.gen(function* () {
       yield* record(commit);
     }
     yield* memory.rebuildCache(orgId).pipe(
+      asPersonWaits,
       Effect.catch((error) =>
         Effect.logWarning("Could not refresh memory cache after an owner change", {
           orgId,
@@ -1199,7 +1191,6 @@ const make = Effect.gen(function* () {
             const onMain = branch === (config.defaultBranch ?? "main");
             if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
             const viaPullRequest = onMain && mainWrites === "pull_request";
-            if (viaPullRequest) yield* refuseOffGitHub(orgId);
             const recorded = yield* branchHead(orgId, writer, branch);
             const unpushedKey = `${orgId}\u0000${branch}`;
             const push = (sha: string) =>
@@ -1339,7 +1330,6 @@ const make = Effect.gen(function* () {
                   }),
                 ),
               );
-              // The wake-up is done once its commit is here; GitHub gets it in the background.
               if (viaPullRequest) yield* lander.signal(orgId);
               else yield* push(commit);
               return { commit };
@@ -1493,7 +1483,6 @@ const make = Effect.gen(function* () {
               operation: "push",
               reason: "Memory writes to the default branch are refused",
             });
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const head = yield* branchHead(orgId, writer, main);
           const headFiles = yield* filesAt(orgId, writer, head);
           if (head !== input.base) {
@@ -1552,7 +1541,6 @@ const make = Effect.gen(function* () {
           const repo = yield* repoFor(orgId);
           const onMain = input.branch === main;
           if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
-          if (onMain && mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const stale = { _tag: "stale" } as const;
           // A purge rewrites history, so the wake-up's commits may be gone.
           for (const sha of [input.base, input.commit])
@@ -1630,7 +1618,6 @@ const make = Effect.gen(function* () {
           yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const item = yield* memory.readItemQuietly(orgId, input.itemId);
           const head = yield* branchHead(orgId, writer, main);
           const headFiles = yield* filesAt(orgId, writer, head);
@@ -1684,7 +1671,6 @@ const make = Effect.gen(function* () {
                 operation: "push",
                 reason: "Memory writes to the default branch are refused",
               });
-        if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
         const item = yield* memory.readItemQuietly(orgId, input.itemId);
         const head = yield* branchHead(orgId, writer, main);
         const headFiles = yield* filesAt(orgId, writer, head);
@@ -1730,7 +1716,6 @@ const make = Effect.gen(function* () {
           yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const item = yield* memory.readItemQuietly(orgId, input.itemId);
           const head = yield* branchHead(orgId, writer, main);
           const headFiles = yield* filesAt(orgId, writer, head);
@@ -1777,7 +1762,6 @@ const make = Effect.gen(function* () {
               operation: "push",
               reason: "Memory writes to the default branch are refused",
             });
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const path = `decisions/${input.itemId}.md`;
           yield* safePath(orgId, writer, path);
           const head = yield* branchHead(orgId, writer, main);
@@ -1857,10 +1841,7 @@ const make = Effect.gen(function* () {
           ]))
             .split("\n")
             .filter((branch) => branch !== "");
-          const mainWritable =
-            mainWrites === "direct" ||
-            (mainWrites === "pull_request" &&
-              (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Success");
+          const mainWritable = mainWrites !== "refused";
           let failure: MemoryWriteFailure | undefined;
           const [clears] = yield* sql<{ mark: number }>`SELECT
               COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(

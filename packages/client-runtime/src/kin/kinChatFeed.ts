@@ -32,7 +32,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel.ts";
-import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
+import { kinTapAnswersChoice, kinTapLine } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinAskTurnKey, kinPostedReplyWakeup, kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinReplyButtons, type KinReplyButton } from "./kinReplyButtons.ts";
@@ -382,6 +382,24 @@ const kinNoticeOpen = (message: Pick<KinMessage, "messageId" | "body">) => {
 const RETRY_NOTICES = ["kin-no-reply:", "kin-partway:", "kin-retrying:", "kin-failed:"];
 const retryNotice = (message: KinMessage) =>
   RETRY_NOTICES.some((prefix) => message.messageId.startsWith(prefix));
+/**
+ * What each retry notice could send again: the viewer's words when the last thing they sent before
+ * it was typed. The notice names only its wake-up, so this is the feed's best reading; after a tap
+ * it offers nothing, since the host gives a tap back to its card to be tapped again.
+ */
+function retryInputs(messages: ReadonlyArray<KinMessage>, personId: KinPersonId | null) {
+  const inputs = new Map<string, string | null>();
+  let last: string | null = null;
+  for (const message of messages) {
+    const own = message.author._tag === "human" && message.author.personId === personId;
+    // Retry resends words, and the host brings back their files; a picture alone has none.
+    if (own && message.kind === "text" && message.status === "posted")
+      last = message.body.trim() === "" ? null : message.body;
+    else if (own && message.kind === "widget_action") last = null;
+    else if (retryNotice(message)) inputs.set(message.messageId, last);
+  }
+  return inputs;
+}
 // "Trying again" stops offering Retry once the agent speaks: the host's own retry worked.
 const hostRetrying = (message: KinMessage) => message.messageId.startsWith("kin-retrying:");
 // Hosts before Retry asked the owner to resend in the notice itself.
@@ -399,7 +417,7 @@ const messageRowKey = (message: KinMessage) =>
     ? message.clientMessageId
     : message.messageId;
 
-// A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
+// A card tap shows as the button's label and the card's title, never its JSON or the card itself.
 const shownMessage = (message: KinMessage): KinMessage => {
   // Bills added from Money ride on their card's message; they show in its review list.
   if (isSystem(message) && message.widgetId?.startsWith("bills:") === true)
@@ -408,7 +426,7 @@ const shownMessage = (message: KinMessage): KinMessage => {
   if (isSystem(message) && message.widgetId !== null)
     return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
-  return { ...message, body: kinTapText(message.body), widgetId: null };
+  return { ...message, body: kinTapLine(message.body), widgetId: null };
 };
 
 // Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.
@@ -801,7 +819,16 @@ export function buildKinFeedRows(
     rows.push(dayRow(message, key, now));
   };
 
-  let lastOwnText: string | null = null;
+  const retries = retryInputs(messages, viewer.personId);
+  // A card keeps its place when it changes, so a host retry that only updated one ("Done.") shows
+  // as that card's change coming after the notice.
+  const lastCardChange = visible.reduce(
+    (latest, message) =>
+      message.widgetId === null ? latest : Math.max(latest, message.changeSeq ?? -1),
+    -1,
+  );
+  const cardChangedSince = (notice: KinMessage) =>
+    notice.changeSeq !== undefined && lastCardChange > notice.changeSeq;
   const openRetries: number[] = [];
   const closeRetries = (which: (row: SystemRow) => boolean) => {
     for (let at = openRetries.length - 1; at >= 0; at--) {
@@ -861,7 +888,10 @@ export function buildKinFeedRows(
       !kinIsBrief(message.body, message.form)
     ) {
       const notice = retryNotice(message);
-      const retry = notice ? lastOwnText : null;
+      const retry =
+        notice && !(hostRetrying(message) && cardChangedSince(message))
+          ? (retries.get(message.messageId) ?? null)
+          : null;
       if (notice) {
         for (const index of retryingRows) superseded.add(index);
         retryingRows = hostRetrying(message) ? [rows.length] : [];
@@ -883,12 +913,8 @@ export function buildKinFeedRows(
     }
     retryingRows = [];
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
-    if (own && message.kind === "text" && message.status === "posted") {
-      // Retry resends words, and the host brings back their files; a picture alone has none.
-      lastOwnText = message.body.trim() === "" ? null : message.body;
-      // Writing again answers the notice, so it stops offering to resend.
-      closeRetries(() => true);
-    }
+    // Writing again answers the notice, so it stops offering to resend.
+    if (own && message.kind === "text" && message.status === "posted") closeRetries(() => true);
     if (message.author._tag === "agent") closeRetries((row) => hostRetrying(row.message));
     const author = authorKey(message);
     rows.push(
@@ -1065,6 +1091,43 @@ export function kinMessageLinks(markdown: string): ReadonlyArray<KinMessageLink>
 /** What a tapped Kin link opens: web links only, so a bubble can't dial, text or deep-link. */
 export function kinLinkToOpen(href: string): string | null {
   return kinSafeWebUrl(href)?.href ?? null;
+}
+
+const NOTE_URL = /https:\/\/[^\s<>()]+[^\s<>().,;:!?'"]/g;
+
+/** One of Kin's own notes as words and the web addresses in them, each to open as a link. */
+export function kinNoteParts(
+  text: string,
+): ReadonlyArray<{ readonly text: string; readonly href: string | null }> {
+  const parts: Array<{ text: string; href: string | null }> = [];
+  let at = 0;
+  for (const match of text.matchAll(NOTE_URL)) {
+    const href = kinLinkToOpen(match[0]);
+    if (href === null) continue;
+    if (match.index > at) parts.push({ text: text.slice(at, match.index), href: null });
+    parts.push({ text: match[0], href });
+    at = match.index + match[0].length;
+  }
+  if (at < text.length || parts.length === 0) parts.push({ text: text.slice(at), href: null });
+  return parts;
+}
+
+const escapeNoteText = (text: string) => text.replace(/[\\`*_[\]{}()#+.!|~<>&-]/g, "\\$&");
+
+/**
+ * A note with a web address as Markdown whose only markup is its links, so the chat opens them as
+ * it opens an agent's; null for a note with none, which stays plain words.
+ */
+export function kinNoteMarkdown(text: string): string | null {
+  const parts = kinNoteParts(text);
+  if (parts.every((part) => part.href === null)) return null;
+  return parts
+    .map((part) =>
+      part.href === null
+        ? escapeNoteText(part.text)
+        : `[${escapeNoteText(part.text)}](${part.href})`,
+    )
+    .join("");
 }
 
 /**
