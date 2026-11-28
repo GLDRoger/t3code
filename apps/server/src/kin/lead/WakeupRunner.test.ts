@@ -15,6 +15,7 @@ import {
   KinEvent,
   KinAgentId,
   KinChatId,
+  KinMemberId,
   KinMessageId,
   KinPersonId,
   MemoryItemHead,
@@ -83,6 +84,8 @@ import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { cappedOutput, KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { emptyWorld, FakeGitHub, runGh } from "../github/fakeGitHub.ts";
 import { KinSessionContext } from "./turn/sessionContext.ts";
 import { claude } from "./turn/providers/claude.ts";
 import { KinServer, type Services as KinServerServices } from "../KinServer.ts";
@@ -304,13 +307,37 @@ const sessions = Effect.fn("test.sessions")(function* () {
     });
 });
 
-const privateRequest = Effect.fn("test.privateRequest")(function* (id: string) {
+const quietRunTeammate = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+const joinQuietRunChat = Effect.fn("test.joinQuietRunChat")(function* () {
+  const repo = yield* KinChatRepository.KinChatRepository;
+  const createdAt = "2026-11-08T00:00:00.000Z";
+  yield* repo.insertPerson({
+    ...quietRunTeammate,
+    handle: "zoya",
+    displayName: "Zoya",
+    githubLogin: null,
+    createdAt,
+  });
+  yield* repo.addMember({
+    orgId,
+    chatId: KinChatId.make("direct"),
+    memberId: KinMemberId.make("zoya-member"),
+    principal: { _tag: "person", personId: quietRunTeammate.personId },
+    role: "member",
+    joinedAt: createdAt,
+    leftAt: null,
+    mutedUntil: null,
+  });
+});
+
+const privateRequest = Effect.fn("test.privateRequest")(function* (id: string, shared = false) {
   yield* seed;
   yield* seedDirectChats;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
     VALUES ('direct-agent', ${orgId}, 'direct', 'agent', ${agentId}, 'member', '2026-11-08T00:00:00.000Z')`;
+  if (shared) yield* joinQuietRunChat();
   const message = yield* ownerSays(id, "direct");
   yield* sql`UPDATE kin_chats SET last_seq = 1, direct_key = 'owner:lead'
     WHERE org_id = ${orgId} AND chat_id = 'direct'`;
@@ -3217,6 +3244,84 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
+  it.effect("an asked review starts its turn only while its asker can still see the repo", () =>
+    Effect.gen(function* () {
+      const prompts: Array<KinLeadPromptInput> = [];
+      const github = new FakeGitHub(emptyWorld("rhea-gh", 0));
+      github.addRepo({ full_name: "tidewater/ledger", collaborators: ["zoya-gh"] });
+      const login = Layer.mock(KinGitHubLogin)({
+        connected: () => Effect.succeed(true),
+        account: () =>
+          Effect.succeed({
+            login: "rhea-gh",
+            orgs: ["tidewater"],
+            scopes: ["repo"],
+            problem: null,
+          }),
+        ghDirectory: "/nonexistent",
+        gh: (args, stdin) =>
+          Effect.sync(() => {
+            const answer = runGh(github, args, stdin ?? "");
+            return { code: answer.code, ...cappedOutput(answer.out + (answer.err ?? "")) };
+          }),
+      });
+      const asked = (number: number) =>
+        decodeEvent({
+          _tag: "github",
+          orgId,
+          agentId,
+          eventId: `asked-${number}`,
+          receivedAt: "2026-11-08T00:00:00.000Z",
+          dedupeKey: `asked:tidewater/ledger#${number}`,
+          provenance: { _tag: "system" },
+          deliveryId: `asked:tidewater/ledger#${number}`,
+          eventName: "review_request",
+          repo: "tidewater/ledger",
+          summary: `review asked on tidewater/ledger#${number}`,
+          trigger: {
+            key: `review:tidewater/ledger#${number}`,
+            kind: "review_request",
+            item: "pull",
+            number,
+            url: `https://github.com/tidewater/ledger/pull/${number}`,
+            title: "Round a total",
+            author: "zoya-gh",
+            association: "COLLABORATOR",
+            inside: true,
+            text: "Invented",
+          },
+          askedBy: "zoya",
+          chatId: "dm-zoya",
+        });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login,
+            created_at, access)
+          VALUES ('zoya', 'org', 'zoya', 'Zoya', 'zoya-gh', '2026-11-08T00:00:00.000Z', 'member')`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('dm-zoya', 'org', 'direct', 'zoya:lead', 0, '2026-11-08T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+            role, joined_at)
+          VALUES ('zoya-member', 'org', 'dm-zoya', 'person', 'zoya', 'member', '2026-11-08T00:00:00.000Z')`;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* queue.enqueue(asked(1));
+        yield* Fiber.join(yield* run());
+        assert.lengthOf(prompts, 1);
+        // Taken off the repo after asking: the queued excerpt never reaches a prompt.
+        github.world.repos.find((repo) => repo.full_name === "tidewater/ledger")!.collaborators =
+          [];
+        yield* queue.enqueue(asked(2));
+        yield* Fiber.join(yield* run());
+        assert.lengthOf(prompts, 1);
+        const [refused] = yield* sql<{ refused: number }>`SELECT
+            json_extract(json, '$._reviewAccessRefusedIn') IS wakeup_id AS refused
+          FROM kin_events WHERE event_id = 'asked-2'`;
+        assert.strictEqual(refused?.refused, 1);
+      }).pipe(Effect.provide(harness({ prompts }).pipe(Layer.provide(login))));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("interrupts mid-wake-up without counting an attempt and admits the next claim", () =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
@@ -3299,10 +3404,35 @@ describe("WakeupRunner", () => {
   );
 
   it.effect.each([
-    ["completed", "Finished", "Lead finished."],
-    ["interrupted", "Stopped", "Nothing it hadn't finished was sent. Ask again to start fresh."],
-    ["failed", "Ended", "Lead stopped working on it."],
-  ] as const)("asks twice about a quiet owed run before it is %s", ([status, title, text]) =>
+    [
+      "an owner-only run's quiet card is not readable by a member who joins later",
+      "completed",
+      "Finished",
+      "Lead finished.",
+      "owner_only",
+    ],
+    [
+      "shows the last note on both quiet cards of a shared run",
+      "completed",
+      "Finished",
+      "Lead finished.",
+      "shared",
+    ],
+    [
+      "asks twice about a quiet owed run before it is interrupted",
+      "interrupted",
+      "Stopped",
+      "Nothing it hadn't finished was sent. Ask again to start fresh.",
+      "owner_only",
+    ],
+    [
+      "asks twice about a quiet owed run before it fails",
+      "failed",
+      "Ended",
+      "Lead stopped working on it.",
+      "owner_only",
+    ],
+  ] as const)("%s", ([, status, title, text, audience]) =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
       const hold = yield* Deferred.make<void>();
@@ -3327,13 +3457,15 @@ describe("WakeupRunner", () => {
         failed: () => Effect.void,
       });
       yield* Effect.gen(function* () {
-        yield* privateRequest("quiet-ask");
+        yield* privateRequest("quiet-ask", audience === "shared");
         const sql = yield* SqlClient.SqlClient;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const fiber = yield* run();
         yield* Deferred.await(entered);
-        const [wake] = yield* sql<{ id: string; threadId: ThreadId }>`
-          SELECT wakeup_id AS id, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`;
+        const [wake] = yield* sql<{ id: string; threadId: ThreadId; audience: string }>`
+          SELECT wakeup_id AS id, thread_id AS "threadId", audience FROM kin_wakeups
+          WHERE org_id = ${orgId}`;
+        assert.strictEqual(wake?.audience, audience);
         yield* toolCall(work, wake!.threadId);
         if (status === "completed") {
           const projection = yield* threads.getThreadProjection(wake!.threadId);
@@ -3397,7 +3529,7 @@ describe("WakeupRunner", () => {
           type: "choice",
           outcome: null,
           text: null,
-          detail: status === "completed" ? "Last note: “Checking the quote.”" : null,
+          detail: audience === "shared" ? "Last note: “Checking the quote.”" : null,
         };
         const second = { ...first, id: `kin-quiet-run:${wake!.id}:2` };
         yield* TestClock.adjust("14 minutes");
@@ -3428,6 +3560,21 @@ describe("WakeupRunner", () => {
         } else yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(fiber);
         assert.deepStrictEqual(yield* cards, [noAnswer, { ...second, outcome: title, text }]);
+        if (status === "completed") {
+          if (audience === "owner_only") yield* joinQuietRunChat();
+          const chat = yield* ChatService.KinChatService;
+          const history = yield* chat.history(quietRunTeammate, {
+            chatId: KinChatId.make("direct"),
+            beforeSeq: 10,
+            limit: 10,
+          });
+          assert.lengthOf(history.widgets, audience === "owner_only" ? 0 : 2);
+          for (const widget of history.widgets)
+            assert.include(
+              (widget.state as { detail: string }).detail,
+              "Last note: “Checking the quote.”",
+            );
+        }
         assert.lengthOf(completions, 1);
         assert.strictEqual(completions[0]?.stopped, status === "interrupted");
       }).pipe(

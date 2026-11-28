@@ -272,7 +272,7 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
   const read = Effect.gen(function* () {
     const arrival = yield* connections.billHeaders(orgId, connectionId, messageId);
     if (arrival === null) return yield* skip("gone");
-    // Bills take the relaxed verdict (aligned DKIM and SPF without DMARC): a bill can only make a suggestion a person must keep, where a bank alert writes facts.
+    // On Gmail, aligned DKIM and SPF can vouch for a bill, which a person still has to keep.
     if (verifiedBillingAddress(arrival) !== address) return yield* skip("unverified");
     if (!(yield* claimOnce(arrival))) return;
 

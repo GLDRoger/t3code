@@ -63,6 +63,8 @@ import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
+import { ghApiLayer, KinGitHubApi } from "../github/GitHubWatch.ts";
+import { askedReviewMayStart } from "../github/reviewAsk.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
@@ -510,6 +512,7 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ensuring(Effect.sync(() => spaceChecks.delete(orgId))), Effect.forkIn(scope));
   }, Effect.uninterruptible);
   const prompt = yield* KinLeadPrompt;
+  const github = yield* KinGitHubApi;
   const linkReader = yield* KinDeferralGithubReader;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
@@ -1944,7 +1947,12 @@ const make = Effect.gen(function* () {
                 : Effect.succeed(true),
             );
             events = yield* Effect.filter(events, (event) =>
-              goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
+              event._tag === "github" && event.askedBy !== undefined
+                ? askedReviewMayStart(event, wakeupId).pipe(
+                    provideSql,
+                    Effect.provideService(KinGitHubApi, github),
+                  )
+                : goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (
               Option.isSome(billFiles) &&
@@ -2941,4 +2949,6 @@ const make = Effect.gen(function* () {
   return WakeupRunner.of({ runOnce, abort, recover, start });
 });
 
-export const layer = Layer.effect(WakeupRunner, make).pipe(Layer.provide(Floor.layer));
+export const layer = Layer.effect(WakeupRunner, make).pipe(
+  Layer.provide(Layer.mergeAll(Floor.layer, ghApiLayer)),
+);

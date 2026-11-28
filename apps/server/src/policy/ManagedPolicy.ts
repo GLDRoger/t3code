@@ -6,7 +6,11 @@
  */
 import * as NodeModule from "node:module";
 
-import { ManagedPolicyDocument, type ManagedPolicySummary } from "@t3tools/contracts";
+import {
+  KIN_HOST_POLICY,
+  ManagedPolicyDocument,
+  type ManagedPolicySummary,
+} from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
@@ -26,6 +30,7 @@ import {
 } from "@t3tools/shared/managedPolicyFile";
 
 import { telemetryChannel } from "../config.ts";
+import * as KinEnabled from "../kin/KinEnabled.ts";
 import * as ManagedLimits from "./managedLimits.ts";
 import * as ManagedProviders from "./managedProviders.ts";
 import * as ManagedSettings from "./managedSettings.ts";
@@ -35,6 +40,7 @@ export class ManagedPolicy extends Context.Service<
   {
     /** Where the policy is read from, whether or not a file exists there. */
     readonly path: string;
+    readonly hasInstalledPolicy: boolean;
     readonly document: ManagedPolicyDocument | undefined;
     readonly settings: ManagedSettings.ManagedSettings;
     readonly providers: ManagedProviders.ManagedProviders;
@@ -45,11 +51,12 @@ export class ManagedPolicy extends Context.Service<
 
 type LimitsSummary = NonNullable<ManagedPolicySummary["limits"]>;
 
+const kinPolicySource = "Kin's built-in policy";
 const encodeDocumentJson = Schema.encodeEffect(Schema.fromJsonString(ManagedPolicyDocument));
 
-/** What `t3 policy show` compares to tell whether a running server loaded the installed policy. */
+/** What `t3 policy show` compares to tell whether a running server loaded the effective policy. */
 export const loadedPolicy = Effect.fn("ManagedPolicy.loadedPolicy")(function* (
-  policy: Pick<ManagedPolicy["Service"], "path" | "document">,
+  policy: Pick<ManagedPolicy["Service"], "path" | "document" | "hasInstalledPolicy">,
 ) {
   if (policy.document === undefined) return null;
   const json = yield* encodeDocumentJson(policy.document).pipe(Effect.orDie);
@@ -58,7 +65,7 @@ export const loadedPolicy = Effect.fn("ManagedPolicy.loadedPolicy")(function* (
     new TextEncoder().encode(json),
   );
   return {
-    source: policy.path,
+    source: policy.hasInstalledPolicy ? policy.path : kinPolicySource,
     organization: policy.document.organization,
     fingerprint: Hex.encode(digest).slice(0, 12),
   };
@@ -78,11 +85,14 @@ export function deniedBy(
 /** Build the service from a decoded document; fails when the document cannot be enforced. */
 export const fromDocument = Effect.fn("ManagedPolicy.fromDocument")(function* (
   path: string,
-  document: ManagedPolicyDocument | undefined,
+  installed: ManagedPolicyDocument | undefined,
+  kinEnabled = false,
 ) {
+  const document = kinEnabled ? withKinPolicy(installed) : installed;
   if (document === undefined) {
     return ManagedPolicy.of({
       path,
+      hasInstalledPolicy: false,
       document: undefined,
       settings: ManagedSettings.unmanagedSettings,
       providers: ManagedProviders.unmanagedProviders,
@@ -90,6 +100,13 @@ export const fromDocument = Effect.fn("ManagedPolicy.fromDocument")(function* (
     });
   }
   const maxRuntimeMode = document.limits?.maxRuntimeMode;
+  // Reject malformed installed settings even when Kin's floor would replace them.
+  if (kinEnabled && installed?.settings !== undefined) {
+    const fileSettings = ManagedSettings.makeManagedSettings(installed.settings, maxRuntimeMode);
+    if (fileSettings._tag === "Invalid") {
+      return yield* new ManagedPolicyFileError({ path, reason: fileSettings.reason });
+    }
+  }
   const settings = ManagedSettings.makeManagedSettings(document.settings ?? {}, maxRuntimeMode);
   if (settings._tag === "Invalid") {
     return yield* new ManagedPolicyFileError({ path, reason: settings.reason });
@@ -110,6 +127,7 @@ export const fromDocument = Effect.fn("ManagedPolicy.fromDocument")(function* (
   const lockedInstanceFields = providers?.providers.lockedInstanceFields ?? {};
   return ManagedPolicy.of({
     path,
+    hasInstalledPolicy: installed !== undefined,
     document,
     settings: settings.settings,
     providers: providers?.providers ?? ManagedProviders.unmanagedProviders,
@@ -123,6 +141,19 @@ export const fromDocument = Effect.fn("ManagedPolicy.fromDocument")(function* (
     },
   });
 });
+
+function withKinPolicy(installed: ManagedPolicyDocument | undefined): ManagedPolicyDocument {
+  if (installed === undefined) return KIN_HOST_POLICY;
+  return {
+    ...installed,
+    settings: { ...installed.settings, ...KIN_HOST_POLICY.settings },
+    limits: {
+      ...installed.limits,
+      ...KIN_HOST_POLICY.limits,
+      updates: { ...installed.limits?.updates, ...KIN_HOST_POLICY.limits.updates },
+    },
+  };
+}
 
 // Copies only what clients may see; other limits can carry values that stay on the server.
 function summarizeLimits(
@@ -169,7 +200,7 @@ function summarizeLimits(
   };
 }
 
-/** Read and validate the policy at `path`; a missing file means no policy. */
+/** Read and validate a policy file in isolation, without the running host's policy. */
 export const load = Effect.fn("ManagedPolicy.load")(function* (path: string) {
   return yield* fromDocument(path, yield* readManagedPolicyFile(path));
 });
@@ -184,22 +215,24 @@ const make = Effect.gen(function* () {
         )
       : Option.none<string>();
   const platform = yield* HostProcess.Platform;
-  const policy = yield* Option.match(devPath, {
-    onSome: load,
+  const installed = yield* Option.match(devPath, {
+    onSome: (source) =>
+      readManagedPolicyFile(source).pipe(Effect.map((document) => ({ source, document }))),
     onNone: () =>
       readManagedPolicy(
         platform,
         ManagedProviders.knownDriverLabels().map(({ driver }) => driver),
-      ).pipe(
-        Effect.flatMap((found) =>
-          fromDocument(found?.source ?? managedPolicyPath(platform), found?.document),
-        ),
       ),
   });
-  const path = policy.path;
+  const { enabled } = yield* KinEnabled.KinEnabled;
+  const policy = yield* fromDocument(
+    installed?.source ?? managedPolicyPath(platform),
+    installed?.document,
+    enabled,
+  );
   if (policy.summary !== undefined) {
     yield* Effect.logInfo("Managed policy applies.", {
-      path,
+      path: policy.hasInstalledPolicy ? policy.path : kinPolicySource,
       organization: policy.summary.organization,
       lockedSettings: policy.summary.lockedSettings,
     });
@@ -211,6 +244,7 @@ const make = Effect.gen(function* () {
 const requireForFfi = NodeModule.createRequire(import.meta.url);
 
 export const layer = Layer.effect(ManagedPolicy, make).pipe(
+  Layer.provide(KinEnabled.layer),
   Layer.provide(
     layerWindowsRegistry(async () => requireForFfi("ffi-rs") as typeof import("ffi-rs")),
   ),

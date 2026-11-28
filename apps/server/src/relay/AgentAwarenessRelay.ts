@@ -50,6 +50,8 @@ import {
 } from "../cloud/config.ts";
 import { EnvironmentSigningKey } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { isPrivateKinActivity } from "../kin/activityPrivacy.ts";
+import * as KinEnabled from "../kin/KinEnabled.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -431,6 +433,11 @@ export const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const random = yield* SecureRandom.SecureRandom;
   const signingKey = yield* EnvironmentSigningKey;
+  const { enabled: kinEnabled } = yield* KinEnabled.KinEnabled;
+  const isPrivateThread = (
+    id: ThreadId,
+    thread?: Pick<AgentAwarenessThread, "projectId" | "lineage">,
+  ) => kinEnabled && isPrivateKinActivity(id, thread);
   const scope = yield* Effect.scope;
   const startedAt = (yield* DateTime.now).epochMilliseconds;
   const catchUpRequests = yield* Queue.dropping<void>(1);
@@ -504,6 +511,7 @@ export const make = Effect.gen(function* () {
   });
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
+    if (isPrivateThread(threadId)) return;
     const publishAgentActivity = yield* readPublishAgentActivityEnabled;
     if (!publishAgentActivity) {
       yield* cancelPublishRetries;
@@ -581,10 +589,19 @@ export const make = Effect.gen(function* () {
 
     // Read only this thread; full shell reads would make each activity event scale with all threads.
     const threadShell = yield* readAwarenessThread(threadId);
+    // Deleted threads leave the shell but retain the project and lineage needed to vet tombstones.
+    const threadIdentity =
+      threadShell ??
+      (kinEnabled
+        ? Option.getOrUndefined(yield* threads.getThreadRecords(threadId, []).pipe(Effect.option))
+            ?.thread
+        : undefined);
+    if (kinEnabled && (threadIdentity === undefined || isPrivateThread(threadId, threadIdentity)))
+      return;
     yield* trackSubagentRequest(threadId, threadShell);
     if (
-      threadShell !== null &&
-      !isListedThreadLineage(threadShell.lineage) &&
+      threadIdentity !== undefined &&
+      !isListedThreadLineage(threadIdentity.lineage) &&
       !hasLivePublishedState(yield* Ref.get(publishedStateByThreadRef), threadId)
     ) {
       // Subagents and side chats have no relay rows to clear; per-event tombstones would needlessly redeliver user aggregates.
@@ -743,8 +760,10 @@ export const make = Effect.gen(function* () {
     ) {
       const parentId: ThreadId | null = current.lineage.parentThreadId;
       if (parentId === null || seen.has(parentId)) return null;
+      if (isPrivateThread(parentId)) return null;
       seen.add(parentId);
       current = yield* readAwarenessThread(parentId);
+      if (current !== null && isPrivateThread(parentId, current)) return null;
     }
     return current?.id ?? null;
   });
@@ -777,7 +796,7 @@ export const make = Effect.gen(function* () {
       if (entry.topLevelThreadId !== topLevelThreadId) continue;
       const child = yield* readAwarenessThread(childId);
       const requestId = waitingApprovalId(child);
-      if (child === null || requestId === undefined) {
+      if (child === null || requestId === undefined || isPrivateThread(childId, child)) {
         subagentRequests.delete(childId);
         continue;
       }
@@ -881,7 +900,10 @@ export const make = Effect.gen(function* () {
     // Live children aren't listed, but a waiting one makes its top-level thread wait.
     const liveChildren = yield* Effect.forEach(
       (yield* threads.listActiveShellIndex()).filter(
-        (thread) => thread.lineage.relationshipToParent === "subagent" && thread.mayBeLive,
+        (thread) =>
+          thread.lineage.relationshipToParent === "subagent" &&
+          thread.mayBeLive &&
+          !isPrivateThread(thread.id, thread),
       ),
       (thread) => readAwarenessThread(thread.id),
     );
@@ -889,7 +911,10 @@ export const make = Effect.gen(function* () {
       environmentId,
       startedAt,
       projects: projectSnapshot.projects,
-      threads: [...activitySnapshot.threads, ...liveChildren.filter((thread) => thread !== null)],
+      threads: [...activitySnapshot.threads, ...liveChildren].filter(
+        (thread): thread is AgentAwarenessThread =>
+          thread !== null && !isPrivateThread(thread.id, thread),
+      ),
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
@@ -982,7 +1007,7 @@ export const make = Effect.gen(function* () {
       yield* forkParked(
         Stream.runForEach(threads.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
-          if (!shouldPublishAgentAwarenessEvent(event)) {
+          if (isPrivateThread(threadId) || !shouldPublishAgentAwarenessEvent(event)) {
             return Effect.void;
           }
           return Effect.logDebug("agent activity publishing queued thread publish", {
@@ -1004,4 +1029,4 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(AgentAwarenessRelay, make);
+export const layer = Layer.effect(AgentAwarenessRelay, make).pipe(Layer.provide(KinEnabled.layer));

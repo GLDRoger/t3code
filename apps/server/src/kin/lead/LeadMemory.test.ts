@@ -35,6 +35,7 @@ import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KEY_SENT_STORED } from "../chat/keySent.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
@@ -1186,6 +1187,22 @@ it.live(
           "Only the owner's own message can set up a scheduled task",
         );
         yield* copied(null);
+        // Nor is what the owner's coding agent sent through its key: an item citing it is
+        // outside text, never owner trust.
+        const fixtureMessage = sql`(SELECT json_extract(json, '$.messageId') FROM kin_events
+          WHERE org_id = ${orgId} AND event_id = 'fixture-event')`;
+        const [sent] = yield* sql<{ clientId: string | null }>`SELECT client_message_id AS
+            "clientId" FROM kin_messages WHERE org_id = ${orgId} AND message_id = ${fixtureMessage}`;
+        const keySent = (clientId: string | null) =>
+          sql`UPDATE kin_messages SET client_message_id = ${clientId} WHERE org_id = ${orgId}
+            AND message_id = ${fixtureMessage}`;
+        yield* keySent(`${KEY_SENT_STORED}session:request`);
+        const keyed = (yield* (yield* Writer.MemoryWriterAuthority).resolve(
+          orgId,
+          "fixture-wakeup",
+        )).sources.get("fixture-event");
+        assert.strictEqual(keyed?.trust, "external");
+        yield* keySent(sent!.clientId);
         // A feed of watched numbers changes only through numbers_watch, and its ids are its own.
         yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
             patch_json, base_rev, widget_id, proposed_at, applied_at)

@@ -61,9 +61,9 @@ import {
   namedDue,
   normaliseAbout,
   normaliseIntent,
+  plainDefaultReason,
   raiseAt,
   repeats,
-  unsafeDefault,
 } from "./rules.ts";
 import { TAKEN_KEY, tellDeclined, tellTaken, tellWithdrawn } from "./defaultTaken.ts";
 import {
@@ -239,7 +239,7 @@ const alreadyAsked = (open: QuestionRow, now: number, zone: string) =>
       : "It has no safe default, so it waits for them"
   }. It is in their Waiting on you; don't ask it again.`;
 
-/** Why a question's default waits for its person: none set, money, sending out, its kind of action, or a task whose closing Undo couldn't put back. */
+/** Why a question's default waits for its person, including what its wording suggests. */
 export type Untaken = "none" | "money" | "leaves" | "action" | "repeats" | "handed_back";
 export type AskPlan = {
   readonly questionId: string;
@@ -296,9 +296,9 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     wanted === "none" ? null : input.labels.find((one) => one.trim().toLowerCase() === wanted);
   if (label === undefined)
     return yield* refuse(
-      `default is the label of the option you'll take if they don't answer (one of ${input.labels
+      `default is the label of a done or drop action Kin may run if they haven't answered (one of ${input.labels
         .map((one) => `“${one}”`)
-        .join(", ")}), or "none" when nothing is safe to do without them.`,
+        .join(", ")}), or "none" to wait for their answer.`,
     );
   const personId = yield* personOfChat(input.orgId, input.chatId);
   if (personId === undefined) return undefined;
@@ -318,19 +318,13 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
         refusalText(hold, yield* leadNamer(input.orgId, input.agentId), clock.zone),
       );
   }
-  // A sealed plan is judged by what it does, not by the card's words; the asker's "none" holds.
-  const untaken: Untaken | undefined =
+  const held =
     label === null
       ? "none"
-      : input.acts !== undefined
-        ? takesAsDefault(input.acts)
-          ? input.held
-          : "action"
-        : (unsafeDefault(label, input.question, {
-            labels: input.labels,
-            aboutMoney: yield* aboutMoney(input.orgId, about),
-          }) ?? input.held);
-  const safe = untaken === undefined;
+      : input.acts !== undefined && takesAsDefault(input.acts)
+        ? input.held
+        : "action";
+  const safe = held === undefined;
   const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.work);
   const intent = normaliseIntent(input.intent);
   if (seen === undefined) {
@@ -352,6 +346,14 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
           );
     if (no !== undefined) return yield* refuse(`${no} Nothing was asked.`);
   }
+  const plain = label !== null && input.acts === undefined;
+  const wording = plain
+    ? plainDefaultReason(label, input.question, {
+        labels: input.labels,
+        aboutMoney: yield* aboutMoney(input.orgId, about),
+      })
+    : undefined;
+  const untaken: Untaken | undefined = wording ?? held;
   return {
     questionId,
     orgId: input.orgId,
@@ -367,10 +369,16 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     askedAt: input.now,
     dueAt,
     actAt,
-    ...(untaken === undefined ? {} : { note: untakenNote(label, untaken) }),
+    ...(untaken === undefined
+      ? {}
+      : {
+          note: untaken === "action" && plain ? WAITS_FOR_ANSWER : untakenNote(label, untaken),
+        }),
     retry: seen !== undefined,
   } satisfies AskPlan;
 });
+
+const WAITS_FOR_ANSWER = "Nothing happens until you answer.";
 
 const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
   money: "the card mentions an amount or a percentage, or is about a money record",
@@ -1543,10 +1551,6 @@ export const reopenRetiredQuestions = Effect.fn("KinQuestions.reopenRetired")(fu
   return rows.length;
 });
 
-/** The turn that takes a default: one per question, keyed so a replay finds its own. */
-const takeEventId = (orgId: string, questionId: string) =>
-  KinEventId.make(`question_${hash(`${orgId}\0${questionId}`).slice(0, 32)}`);
-
 type SettleDeps = {
   readonly chat: Pick<
     KinChatService["Service"],
@@ -1839,43 +1843,22 @@ const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
     RETURNING question_id`;
   if (moved.length === 0) return false;
   const option = row.options.find((one) => one.label === row.defaultLabel);
-  const acts =
-    row.widgetId !== null &&
-    option !== undefined &&
-    (yield* sealedOptions(orgId, row.widgetId)).has(option.optionId);
-  const clock = yield* personClock(orgId, row.personId);
-  if (acts) {
-    // Its own action runs here, as the asker; one that no longer holds waits for its person.
-    const plan = (yield* plansOf(orgId, row.widgetId!)).get(option!.optionId);
-    const { takeAtDay } = yield* Effect.promise(() => import("../widgets/cardActions.ts"));
-    const ran =
-      plan !== undefined &&
-      deps.records !== undefined &&
-      (yield* takeAtDay(orgId, plan, row, deps.records));
-    if (!ran) {
-      yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
-          safe = 0, act_at = ${raiseAt(row.dueAt, clock.zone, clock.work)}
-        WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
-      return true;
-    }
-  } else {
-    const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
-      FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
-    const event = yield* decodeEvent({
-      _tag: "deferral.due",
-      eventId: takeEventId(orgId, row.questionId),
-      orgId,
-      agentId: row.agentId,
-      receivedAt: iso(now),
-      provenance: { _tag: "system" },
-      dedupeKey: `question:${row.questionId}`,
-      subject: { type: "question", questionId: row.questionId },
-      lateByMs: Math.max(0, now - row.dueAt),
-      ...(lead?.ownerChatId === row.chatId
-        ? {}
-        : { origin: { agentId: row.agentId, chatId: row.chatId, personId: row.personId } }),
-    });
-    yield* deps.queue.enqueue(event);
+  const plan =
+    row.widgetId === null || option === undefined
+      ? undefined
+      : (yield* plansOf(orgId, row.widgetId)).get(option.optionId);
+  // Older plain defaults can have safe = 1. Require the chosen option's own plan on the day.
+  const { takeAtDay } = yield* Effect.promise(() => import("../widgets/cardActions.ts"));
+  const ran =
+    plan !== undefined &&
+    deps.records !== undefined &&
+    (yield* takeAtDay(orgId, plan, row, deps.records));
+  if (!ran) {
+    const clock = yield* personClock(orgId, row.personId);
+    yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
+        safe = 0, act_at = ${raiseAt(row.dueAt, clock.zone, clock.work)}
+      WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
+    return true;
   }
   // The person's own notice says nobody answered (`tellTaken`): the card only reads as closed.
   const went = `Went with “${row.defaultLabel ?? ""}”`;
@@ -1885,7 +1868,7 @@ const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
       widgetId: KinWidgetId.make(widgetId),
       outcome: {
         title: went,
-        text: acts ? `${went}.` : `${went}. Say "undo it" in the chat to reverse.`,
+        text: `${went}.`,
       },
     });
   return true;
@@ -2007,7 +1990,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     }
     return true;
   }
-  const said = `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`;
+  const said = `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. ${WAITS_FOR_ANSWER}`;
   // Asked for someone, it says who still: the server's line, as on the first card.
   const by =
     row.forChatId === null

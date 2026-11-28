@@ -17,7 +17,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { nudgeMessageId, steerMessageId } from "../chat/KinIdentity.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
-import { delegatedTurn, fullSessionRefusal, isT3Tool } from "./AgentSession.ts";
+import { answeredEventId } from "../questions/approval.ts";
+import {
+  delegatedTurn,
+  fullSessionRefusal,
+  isT3Tool,
+  visibleOnKinEndpoint,
+} from "./AgentSession.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
 import { approvedWakeup, ownerOnlyWakeup } from "./Audience.testkit.ts";
 
@@ -165,6 +171,88 @@ it.effect(
           0, 0, 'claimed', ${wakeupId})`;
       assert.isUndefined(yield* fullSessionRefusal(lead));
     }).pipe(Effect.provide(authorityLayer)),
+);
+
+it.effect(
+  "an owner-only turn woken by the answer to a question asked for Zoya refuses Bash, including in delegated tasks",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const wakeupId = "wake-answer";
+      const askingWakeupId = "wake-asking";
+      const raisedWakeupId = "wake-raised";
+      const ownerId = `${orgId}:owner`;
+      const ownerChatId = `${orgId}:owner-chat`;
+      const questionId = "q-answer";
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: askingWakeupId });
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: raisedWakeupId });
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE org_id = ${orgId}`;
+      const run = yield* startWakeupRun(lead, wakeupId);
+      yield* sql`UPDATE kin_wakeups SET thread_id = ${lead}, run_id = ${run.id}, status = 'running'
+        WHERE wakeup_id = ${wakeupId}`;
+      yield* delegation(lead, run.id, "task-of-answer");
+      const task = ThreadId.make("task-of-answer");
+      assert.isUndefined(yield* fullSessionRefusal(lead));
+      assert.isUndefined(yield* fullSessionRefusal(task));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', '', 'member'),
+          ('meera', ${orgId}, 'meera', 'Meera', '', 'co_owner')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          agent_id, role, joined_at)
+        VALUES ('lead-member', ${orgId}, ${ownerChatId}, 'agent', ${agentId}, 'member', '')`;
+      for (const [seq, source] of [askingWakeupId, raisedWakeupId].entries()) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_agent_id, author_owner_person_id, author_thread_id, author_member_id, author_role,
+            kind, body, mentions_json, status, created_at, source_wakeup_id)
+          VALUES (${`message:${source}`}, ${orgId}, ${ownerChatId}, ${seq + 1}, 'agent',
+            ${agentId}, ${ownerId}, ${lead}, 'lead-member', 'member', 'text', '', '[]', 'posted', '',
+            ${source})`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+            type, revision, state_json, awaiting_json, updated_at)
+          VALUES (${`choice:${source}`}, ${orgId}, ${ownerChatId}, ${`message:${source}`},
+            'native', 'choice', 1, '{}', '[]', '')`;
+      }
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+          chat_id, kind, question, safe, asked_at, due_at, act_at, state, answer, for_chat_id,
+          for_person_id, widget_id, raise_widget_id)
+        VALUES (${questionId}, ${orgId}, ${agentId}, ${ownerId}, ${ownerChatId}, 'card',
+          'Can Tidewater Freight deliver Friday?', 0, 0, 0, 0, 'answered', 'Friday works',
+          ${ownerChatId}, 'zoya', ${`choice:${askingWakeupId}`}, ${`choice:${raisedWakeupId}`})`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id, dedupe_key)
+        VALUES (${answeredEventId(orgId, questionId)}, ${orgId}, ${agentId}, 'deferral.due', 'P1',
+          ${JSON.stringify({
+            _tag: "deferral.due",
+            provenance: { _tag: "system" },
+            subject: { type: "question", questionId, answered: true },
+          })}, 0, 0, 'claimed', ${wakeupId}, ${`question-answered:${questionId}`})`;
+      assert.isDefined(yield* fullSessionRefusal(lead));
+      assert.isDefined(yield* fullSessionRefusal(task));
+      yield* sql`UPDATE kin_questions SET for_person_id = ${ownerId} WHERE question_id = ${questionId}`;
+      assert.isUndefined(yield* fullSessionRefusal(lead));
+      assert.isUndefined(yield* fullSessionRefusal(task));
+      yield* sql`UPDATE kin_questions SET person_id = 'meera' WHERE question_id = ${questionId}`;
+      assert.isDefined(yield* fullSessionRefusal(lead), "an answer from Meera");
+      yield* sql`UPDATE kin_questions SET person_id = ${ownerId} WHERE question_id = ${questionId}`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${askingWakeupId}`;
+      assert.isDefined(
+        yield* fullSessionRefusal(lead),
+        "the original card came from a shared turn",
+      );
+      assert.isDefined(yield* fullSessionRefusal(task));
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only', shared_since = 1
+        WHERE wakeup_id = ${askingWakeupId}`;
+      assert.isDefined(yield* fullSessionRefusal(lead), "the asking turn was marked shared");
+    }).pipe(Effect.provide(authorityLayer)),
+);
+
+it.effect("an unknown T3 tool is not visible in an owner-only thread", () =>
+  Effect.gen(function* () {
+    assert.isFalse(yield* visibleOnKinEndpoint("t3_unclassified_tool", lead));
+    assert.isTrue(yield* visibleOnKinEndpoint("record_get", lead));
+    assert.isTrue(yield* visibleOnKinEndpoint("delegate_task", lead));
+  }),
 );
 
 it("counts every upstream toolkit's tools as T3's, so a new one is hidden until Kin lists it", async () => {
