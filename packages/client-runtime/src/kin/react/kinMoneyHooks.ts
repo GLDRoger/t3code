@@ -2,6 +2,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   KinBankSendersResult,
+  KinBillSendersResult,
   KinCompanyProfile,
   KinListDefinition,
   KinListId,
@@ -70,6 +71,9 @@ const noCompanyAtom: Atom.Atom<AsyncResult.AsyncResult<KinCompanyProfile, unknow
 );
 
 const noBankSendersAtom: Atom.Atom<AsyncResult.AsyncResult<KinBankSendersResult, unknown>> =
+  Atom.make(AsyncResult.initial());
+
+const noBillSendersAtom: Atom.Atom<AsyncResult.AsyncResult<KinBillSendersResult, unknown>> =
   Atom.make(AsyncResult.initial());
 
 const schedule = (run: () => void, ms: number) => {
@@ -486,6 +490,16 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     return { state, refresh: () => registry.refresh(atom) };
   }
 
+  /** Billing senders for the company. `enabled` is off where the host would refuse. */
+  function useKinBillSenders(target: KinScreenTarget, enabled: boolean) {
+    const atom = kinClient.billSenders({
+      environmentId: target.environmentId,
+      input: { orgId: target.orgId },
+    });
+    const state = kinWorkReadState(useAtomValue(enabled ? atom : noBillSendersAtom));
+    return { state, refresh: () => registry.refresh(atom) };
+  }
+
   /** The owner's home currency and rates, for the estimates beside foreign amounts. Null for a teammate. */
   function useKinRates(target: KinScreenTarget, enabled = true) {
     // A teammate never asks: the host would refuse, and no figure reaches them anyway.
@@ -710,6 +724,7 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     useKinAskAgent,
     useKinCompanyProfile,
     useKinBankSenders,
+    useKinBillSenders,
     useKinRates,
     useKinHomeCurrency,
     useKinCountryNeeded,

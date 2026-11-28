@@ -25,6 +25,7 @@ export const {
   useKinAskAgent,
   useKinCompanyProfile,
   useKinBankSenders,
+  useKinBillSenders,
   useKinRates,
   useKinHomeCurrency,
   useKinCountryNeeded,

@@ -652,6 +652,9 @@ const BillRow = memo(function BillRow(props: {
             </div>
           ))}
         </dl>
+        {view.mailLine === null ? null : (
+          <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{view.mailLine}</p>
+        )}
         <p className="min-h-4 text-xs text-muted-foreground">{note}</p>
         {props.problem === null ? null : (
           <p role="alert" className="text-xs text-destructive-foreground">

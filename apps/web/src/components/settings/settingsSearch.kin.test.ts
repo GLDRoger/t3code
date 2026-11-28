@@ -40,6 +40,11 @@ it("finds Kin's own Profile settings only where a host runs Kin", () => {
     to: "/settings/kin-connections",
   });
   expect(first("mail rules", false)?.id).not.toBe("kin-mail-rules");
+  expect(first("billing sender", true)).toMatchObject({
+    id: "kin-bill-senders",
+    to: "/settings/company",
+  });
+  expect(first("billing sender", false)?.id).not.toBe("kin-bill-senders");
   // Deal stages go with Deals.
   expect(first("deal stages", true)?.id).toBe("kin-deals");
   expect(first("deal stages", true, ["deals"])?.id).not.toBe("kin-deals");
