@@ -34,8 +34,8 @@ export const hashedLive = <Held, Change extends object, Snapshot>(spec: {
   readonly held: string | undefined;
   readonly hash: (held: Held) => string;
   readonly snapshot: (held: Held, hash: string) => Snapshot;
-  /** What differs from `before` in `next`, or null when nothing a screen shows does. */
-  readonly diff: (before: Held, next: Held) => Change | null;
+  /** What moved, a whole replacement if a patch cannot express it, or null when unchanged. */
+  readonly diff: (before: Held, next: Held) => Change | { readonly replacement: Held } | null;
   /** `before` with `change` applied, as the client applies it. */
   readonly apply: (before: Held, change: Change) => Held;
 }) => {
@@ -49,6 +49,11 @@ export const hashedLive = <Held, Change extends object, Snapshot>(spec: {
     if (sent === null) return [first(built)];
     const change = spec.diff(sent.held, built);
     if (change === null) return [];
+    if ("replacement" in change) {
+      const held = change.replacement;
+      sent = { held };
+      return [spec.snapshot(held, spec.hash(held))];
+    }
     const held = spec.apply(sent.held, change);
     sent = { held };
     return [{ ...change, _tag: "changed", hash: spec.hash(held) }];
