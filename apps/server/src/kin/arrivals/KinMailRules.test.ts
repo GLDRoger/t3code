@@ -29,6 +29,7 @@ import { turnAudience, turnChat } from "../lead/Audience.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
+import type { MailAuthResults } from "../connections/MailProvider.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
@@ -72,9 +73,42 @@ const tap = {
   chatId,
   tapId: "settings-tap",
 };
+const dmarcPass = "dmarc=pass header.from=juniper.example; compauth=pass";
+const livePass = { receiver: "microsoft", results: [dmarcPass] } as const;
+const liveFail = {
+  receiver: "microsoft",
+  results: ["dmarc=fail header.from=juniper.example; compauth=fail"],
+} as const;
+const readRuleMail = (messageId: string, authResults: MailAuthResults = livePass) => ({
+  _tag: "read" as const,
+  messageId,
+  arrival: {
+    messageId,
+    threadId: "thread",
+    receivedAt: 0,
+    from: "bill@juniper.example",
+    fromAddress: "bill@juniper.example",
+    to: [],
+    cc: [],
+    deliveredTo: [],
+    subject: "Juniper invoice",
+    date: null,
+    internetId: null,
+    authResults,
+    listUnsubscribe: false,
+    precedence: null,
+    autoSubmitted: null,
+    bulk: false,
+    hasFile: true,
+  },
+});
+const verifiedHeaders = Layer.mock(KinConnections)({
+  arrivals: (_org, _connection, ids) => Effect.succeed(ids.map((id) => readRuleMail(id))),
+});
+
 const sqlLayer = NodeSqliteClient.layer({ filename: ":memory:" });
 const rulesWithQueue = MailRules.layer.pipe(
-  Layer.provideMerge(Layer.merge(Layer.mock(KinConnections)({}), EventQueue.layer)),
+  Layer.provideMerge(Layer.merge(verifiedHeaders, EventQueue.layer)),
 );
 const fixture = rulesWithQueue.pipe(Layer.provideMerge(sqlLayer));
 
@@ -481,29 +515,7 @@ it.effect(
         arrivals: (_org, _connection, ids) =>
           Effect.sync(() => {
             calls.push([...ids]);
-            return ids.map((messageId) => ({
-              _tag: "read",
-              messageId,
-              arrival: {
-                messageId,
-                threadId: "thread",
-                receivedAt: 0,
-                from: "bill@juniper.example",
-                fromAddress: "bill@juniper.example",
-                to: [],
-                cc: [],
-                deliveredTo: [],
-                subject: "Juniper invoice",
-                date: null,
-                internetId: null,
-                authResults: [],
-                listUnsubscribe: false,
-                precedence: null,
-                autoSubmitted: null,
-                bulk: false,
-                hasFile: true,
-              },
-            }));
+            return ids.map((id) => readRuleMail(id, id === "m-202" ? liveFail : livePass));
           }),
       });
       const rules = yield* Effect.provide(
@@ -543,7 +555,7 @@ it.effect(
       assert.strictEqual(draft.matches.at(-1)?.arrivalId, "a-3");
       yield* sql`INSERT INTO kin_mail_rule_runs (org_id, event_id, arrival_id, rule_id, state, manual)
         VALUES ('org', 'automatic', 'a-201', ${rule.ruleId}, 'woke', 0)`;
-      // a-202 is the newest match, but its sender check failed: Run now never picks it.
+      // a-202 is the newest match, but its live sender check failed: Run now never picks it.
       const result = yield* rules.runNow(owners, ref);
       assert.include(result, { status: "queued", arrivalId: "a-201" });
       const missed = yield* rules.createFromTap(owners, {
@@ -555,10 +567,11 @@ it.effect(
         status: "no_match",
         message: "No mail in the last 30 days matches this rule.",
       });
-      assert.deepStrictEqual(
-        calls.slice(1).flat(),
-        Array.from({ length: 50 }, (_, i) => `m-${201 - i}`),
-      );
+      assert.deepStrictEqual(calls.slice(1).flat(), [
+        "m-202",
+        "m-201",
+        ...Array.from({ length: 50 }, (_, i) => `m-${202 - i}`),
+      ]);
       const history = yield* rules.history(owners, ref);
       const automatic = history.entries.find(
         (entry) => entry.kind === "mail" && entry.eventId === "automatic",
@@ -601,6 +614,61 @@ it.effect(
         [{ agent_id: agentId, tag: "pulse", chat_id: chatId, rule_id: rule.ruleId, manual: 1 }],
       );
     }).pipe(Effect.provide(sqlLayer)),
+);
+
+it.effect.each([
+  ["live failure", "passed", liveFail, true, "no_match"],
+  [
+    "two live results",
+    "passed",
+    { ...livePass, results: [dmarcPass, dmarcPass] },
+    true,
+    "no_match",
+  ],
+  ["live pass", "not checked", livePass, true, "queued"],
+  ["unreadable mail", "passed", null, true, "unavailable"],
+  ["no sender filter", "not checked", null, false, "queued"],
+] as const)("Run now with %s", ([, stored, authResults, namesSender, expected]) =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const calls: Array<string> = [];
+    const headers = Layer.mock(KinConnections)({
+      arrivals: (_org, _connection, ids) =>
+        Effect.sync(() =>
+          ids.map((id) => {
+            calls.push(id);
+            return authResults === null
+              ? { _tag: "unreadable", messageId: id }
+              : readRuleMail(id, authResults);
+          }),
+        ),
+    });
+    const rules = yield* Effect.provide(
+      MailRules.KinMailRules,
+      MailRules.layer.pipe(Layer.provide(Layer.merge(headers, EventQueue.layer))),
+    );
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      noticed_at, class, state, sender_check, has_file)
+      VALUES ('org', 'invoice', 'mail', 'message', 'bill@juniper.example',
+        0, 'known_biller', 'settled', ${stored}, 1)`;
+    const rule = yield* rules.createFromTap(owners, {
+      ...tap,
+      match: namesSender ? match : { ...match, from: [], withFile: true },
+    });
+    const result = yield* rules.runNow(owners, { orgId, ruleId: rule.ruleId }).pipe(
+      Effect.match({
+        onFailure: ({ reason, message }) => ({ status: reason, message }),
+        onSuccess: (outcome) => outcome,
+      }),
+    );
+    assert.strictEqual(result.status, expected);
+    if (result.status === "unavailable" && "message" in result)
+      assert.strictEqual(result.message, "Kin couldn't read that mail.");
+    assert.deepStrictEqual(calls, namesSender ? ["message"] : []);
+    const count = expected === "queued" ? 1 : 0;
+    assert.lengthOf(yield* sql`SELECT event_id FROM kin_events`, count);
+    assert.lengthOf(yield* sql`SELECT event_id FROM kin_mail_rule_runs`, count);
+  }).pipe(Effect.provide(sqlLayer)),
 );
 
 it.effect("pausing or disconnecting a rule settles its waiting mail before a feed tick", () =>
