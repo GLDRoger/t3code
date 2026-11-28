@@ -2052,6 +2052,15 @@ export const setForChat = Effect.fn("KinBills.setForChat")(function* (
         const state = batch.state(row);
         if (state === "kept" || state === "dropped")
           return yield* invalid(`${bill} is already ${state}: change its expense instead.`);
+        // Settling again rewrites the suggestion from the paper; a person's own edit there wins.
+        const [edited] =
+          row.recordId === null
+            ? []
+            : yield* sql`SELECT 1 FROM kin_record_changes WHERE org_id = ${orgId}
+                AND record_id = ${row.recordId} AND kind = 'updated' AND actor_kind = 'person'
+              LIMIT 1`;
+        if (edited !== undefined)
+          return yield* invalid(`${bill}'s expense was changed by hand: change it there instead.`);
         targets.push({ bill, row });
       }
       const results = [];

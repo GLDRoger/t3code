@@ -849,6 +849,38 @@ describe("Fix bills by talking", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("never puts the paper back over a suggested expense a person changed by hand", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* addPage(yield* upload("harbor.jpg", "hand edit"));
+      const turn = yield* claimTurn(1);
+      yield* read({ bill: "B1", vendor: "Harbor Cafe", date: "2026-11-03", amount: "110" });
+      yield* endTurn(turn.wakeupId);
+      const expense = yield* expenseOf(added.batchId);
+      yield* update(as(rhea), {
+        orgId,
+        key: expense.key,
+        rev: expense.rev,
+        amount: { minor: 14_000, currency: "INR" },
+      });
+      const { sourceEventId } = yield* billAsk("Photo 1 is Meals.");
+      assert.include(
+        yield* LeadBills.set(readerScope, {
+          sourceEventId,
+          bills: ["P1"],
+          fields: { category: "Meals" },
+        }).pipe(Effect.flip),
+        { message: "P1's expense was changed by hand: change it there instead." },
+      );
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor AS minor, category FROM kin_records
+          WHERE register_id = 'expenses'`,
+        [{ minor: 14_000, category: null }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("replaces a cut with a confined turn carrying the person's own words", () =>
     Effect.gen(function* () {
       yield* seed;
