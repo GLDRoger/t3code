@@ -3,6 +3,7 @@ import {
   KIN_BILL_BATCH_CARD,
   KinBillBatchCard,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  formatKinWhen,
   kinWhenFormat,
   parseKinMoney,
   type KinAttachment,
@@ -118,6 +119,9 @@ export const KIN_BILLS = {
     detail: "Only the owner or a co-owner adds and keeps bills.",
   },
   more: "Show more",
+  /** The host's own words on the expense a mailed bill becomes. */
+  fromMail: (address: string, date: string) =>
+    `Read by Kin from a mail from ${address}, received ${date}.`,
 } as const;
 
 const dayOfYear = kinWhenFormat("dateYear", { zone: "UTC" });
@@ -194,6 +198,8 @@ export interface KinBillRowView {
   readonly duplicateOf: KinRecordKey | null;
   /** Why "Keep all" left it, in the host's words, until the list reads again. */
   readonly skipped: string | null;
+  /** Who mailed it and when, for a bill that came by mail; never its subject or body. */
+  readonly mailLine: string | null;
   readonly accessibilityLabel: string;
 }
 
@@ -316,6 +322,9 @@ export function kinBillRowView(
   options: {
     readonly categoryLabel?: (category: string) => string;
     readonly skipped?: ReadonlyMap<string, string>;
+    /** The reader's zone and locale; the device's when absent. */
+    readonly zone?: string;
+    readonly locale?: string;
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
@@ -326,6 +335,16 @@ export function kinBillRowView(
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],
   );
+  const mailLine =
+    row.mail === undefined
+      ? null
+      : KIN_BILLS.fromMail(
+          row.mail.from,
+          formatKinWhen(new Date(row.mail.receivedAt), "date", {
+            zone: options.zone,
+            locale: options.locale,
+          }),
+        );
   return {
     key: row.sha256,
     row,
@@ -339,11 +358,13 @@ export function kinBillRowView(
     expense: row.expense === undefined ? null : { key: row.expense.key, rev: row.expense.rev },
     duplicateOf: row.duplicateOf?.key ?? null,
     skipped: options.skipped?.get(row.sha256) ?? null,
+    mailLine,
     accessibilityLabel: [
       row.file.name,
       label,
       ...read,
       ...(problem === null ? [] : [problem]),
+      ...(mailLine === null ? [] : [mailLine.slice(0, -1)]),
     ].join(". "),
   };
 }

@@ -32,13 +32,17 @@ export function KinDayField(props: {
   readonly none?: string | null;
   readonly hint?: string | null;
   readonly disabled?: boolean;
+  /** Days offered first, in place of the usual due days. */
+  readonly choices?: ReadonlyArray<{ readonly label: string; readonly day: string }>;
+  /** The last day that can be picked, `YYYY-MM-DD`. */
+  readonly latest?: string;
   readonly onPick: (day: string | null) => void;
 }) {
   const { day, now, zone } = props;
   const none = props.none === undefined ? KIN_WORK_NEW_COPY.noDue : props.none;
   const [open, setOpen] = useState(false);
   const grows = useKinTextGrows();
-  const choices = kinWorkDueChoices(now, zone);
+  const choices = props.choices ?? kinWorkDueChoices(now, zone);
   const [month, setMonth] = useState((day ?? choices[0]!.day).slice(0, 7));
   const grid = kinDatesMonth(
     month,
@@ -94,6 +98,7 @@ export function KinDayField(props: {
             weeks={grid.weeks}
             selected={day}
             disabled={props.disabled}
+            {...(props.latest === undefined ? {} : { latest: props.latest })}
             onPick={pick}
             onShift={(by) => setMonth(kinShiftMonth(month, by))}
           />
