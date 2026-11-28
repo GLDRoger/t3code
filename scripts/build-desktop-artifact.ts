@@ -4,8 +4,6 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
-// plist is CommonJS; Node cannot load its named exports from an ES module.
-import Plist from "plist";
 
 import {
   createPackageWithOptions,
@@ -31,6 +29,13 @@ import {
 } from "./update-release-package-versions.ts";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import { kinDesktopMac } from "./lib/kinDesktopBuild.ts";
+import {
+  buildKinSigner,
+  KIN_SIGNER_ENTITLEMENTS_ENV,
+  KIN_SIGNER_NESTED_PATH,
+  readMacProvisioningProfileEntitlements,
+  resolveKinSignerProfilePath,
+} from "./lib/kin-signer.ts";
 import {
   BRAND_ASSET_PATHS,
   resolveWebAssetBrandForChannel,
@@ -1321,31 +1326,19 @@ export interface MacWebAuthnEntitlements {
 
 const BROWSER_PASSKEYS_ENTITLEMENT = "com.apple.developer.web-browser.public-key-credential";
 
-const ProvisioningProfilePlist = Schema.Struct({
-  Entitlements: Schema.Struct({
+const isMacWebAuthnProfileEntitlements = Schema.is(
+  Schema.Struct({
     "keychain-access-groups": Schema.optional(Schema.Array(Schema.String)),
     [BROWSER_PASSKEYS_ENTITLEMENT]: Schema.optional(Schema.Boolean),
   }),
-});
-const isProvisioningProfilePlist = Schema.is(ProvisioningProfilePlist);
-
-const readProfileEntitlements = (provisioningProfile: string) => {
-  const start = provisioningProfile.indexOf("<?xml");
-  const end = provisioningProfile.indexOf("</plist>", start);
-  if (start === -1 || end === -1) return undefined;
-  try {
-    const profile: unknown = Plist.parse(provisioningProfile.slice(start, end + "</plist>".length));
-    return isProvisioningProfilePlist(profile) ? profile.Entitlements : undefined;
-  } catch {
-    return undefined;
-  }
-};
+);
 
 export function resolveMacWebAuthnEntitlements(
   provisioningProfile: string,
   configuration: Pick<MacPasskeySigningConfiguration, "appId" | "teamId">,
 ): MacWebAuthnEntitlements {
-  const entitlements = readProfileEntitlements(provisioningProfile);
+  const candidate = readMacProvisioningProfileEntitlements(provisioningProfile);
+  const entitlements = isMacWebAuthnProfileEntitlements(candidate) ? candidate : undefined;
   const keychainAccessGroup = `${configuration.teamId}.${configuration.appId}.webauthn`;
   const keychainGroupAuthorized = (entitlements?.["keychain-access-groups"] ?? []).some((group) =>
     group.endsWith("*")
@@ -2819,6 +2812,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  kinSignerBundlePath?: string,
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
@@ -2870,6 +2864,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    if (kinSignerBundlePath) buildConfig.forceCodeSigning = true;
     buildConfig.mac = kinDesktopMac({
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
@@ -2918,6 +2913,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(kinSignerBundlePath
+        ? { extraFiles: [{ from: kinSignerBundlePath, to: KIN_SIGNER_NESTED_PATH }] }
+        : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
@@ -3901,13 +3899,20 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
-  const configuredMacPasskeySigning =
+  const macSigningConfiguration =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => {
+            const env = loadRepoEnv({ repoRoot });
+            return {
+              passkeys: resolveMacPasskeySigningConfiguration(env),
+              signerProfilePath: resolveKinSignerProfilePath(env),
+            };
+          },
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
+  const configuredMacPasskeySigning = macSigningConfiguration?.passkeys;
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
         ...configuredMacPasskeySigning,
@@ -3939,6 +3944,21 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
     );
   }
+
+  const kinSignerProfilePath = macSigningConfiguration?.signerProfilePath;
+  const kinSigner =
+    kinSignerProfilePath && macPasskeySigning
+      ? yield* buildKinSigner({
+          arch: options.arch,
+          outDir: stageRoot,
+          appId: macPasskeySigning.appId,
+          version: appVersion,
+          signing: {
+            teamId: macPasskeySigning.teamId,
+            profilePath: path.resolve(repoRoot, kinSignerProfilePath),
+          },
+        })
+      : undefined;
 
   const stageDependencies =
     options.platform === "win"
@@ -3988,6 +4008,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      kinSigner?.bundlePath,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -4064,6 +4085,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const buildEnv: NodeJS.ProcessEnv = {
     ...process.env,
   };
+  delete buildEnv[KIN_SIGNER_ENTITLEMENTS_ENV];
+  if (kinSigner?.entitlementsPath) {
+    buildEnv[KIN_SIGNER_ENTITLEMENTS_ENV] = kinSigner.entitlementsPath;
+  }
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {

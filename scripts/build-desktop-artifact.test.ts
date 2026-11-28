@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createPackageWithOptions, extractFile } from "@electron/asar";
+import Plist from "plist";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
@@ -552,6 +553,41 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  it.effect("stages the native signer only when requested for a signed Mac build", () =>
+    Effect.gen(function* () {
+      const bundle = "/synthetic-stage/Kin Signer.app";
+      const withoutSigner = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.33",
+        true,
+        false,
+        undefined,
+        undefined,
+        false,
+        "universal",
+      );
+      const withSigner = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.33",
+        true,
+        false,
+        undefined,
+        undefined,
+        false,
+        "universal",
+        bundle,
+      );
+      assert.notProperty(withoutSigner.mac, "extraFiles");
+      assert.notProperty(withoutSigner, "forceCodeSigning");
+      assert.deepPropertyVal(withSigner.mac, "extraFiles", [
+        { from: bundle, to: "Helpers/Kin Signer.app" },
+      ]);
+      assert.isTrue(withSigner.forceCodeSigning);
+    }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>
@@ -1598,7 +1634,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
     assert.match(entitlements, /<key>com\.apple\.security\.device\.camera<\/key>\s*<true\/>/u);
     assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/u);
-    assert.notInclude(entitlements, "keychain-access-groups");
+    assert.notProperty(Plist.parse(entitlements), "keychain-access-groups");
     assert.notInclude(entitlements, "com.apple.developer.web-browser.public-key-credential");
   });
 
@@ -1659,6 +1695,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         configuration,
       ),
     );
+    assert.deepPropertyVal(Plist.parse(entitlements), "keychain-access-groups", [
+      "ABC1234567.com.t3tools.t3code.webauthn",
+    ]);
     assert.match(
       entitlements,
       /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.com\.t3tools\.t3code\.webauthn<\/string>\s*<\/array>/u,
