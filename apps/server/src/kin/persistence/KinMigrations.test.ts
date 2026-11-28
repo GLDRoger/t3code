@@ -191,6 +191,7 @@ const tableNames = [
   "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
+  "kin_shadow_landings",
   "kin_social_groups",
   "kin_social_posts",
   "kin_statement_password_budget",
@@ -2377,6 +2378,7 @@ describe("Kin migrations", () => {
           [237, "CardTapDeliveries"],
           [238, "BillSenders"],
           [239, "BillMail"],
+          [240, "ShadowLandings"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
           {
@@ -2449,7 +2451,10 @@ describe("Kin migrations", () => {
         VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.pdf', 'file', 'application/pdf',
           8, 'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting')`;
       const before = yield* sql`SELECT * FROM kin_bill_reads`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [239, "BillMail"],
+        [240, "ShadowLandings"],
+      ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: null, mail_at: null },
       ]);
@@ -2457,8 +2462,11 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_bill_mail
         (org_id, connection_id, message_id, address, state, next_at, queued_at)
         VALUES ('org', 'box', 'message', 'billing@inkspot.example', 'waiting', 2, 2)`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 239`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [239, "BillMail"],
+        [240, "ShadowLandings"],
+      ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: "billing@inkspot.example", mail_at: 2 },
       ]);

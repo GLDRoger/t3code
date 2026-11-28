@@ -2176,6 +2176,7 @@ const commitDirectly = (
     readonly orphan?: boolean;
     /** The commit's parents in place of the branch's head, as a merge has. */
     readonly parents?: ReadonlyArray<string>;
+    readonly message?: string;
   },
   date?: string,
 ) =>
@@ -2217,7 +2218,7 @@ const commitDirectly = (
         ? []
         : (change.parents ?? [before]).flatMap((parent) => ["-p", parent])),
       "-m",
-      "direct",
+      change.message ?? "direct",
     ]);
     const remote = yield* bare(["rev-parse", "--absolute-git-dir"]);
     yield* git(["push", "--", remote, `+${commit}:refs/heads/${branch}`]);
@@ -2244,11 +2245,23 @@ const toldOwner = Effect.gen(function* () {
 });
 const landedMarks = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ branch: string; head: string }>`SELECT branch, head
-    FROM kin_memory_heads WHERE org_id = ${orgId} AND branch LIKE 'kin/shadow-landed/%'
-    ORDER BY branch`;
-  return rows.map((row) => row.branch);
+  const rows = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
+    FROM kin_shadow_landings WHERE org_id = ${orgId} AND landed_at IS NOT NULL
+    ORDER BY agent_id`;
+  return rows.map((row) => row.agentId);
 });
+// While on, the remote takes a landing and then the transaction that marks it fails.
+const marksFail = (on: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const event of ["INSERT", "UPDATE"])
+      yield* sql.unsafe(
+        on
+          ? `CREATE TRIGGER no_mark_${event} BEFORE ${event} ON kin_shadow_landings
+            WHEN NEW.landed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'no mark'); END`
+          : `DROP TRIGGER no_mark_${event}`,
+      );
+  });
 
 it.effect("an L0 lead's shadow notes land on the default branch and its index, once", () =>
   landingFixture(({ bare, setLevel }) =>
@@ -2372,12 +2385,7 @@ it.effect("one lead that cannot land leaves the next lead's notes landing", () =
 
       yield* writer.landShadows(orgId);
       assert.include(yield* bare(["show", "main:people/owner-repos.md"]), "two main repos");
-      const marked = yield* sql<{ branch: string }>`SELECT branch FROM kin_memory_heads
-        WHERE org_id = ${orgId} AND branch LIKE 'kin/shadow-landed/%' ORDER BY branch`;
-      assert.deepStrictEqual(
-        marked.map((row) => row.branch),
-        [`kin/shadow-landed/${agentId}`],
-      );
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
     }),
   ),
 );
@@ -2862,10 +2870,7 @@ it.effect("each lead's note of what stayed behind survives a restart and posts o
         );
 
       yield* writer.landShadows(orgId);
-      assert.deepStrictEqual(yield* landedMarks, [
-        "kin/shadow-landed/b-lead",
-        `kin/shadow-landed/${agentId}`,
-      ]);
+      assert.deepStrictEqual(yield* landedMarks, ["b-lead", agentId]);
       // A restart here, before anything posted: the lines wait in what was stored with the marks.
       const posted: Array<{ messageId: string; chatId: string; body: string }> = [];
       const chat = (fail: boolean) => ({
@@ -3029,7 +3034,6 @@ it.effect("a retry after a landing the remote took marks it and brings back noth
     Effect.gen(function* () {
       const writer = yield* Writer.MemoryWriter;
       const memory = yield* Memory.Memory;
-      const sql = yield* SqlClient.SqlClient;
       yield* said("m1", "2026-10-30T00:00:00.000Z");
       yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
       yield* wokeBeforeCutOver(writer, "wake0");
@@ -3044,15 +3048,13 @@ it.effect("a retry after a landing the remote took marks it and brings back noth
         },
         preCutOver,
       );
-      // The remote takes the landing, then the transaction that marks it fails.
-      yield* sql.unsafe(`CREATE TRIGGER no_mark BEFORE INSERT ON kin_memory_heads
-        WHEN NEW.branch LIKE 'kin/shadow-landed/%' BEGIN SELECT RAISE(ABORT, 'no mark'); END`);
+      yield* marksFail(true);
       yield* writer.landShadows(orgId);
       assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
       assert.notInclude(yield* bare(["show", "main:people/sam.md"]), FIXTURE_QUOTE);
       assert.deepStrictEqual(yield* landedMarks, []);
       assert.deepStrictEqual(yield* toldOwner, []);
-      yield* sql.unsafe("DROP TRIGGER no_mark");
+      yield* marksFail(false);
       yield* memory.syncCheckout(orgId);
       // Before the retry, someone removes a landed note from Memory.
       yield* commitDirectly(bare, "main", { remove: ["people/alex.md"] });
@@ -3060,7 +3062,7 @@ it.effect("a retry after a landing the remote took marks it and brings back noth
 
       yield* writer.landShadows(orgId);
       assert.strictEqual(yield* bare(["rev-parse", "main"]), removed);
-      assert.deepStrictEqual(yield* landedMarks, [`kin/shadow-landed/${agentId}`]);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
       assert.deepStrictEqual(
         (yield* toldOwner).map((row) => row.body),
         [
@@ -3092,6 +3094,130 @@ it.effect("a shadow whose history crosses the default branch's twice lands nothi
       assert.strictEqual(yield* bare(["rev-parse", "main"]), before);
       assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/alex.md");
       assert.deepStrictEqual(yield* landedMarks, []);
+    }),
+  ),
+);
+
+it.effect("a retry after a landing the remote took decides nothing until it can fetch", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const sql = yield* SqlClient.SqlClient;
+      const fs = yield* FileSystem.FileSystem;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // The shadow's only note is cited from the owner's chat.
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        { remove: ["people/alex.md"], add: { "people/sam.md": cited("sam", "Sam runs billing") } },
+        preCutOver,
+      );
+      yield* marksFail(true);
+      yield* writer.landShadows(orgId);
+      yield* marksFail(false);
+      assert.include(yield* bare(["show", "main:people/sam.md"]), "Sam runs billing");
+      const landed = yield* bare(["rev-parse", "main"]);
+      // A note's source is cleared, and the remote can't be reached for the retry.
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'm1'`;
+      const remote = yield* bare(["rev-parse", "--absolute-git-dir"]);
+      yield* fs.rename(remote, `${remote}.away`);
+      yield* writer.landShadows(orgId);
+      assert.deepStrictEqual(yield* landedMarks, []);
+      assert.deepStrictEqual(yield* toldOwner, []);
+
+      yield* fs.rename(`${remote}.away`, remote);
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), landed);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+      assert.deepStrictEqual(yield* toldOwner, []);
+    }),
+  ),
+);
+
+it.effect("a commit that only copies a landing's message marks nothing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      const shadowHead = yield* bare(["rev-parse", shadow]);
+      yield* commitDirectly(bare, "main", {
+        add: { "rules.md": "Other rules\n" },
+        message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
+      });
+
+      yield* writer.landShadows(orgId);
+      assert.include(
+        (yield* bare(["ls-tree", "-r", "--name-only", "main"])).split("\n"),
+        "people/alex.md",
+      );
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+    }),
+  ),
+);
+
+it.effect("a note held for a clash is still told as a clash after its source is cleared", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, "main", {
+        add: { "people/onboarding.md": personNote("onboarding", "Onboarding").content },
+      });
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        { add: { "people/onboarding-copy.md": cited("onboarding", "Onboarding, again") } },
+        preCutOver,
+      );
+      yield* marksFail(true);
+      yield* writer.landShadows(orgId);
+      yield* marksFail(false);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      yield* memory.syncCheckout(orgId);
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'm1'`;
+
+      yield* writer.landShadows(orgId);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/onboarding-copy.md: It clashes with another note in Memory, so Kin left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a file Memory doesn't read, with a note's id, doesn't hold that note back", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* writer.stage(orgId, "wake0", personNote("sam", "Sam runs billing"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, "main", {
+        add: { "people/sam.md.bak": personNote("sam", "Sam, an old copy").content },
+      });
+
+      yield* writer.landShadows(orgId);
+      assert.include(
+        (yield* bare(["ls-tree", "-r", "--name-only", "main"])).split("\n"),
+        "people/sam.md",
+      );
+      yield* memory.syncCheckout(orgId);
+      assert.strictEqual(
+        (yield* memory.readItem(orgId, KinMemoryItemId.make("sam"))).head.title,
+        "Sam runs billing",
+      );
+      assert.deepStrictEqual(yield* toldOwner, []);
     }),
   ),
 );

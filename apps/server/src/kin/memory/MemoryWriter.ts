@@ -35,6 +35,7 @@ import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import { memoryIdentity } from "./memoryIdentity.ts";
 import {
+  admittedId,
   Memory,
   MemoryCheckoutInvalid,
   MemoryRecoveryHooks,
@@ -324,9 +325,6 @@ export class MemoryWriter extends Context.Service<
     readonly landShadows: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
-// Through `Memory.anchor`, the table's owner: a `kin_memory_heads` row no branch uses, holding the
-// shadow head landed.
-const shadowLanded = (agentId: string) => `kin/shadow-landed/${agentId}`;
 // The held line (`deliverHeld`) telling the owner what of a lead's shadow stayed behind.
 const shadowNoticeKind = (agentId: string) => `kin-memory:shadow-landed:${agentId}`;
 // Why a shadow note stayed off the default branch, in the owner's words.
@@ -338,6 +336,17 @@ const heldWhy = {
   unverified: "Kin couldn't confirm where it came from, so it left it out.",
   clash: "It clashes with another note in Memory, so Kin left it out.",
 };
+// What a landing kept back, as its owner notice names it (`null`: a name the scan flags).
+const HeldNotes = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      path: Schema.NullOr(Schema.String),
+      why: Schema.Literals(Object.keys(heldWhy) as Array<keyof typeof heldWhy>),
+    }),
+  ),
+);
+const encodeHeld = Schema.encodeEffect(HeldNotes);
+const decodeHeld = Schema.decodeEffect(HeldNotes);
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = [
@@ -842,6 +851,8 @@ const make = Effect.gen(function* () {
       readonly message: string;
       /** Runs in the transaction that records the new head. */
       readonly landed?: (commit: string) => Effect.Effect<void, Failure>;
+      /** Runs once the commit exists, before anything can publish it. */
+      readonly pushing?: (commit: string) => Effect.Effect<void, Failure>;
     },
   ) {
     const { writer, branch, head, headFiles } = input;
@@ -875,6 +886,7 @@ const make = Effect.gen(function* () {
     });
     if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
     const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, input.message);
+    if (input.pushing !== undefined) yield* input.pushing(commit);
     if (onMain && mainWrites === "pull_request") {
       yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
       yield* record(commit);
@@ -1968,13 +1980,16 @@ const make = Effect.gen(function* () {
             branch: string;
             owner: string;
             ownerChat: string;
+            pushed: string | null;
+            held: string | null;
           }>`SELECT l.agent_id AS "agentId", l.name, h.branch, a.owner_person_id AS owner,
-              l.owner_chat_id AS "ownerChat" FROM kin_memory_heads h
+              l.owner_chat_id AS "ownerChat", s.commit_id AS pushed, s.held_json AS held
+            FROM kin_memory_heads h
             JOIN kin_leads l ON l.org_id = h.org_id AND h.branch = 'kin/shadow/' || l.agent_id
             JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
               AND a.retired_at IS NULL
-            WHERE h.org_id = ${orgId} AND NOT EXISTS (SELECT 1 FROM kin_memory_heads m
-              WHERE m.org_id = h.org_id AND m.branch = 'kin/shadow-landed/' || l.agent_id)
+            LEFT JOIN kin_shadow_landings s ON s.org_id = l.org_id AND s.agent_id = l.agent_id
+            WHERE h.org_id = ${orgId} AND s.landed_at IS NULL
             ORDER BY l.agent_id`.pipe(toSql);
           // Tried again at the next sync once the default branch takes writes.
           if (pending.length === 0 || mainWrites === "refused") return;
@@ -2099,26 +2114,30 @@ const make = Effect.gen(function* () {
               files.delete(path);
             }
             // Two notes with one id fail every read of it (`MemoryDuplicateId`), so the tree that
-            // would land is checked with ids as `Memory.load` reads them; holding a note back puts
-            // the default branch's at its path again, so it repeats until nothing clashes.
+            // would land is checked with ids only for files `Memory.load` admits, as it reads
+            // them; holding a note back puts the default branch's at its path again, so it
+            // repeats until nothing clashes.
             const reserved = new Map<string, string>();
-            for (const [path, bytes] of headFiles)
-              if (folders.some((folder) => path.startsWith(`${folder}/`))) {
-                const item = yield* parseFrontMatter(
-                  orgId,
-                  path,
-                  bytes.toString("utf8"),
-                  false,
-                  true,
-                ).pipe(Effect.option);
-                if (Option.isSome(item)) reserved.set(path, item.value.frontMatter.id);
-              }
+            for (const { relative, mode } of yield* treeAt(orgId, writer, head)) {
+              const bytes = headFiles.get(relative);
+              const id =
+                bytes === undefined ? undefined : yield* admittedId(orgId, relative, mode, bytes);
+              if (id !== undefined) reserved.set(relative, id);
+            }
+            // A landed file is committed as a regular file.
+            const claims = new Map<string, string>();
+            for (const [path, text] of files) {
+              const id = yield* admittedId(orgId, path, "100644", Buffer.from(text));
+              if (id !== undefined) claims.set(path, id);
+            }
             for (;;) {
               const count = new Map<string, number>();
               const claim = (id: string) => count.set(id, (count.get(id) ?? 0) + 1);
               for (const [path, id] of reserved) if (!files.has(path)) claim(id);
-              for (const item of items.values()) claim(item.id);
-              const clashing = [...items].filter(([, item]) => count.get(item.id)! > 1);
+              for (const [path, id] of claims) if (items.has(path)) claim(id);
+              const clashing = [...claims].filter(
+                ([path, id]) => items.has(path) && count.get(id)! > 1,
+              );
               if (clashing.length === 0) break;
               for (const [path] of clashing) {
                 files.delete(path);
@@ -2128,67 +2147,109 @@ const make = Effect.gen(function* () {
             }
             return { headFiles, files, items, held };
           });
-          const landingMessage = (agentId: string, shadowHead: string) =>
-            `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`;
-          // A landing the remote took while the transaction marking it failed is on the default
-          // branch once sync adopts it. Found by its message and checked to carry only this
-          // shadow's notes, so the retry marks it instead of landing again what was removed since.
-          const earlierLanding = Effect.fn("MemoryWriter.landShadows.earlier")(function* (
-            agentId: string,
-            shadowHead: string,
-            shadowFiles: ReadonlyMap<string, Buffer>,
-            head: string,
+          // The landing's state is written before its commit can reach the remote, so a retry
+          // after a push whose mark failed checks for that exact commit; the default branch is
+          // fetched first, and nothing is decided when it can't be.
+          const onRemoteMain = Effect.fn("MemoryWriter.landShadows.onRemoteMain")(function* (
+            commit: string,
           ) {
-            const candidates = (yield* git(orgId, writer, [
-              "log",
-              "--format=%H",
-              "--fixed-strings",
-              `--grep=Kin-Shadow-Landed: ${shadowHead}`,
-              head,
-            ]))
-              .split("\n")
-              .filter((line) => line !== "");
-            for (const commit of candidates) {
-              const message = yield* git(orgId, writer, ["show", "-s", "--format=%B", commit]);
-              if (message.trim() !== landingMessage(agentId, shadowHead).trim()) continue;
-              const [, ...parents] = (yield* git(orgId, writer, [
-                "rev-list",
-                "--parents",
-                "-n",
-                "1",
-                commit,
-              ])).split(" ");
-              const landedFiles = yield* filesAt(orgId, writer, commit);
-              const parentFiles =
-                parents.length === 1 ? yield* filesAt(orgId, writer, parents[0]!) : undefined;
-              const landed = new Set<string>();
-              const matches =
-                parentFiles !== undefined &&
-                [...new Set([...parentFiles.keys(), ...landedFiles.keys()])].every((path) => {
-                  const bytes = landedFiles.get(path);
-                  if (path === "INDEX.md" || same(parentFiles.get(path), bytes)) return true;
-                  const kept = shadowFiles.get(path);
-                  landed.add(path);
-                  return (
-                    folders.some((folder) => path.startsWith(`${folder}/`)) &&
-                    bytes !== undefined &&
-                    kept !== undefined &&
-                    bytes.equals(Buffer.from(withoutQuote(kept.toString("utf8"))))
-                  );
-                });
-              if (!matches)
-                return yield* new MemorySyncConflict({
-                  orgId,
-                  operation: "landShadows",
-                  reason: "An earlier landing of this shadow branch holds more than its notes",
-                });
-              return { parent: parents[0]!, landed };
-            }
-            return undefined;
+            const advertised = yield* git(orgId, writer, [
+              "ls-remote",
+              "--",
+              repo.repoUrl,
+              `refs/heads/${main}`,
+            ]);
+            const [sha, ref] = advertised.split(/\s+/);
+            if (
+              !sha ||
+              !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha) ||
+              ref !== `refs/heads/${main}`
+            )
+              return yield* new MemoryCheckoutInvalid({
+                orgId,
+                operation: "landShadows",
+                reason: "Invalid remote advertisement",
+              });
+            yield* git(orgId, writer, ["fetch", "--", repo.repoUrl, sha]);
+            // A wrong "no" (the commit gone from this checkout, say) only plans again, and that
+            // push can't replace a default branch that holds the commit.
+            return yield* git(orgId, writer, ["merge-base", "--is-ancestor", commit, sha]).pipe(
+              Effect.as(true),
+              Effect.catchTags({ MemoryError: () => Effect.succeed(false) }),
+            );
           });
           // A lead that fails is logged and left unmarked, so the next sync retries it alone.
-          for (const { agentId, name, branch, owner, ownerChat } of pending)
+          for (const { agentId, name, branch, owner, ownerChat, pushed, held: saved } of pending)
             yield* Effect.gen(function* () {
+              const at = yield* Clock.currentTimeMillis;
+              const record = (
+                commit: string | null,
+                shown: ReadonlyArray<{ path: string | null; why: keyof typeof heldWhy }>,
+                landedAt: number | null,
+              ) =>
+                encodeHeld(shown).pipe(
+                  Effect.mapError(
+                    (cause) => new MemoryError({ orgId, operation: "landShadows", cause }),
+                  ),
+                  Effect.flatMap((held) =>
+                    sql`INSERT INTO kin_shadow_landings (org_id, agent_id, commit_id, held_json,
+                        landed_at)
+                      VALUES (${orgId}, ${agentId}, ${commit}, ${held}, ${landedAt})
+                      ON CONFLICT (org_id, agent_id) DO UPDATE SET commit_id = excluded.commit_id,
+                        held_json = excluded.held_json, landed_at = excluded.landed_at`.pipe(toSql),
+                  ),
+                  Effect.asVoid,
+                );
+              // Kept with the mark, so a restart can't lose it; `deliverHeld` posts it once, on
+              // its own, under an id of its own, after any quiet hours.
+              const landed = (
+                commit: string | null,
+                shown: ReadonlyArray<{ path: string | null; why: keyof typeof heldWhy }>,
+              ) =>
+                record(commit, shown, at).pipe(
+                  Effect.andThen(
+                    shown.length === 0
+                      ? Effect.void
+                      : sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id,
+                            kind, body, audience, held_at, deliver_at)
+                          VALUES (${`shadow-landed:${orgId}:${agentId}`}, ${orgId}, ${ownerChat},
+                            ${owner}, ${shadowNoticeKind(agentId)},
+                            ${`Some of ${name}'s earlier notes weren't added to Memory:\n${shown.map(({ path, why }) => `- ${path ?? "One note"}: ${heldWhy[why]}`).join("\n")}`},
+                            'owner', ${at}, ${at})
+                          ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid),
+                  ),
+                );
+              const landedNow = (
+                commit: string | null,
+                shown: ReadonlyArray<{ path: string | null; why: keyof typeof heldWhy }>,
+              ) =>
+                sql.withTransaction(landed(commit, shown)).pipe(
+                  Effect.catchTags({
+                    SqlError: (cause) =>
+                      Effect.fail(toPersistenceSqlError("MemoryWriter.landShadows")(cause)),
+                  }),
+                );
+              const logHeld = (
+                shown: ReadonlyArray<{ path: string | null; why: keyof typeof heldWhy }>,
+              ) =>
+                shown.length === 0
+                  ? Effect.void
+                  : recovery.notify({
+                      orgId,
+                      branch,
+                      reason: `Left on the shadow branch: ${shown.map(({ path, why }) => `${path ?? "[redacted]"} (${why})`).join(", ")}`,
+                    });
+              // Retired notes of a landing the remote took end their sharing as
+              // `reconcileSharing` sweeps the default branch.
+              if (pushed !== null && saved !== null && (yield* onRemoteMain(pushed))) {
+                const shown = yield* decodeHeld(saved).pipe(
+                  Effect.mapError(
+                    (cause) => new MemoryError({ orgId, operation: "landShadows", cause }),
+                  ),
+                );
+                yield* landedNow(pushed, shown);
+                return yield* logHeld(shown);
+              }
               const tip = yield* branchHead(orgId, writer, branch);
               // `--before` takes its own second, and a commit that second may be after K035 ran.
               const shadowHead = yield* git(orgId, writer, [
@@ -2197,64 +2258,22 @@ const make = Effect.gen(function* () {
                 `--before=@${Math.ceil(cutOverSeconds) - 1}`,
                 tip,
               ]);
-              const mark = memory
-                .anchor(orgId, shadowLanded(agentId), shadowHead || tip)
-                .pipe(Effect.asVoid);
-              if (shadowHead === "") return yield* mark;
+              if (shadowHead === "") return yield* landedNow(null, []);
               const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
               const head = yield* branchHead(orgId, writer, main);
-              const earlier = yield* earlierLanding(agentId, shadowHead, shadowFiles, head);
-              // Replayed against the head it landed on, so the owner hears what that landing left.
-              const plan = yield* planLanding(
-                agentId,
-                owner,
-                shadowHead,
-                shadowFiles,
-                earlier?.parent ?? head,
-              );
-              const held =
-                earlier === undefined
-                  ? plan.held
-                  : [
-                      ...plan.held.filter(({ path }) => !earlier.landed.has(path)),
-                      ...[...plan.files.keys()]
-                        .filter((path) => !earlier.landed.has(path))
-                        .map((path) => ({ path, why: "unverified" as const })),
-                    ];
+              const plan = yield* planLanding(agentId, owner, shadowHead, shadowFiles, head);
               // A name the scan flags stays out of the owner's chat and the log.
-              const shown: Array<{ path: string | undefined; why: keyof typeof heldWhy }> = [];
-              for (const { path, why } of held.toSorted((a, b) => a.path.localeCompare(b.path))) {
+              const shown: Array<{ path: string | null; why: keyof typeof heldWhy }> = [];
+              for (const { path, why } of plan.held.toSorted((a, b) =>
+                a.path.localeCompare(b.path),
+              )) {
                 const findings = yield* scanner.scan({
                   orgId,
                   files: [{ path, content: new Uint8Array() }],
                 });
-                shown.push({ path: findings.length > 0 ? undefined : path, why });
+                shown.push({ path: findings.length > 0 ? null : path, why });
               }
-              const lines = shown.map(
-                ({ path, why }) => `- ${path ?? "One note"}: ${heldWhy[why]}`,
-              );
-              // Kept with the marker, so a restart can't lose it; `deliverHeld` posts it once,
-              // on its own, under an id of its own, after any quiet hours.
-              const at = yield* Clock.currentTimeMillis;
-              const told =
-                shown.length === 0
-                  ? Effect.void
-                  : sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind,
-                        body, audience, held_at, deliver_at)
-                      VALUES (${`shadow-landed:${orgId}:${agentId}`}, ${orgId}, ${ownerChat},
-                        ${owner}, ${shadowNoticeKind(agentId)},
-                        ${`Some of ${name}'s earlier notes weren't added to Memory:\n${lines.join("\n")}`},
-                        'owner', ${at}, ${at})
-                      ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
-              const landed = mark.pipe(Effect.andThen(told));
-              // An earlier landing's retired notes end their sharing as `reconcileSharing` sweeps.
-              if (earlier !== undefined || plan.files.size === 0)
-                yield* sql.withTransaction(landed).pipe(
-                  Effect.catchTags({
-                    SqlError: (cause) =>
-                      Effect.fail(toPersistenceSqlError("MemoryWriter.landShadows")(cause)),
-                  }),
-                );
+              if (plan.files.size === 0) yield* landedNow(null, shown);
               else {
                 const ending = [...plan.items.values()].filter(retired).map((item) => item.id);
                 yield* ownerCommit(orgId, {
@@ -2264,17 +2283,14 @@ const make = Effect.gen(function* () {
                   head,
                   headFiles: plan.headFiles,
                   files: plan.files,
-                  message: landingMessage(agentId, shadowHead),
+                  message: `kin(${agentId}): land notes kept at L0`,
+                  pushing: (commit) => record(commit, shown, null),
                   // With the mark, so a commit that fails leaves sharing as it was for the retry.
-                  landed: () => endSharing(orgId, ending).pipe(Effect.andThen(landed)),
+                  landed: (commit) =>
+                    endSharing(orgId, ending).pipe(Effect.andThen(landed(commit, shown))),
                 });
               }
-              if (shown.length > 0)
-                yield* recovery.notify({
-                  orgId,
-                  branch,
-                  reason: `Left on the shadow branch: ${shown.map(({ path, why }) => `${path ?? "[redacted]"} (${why})`).join(", ")}`,
-                });
+              yield* logHeld(shown);
             }).pipe(
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
