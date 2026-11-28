@@ -18,7 +18,7 @@ import {
   KIN_YES_NO,
   KIN_LISTS,
   kinEntryPrivateLine,
-  kinEntryShareCopy,
+  kinEntryWhoSees,
   KIN_LIST_LABEL_MAX,
   kinListEditDraftOf,
   kinListEditInput,
@@ -44,6 +44,7 @@ import {
   kinInvoiceDraftNote,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
+  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   kinWorkDueLabel,
@@ -300,6 +301,7 @@ export function KinListEntryBody(
   const agent = useKinAskAgent(props);
   const mayUpdate = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  const whoSees = kinEntryWhoSees(item, def, shell, ownerLevel);
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   // A project's lead drafts its entries' words and figures; state, files and the rest are the owner's.
   const leads =
@@ -751,7 +753,11 @@ export function KinListEntryBody(
           </>
         )}
       </ListSection>
-      {ownerLevel && item.list !== "bank_transactions" ? (
+      {whoSees !== null ? (
+        <ListSection>
+          <ListRowLayout icon="person.2" label={whoSees.line} />
+        </ListSection>
+      ) : ownerLevel && item.list !== "bank_transactions" ? (
         <ListSection>
           <KinWorkShareRow
             environmentId={environmentId}
@@ -759,7 +765,7 @@ export function KinListEntryBody(
             itemKey={item.key}
             shared={view.shared}
             disabled={busy}
-            copy={kinEntryShareCopy(item, def, shell)}
+            copy={KIN_ENTRY_SHARE}
           />
         </ListSection>
       ) : null}
