@@ -72,6 +72,15 @@ export const receivedAfter = (receivedAt: number | null | undefined, floor: numb
 export const ACTIVITY_MAIL = 100;
 export const ACTIVITY_EVENTS = 200;
 
+/** Ordered Gmail headers, or Microsoft headers tagged by the Graph adapter. */
+export type MailAuthResults =
+  | ReadonlyArray<string>
+  | {
+      readonly receiver: "microsoft";
+      readonly results: ReadonlyArray<string>;
+      readonly isDraft?: boolean;
+    };
+
 export type MailActivity = {
   /** Where the vendor's change feed stopped, for the next read; null for a vendor that keeps none. */
   readonly cursor: string | null;
@@ -84,7 +93,7 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
-    readonly authResults?: ReadonlyArray<string>;
+    readonly authResults?: MailAuthResults;
     readonly automatedNotice?: true;
   }>;
   readonly calendar: ReadonlyArray<{
@@ -124,7 +133,7 @@ export type MailArrival = {
   readonly date: string | null;
   /** The RFC 5322 Message-ID, the same in every mailbox that got the message. */
   readonly internetId: string | null;
-  readonly authResults: ReadonlyArray<string>;
+  readonly authResults: MailAuthResults;
   readonly listUnsubscribe: boolean;
   readonly precedence: string | null;
   readonly autoSubmitted: string | null;
@@ -196,7 +205,7 @@ export type MailMessage = {
   readonly unread: boolean;
   readonly messageId: string | null;
   readonly references: string | null;
-  readonly authResults: ReadonlyArray<string>;
+  readonly authResults: MailAuthResults;
   readonly automation?: MailAutomation;
   /** Only on a whole read of the thread. */
   readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;

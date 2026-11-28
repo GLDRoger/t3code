@@ -694,6 +694,10 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
     ],
   ];
 
+const microsoftPass =
+  "spf=pass smtp.mailfrom=client.example; dmarc=pass action=none header.from=client.example; compauth=pass reason=100";
+const extraPass = "dmarc=pass header.from=client.example; compauth=pass";
+
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
 
@@ -704,25 +708,30 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
         "mx.google.com; spf=pass (dmarc=pass+header.from=client.example@else.example); dmarc=fail header.from=client.example",
       ],
       "failed",
+      "failed",
     ],
     [
       "a pass in a quoted property",
       ['mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=client.example"'],
       "not checked",
+      "not checked",
     ],
     [
       "only the lower header carries a claimed pass",
-      ["mx.google.com; none", "mx.example; dmarc=pass header.from=client.example"],
+      ["mx.google.com; none", "mx.google.com; dmarc=pass header.from=client.example"],
+      "not checked",
       "not checked",
     ],
     [
       "a DMARC pass for another domain",
       ["mx.google.com; dmarc=pass header.from=else.example"],
       "not checked",
+      "not checked",
     ],
     [
       "SPF and DKIM both pass for an unrelated domain",
       ["mx.google.com; dkim=pass header.d=else.example; spf=pass smtp.mailfrom=else.example"],
+      "not checked",
       "not checked",
     ],
     [
@@ -731,15 +740,44 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
         "mx.google.com; dkim=pass header.i=@client.example; spf=pass smtp.mailfrom=ana@client.example; dmarc=pass (p=REJECT) header.from=client.example",
       ],
       "passed",
+      "not checked",
     ],
     [
-      "a Microsoft-shaped DMARC pass",
+      "a Microsoft-shaped DMARC pass without compauth",
       [
         "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
       ],
-      "passed",
+      "not checked",
+      "not checked",
     ],
-  ] as const)("reports the sender check for %s", ([, authResults, verdict]) =>
+    ["one Microsoft pass with compauth", [microsoftPass], "not checked", "passed"],
+    [
+      "two passes with the Microsoft pass last",
+      [extraPass, microsoftPass],
+      "not checked",
+      "not checked",
+    ],
+    [
+      "two passes with the Microsoft pass first",
+      [microsoftPass, extraPass],
+      "not checked",
+      "not checked",
+    ],
+    [
+      "a receiver name on otherwise Microsoft-shaped results",
+      [`mx.microsoft.com; ${microsoftPass}`],
+      "not checked",
+      "not checked",
+    ],
+    [
+      "a Microsoft-shaped DMARC fail",
+      [
+        "spf=fail smtp.mailfrom=client.example; dkim=none (message not signed) header.d=none; dmarc=fail action=none header.from=client.example",
+      ],
+      "failed",
+      "failed",
+    ],
+  ] as const)("reports the sender check for %s", ([, authResults, gmail, outlook]) =>
     run(provider, ({ fake, call }) =>
       Effect.gen(function* () {
         const message = fake.deliver({
@@ -751,7 +789,10 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
           authResults,
         });
         const thread = yield* call(MAIL_TOOL.read, { threadId: message.threadId });
-        assert.strictEqual(thread.messages[0].senderCheck, verdict);
+        assert.strictEqual(
+          thread.messages[0].senderCheck,
+          provider === MAIL_PROVIDERS.microsoft ? outlook : gmail,
+        );
       }),
     ),
   );
