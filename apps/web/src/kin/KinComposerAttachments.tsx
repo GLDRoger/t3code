@@ -50,11 +50,8 @@ import {
   startAttachmentUpload,
   useAttachmentUploadStore,
 } from "../lib/attachmentUploadQueue";
-import {
-  inheritComposerImageThumbnail,
-  prepareImageForAttachment,
-  reencodePhoto,
-} from "../lib/imageCompression";
+import { inheritComposerImageThumbnail, prepareImageForAttachment } from "../lib/imageCompression";
+import { kinPhotoReencode } from "./kinPhotoReencode";
 import { KIN_PHOTO_FIT, kinPhotosFit } from "@t3tools/client-runtime/kin/kinPhotoFit";
 import { randomUUID } from "../lib/utils";
 import { useServerConfigs } from "../state/entities";
@@ -155,7 +152,7 @@ export function useKinComposerAttachments(input: {
       })),
       cap: KIN_PHOTO_FIT.cap - held,
       encode: async (image, step) => {
-        const file = await reencodePhoto(image.file, step.quality, step.maxEdge);
+        const file = await kinPhotoReencode(image.file, step.quality, step.maxEdge);
         if (file === null) return null;
         inheritComposerImageThumbnail(image.file, file);
         const photo: ComposerImageAttachment = {
