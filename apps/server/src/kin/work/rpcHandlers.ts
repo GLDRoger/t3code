@@ -481,6 +481,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.bills.addAnyway": Effect.fn("KinWork.rpc.billsAddAnyway")(function* (input) {
         return yield* call((people) => Bills.addAnyway(people, input));
       }),
+      "kin.bills.keepEntered": Effect.fn("KinWork.rpc.billsKeepEntered")(function* (input) {
+        return yield* call((people) => Bills.keepEntered(people, input));
+      }),
       "kin.bills.dismiss": Effect.fn("KinWork.rpc.billsDismiss")(function* (input) {
         return yield* call((people) => Bills.dismiss(people, input));
       }),

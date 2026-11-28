@@ -290,7 +290,9 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.strictEqual(KIN_RPC_AGGREGATES["kin.mailRules.setLimit"], "kin-connections");
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
-        assert.lengthOf(bills, 6);
+        assert.lengthOf(bills, 7);
+        assert.include(bills, "kin.bills.keepEntered");
+        assert.propertyVal(CLIENT_GUARDED_RPC_SCOPES, "kin.bills.keepEntered", AuthKinChatScope);
         assert.deepStrictEqual(
           bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
           [],
@@ -399,6 +401,17 @@ it.effect("a coding agent key reaches no RPC: every method T3 and Kin serve refu
       ).pipe(Effect.exit);
       if (result._tag === "Success") admitted.push(method);
     }
+    const entered = {
+      orgId,
+      sha256: "a".repeat(64),
+      clientRequestId: "fix",
+      entered: { vendor: "Harbor Cafe", date: "2026-11-20", amount: "12", currency: "EUR" },
+    };
+    assert.strictEqual(
+      (yield* authorizeRpc([AuthKinTasksScope], "kin.bills.keepEntered", entered).pipe(Effect.exit))
+        ._tag,
+      "Failure",
+    );
     assert.isAbove(WsRpcGroup.requests.size, KinRpcs.length);
     assert.deepStrictEqual(admitted, []);
   }),
