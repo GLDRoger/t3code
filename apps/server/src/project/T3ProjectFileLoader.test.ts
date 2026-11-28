@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 
 const layerTest = Layer.empty.pipe(
   Layer.provideMerge(T3ProjectFileLoader.layer),
@@ -28,6 +29,20 @@ const writeProjectFile = Effect.fn("writeProjectFile")(function* (cwd: string, c
 
 it.layer(layerTest)("T3ProjectFileLoader", (it) => {
   describe("load", () => {
+    it.effect("ignores project configuration in a fenced workspace", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir;
+        yield* writeProjectFile(cwd, '{"worktreeLayout":{"create":"true","remove":"true"}}');
+        const loader = yield* T3ProjectFileLoader.make.pipe(
+          Effect.provideService(WorkspaceHostAccess, {
+            fenced: () => Effect.succeed(true),
+            register: () => Effect.succeed(true),
+            guard: (_paths, _effect, refused) => refused,
+          }),
+        );
+        expect(Option.isNone(yield* loader.load(cwd))).toBe(true);
+      }),
+    );
     it.effect("returns none for malformed JSON without failing", () =>
       Effect.gen(function* () {
         const loader = yield* T3ProjectFileLoader.T3ProjectFileLoader;

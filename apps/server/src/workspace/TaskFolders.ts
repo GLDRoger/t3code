@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "./WorkspaceHostAccess.ts";
 import {
   GitCommandError,
   type ProjectId,
@@ -290,10 +291,15 @@ const make = Effect.gen(function* () {
       new TaskFolderError({ operation, detail: `${prefix}: ${failureDetail(cause)}`, cause });
 
   // A project that lays its own thread folder out says so in its `t3.json`.
+  const workspaceAccess = yield* WorkspaceHostAccess;
   const worktreeLayout = (projectRoot: string) =>
-    fileSystem.readFileString(path.join(projectRoot, T3_PROJECT_FILE_NAME)).pipe(
-      Effect.map((contents) => parseT3ProjectFile(contents)?.worktreeLayout ?? null),
-      Effect.orElseSucceed(() => null),
+    workspaceAccess.guard(
+      [projectRoot],
+      fileSystem.readFileString(path.join(projectRoot, T3_PROJECT_FILE_NAME)).pipe(
+        Effect.map((contents) => parseT3ProjectFile(contents)?.worktreeLayout ?? null),
+        Effect.orElseSucceed(() => null),
+      ),
+      Effect.succeed(null),
     );
   // One at a time per project: the commands share the project folder, and its workspace files.
   const layoutLocks = yield* KeyedLock.make<string>();

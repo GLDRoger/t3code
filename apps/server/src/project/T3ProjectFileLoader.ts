@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -47,9 +48,11 @@ const logT3ProjectFileLoadError = (error: T3ProjectFileLoadError) =>
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const workspaceAccess = yield* WorkspaceHostAccess;
 
   const load: T3ProjectFileLoader["Service"]["load"] = Effect.fn("T3ProjectFileLoader.load")(
     function* (workspaceRoot) {
+      if (yield* workspaceAccess.fenced(workspaceRoot)) return Option.none<T3ProjectFile>();
       const filePath = path.join(workspaceRoot, T3_PROJECT_FILE_NAME);
       const raw = yield* fileSystem.readFileString(filePath).pipe(
         Effect.asSome,

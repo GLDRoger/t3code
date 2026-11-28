@@ -1,3 +1,4 @@
+import { WorkspaceHostAccess } from "../workspace/WorkspaceHostAccess.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import {
@@ -260,6 +261,7 @@ function wrapCommandForCompletion(
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const workspaceAccess = yield* WorkspaceHostAccess;
   const projects = yield* ProjectService.ProjectService;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const terminalManager = yield* TerminalManager.TerminalManager;
@@ -445,6 +447,8 @@ export const make = Effect.gen(function* () {
     );
     if (thread?.linkOrigin !== undefined && linkOriginIsFenced(thread.linkOrigin))
       return { status: "skipped-for-link" } as const;
+    if (yield* workspaceAccess.fenced(input.worktreePath, ThreadId.make(input.threadId)))
+      return { status: "no-script" } as const;
     const suppliedProject = input.project;
     const projectById =
       suppliedProject ??
@@ -481,6 +485,9 @@ export const make = Effect.gen(function* () {
     if (!project) {
       return yield* new ProjectSetupScriptProjectNotFoundError(errorContext);
     }
+
+    if (yield* workspaceAccess.fenced(project.workspaceRoot))
+      return { status: "no-script" } as const;
 
     const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError(
