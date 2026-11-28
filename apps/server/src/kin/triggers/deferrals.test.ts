@@ -434,8 +434,16 @@ it.effect.each([
     assert.lengthOf(more, 0);
     if (state === "started") {
       assert.deepInclude(JSON.parse(started!.json).provenance, { _tag: "human", personId: person });
-      assert.deepInclude(yield* cardOf("def-1"), { phase: "started", actions: [] });
-    } else assert.isUndefined(started);
+      assert.deepInclude(yield* cardOf("def-1"), {
+        phase: "started",
+        actions: [],
+        closed: "started",
+      });
+    } else {
+      assert.isUndefined(started);
+      if (expected === "ok" && action === "cancel")
+        assert.deepInclude(yield* cardOf("def-1"), { closed: "cancelled" });
+    }
     // A tap Kin finished itself wakes no one.
     const sql = yield* SqlClient.SqlClient;
     const woke = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
@@ -542,6 +550,80 @@ it.effect(
   },
 );
 
+it.effect.each([
+  [
+    true,
+    "start",
+    "Tap Start now to start it, Monday to move it, or Cancel. I won't start it on my own: Kin asks before every start for now.",
+  ],
+  [
+    false,
+    "start",
+    "Tap Monday to move it, or Cancel. I can't start it now: Kin asks before every start for now; there is no active agent.",
+  ],
+  [true, "ask", "Tap Start now to start it, Monday to move it, or Cancel."],
+  [false, "ask", "Tap Monday to move it, or Cancel."],
+] as const)(
+  "a decision card keeps its legacy text and sends a clock-free note: live=%s mode=%s",
+  ([live, mode, note]) => {
+    const scheduled = makeDeferral("def-1", { on_due: mode });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(scheduled);
+      if (!live) {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE org_id = ${orgId}`;
+      }
+      yield* tick(mode === "start" ? headsUpAt : dueAt);
+      assert.deepInclude(yield* cardOf("def-1"), { text: `Due at 9:00 am. ${note}`, note });
+    }).pipe(Effect.provide(layerFor([scheduled])));
+  },
+);
+
+it.effect("a Monday tap records the GitHub state of the newly armed run", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  const github = new Map<string, Omit<GithubLinkState, "link">>();
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const state = { state: "open", assignees: [], linkedPrs: [] } as const;
+    github.set("acme/api#12", state);
+    assert.equal(outcome(yield* tap("monday")), "ok");
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    assert.deepInclude(JSON.parse(row!.snapshot), { github: [{ link: issue, ...state }] });
+    yield* tick(nextMonday);
+    assert.notInclude((yield* cardOf("def-1")).text, "couldn't verify GitHub when it was deferred");
+  }).pipe(
+    Effect.provideService(KinDeferralGithubReader, fakeGithub(github)),
+    Effect.provide(layerFor([linked])),
+  );
+});
+
+it.effect("a card in Rhea's chat names Meera when Meera asked", () => {
+  const meera = makeDeferral("def-2", { said_by: "meera" });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("meera", "co_owner");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET display_name = 'Meera' WHERE person_id = 'meera'`;
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* service.syncItem(meera);
+    const check = Effect.fn("test.deferralAsker")(function* () {
+      assert.isUndefined((yield* cardOf("def-1")).askedBy);
+      assert.deepInclude(yield* cardOf("def-2"), {
+        askedBy: { personId: KinPersonId.make("meera"), name: "Meera" },
+      });
+    });
+    yield* check();
+    yield* tick(headsUpAt);
+    yield* check();
+  }).pipe(Effect.provide(layerFor([deferral, meera])));
+});
+
 const DECIDE = ["start_now", "monday", "cancel"];
 const refusalOf = (result: Effect.Success<ReturnType<typeof tap>>) =>
   result._tag === "Failure" && result.failure._tag === "KinChatError"
@@ -583,16 +665,24 @@ it.effect(
   },
 );
 
-it.effect("a tap on an item cancelled in memory is refused and closes its card", () => {
+it.effect.each([
+  [{ status: "cancelled" }, "cancelled"],
+  [{ status: "done" }, "done"],
+  [{ invalid_at: "2026-11-12T00:00:00Z" }, undefined],
+  [{ superseded_by: KinMemoryItemId.make("def-2") }, undefined],
+] as const)("a tap on an item closed in memory is refused: %j", ([head, closed]) => {
   const items = [deferral];
   return Effect.gen(function* () {
     yield* setup();
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
     yield* tick(headsUpAt);
-    items[0] = makeDeferral("def-1", { status: "cancelled" });
+    items[0] = makeDeferral("def-1", head);
     assert.equal(outcome(yield* tap("monday")), "widget_changed");
     const repo = yield* Repository.KinChatRepository;
-    assert.isNotNull(Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).closedAt);
+    const widget = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+    assert.isNotNull(widget.closedAt);
+    if (closed === undefined) assert.notProperty(widget.state, "closed");
+    else assert.deepInclude(widget.state, { closed });
     assert.deepStrictEqual(yield* runOf("def-1"), { state: "asked", dueAt });
     assert.lengthOf(yield* starts(), 0);
   }).pipe(Effect.provide(layerFor(items)));
@@ -915,6 +1005,7 @@ it.effect("an Undo after [Monday] holds; a tap on a card drawn before a change i
       .pipe(Effect.result);
     assert.equal(outcome(stale), "widget_changed");
     assert.equal(outcome(yield* tap("undo")), "ok");
+    assert.deepInclude(yield* cardOf("def-1"), { closed: "undone" });
     assert.equal((yield* runOf("def-1"))?.state, "undone");
     assert.equal(yield* service.syncItem(deferral), "unchanged");
     yield* tick(nextMonday);
@@ -984,6 +1075,10 @@ it.effect(
       const asked = (yield* cardOf("def-1")).text;
       assert.include(asked, "it's more than 30 minutes late");
       assert.include(asked, "This was due at 9:00 am.");
+      assert.deepInclude(yield* cardOf("def-1"), {
+        lateSince: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+        note: asked.replace(/^Due at .*?\. /, "").replace(/ This was due at .*\.$/, ""),
+      });
 
       assert.equal((yield* runOf("def-2"))?.state, "grace");
       const grace = yield* cardOf("def-2");
@@ -2163,6 +2258,7 @@ it.effect.each([
   "cancel while reconcile holds the lock",
   "sync lost after commit",
   "undo cancel",
+  "owner restore with GitHub",
   "legacy schedule",
 ] as const)("committed memory arms or disarms immediately: %s", (scenario) =>
   Effect.gen(function* () {
@@ -2191,7 +2287,14 @@ it.effect.each([
     const seeded = scenario !== "set two" && scenario !== "legacy schedule";
     yield* git(source, ["init", "-b", "main"]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules.\n");
-    if (seeded) yield* fs.writeFileString(`${source}/${path}`, content());
+    const restore = scenario === "owner restore with GitHub";
+    if (seeded)
+      yield* fs.writeFileString(
+        `${source}/${path}`,
+        content(
+          restore ? { on_due: "start", links: [issue], invalid_at: "2026-11-08T00:00:00Z" } : {},
+        ),
+      );
     yield* git(source, ["add", "."]);
     yield* git(source, [
       "-c",
@@ -2232,11 +2335,18 @@ it.effect.each([
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
     );
+    const github = fakeGithub(
+      new Map([["acme/api#12", { state: "open", assignees: [], linkedPrs: [] }]]),
+    );
     const runtime = Layer.merge(writerLayer, Watchdogs.layer).pipe(
       Layer.provideMerge(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
       Layer.provideMerge(
         layerFor([], {
-          memory: memoryLayer.pipe(Layer.provide(config), Layer.provide(nodeGit)),
+          memory: memoryLayer.pipe(
+            Layer.provide(config),
+            Layer.provide(nodeGit),
+            Layer.provide(Layer.succeed(KinDeferralGithubReader, github)),
+          ),
         }),
       ),
     );
@@ -2257,6 +2367,27 @@ it.effect.each([
             WHERE org_id = ${orgId} AND trigger_id = ${id}`;
         return row;
       });
+
+      if (restore) {
+        assert.isUndefined(yield* runOf("def-written"));
+        assert.deepInclude(
+          yield* writer.restore(orgId, { itemId: KinMemoryItemId.make("def-written") }),
+          {
+            restored: true,
+          },
+        );
+        const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+          FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-written'`;
+        assert.deepInclude(JSON.parse(row!.snapshot), {
+          github: [{ link: issue, state: "open", assignees: [], linkedPrs: [] }],
+        });
+        yield* tick(dueAt).pipe(Effect.provideService(KinDeferralGithubReader, github));
+        assert.notInclude(
+          (yield* cardOf("def-written")).text,
+          "couldn't verify GitHub when it was deferred",
+        );
+        return;
+      }
 
       if (seeded) {
         yield* watchdog.run("trigger_reconcile", orgId);
