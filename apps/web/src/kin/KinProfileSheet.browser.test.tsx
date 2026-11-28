@@ -23,13 +23,17 @@ const state = vi.hoisted(() => ({
   pictured: false,
   /** How the next save is answered. */
   answer: "saved" as "saved" | "taken",
+  /** Whether the reader is the owner or a co-owner. */
+  ownerLevel: true,
 }));
 
 function setup(
   logins: Record<string, string | null | undefined>,
   answer: "saved" | "taken",
   pictured = false,
+  ownerLevel = true,
 ) {
+  state.ownerLevel = ownerLevel;
   state.logins = logins;
   state.saved = [];
   state.updates = [];
@@ -89,7 +93,7 @@ vi.mock("./KinAvatar", () => ({ KinAvatar: () => null }));
 vi.mock("./KinAway", () => ({ KinAwayRow: () => null }));
 vi.mock("./KinTasksKeys", () => ({ KinTasksKeysSection: () => null }));
 vi.mock("./KinDevices", () => ({ KinMyDevices: () => null }));
-vi.mock("./useKinOwnerLevel", () => ({ useKinOwnerLevelKnown: () => true }));
+vi.mock("./useKinOwnerLevel", () => ({ useKinOwnerLevelKnown: () => state.ownerLevel }));
 vi.mock("./KinPeopleChat", () => ({ useOpenKinPeopleChat: () => async () => null }));
 vi.mock("../state/use-atom-command", async () => {
   const { Cause } = await import("effect");
@@ -248,6 +252,17 @@ describe("a GitHub username on a profile", () => {
     await save().click();
     await expect.element(field()).not.toBeInTheDocument();
     expect(state.saved).toEqual([{ personId: zoya, githubLogin: "zoya-ambermill" }]);
+  });
+
+  it("is read-only for a member on their own profile, saying who sets it", async () => {
+    setup({ rhea: "rhea-ambermill" }, "saved", false, false);
+    await using _mine = await opened("/kin", rhea);
+    const row = () => document.getElementById("kin-github-username")?.textContent ?? "";
+    await vi.waitFor(() => expect(row()).toContain("rhea-ambermill"));
+    expect(row()).toContain("The owner or a co-owner sets this on your page in Team.");
+    await expect
+      .element(page.getByRole("button", { name: /^GitHub username/ }))
+      .not.toBeInTheDocument();
   });
 
   it("isn't on someone else's page when the host doesn't let the reader change it", async () => {

@@ -3,7 +3,7 @@
  * text dropped, and bodies of sign-in and security mail withheld. All of it stays outside text.
  */
 
-import { isPlainAddress } from "./MailProvider.ts";
+import { isPlainAddress, type MailAuthResults } from "./MailProvider.ts";
 
 const ENTITIES: Record<string, string> = {
   amp: "&",
@@ -70,16 +70,10 @@ export const looksLikeSignInMail = (subject: string, body: string) =>
 
 export const WITHHELD = "[body withheld: this looks like a sign-in or security message]";
 
-export const senderVerdictForAddress = (
-  results: ReadonlyArray<string>,
-  fromAddress: string | null,
-) => {
-  if (results.length > 0) {
-    const from = fromAddress?.trim().toLowerCase();
-    const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
-    return senderVerdict(results, domain);
-  }
-  return "not checked";
+export const senderVerdictForAddress = (results: MailAuthResults, fromAddress: string | null) => {
+  const from = fromAddress?.trim().toLowerCase();
+  const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
+  return senderVerdict(results, domain);
 };
 
 type Verdict = {
@@ -118,13 +112,13 @@ const segments = (header: string) => {
 
 const PROPERTY = /^\s*([a-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s"]+)/;
 
-/**
- * The receiving server's verdicts: only the topmost `Authentication-Results`, the one it added,
- * since a sender can write its own lower down. Read as RFC 8601 results, never as loose text.
- */
-const receiverVerdicts = (results: ReadonlyArray<string>) =>
-  segments((results[0] ?? "").toLowerCase()).flatMap((segment): Array<Verdict> => {
-    const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
+const GMAIL = /^\s*mx\.google\.com\s*;/i;
+const METHOD_RESULT = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/;
+
+// Keep sender-controlled comments and quoted properties out of the method results.
+const parseVerdicts = (header: string) =>
+  segments(header).flatMap((segment): Array<Verdict> => {
+    const head = METHOD_RESULT.exec(segment);
     if (head === null) return [];
     const props = new Map<string, string>();
     let rest = segment.slice(head[0].length);
@@ -139,6 +133,25 @@ const receiverVerdicts = (results: ReadonlyArray<string>) =>
     return [{ method: head[1]!, result: head[2]!, props }];
   });
 
+const receiverVerdicts = (auth: MailAuthResults) => {
+  if ("receiver" in auth) {
+    if (auth.results.length !== 1) return { vouches: false, verdicts: [] };
+    const header = auth.results[0]!.toLowerCase();
+    const verdicts = parseVerdicts(header);
+    // Microsoft stamps inbound mail. A second result makes the receiver's stamp ambiguous.
+    const vouches =
+      auth.isDraft !== true &&
+      METHOD_RESULT.test(header) &&
+      verdicts.some(({ method }) => method === "compauth");
+    return { vouches, verdicts };
+  }
+  // Gmail puts its own named header above any results carried with the message.
+  const header = (auth[0] ?? "").toLowerCase();
+  const receiver = GMAIL.exec(header);
+  const verdicts = parseVerdicts(receiver === null ? header : header.slice(receiver[0].length));
+  return { vouches: receiver !== null, verdicts };
+};
+
 const domainIn = (value: string | undefined) =>
   value?.slice(value.lastIndexOf("@") + 1).replace(/\.$/, "");
 const aligned = (domain: string | undefined, from: string) =>
@@ -146,38 +159,63 @@ const aligned = (domain: string | undefined, from: string) =>
   domain !== "" &&
   (domain === from || from.endsWith(`.${domain}`) || domain.endsWith(`.${from}`));
 
-/** The receiving server's DMARC pass for exactly this From domain. */
-export const dmarcPassedFor = (results: ReadonlyArray<string>, domain: string) =>
-  receiverVerdicts(results).some(
+const dmarcPass = (verdicts: ReadonlyArray<Verdict>, domain: string) =>
+  verdicts.some(
     ({ method, result, props }) =>
       method === "dmarc" && result === "pass" && domainIn(props.get("header.from")) === domain,
   );
 
-/**
- * Whether the receiving server vouched for a From domain (ASCII, lower case): DMARC passed for it,
- * or DKIM and SPF both passed for it or a domain it shares an owner with.
- */
-export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string | null) => {
-  const verdicts = receiverVerdicts(results);
+const dmarcFailed = (verdicts: ReadonlyArray<Verdict>) =>
+  verdicts.some(({ method, result }) => method === "dmarc" && result === "fail");
+
+/** The receiving server's DMARC pass for exactly this From domain. */
+export const dmarcPassedFor = (results: MailAuthResults, domain: string) => {
+  const { vouches, verdicts } = receiverVerdicts(results);
+  return vouches && !dmarcFailed(verdicts) && dmarcPass(verdicts, domain);
+};
+
+const verdictOf = (verdicts: ReadonlyArray<Verdict>, fromDomain: string | null) => {
   const passes = (method: string, domain: (props: Map<string, string>) => string | undefined) =>
     fromDomain !== null &&
     verdicts.some(
       (one) =>
         one.method === method && one.result === "pass" && aligned(domain(one.props), fromDomain),
     );
-  if (fromDomain !== null && dmarcPassedFor(results, fromDomain)) return "passed" as const;
-  if (verdicts.some(({ method, result }) => method === "dmarc" && result === "fail"))
+  if (dmarcFailed(verdicts)) return "failed" as const;
+  if (fromDomain !== null && dmarcPass(verdicts, fromDomain)) return "passed" as const;
+  if (
+    verdicts.some(
+      ({ method, result }) =>
+        (method === "dkim" || method === "spf") && (result === "fail" || result === "softfail"),
+    )
+  )
     return "failed" as const;
   if (
     passes("dkim", (props) => domainIn(props.get("header.d") ?? props.get("header.i"))) &&
     passes("spf", (props) => domainIn(props.get("smtp.mailfrom")))
   )
     return "passed" as const;
-  return verdicts.some(
-    ({ method, result }) =>
-      (method === "dkim" || method === "spf") && (result === "fail" || result === "softfail"),
-  )
-    ? ("failed" as const)
+  return "not checked" as const;
+};
+
+/**
+ * DMARC passed for the From domain (ASCII, lower case), or for Gmail only, aligned DKIM and SPF
+ * both passed.
+ */
+export const senderVerdict = (results: MailAuthResults, fromDomain: string | null) => {
+  const microsoft = "receiver" in results;
+  if (microsoft && results.results.length > 1) {
+    return results.results.some(
+      (header) => verdictOf(parseVerdicts(header.toLowerCase()), fromDomain) === "failed",
+    )
+      ? ("failed" as const)
+      : ("not checked" as const);
+  }
+  const { vouches, verdicts } = receiverVerdicts(results);
+  const verdict = verdictOf(verdicts, fromDomain);
+  if (verdict !== "passed") return verdict;
+  return vouches && (!microsoft || (fromDomain !== null && dmarcPass(verdicts, fromDomain)))
+    ? ("passed" as const)
     : ("not checked" as const);
 };
 

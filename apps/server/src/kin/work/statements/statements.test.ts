@@ -48,6 +48,7 @@ import * as KinFloor from "../../floor/KinFloor.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as ChatWake from "../../lead/ChatWake.ts";
 import * as KinEventQueue from "../../lead/KinEventQueue.ts";
+import { outsideStamp, stampKey } from "../../lead/OutsideContent.ts";
 import { kinHostDependencies } from "../../lead/layer.testkit.ts";
 import * as Kin from "../../layer.ts";
 import { sharedToolAllowed } from "../../lead/SharedTools.ts";
@@ -362,7 +363,7 @@ const bankRows = Effect.gen(function* () {
 
 describe("bank statements", () => {
   it.effect(
-    "reads a statement in the owner's turn, marks it sensitive and posts one review card",
+    "reads a statement in the owner's turn, marks it sensitive and outside-read and posts one review card",
     () =>
       Effect.gen(function* () {
         const keys = yield* seed;
@@ -384,6 +385,10 @@ describe("bank statements", () => {
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_wakeup_sensitive_reads WHERE wakeup_id = 'wake-1'`,
           1,
+        );
+        assert.strictEqual(
+          stampKey((yield* outsideStamp({ orgId, wakeupId: "wake-1" })) ?? ""),
+          "bank-statement",
         );
         const { card, awaiting, type } = yield* reviewCardOf(result.statement);
         assert.strictEqual(type, "statement_review");
@@ -436,6 +441,17 @@ describe("bank statements", () => {
           `${keys.tds} (paid with ₹10,000.00 of tax withheld)`,
         );
         assert.notInclude(JSON.stringify([withoutLabel.matched, withoutLabel.choose]), "TDS");
+        yield* turn(2);
+        const nextTurn = { orgId, wakeupId: "wake-2" };
+        const empty = yield* LeadStatements.rows(scope, {
+          statement: result.statement,
+          offset: result.rows,
+        });
+        assert.isEmpty(empty.rows);
+        assert.isUndefined(yield* outsideStamp(nextTurn));
+        const nextPage = yield* LeadStatements.rows(scope, { statement: result.statement });
+        assert.isNotEmpty(nextPage.rows);
+        assert.strictEqual(stampKey((yield* outsideStamp(nextTurn)) ?? ""), "bank-statement");
         // Nothing is recorded by reading.
         assert.lengthOf(yield* bankRows, 0);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);

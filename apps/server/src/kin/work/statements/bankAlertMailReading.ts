@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { isReplyOrForward } from "../../connections/MailSignals.ts";
+import type { MailAuthResults } from "../../connections/MailProvider.ts";
 import { dmarcPassedFor } from "../../connections/MailText.ts";
 import type { AlertMail, AlertReading, AlertRejection } from "./bankAlerts.ts";
 import type * as BankAlertReader from "./BankAlertReader.ts";
@@ -9,7 +10,7 @@ import { printedAccountEndings, verifyBankAlert } from "./bankAlertGuard.ts";
 const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", reason });
 
 /** The receiving server's DMARC pass for the sender's own domain, read by the one shared parser. */
-export const senderDmarcPassed = (results: ReadonlyArray<string>, address: string) =>
+export const senderDmarcPassed = (results: MailAuthResults, address: string) =>
   dmarcPassedFor(results, address.slice(address.lastIndexOf("@") + 1));
 
 export const authenticationRejection = (

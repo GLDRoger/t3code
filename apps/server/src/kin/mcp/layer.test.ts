@@ -51,7 +51,7 @@ import { KinBudget } from "../lead/KinBudget.ts";
 import { SHARED_TOOLS, sharedToolAllowed, toolAdmitted } from "../lead/SharedTools.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
-import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
+import { isT3Tool, visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "../lead/billsOnly.ts";
 import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
 import {
@@ -2497,6 +2497,28 @@ it.effect.each([true, false])(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const withInProcessToolServer = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
+  registrations.pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(Kin.layer),
+    Layer.provide(Sqlite.layerConfig),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: false }))),
+    Layer.provide(toolHandlerServices),
+    Layer.provide(Layer.mock(OrchestratorV2)({})),
+  );
+
+it.effect("Kin classifies every tool registered by T3's MCP layer", () =>
+  Effect.gen(function* () {
+    const mcp = yield* McpServer.McpServer;
+    const names = mcp.tools.map(({ tool }) => tool.name);
+    assert.isAbove(names.length, 50);
+    assert.deepStrictEqual(
+      names.filter((name) => !isT3Tool(name)),
+      [],
+    );
+  }).pipe(Effect.provide(withInProcessToolServer(McpHttpServer.layerTools))),
+);
+
 it.effect("measures the combined agent tool list separately from ordinary threads", () =>
   Effect.gen(function* () {
     const mcp = yield* McpServer.McpServer;
@@ -2533,16 +2555,11 @@ it.effect("measures the combined agent tool list separately from ordinary thread
     );
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(
-        McpHttpServer.layerTools,
-        McpHttpServer.toolkitRegistration(KinChatToolkit, handlers),
-      ).pipe(
-        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-        Layer.provide(Kin.layer),
-        Layer.provide(Sqlite.layerConfig),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: false }))),
-        Layer.provide(toolHandlerServices),
-        Layer.provide(Layer.mock(OrchestratorV2)({})),
+      withInProcessToolServer(
+        Layer.mergeAll(
+          McpHttpServer.layerTools,
+          McpHttpServer.toolkitRegistration(KinChatToolkit, handlers),
+        ),
       ),
     ),
   ),

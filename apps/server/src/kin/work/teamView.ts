@@ -143,11 +143,11 @@ const pictureVersionReader = (
   sql: SqlClient.SqlClient,
   personId: KinPersonId | Statement.Fragment,
 ) =>
-  sql`(pv.audience = 'shared' AND EXISTS (SELECT 1 FROM kin_picture_images pi
+  sql`COALESCE(pv.audience = 'shared' AND EXISTS (SELECT 1 FROM kin_picture_images pi
     JOIN kin_message_attachments pa ON pa.org_id = pi.org_id AND pa.attachment_id = pi.attachment_id
     JOIN kin_messages ON kin_messages.org_id = pa.org_id AND kin_messages.message_id = pa.message_id
     WHERE pi.org_id = pv.org_id AND pi.record_id = pv.record_id AND pi.version = pv.version
-      AND kin_messages.status <> 'deleted' AND ${personReads(sql, personId)}))`;
+      AND kin_messages.status <> 'deleted' AND ${personReads(sql, personId)}), 0)`;
 
 /**
  * Version `pv` of picture doc `r`, for someone below the owner level: unlabelled, and its reply
@@ -292,8 +292,8 @@ export const ownMoneyDraft = (
     AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)}
     AND NOT EXISTS (SELECT 1 FROM kin_doc_versions ov
       WHERE ov.org_id = r.org_id AND ov.record_id = r.record_id
-        AND NOT ((ov.actor_kind = 'person' AND ov.actor_id = ${personId})
-          OR (ov.actor_kind = 'agent' AND ov.audience = 'shared'))), 0)`;
+        AND NOT COALESCE((ov.actor_kind = 'person' AND ov.actor_id = ${personId})
+          OR (ov.actor_kind = 'agent' AND ov.audience = 'shared'), 0)), 0)`;
 
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are

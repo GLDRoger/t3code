@@ -10,6 +10,7 @@ import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import { moneyInCheck } from "../statements/moneyInCheck.ts";
 import * as Work from "../leadWork.ts";
+import * as RecordReads from "../recordReads.ts";
 import * as Comments from "../workComments.ts";
 import { liftMarks } from "../pageMarks.ts";
 import { proposeHandler } from "../../shell/mcp.ts";
@@ -28,14 +29,14 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ...numbersHandlers,
   records_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.query")(function* (input) {
-      const result = yield* Work.query(yield* McpInvocationContext, input);
+      const result = yield* RecordReads.query(yield* McpInvocationContext, input);
       const [records, marks] = liftMarks(result.records);
       return { ...result, records, ...marks };
     }, Effect.mapError(failure)),
   ),
   record_get: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.get")(function* (input) {
-      return yield* Work.get(yield* McpInvocationContext, input);
+      return yield* RecordReads.get(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   client_read: McpToolAccess.reads(

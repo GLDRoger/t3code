@@ -2065,7 +2065,7 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a thumbs-up wakes the agent only on a message it waits on", () =>
+  it.effect("a thumbs-up on a billing sender card wakes nothing", () =>
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed(false, {
         owner: "Rhea",
@@ -2156,6 +2156,36 @@ describe("KinChatService", () => {
       });
       yield* react(latest.messageId, "❌");
 
+      yield* TestClock.adjust("30 seconds");
+      const [wake] = yield* sql<{ wakeupId: KinWakeupId }>`
+        SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+        WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND status = 'running'`;
+      const billing = yield* service.ask(
+        { ...agent, wakeupId: wake!.wakeupId, hostPosted: true },
+        {
+          chatId: chat.chatId,
+          clientMessageId: "kin-bill-sender:bills@inkspot.example",
+          question: "Read bills from bills@inkspot.example?",
+          options: [{ label: "Approve" }, { label: "Decline" }],
+          silent: true,
+        },
+      );
+      const billingReaction = yield* react(billing.messageId, "👍");
+      assert.deepInclude(
+        (yield* service.history(person, { chatId: chat.chatId, beforeSeq: 100, limit: 10 }))
+          .reactions ?? [],
+        billingReaction,
+      );
+      yield* TestClock.adjust("30 seconds");
+      const quoted = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "billing-sender-quoted",
+        body: "For Inkspot Cloud, the billing sender is bills@inkspot.example.",
+        intent: "answer",
+        replyTo: billing.messageId,
+      });
+      yield* react(quoted.messageId, "👎");
+
       yield* hub.publish({
         type: "message.posted",
         orgId: person.orgId,
@@ -2173,7 +2203,64 @@ describe("KinChatService", () => {
           { messageId: card.messageId, emoji: "👍" },
           { messageId: plain.messageId, emoji: "👎" },
           { messageId: latest.messageId, emoji: "❌" },
+          { messageId: quoted.messageId, emoji: "👎" },
         ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a thumbs-down on the lead's own line Kin delivered later still wakes it", () =>
+    Effect.gen(function* () {
+      const { service, person, agent, chat } = yield* seed(false, {
+        owner: "Rhea",
+        agent: "Finance",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      const drained = yield* Deferred.make<void>();
+      const marker = KinMessageId.make("held-reaction-drained");
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted" && event.message.messageId === marker
+                      ? Deferred.succeed(drained, undefined)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+          Layer.provide(KinEventQueue.layer),
+        ),
+      );
+      yield* sql`UPDATE kin_leads SET thread_id = ${agent.threadId}
+        WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}`;
+      const { message: held } = yield* service.notice({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        messageId: KinMessageId.make("kin-held:hold-1"),
+        audience: "chat",
+        body: "The Tidewater Freight invoice is ready to send.",
+        from: agent.agentId,
+      });
+      assert.strictEqual(held.author._tag, "agent");
+      yield* service.react(person, { messageId: held.messageId, emoji: "👎", on: true });
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: person.orgId,
+        message: { ...held, messageId: marker, author: { _tag: "system" }, kind: "system" },
+      });
+      yield* Deferred.await(drained);
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$.messageId') AS "messageId"
+            FROM kin_events WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}
+              AND tag = 'chat.reaction'`,
+        [{ messageId: held.messageId }],
       );
     }).pipe(Effect.provide(layer)),
   );
