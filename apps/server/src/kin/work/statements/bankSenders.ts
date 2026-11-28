@@ -1,3 +1,4 @@
+import { normalizeAddress } from "../../connections/MailSignals.ts";
 import {
   KinChatError,
   type KinBankSendersResult,
@@ -9,9 +10,8 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { mayActAsOwner } from "../../people/KinAccess.ts";
 import { ranOutAt } from "../../recommend/ledger.ts";
-import { orgOwner } from "../toolNames.ts";
+import { onlyOwnerLevel } from "../mailSenderAccess.ts";
 
 import { startHeldAlertReplay } from "./alertMail.ts";
 import {
@@ -22,30 +22,11 @@ import {
   endingsOf,
   list as senderRows,
   liveHeldMail,
-  normalizeAddress,
 } from "./bankSenderRows.ts";
 
 export { noteCandidate, sendersOf } from "./bankSenderRows.ts";
 
-const onlyOwnerLevel = Effect.fn("KinBankSenders.onlyOwnerLevel")(function* (
-  orgId: KinOrgId,
-  personId: KinPersonId,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const [active] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
-    AND person_id = ${personId} AND removed_at IS NULL`;
-  const owner = yield* orgOwner(orgId);
-  if (
-    active !== undefined &&
-    owner !== null &&
-    (yield* mayActAsOwner(orgId, personId, { personId: owner }))
-  )
-    return;
-  return yield* new KinChatError({
-    reason: "not_allowed",
-    message: "Only an owner or co-owner can change bank alert addresses.",
-  });
-});
+const OWNER_ONLY = "Only an owner or co-owner can change bank alert addresses.";
 
 const settingsList = Effect.fn("KinBankSenders.list")(function* (
   orgId: KinOrgId,
@@ -55,7 +36,7 @@ const settingsList = Effect.fn("KinBankSenders.list")(function* (
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
-        yield* onlyOwnerLevel(orgId, personId);
+        yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
         const now = yield* Clock.currentTimeMillis;
         const held = yield* liveHeldMail(orgId, now);
         const cards = yield* sql<{
@@ -113,7 +94,7 @@ export const approve = Effect.fn("KinBankSenders.approve")(function* (
   const now = yield* Clock.currentTimeMillis;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* onlyOwnerLevel(orgId, personId);
+      yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
       const address = normalizeAddress(value);
       const accounts = endingsOf(endings);
       const [candidate] = yield* sql<{
@@ -152,7 +133,7 @@ const stop = Effect.fn("KinBankSenders.stop")(function* (
   const now = yield* Clock.currentTimeMillis;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* onlyOwnerLevel(orgId, personId);
+      yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
       const address = normalizeAddress(value);
       const from = state === "declined" ? "candidate" : "approved";
       const changed = yield* sql`UPDATE kin_bank_senders SET state = ${state},
@@ -197,7 +178,7 @@ export const add = Effect.fn("KinBankSenders.add")(function* (
   const now = yield* Clock.currentTimeMillis;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* onlyOwnerLevel(orgId, personId);
+      yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
       const address = normalizeAddress(input.address);
       const bankName = input.bankName.trim();
       const accounts = endingsOf(input.accounts);

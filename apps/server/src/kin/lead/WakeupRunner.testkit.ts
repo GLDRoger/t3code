@@ -131,8 +131,8 @@ export const seed = Effect.gen(function* () {
   const models = yield* encodeJson(selection);
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
-export const event = (id: string) =>
-  decodeEvent({
+export const event = (id: string) => {
+  const built = decodeEvent({
     _tag: "routine",
     orgId,
     agentId,
@@ -142,6 +142,9 @@ export const event = (id: string) =>
     provenance: { _tag: "system" },
     routine: "owner_check",
   });
+  if (built._tag !== "routine") throw new Error("Expected a routine event.");
+  return built;
+};
 
 /** One tool call by the running turn (`work`), back once T3 has recorded it. */
 export const toolCall = Effect.fn("test.toolCall")(function* (

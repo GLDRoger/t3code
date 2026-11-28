@@ -131,6 +131,8 @@ export type MailArrival = {
   /** The vendor filed it as bulk (Gmail's Promotions, Social or Forums). */
   readonly bulk: boolean;
   readonly hasFile: boolean;
+  /** A named PDF or image, determined from part metadata without loading any bytes. */
+  readonly hasBillFile?: true;
 };
 export type MailAutomation = Pick<
   MailArrival,
@@ -308,6 +310,7 @@ export interface MailVendor {
     messageId: string,
     attachmentId: string,
   ) => Call<MailAttachment>;
+  readonly message: (context: MailContext, messageId: string) => Call<MailMessage | null>;
   readonly thread: (
     context: MailContext,
     threadId: string,
@@ -359,7 +362,11 @@ export interface MailVendor {
   /** The Inbox's change record after `position`: ids only, one page. */
   readonly changes: (context: MailContext, position: string) => Call<MailChanges>;
   /** One message's headers; null when the account no longer has it. */
-  readonly arrival: (context: MailContext, messageId: string) => Call<MailArrival | null>;
+  readonly arrival: (
+    context: MailContext,
+    messageId: string,
+    partHints?: (arrival: MailArrival) => boolean,
+  ) => Call<MailArrival | null>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
   readonly sentSince: MailProvider["sentSince"];
@@ -439,7 +446,14 @@ export interface MailProvider {
     http: HttpClient.HttpClient,
     token: string,
     messageId: string,
+    partHints?: (arrival: MailArrival) => boolean,
   ) => Call<MailArrival | null>;
+  readonly message: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    messageId: string,
+  ) => Call<MailMessage | null>;
   /** Server use only: a thread's messages with their text, as `mail_read_thread` reads them. */
   readonly messages: (
     http: HttpClient.HttpClient,
