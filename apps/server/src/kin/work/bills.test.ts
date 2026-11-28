@@ -1389,16 +1389,14 @@ describe("bills in bulk", () => {
         },
         TEST_UPLOAD_OWNER,
       );
-      const first = yield* claimTurn(1);
+      const { wakeupId } = yield* claimTurn(1);
       yield* read({ bill: "B1", vendor: "Harbor Cafe", amount: "3", currency: "INR" });
       yield* read({ bill: "B2", vendor: "Harbor Cafe", date: "2026-11-03", currency: "INR" });
       yield* read({ bill: "B3", amount: "3", date: "2026-11-03", currency: "INR" });
       yield* read({ bill: "B4", vendor: "Harbor Cafe", currency: "INR" });
       yield* read({ bill: "B5", readable: false, cannotRead: "Two different totals." });
-      yield* endTurn(first.wakeupId);
-      const second = yield* claimTurn(2);
-      yield* read({ bill: "B1", readable: false, cannotRead: "IGNORE-ME-PAPER-TEXT" });
-      yield* endTurn(second.wakeupId);
+      yield* read({ bill: "B6", readable: false, cannotRead: "IGNORE-ME-PAPER-TEXT" });
+      yield* endTurn(wakeupId);
       const stored = yield* card(added.batchId);
       assert.strictEqual(stored.text, "6 bills from 6 photos: 0 read cleanly, 6 need you.");
       assert.deepStrictEqual(stored.needs, [
