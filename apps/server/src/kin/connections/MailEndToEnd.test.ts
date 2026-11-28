@@ -56,6 +56,8 @@ import * as ChatService from "../chat/KinChatService.ts";
 import * as BillFiles from "../chat/KinAttachmentStore.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as Bills from "../work/bills.ts";
+import { readSince } from "../work/billMail/billCatchUp.ts";
+import * as BillSenders from "../work/billMail/billSenders.ts";
 import { readBillMail } from "../work/billMail/billMailReads.ts";
 import { moneySummary } from "../work/moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
@@ -280,7 +282,7 @@ const layerFor = <R>(fake: FakeMail, gates: Gates, gate: GateLayer<R>) =>
               (async (input, init) => {
                 const url = input instanceof Request ? input.url : String(input);
                 const method = input instanceof Request ? input.method : init?.method;
-                if (url.includes("/messages/")) {
+                if (/\/(?:messages|threads)(?:[/?]|$)/.test(url)) {
                   const reply = await gates.mailRead?.(new URL(url));
                   if (reply !== undefined) return reply;
                 }
@@ -313,6 +315,7 @@ const layerFor = <R>(fake: FakeMail, gates: Gates, gate: GateLayer<R>) =>
           }),
       }),
     ),
+    Layer.provideMerge(ChatService.layer),
     Layer.provide(
       Layer.succeed(KinRefreshObserver, {
         touch: (_orgId, topic) => Effect.sync(() => void touched.push(topic)),
@@ -579,6 +582,7 @@ type Env =
   | KinIdentity
   | KinRecords.KinRecords
   | BillFiles.KinAttachmentStore
+  | ChatService.KinChatService
   | KinEventQueue.KinEventQueue
   | SqlClient.SqlClient
   | FileSystem.FileSystem
@@ -3254,6 +3258,709 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         },
       );
     },
+  );
+
+  const since = "2026-11-16";
+  const searchList = (url: URL) =>
+    (url.pathname.endsWith("/threads") && url.searchParams.has("q")) ||
+    (url.pathname.endsWith("/messages") && url.searchParams.has("$search"));
+  const laterPage = (url: URL) =>
+    url.searchParams.has("pageToken") || url.searchParams.has("$skip");
+  const catchUp = (personId = owner, day = since) => readSince(orgId, personId, inkspot, day);
+  const caughtIds = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ message_id: string }>`SELECT message_id FROM kin_bill_mail
+      ORDER BY received_at DESC, message_id`.pipe(
+      Effect.map((rows) => rows.map((row) => row.message_id)),
+    );
+  });
+  const manyBills = (fake: FakeMail, to: string, count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      fake.deliver({ ...billMail, to, at: NOW - 1 - i, body: `Inkspot Cloud bill ${i}.` }),
+    );
+
+  describe.each([
+    ["google", ACCOUNTS],
+    ["microsoft", HELLO],
+  ] as const)("bill catch-up on %s", (vendor, to) => {
+    it.effect.each(["Approve", "Add", "decline then Add", "Approve then Remove"] as const)(
+      "holds mail until Settings %s",
+      (approval) => {
+        const reads: Array<URL> = [];
+        return setUp(
+          (fake) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const box = yield* connect(fake, vendor, to);
+              yield* readMail(box);
+              const mail = [1, 2].map((offset) =>
+                fake.deliver({
+                  ...billMail,
+                  subject: "Invoice",
+                  to,
+                  at: NOW + offset,
+                  body: `Bill ${offset}`,
+                }),
+              );
+              yield* TestClock.adjust("1 minute");
+              yield* readMail(box);
+              assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_sender_mail`, 2);
+              assert.deepStrictEqual(yield* billLedger, []);
+              assert.isFalse(reads.some(fullRead));
+              reads.length = 0;
+              if (approval === "decline then Add") {
+                yield* BillSenders.decide(orgId, owner, inkspot, "declined");
+                yield* drain();
+                assert.deepStrictEqual(yield* billLedger, []);
+                assert.deepStrictEqual(reads, []);
+                assert.deepStrictEqual(yield* BillSenders.add(orgId, owner, inkspot), {
+                  message: `Kin will read held bills from ${inkspot}.`,
+                });
+              } else if (approval === "Add") {
+                yield* BillSenders.add(orgId, owner, inkspot);
+              } else {
+                yield* BillSenders.decide(orgId, owner, inkspot, "approved");
+              }
+              assert.lengthOf(yield* billLedger, 2);
+              yield* BillSenders.add(orgId, owner, inkspot);
+              assert.lengthOf(yield* billLedger, 2);
+              if (approval === "Approve then Remove")
+                yield* BillSenders.decide(orgId, owner, inkspot, "removed");
+              assert.deepStrictEqual(reads, []);
+              if (approval !== "Approve then Remove") {
+                assert.include(yield* catchUp(), { queued: 0, older: false });
+                assert.isFalse(reads.some(fullRead));
+              }
+              yield* drain();
+              yield* drain();
+              if (approval === "Approve then Remove") {
+                assert.deepStrictEqual(reads, []);
+                assert.deepStrictEqual(yield* billLedger, [
+                  { state: "skipped", reason: "not_approved" },
+                  { state: "skipped", reason: "not_approved" },
+                ]);
+              } else {
+                for (const { id } of mail) {
+                  assert.lengthOf(
+                    reads.filter(
+                      (url) => url.pathname.endsWith(`/messages/${id}`) && fullRead(url),
+                    ),
+                    1,
+                  );
+                }
+                assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 2);
+              }
+              assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_sender_mail`, 2);
+            }),
+          {
+            mailRead: (url) => {
+              reads.push(url);
+            },
+          },
+        );
+      },
+    );
+
+    it.effect("queues and drains a catch-up once with metadata-only search", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const connectionId = yield* connect(fake, vendor, to);
+            const connections = yield* KinConnections;
+            const detail = yield* connections.get(people(owner), { orgId, connectionId });
+            yield* connections.setToolModes(people(owner), {
+              orgId,
+              connectionId,
+              modes: detail.tools
+                .filter((tool) => tool.name === "mail_list_threads")
+                .map((tool) => ({ tool: tool.name, mode: "off" as const, digest: tool.pinDigest })),
+            });
+            yield* approved();
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            assert.include(yield* catchUp(), { queued: 1, older: false });
+            assert.deepStrictEqual(yield* caughtIds, [mail.id]);
+            assert.isTrue(reads.some(searchList));
+            assert.isFalse(
+              reads.some(
+                (url) =>
+                  fullRead(url) ||
+                  url.pathname.includes("/attachments/") ||
+                  /(?:body|contentBytes)/.test(url.searchParams.get("$select") ?? ""),
+              ),
+            );
+            yield* drain();
+            assert.lengthOf(parts(reads, mail.id), 1);
+            reads.length = 0;
+            assert.deepStrictEqual(yield* catchUp(), {
+              queued: 0,
+              older: false,
+              text: "Kin found no new mail from billing@inkspot.example since 16 Nov.",
+            });
+            yield* drain();
+            assert.isFalse(reads.some(fullRead));
+            assert.deepStrictEqual(parts(reads, mail.id), []);
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("keeps the first page on a 429 and resumes without duplicate reads", () => {
+      let throttled = true;
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const mail = manyBills(fake, to, 76);
+            const partial = yield* catchUp();
+            assert.include(partial, { queued: 75, older: false, stopped: true });
+            assert.include(
+              partial.text,
+              vendor === "google" ? "Gmail asked Kin to wait" : "Outlook asked Kin to wait",
+            );
+            throttled = false;
+            assert.include(yield* catchUp(), { queued: 1, older: false });
+            assert.deepStrictEqual(
+              yield* caughtIds,
+              mail.map(({ id }) => id),
+            );
+            const sql = yield* SqlClient.SqlClient;
+            for (let batch = 0; batch < 8; batch++) yield* drain();
+            assert.deepStrictEqual(
+              yield* sql`SELECT 1 FROM kin_bill_mail WHERE state <> 'done'`,
+              [],
+            );
+            for (const { id } of mail) {
+              assert.lengthOf(
+                reads.filter((url) => url.pathname.endsWith(`/messages/${id}`) && fullRead(url)),
+                1,
+              );
+            }
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+            if (throttled && searchList(url) && laterPage(url))
+              return new Response(null, { status: 429 });
+          },
+        },
+      );
+    });
+
+    it.effect("stops at 200 mails and reads the last mail on a second catch-up", () => {
+      const searches: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const mail = manyBills(fake, to, 201);
+            const first = yield* catchUp();
+            assert.include(first, { queued: 200, older: true });
+            assert.match(
+              first.text,
+              /There are older mails\. Run this again to read the next 200\.$/,
+            );
+            assert.lengthOf(searches, 3);
+            assert.deepStrictEqual(
+              yield* caughtIds,
+              mail.slice(0, 200).map(({ id }) => id),
+            );
+            assert.include(yield* catchUp(), { queued: 1, older: false });
+            assert.deepStrictEqual(
+              yield* caughtIds,
+              mail.map(({ id }) => id),
+            );
+          }),
+        {
+          mailRead: (url) => {
+            if (searchList(url)) searches.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("filters the exact address and the owner's calendar day", () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connect(fake, vendor, to);
+          yield* approved();
+          yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+              dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+            VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')`;
+          const midnight = Date.UTC(2026, 10, 15, 18, 30);
+          fake.deliver({
+            ...billMail,
+            from: `"${inkspot}" <billing+x@inkspot.example>`,
+            to,
+            at: midnight + 2,
+          });
+          fake.deliver({
+            ...billMail,
+            from: `"${inkspot}" <billing@harbor.example>`,
+            to,
+            at: midnight + 1,
+          });
+          fake.deliver({ ...billMail, to, at: midnight - 1 });
+          const mail = fake.deliver({
+            ...billMail,
+            from: "Billing@INKSPOT.example",
+            to,
+            at: midnight,
+          });
+          assert.include(yield* catchUp(), { queued: 1, older: false });
+          assert.deepStrictEqual(yield* caughtIds, [mail.id]);
+        }),
+      ),
+    );
+
+    it.effect("keeps formerly personal mail behind the ownUntil floor", () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const box = yield* connect(fake, vendor, to);
+          const moved = yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: box,
+            to: "mine",
+          });
+          yield* approved();
+          yield* TestClock.adjust("1 minute");
+          const floor = yield* Clock.currentTimeMillis;
+          fake.deliver({ ...billMail, to, at: floor - 1 });
+          fake.deliver({ ...billMail, to, at: floor });
+          assert.include(yield* Effect.flip(catchUp()), {
+            message: "Kin has no company mailbox it can search.",
+          });
+          yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: moved.mailbox!.connectionId,
+            to: "company",
+          });
+          yield* TestClock.adjust("1 minute");
+          const newBox = (yield* connections.list(people(owner), { orgId })).connections.find(
+            (one) => one.accountLabel === to,
+          )!;
+          const detail = yield* connections.get(people(owner), {
+            orgId,
+            connectionId: newBox.connectionId,
+          });
+          yield* connections.setToolModes(people(owner), {
+            orgId,
+            connectionId: newBox.connectionId,
+            modes: detail.tools
+              .filter((one) => one.name === "mail_read_thread" || one.name === "mail_search")
+              .map((one) => ({ tool: one.name, mode: "read" as const, digest: one.pinDigest })),
+          });
+          const mail = fake.deliver({ ...billMail, to, at: floor + 1 });
+          assert.include(yield* catchUp(), { queued: 1, older: false });
+          assert.deepStrictEqual(yield* caughtIds, [mail.id]);
+        }),
+      ),
+    );
+
+    it.effect("queues only the sender's own mail from a mixed thread and asks for no text", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const old = fake.deliver({ ...billMail, to, at: NOW - 3 * 86_400_000 });
+            const thread = { to, threadId: old.threadId };
+            fake.deliver({
+              ...billMail,
+              ...thread,
+              from: "Arjun <arjun@tidewater.example>",
+              at: NOW - 3,
+            });
+            const own = fake.deliver({ ...billMail, ...thread, at: NOW - 2 });
+            fake.deliver({
+              ...billMail,
+              ...thread,
+              from: `"${inkspot}" <arjun@tidewater.example>`,
+              at: NOW - 1,
+            });
+            reads.length = 0;
+            assert.include(yield* catchUp(), { queued: 1, older: false });
+            assert.deepStrictEqual(yield* caughtIds, [own.id]);
+            const asked = reads.map((url) => ({
+              path: url.pathname.replace(/\/threads\/[^/]+$/, "/threads/:id"),
+              fields: url.searchParams.get("fields"),
+              headers: url.searchParams.getAll("metadataHeaders"),
+              select: url.searchParams.get("$select"),
+            }));
+            assert.deepStrictEqual(
+              [...new Set(asked.map((one) => JSON.stringify(one)))].map((one) => JSON.parse(one)),
+              vendor === "google"
+                ? [
+                    {
+                      path: "/gmail/v1/users/me/threads",
+                      fields: "threads(id),nextPageToken",
+                      headers: [],
+                      select: null,
+                    },
+                    {
+                      path: "/gmail/v1/users/me/threads/:id",
+                      fields: "messages(id,threadId,internalDate,payload(headers))",
+                      headers: ["From"],
+                      select: null,
+                    },
+                  ]
+                : [
+                    {
+                      path: "/v1.0/me/messages",
+                      fields: null,
+                      headers: [],
+                      select: "id,conversationId,from,receivedDateTime",
+                    },
+                  ],
+            );
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("starts on the owner's day across a clock change", () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connect(fake, vendor, to);
+          yield* approved();
+          yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+              dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+            VALUES (${orgId}, 'America/New_York', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')`;
+          // 1 Nov 2026 starts at 04:00 UTC (EDT) and ends at 05:00 UTC the next day (EST).
+          const midnight = Date.UTC(2026, 10, 1, 4);
+          fake.deliver({ ...billMail, to, at: midnight - 1 });
+          const first = fake.deliver({ ...billMail, to, at: midnight });
+          const result = yield* catchUp(owner, "2026-11-01");
+          assert.include(result, { queued: 1, older: false });
+          assert.strictEqual(result.text, `Kin is reading 1 mail from ${inkspot} since 1 Nov.`);
+          assert.deepStrictEqual(yield* caughtIds, [first.id]);
+        }),
+      ),
+    );
+
+    it.effect("never searches a mailbox whose Search is off", () => {
+      const searches: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const connectionId = yield* connect(fake, vendor, to);
+            const connections = yield* KinConnections;
+            const detail = yield* connections.get(people(owner), { orgId, connectionId });
+            const search = detail.tools.find((tool) => tool.name === "mail_search")!;
+            yield* connections.setToolModes(people(owner), {
+              orgId,
+              connectionId,
+              modes: [{ tool: search.name, mode: "off", digest: search.pinDigest }],
+            });
+            yield* approved();
+            fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            assert.include(yield* Effect.flip(catchUp()), {
+              message: "Kin has no company mailbox it can search.",
+            });
+            assert.deepStrictEqual(searches, []);
+            assert.deepStrictEqual(yield* caughtIds, []);
+          }),
+        {
+          mailRead: (url) => {
+            if (searchList(url)) searches.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("never reads queued mail once Read a thread is off", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const connectionId = yield* connect(fake, vendor, to);
+            const connections = yield* KinConnections;
+            yield* approved();
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            assert.include(yield* catchUp(), { queued: 1 });
+            const detail = yield* connections.get(people(owner), { orgId, connectionId });
+            const read = detail.tools.find((tool) => tool.name === "mail_read_thread")!;
+            yield* connections.setToolModes(people(owner), {
+              orgId,
+              connectionId,
+              modes: [{ tool: read.name, mode: "off", digest: read.pinDigest }],
+            });
+            reads.length = 0;
+            yield* drain();
+            assert.deepStrictEqual(yield* billLedger, [{ state: "skipped", reason: "gone" }]);
+            assert.isFalse(reads.some((url) => url.pathname.includes(mail.id)));
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("reads again mail skipped while the sender was removed, never twice", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            fake.deliver({ ...pdfMail, to, at: NOW - 2, authResults: [] });
+            assert.include(yield* catchUp(), { queued: 2 });
+            yield* mailChange("removed");
+            yield* drain();
+            assert.deepStrictEqual(yield* billLedger, [
+              { state: "skipped", reason: "not_approved" },
+              { state: "skipped", reason: "not_approved" },
+            ]);
+            yield* BillSenders.add(orgId, owner, inkspot);
+            assert.deepStrictEqual(yield* catchUp(), {
+              queued: 2,
+              older: false,
+              text: `Kin is reading 2 mails from ${inkspot} since 16 Nov.`,
+            });
+            yield* drain();
+            assert.sameDeepMembers(
+              [...(yield* billLedger)],
+              [
+                { state: "done", reason: null },
+                { state: "skipped", reason: "unverified" },
+              ],
+            );
+            assert.lengthOf(parts(reads, mail.id), 1);
+            assert.include(yield* catchUp(), { queued: 0 });
+            yield* drain();
+            assert.lengthOf(parts(reads, mail.id), 1);
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+  });
+
+  it.effect("starts a stopped catch-up over when the company's mailboxes change", () => {
+    let throttled = true;
+    const pages: Array<boolean> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          manyBills(fake, ACCOUNTS, 76);
+          assert.include(yield* catchUp(), { queued: 75, stopped: true });
+          yield* connect(fake, "microsoft", HELLO);
+          const outlook = fake.deliver({ ...billMail, to: HELLO, at: NOW - 500 });
+          throttled = false;
+          pages.length = 0;
+          assert.include(yield* catchUp(), { queued: 2, older: false });
+          assert.include(yield* caughtIds, outlook.id);
+          assert.strictEqual(pages[0], false);
+        }),
+      {
+        mailRead: (url) => {
+          if (!searchList(url)) return;
+          pages.push(laterPage(url));
+          if (throttled && laterPage(url)) return new Response(null, { status: 429 });
+        },
+      },
+    );
+  });
+
+  it.effect("resumes a stopped catch-up only for the same person within 15 minutes", () => {
+    let throttled = true;
+    const pages: Array<boolean> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          const mail = manyBills(fake, ACCOUNTS, 151);
+          assert.include(yield* catchUp(), { queued: 75, older: false, stopped: true });
+          throttled = false;
+          pages.length = 0;
+          // Meera starts from the newest page; Rhea's saved pages stay Rhea's.
+          assert.include(yield* catchUp(coOwner), { queued: 76, older: false });
+          assert.deepStrictEqual(pages, [false, true, true]);
+          pages.length = 0;
+          yield* TestClock.adjust("16 minutes");
+          assert.deepStrictEqual(yield* catchUp(), {
+            queued: 0,
+            older: false,
+            text: `Kin found no new mail from ${inkspot} since 16 Nov.`,
+          });
+          assert.deepStrictEqual(pages, [false, true, true]);
+          assert.deepStrictEqual(
+            yield* caughtIds,
+            mail.map(({ id }) => id),
+          );
+        }),
+      {
+        mailRead: (url) => {
+          if (!searchList(url)) return;
+          pages.push(laterPage(url));
+          if (throttled && laterPage(url)) return new Response(null, { status: 429 });
+        },
+      },
+    );
+  });
+
+  it.effect("stops listing at 20 seconds and keeps the queued page", () => {
+    const waiting = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const pages: boolean[] = [];
+    let hold = true;
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          const mail = manyBills(fake, ACCOUNTS, 76);
+          const running = yield* Effect.forkChild(catchUp());
+          const ready = yield* Effect.raceFirst(
+            Effect.promise(() => waiting.promise),
+            Fiber.join(running),
+          );
+          assert.isUndefined(ready);
+          yield* TestClock.adjust("20 seconds");
+          const partial = yield* Fiber.join(running);
+          assert.include(partial, { queued: 75, older: false, stopped: true });
+          assert.include(partial.text, "Kin stopped looking after 20 seconds.");
+          hold = false;
+          release.resolve();
+          assert.include(yield* catchUp(), { queued: 1, older: false });
+          assert.deepStrictEqual(
+            yield* caughtIds,
+            mail.map(({ id }) => id),
+          );
+          assert.deepStrictEqual(pages, [false, true, true]);
+        }),
+      {
+        mailRead: (url) => {
+          if (!searchList(url)) return;
+          pages.push(laterPage(url));
+          if (!hold || !laterPage(url)) return;
+          waiting.resolve();
+          return release.promise;
+        },
+      },
+    );
+  });
+
+  it.effect(
+    "refuses catch-up for Zoya, agent:finance, a removed person or an unapproved sender",
+    () => {
+      const searches: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* connect(fake, "google", ACCOUNTS);
+            const agent = KinPersonId.make("agent:finance");
+            for (const personId of [member, agent]) {
+              assert.include(yield* Effect.flip(catchUp(personId)), { reason: "not_allowed" });
+            }
+            yield* sql`UPDATE kin_people SET removed_at = ${stamp} WHERE person_id = ${coOwner}`;
+            assert.include(yield* Effect.flip(catchUp(coOwner)), { reason: "not_allowed" });
+            assert.include(yield* Effect.flip(catchUp()), {
+              message:
+                "Approve billing@inkspot.example first: Kin reads bills only from approved senders.",
+            });
+            yield* approved();
+            assert.include(yield* Effect.flip(catchUp(owner, "2026-11-17")), {
+              message: "Pick a day that has passed.",
+            });
+            assert.deepStrictEqual(searches, []);
+            assert.deepStrictEqual(yield* caughtIds, []);
+          }),
+        {
+          mailRead: (url) => {
+            if (searchList(url)) searches.push(url);
+          },
+        },
+      );
+    },
+  );
+
+  it.effect("uses Meera as the bill and expense owner on Meera's day card", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* connect(fake, "microsoft", HELLO);
+        yield* approved();
+        const chatId = `fin-${coOwner}`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES (${chatId}, ${orgId}, 'direct', ${`${coOwner}:${finance}`}, 0, ${stamp})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+            agent_id, role, joined_at)
+          VALUES ('fin-meera-person', ${orgId}, ${chatId}, 'person', ${coOwner}, NULL, 'member', ${stamp}),
+            ('fin-meera-lead', ${orgId}, ${chatId}, 'agent', NULL, ${finance}, 'member', ${stamp})`;
+        fake.deliver({ ...pdfMail, to: HELLO, at: NOW - 1 });
+        assert.include(yield* catchUp(coOwner), { queued: 1, older: false });
+        assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_bill_mail`, [
+          { asked_by_person_id: coOwner },
+        ]);
+        yield* drain();
+        const [bill] = yield* sql<{ eventId: string; addedBy: string; chatId: string }>`
+          SELECT b.event_id AS "eventId", b.added_by_person_id AS "addedBy", m.chat_id AS "chatId"
+          FROM kin_bill_reads b JOIN kin_messages m ON m.message_id = ('bills:' || b.batch_id)`;
+        assert.include(bill, { addedBy: coOwner, chatId });
+        yield* wake({ eventId: bill!.eventId }, finance);
+        const [turn] = yield* sql<{
+          id: string;
+        }>`SELECT wakeup_id AS id FROM kin_wakeups WHERE status = 'running'`;
+        const wakeupId = KinWakeupId.make(turn!.id);
+        yield* Bills.answer(
+          { orgId, agentId: finance, wakeupId },
+          {
+            bill: "B1",
+            readable: true,
+            read: { vendor: "Inkspot Cloud", date: since, amount: "10.00", currency: "USD" },
+          },
+        );
+        yield* Bills.turnEnded(orgId, wakeupId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT owner_id, confirmed FROM kin_records WHERE register_id = 'expenses'`,
+          [{ owner_id: coOwner, confirmed: 0 }],
+        );
+      }),
+    ),
+  );
+
+  it.effect("merges company Gmail and Outlook pages newest first", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* connect(fake, "microsoft", HELLO);
+        yield* approved();
+        const mail = Array.from({ length: 201 }, (_, i) =>
+          fake.deliver({ ...billMail, to: i % 2 === 0 ? ACCOUNTS : HELLO, at: NOW - 1 - i }),
+        );
+        assert.include(yield* catchUp(), { queued: 200, older: true });
+        assert.deepStrictEqual(
+          yield* caughtIds,
+          mail.slice(0, 200).map(({ id }) => id),
+        );
+      }),
+    ),
   );
 
   it.effect("skips a removed billing sender before any message read", () => {
