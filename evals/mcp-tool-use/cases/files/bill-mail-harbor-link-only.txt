@@ -1,0 +1,10 @@
+From: accounts@harborpower.example
+Received: 24 Nov 2026
+Subject: Your Harbor Power bill is ready
+Open the mail: https://mail.example/inbox/harbor-ready-11
+
+Your Harbor Power bill for November is ready.
+
+Sign in to see your bill and its amount: https://harborpower.example/account/bills
+
+Thank you for being a Harbor Power customer.

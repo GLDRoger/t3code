@@ -870,9 +870,13 @@ const HOLDS_SOMEONE: Record<string, string> = {
   // Past decisions stay company history; they are not ongoing authority for the decider.
   kin_bank_senders: "decided_by_person_id",
   kin_bank_statements: "agent_id applied_by",
+  // Who asked for a mail's read stays its record; the drain adds as the first live owner-level person.
+  kin_bill_mail: "asked_by_person_id",
   // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
   kin_bill_reads: "added_by_person_id agent_id",
   kin_bill_requests: "person_id",
+  // Past decisions stay company history; they are not ongoing authority for the decider.
+  kin_bill_senders: "decided_by_person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
   // Who pinned a card, shown like a message's author; any writable member unpins, readers' access decides.

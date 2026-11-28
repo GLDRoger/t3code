@@ -1,0 +1,18 @@
+From: billing@inkspot.example
+Received: 24 Nov 2026
+Subject: Inkspot Cloud receipt INV-24-1102
+Open the mail: https://mail.example/inbox/inkspot-1102
+
+Inkspot Cloud
+Receipt for invoice INV-24-1102
+Date paid: 2026-11-02
+
+[Team plan, 5 seats]
+Subtotal                   50.00 USD
+Tax                         4.50 USD
+Total paid                 54.50 USD
+
+[Paid by card ending 4242]
+[End of receipt]
+
+Questions about this receipt? Reply to this mail.
