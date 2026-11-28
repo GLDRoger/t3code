@@ -1,4 +1,13 @@
-import { KIN_BILLS_PER_TURN, KinBillRead, KinChatError, KinDay } from "@t3tools/contracts";
+import {
+  KIN_BILLS_PER_TURN,
+  KinBillBatchId,
+  KinBillRead,
+  KinBillSaid,
+  KinBillSaidBy,
+  KinBillState,
+  KinChatError,
+  KinDay,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -7,7 +16,14 @@ import * as Schema from "effect/Schema";
 
 import { TurnEvent } from "../lead/eventIds.ts";
 import { MAX_BILL_BOXES } from "./billCutterProtocol.ts";
-import { addFromMessage, answerMany, cutMany } from "./bills.ts";
+import {
+  addFromMessage,
+  answerMany,
+  cutMany,
+  listForChat,
+  recutForChat,
+  setForChat,
+} from "./bills.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, type Lead, leadTool, sourceOf } from "./leadWork.ts";
 
@@ -194,3 +210,76 @@ const runCut = Effect.fnUntraced(function* (lead: Lead, input: typeof CutInput.T
   );
 });
 export const cut = leadTool("KinBillTools.cut", runCut);
+
+const BatchId = Schema.optional(KinBillBatchId).annotate({
+  description: "The id of a batch in this chat. Omit for the latest batch.",
+});
+const ShortBill = Schema.String.check(
+  Schema.isPattern(/^[PF]\d{1,4}(?:@\d{1,5})?(?:\.\d{1,2}){0,2}$/u),
+);
+export const ListInput = Schema.Struct({ batchId: BatchId });
+export const ListResult = Schema.Struct({
+  batchId: KinBillBatchId,
+  bills: Schema.Array(
+    Schema.Struct({
+      bill: ShortBill,
+      state: KinBillState,
+      read: KinBillRead,
+      missing: Schema.Array(Schema.String),
+      problem: Schema.optional(Schema.String),
+      said: Schema.optional(KinBillSaid),
+      saidBy: Schema.optional(KinBillSaidBy),
+    }),
+  ),
+});
+export const listBills = leadTool(
+  "KinBillTools.list",
+  Effect.fnUntraced(function* (lead: Lead, input: typeof ListInput.Type) {
+    yield* admitted(lead, "bills_list", input);
+    return yield* listForChat(lead, input.batchId);
+  }),
+);
+
+export const SetInput = Schema.Struct({
+  batchId: BatchId,
+  sourceEventId: TurnEvent,
+  bills: Schema.Array(ShortBill).check(Schema.isMinLength(1), Schema.isMaxLength(2400)).annotate({
+    description: "The names from bills_list, such as P3.2. Each gets the same fields.",
+  }),
+  fields: Schema.Struct({
+    vendor: Printed(200, "The payee the person gave."),
+    date: Schema.optional(KinDay).annotate({
+      description: "The date the person gave, as YYYY-MM-DD.",
+    }),
+    amount: Printed(60, "The amount the person gave, as a plain number with a decimal point."),
+    currency: KinBillSaid.fields.currency,
+    tax: Printed(60, "The tax the person gave, as a plain number with a decimal point."),
+    category: Printed(60, "The Expenses category the person gave."),
+    number: Printed(80, "The bill number the person gave."),
+    paidBy: Printed(200, 'Use "me" for the author of the message, or the name the author gave.'),
+  }),
+});
+export const set = leadTool(
+  "KinBillTools.set",
+  Effect.fnUntraced(function* (lead: Lead, input: typeof SetInput.Type) {
+    yield* admitted(lead, "bill_set", input);
+    return yield* setForChat(lead, input);
+  }),
+);
+
+export const RecutInput = Schema.Struct({
+  batchId: BatchId,
+  sourceEventId: TurnEvent,
+  photo: Schema.Int.check(Schema.isGreaterThan(0)).annotate({
+    description: "The photo number in the batch, such as 3 for Photo 3.",
+  }),
+  words: KinToolText(300, "The person's exact words about where the bills are on the photo."),
+});
+export const RecutResult = Schema.Struct({ result: Schema.String });
+export const recut = leadTool(
+  "KinBillTools.recut",
+  Effect.fnUntraced(function* (lead: Lead, input: typeof RecutInput.Type) {
+    yield* admitted(lead, "bill_recut", input);
+    return yield* recutForChat(lead, input);
+  }),
+);

@@ -248,6 +248,9 @@ export const SHARED_TOOLS = {
   statement_rows: "refused",
   // Bills become the owner's expenses.
   bills_add: "refused",
+  bills_list: "refused",
+  bill_set: "refused",
+  bill_recut: "refused",
   bill_cut: "refused",
   bill_read: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.

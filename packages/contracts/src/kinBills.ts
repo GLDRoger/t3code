@@ -69,6 +69,28 @@ export const KinBillRead = Schema.Struct({
 });
 export type KinBillRead = typeof KinBillRead.Type;
 
+export const KinBillSaid = Schema.Struct({
+  vendor: KinBillRead.fields.vendor,
+  date: KinBillRead.fields.date,
+  amount: KinBillRead.fields.amount,
+  currency: Schema.optional(KinCurrency),
+  tax: KinBillRead.fields.tax,
+  category: KinBillRead.fields.category,
+  number: KinBillRead.fields.number,
+  paidBy: Schema.optional(KinPersonId),
+});
+export type KinBillSaid = typeof KinBillSaid.Type;
+export const KinBillSaidBy = Schema.Struct({
+  vendor: Schema.optional(KinPersonId),
+  date: Schema.optional(KinPersonId),
+  amount: Schema.optional(KinPersonId),
+  currency: Schema.optional(KinPersonId),
+  tax: Schema.optional(KinPersonId),
+  category: Schema.optional(KinPersonId),
+  number: Schema.optional(KinPersonId),
+  paidBy: Schema.optional(KinPersonId),
+});
+
 const BatchCounts = Schema.Struct({
   read: NonNegativeInt,
   duplicate: NonNegativeInt,
@@ -125,6 +147,8 @@ export const KinBillBatchCard = Schema.Struct({
     Schema.Array(Schema.Struct({ name: Label, reason: Text })).check(Schema.isMaxLength(5)),
   ),
   needsMore: Schema.optional(NonNegativeInt),
+  said: Schema.optional(Schema.Array(Text).check(Schema.isMaxLength(10))),
+  saidMore: Schema.optional(Text),
   keepable: Schema.optional(Keepable),
 });
 export type KinBillBatchCard = typeof KinBillBatchCard.Type;
@@ -223,6 +247,9 @@ export const KinBillRow = Schema.Struct({
   preview: Schema.optional(KinFileRef),
   state: KinBillState,
   read: KinBillRead,
+  /** What a person supplied, over the reader's values. */
+  said: Schema.optional(KinBillSaid),
+  saidBy: Schema.optional(KinBillSaidBy),
   /** In plain words, what could not be read. */
   problem: Schema.optional(Text),
   /**

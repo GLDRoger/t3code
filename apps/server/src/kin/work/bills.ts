@@ -10,6 +10,8 @@ import {
   type KinAttachment,
   KinBillBatchCard,
   KinBillRead,
+  KinBillSaid,
+  KinBillSaidBy,
   type KinBillRow,
   type KinRecordState,
   type KinBillsAddAnywayInput,
@@ -62,6 +64,8 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import { billsOnly } from "../lead/billsOnly.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
@@ -69,6 +73,7 @@ import { shownAsPicture } from "../lead/turn/content.ts";
 import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
+import { personNamed } from "../people/personNamed.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billPhotoForModel, isBillPdf as isPdf } from "./billPhotoForModel.ts";
 import { MAX_BILL_BOXES, refuseBillPage, type BillBox } from "./billCutterProtocol.ts";
@@ -79,7 +84,8 @@ import { currencyDigits, dayIn, farAbove, largestIn } from "./money.ts";
 import { fold } from "./nameMatch.ts";
 import { confirm, theOwner } from "./ownerWork.ts";
 import { endOfDay, ownerZone, workFailure } from "./recordRows.ts";
-import { listDef, presetList } from "./registers.ts";
+import { listDef, PRESETS, presetList } from "./registers.ts";
+import { FUNDED_BY, NO_ROOM_FOR_FUNDING, REIMBURSEMENT } from "./reimbursement.ts";
 import { notAVendor } from "./vendorName.ts";
 
 /**
@@ -161,10 +167,19 @@ const ReadJson = Schema.fromJsonString(
     tax: Schema.optional(Schema.String),
     category: Schema.optional(Schema.String),
     number: Schema.optional(Schema.String),
+    refused: Schema.optional(Schema.String),
   }),
 );
 const encodeRead = Schema.encodeEffect(ReadJson);
 const decodeRead = Schema.decodeUnknownOption(ReadJson);
+const SaidJson = Schema.fromJsonString(Schema.Struct({ values: KinBillSaid, by: KinBillSaidBy }));
+const decodeSaid = Schema.decodeUnknownOption(SaidJson);
+const encodeSaid = Schema.encodeEffect(SaidJson);
+const saidOf = (row: Row) => Option.getOrUndefined(decodeSaid(row.saidJson));
+const printedOf = (row: Row): KinBillRead => {
+  const { refused: _refused, ...printed } = Option.getOrUndefined(decodeRead(row.readJson)) ?? {};
+  return printed;
+};
 // A cut source is terminal, with a list of pages cut instead of a bill_read object.
 const CutPages = Schema.fromJsonString(Schema.Array(Schema.Int));
 const decodeCutPages = Schema.decodeUnknownOption(CutPages);
@@ -208,6 +223,7 @@ type Row = {
   readonly eventId: string | null;
   readonly reads: number;
   readonly readJson: string | null;
+  readonly saidJson: string | null;
   readonly problem: string | null;
   readonly duplicateOf: string | null;
   readonly recordId: string | null;
@@ -230,7 +246,7 @@ const COLUMNS = `sha256, attachment_id AS "attachmentId", preview_id AS "preview
   size_bytes AS "sizeBytes",
   batch_id AS "batchId", position, agent_id AS "agentId", card_chat_id AS "cardChatId",
   widget_id AS "widgetId", added_by_person_id AS "addedBy", added_at AS "addedAt", state,
-  event_id AS "eventId", reads, read_json AS "readJson", problem, duplicate_of AS "duplicateOf",
+  event_id AS "eventId", reads, read_json AS "readJson", said_json AS "saidJson", problem, duplicate_of AS "duplicateOf",
   record_id AS "recordId", dismissed_at AS "dismissedAt", parent_sha256 AS "parentSha256",
   cut_page AS "cutPage", json_type(read_json) IS 'array' AS cut,
   ${mailColumn("mail_from")} AS "mailFrom", ${mailColumn("mail_at")} AS "mailAt"`;
@@ -340,9 +356,9 @@ const cardText = (
   slots: ReadonlyArray<SourceSlot>,
   kept: number,
   needs: number,
+  clean: number,
 ) => {
   if (card.from === "mail" || card.pausedUntil !== undefined) return legacyCardText(card);
-  const clean = card.keepable?.count ?? 0;
   if (card.status === "reading") {
     const read = clean + kept;
     return `Reading ${sourceText(slots)}${read === 0 ? "" : `: ${countText(read)} read so far`}.`;
@@ -554,6 +570,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   orgId: KinOrgId,
   batchId: string,
   prepared: ReadonlyMap<string, ChatAttachment | undefined> | undefined,
+  recut?: { readonly hash: string; readonly note: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
@@ -591,7 +608,13 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   for (const row of waiting)
     shown = (yield* indexPreview(orgId, row, prepared?.get(row.attachmentId))) || shown;
   if (shown) yield* touchBills(orgId);
-  for (const group of billGroups(waiting, prepared)) {
+  const groups = billGroups(
+    waiting.filter((row) => row.sha256 !== recut?.hash),
+    prepared,
+  );
+  const photo = waiting.find((row) => row.sha256 === recut?.hash);
+  if (photo !== undefined) groups.unshift([photo]);
+  for (const group of groups) {
     const first = group[0]!;
     const reads = Math.max(...group.map((row) => row.reads)) + 1;
     const key = `${orgId}:${batchId}:${group.map((row) => row.sha256).join(",")}:${reads}`;
@@ -610,6 +633,9 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           chatId: KinChatId.make(first.cardChatId),
           batchId,
           bills: hashes,
+          ...(photo !== undefined && first === photo && recut !== undefined
+            ? { note: recut.note }
+            : {}),
           ...(prepared !== undefined || group.every((row) => isPdf(row) || isText(row))
             ? { photosPrepared: true }
             : {}),
@@ -788,6 +814,67 @@ const needReason = (row: Row, records: ReadonlyMap<string, RecordBrief>) => {
   return "couldn't be read.";
 };
 
+const cardCorrections = Effect.fn("KinBills.cardCorrections")(function* (
+  orgId: KinOrgId,
+  rows: ReadonlyArray<Row>,
+  records: ReadonlyMap<string, RecordBrief>,
+  nameFor: (row: Row) => string,
+) {
+  const groups = new Map<string, { field: keyof KinBillSaid; value: string; rows: Array<Row> }>();
+  for (const row of rows) {
+    const state = shownState(row, records.get(row.recordId ?? ""));
+    if (row.dismissedAt !== null || state === "kept" || state === "dropped") continue;
+    const values = saidOf(row)?.values ?? {};
+    for (const [field, value] of Object.entries(values) as Array<[keyof KinBillSaid, string]>) {
+      const key = `${field}:${value}`;
+      const group = groups.get(key) ?? { field, value, rows: [] };
+      group.rows.push(row);
+      groups.set(key, group);
+    }
+  }
+  const all = [...groups.values()];
+  const shown = all.slice(0, 10);
+  const payers = shown.filter(({ field }) => field === "paidBy").map(({ value }) => value);
+  const sql = yield* SqlClient.SqlClient;
+  const names =
+    payers.length === 0
+      ? []
+      : yield* sql<{ id: string; name: string }>`
+    SELECT person_id AS id, display_name AS name FROM kin_people
+    WHERE org_id = ${orgId} AND person_id IN ${sql.in([...new Set(payers)])}`;
+  const lines = shown.map(({ field, value, rows }) => {
+    const name = nameFor(rows[0]!).replace(/ · bill (\d+) of \d+/gu, ", bill $1");
+    const one = rows.length === 1;
+    const whom = one ? name : countText(rows.length);
+    const are = one ? "is" : "are";
+    let words: string;
+    switch (field) {
+      case "date": {
+        const [year, month, day] = value.split("-");
+        words = `${whom} ${are} dated ${Number(day)} ${MONTHS[Number(month) - 1]} ${year}`;
+        break;
+      }
+      case "category":
+        words = `${whom} ${are} ${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
+        break;
+      case "paidBy":
+        words = `${whom} ${are} to be repaid to ${names.find(({ id }) => id === value)?.name ?? "a teammate"}`;
+        break;
+      default:
+        words = one
+          ? `${whom}'s ${fieldLabel(field)} is ${value}`
+          : `${whom} have ${fieldLabel(field)} ${value}`;
+    }
+    return oneLine(`You said: ${words}`).slice(0, 299) + ".";
+  });
+  const extra = all.slice(10);
+  return {
+    lines,
+    more: extra.length,
+    hidden: new Set(extra.flatMap(({ rows }) => rows.map(({ sha256 }) => sha256))),
+  };
+});
+
 /**
  * Redraws a batch's card from its rows: progress while Kin reads, the counts when done. Once done
  * it waits on the adder while a bill still needs them, which rings them once; else it closes.
@@ -833,6 +920,8 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
         ? stored.sourceSlots
         : [...stored.sourceSlots, ...appended];
   const { sources, nameFor } = billNames(all, sourceSlots);
+  const said = yield* cardCorrections(orgId, rows, records, nameFor);
+  const offered = new Map([...keepable].filter(([hash]) => !said.hidden.has(hash)));
   const kept = rows.filter(
     (row) =>
       row.dismissedAt === null && shownState(row, records.get(row.recordId ?? "")) === "kept",
@@ -865,7 +954,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
           ? undefined
           : Date.parse(stored.pausedUntil);
   const pausedUntil = status === "reading" && held !== undefined && held > now ? held : undefined;
-  const { pausedUntil: _held, ...rest } = stored;
+  const { pausedUntil: _held, said: _said, saidMore: _saidMore, ...rest } = stored;
   const base = {
     ...rest,
     status,
@@ -873,7 +962,11 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     done: total - pending,
     counts,
     ...(sourceSlots === undefined ? {} : { sourceSlots }),
-    keepable: keepableSummary(keepable),
+    keepable: keepableSummary(offered),
+    ...(said.lines.length === 0 ? {} : { said: said.lines }),
+    ...(said.more === 0
+      ? {}
+      : { saidMore: `And ${said.more} more changes of yours: keep those in Review.` }),
     totals: cardTotals(
       keepable,
       keepable.size === 0 ? [] : ((yield* listDef(orgId, "expenses"))?.categories ?? []),
@@ -885,7 +978,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     ...(pausedUntil === undefined ? {} : { pausedUntil: iso(pausedUntil) }),
   };
   const reader = rows.find((row) => row.state === "waiting" || row.state === "reading")?.agentId;
-  const text = cardText(base, sources, kept, problemRows.length);
+  const text = cardText(base, sources, kept, problemRows.length, keepable.size);
   const card: StoredCard = {
     ...base,
     text:
@@ -1058,7 +1151,7 @@ const insertBills = Effect.fn("KinBills.insertBills")(function* (input: {
               card_chat_id = ${input.cardChatId}, widget_id = ${billWidgetId(input.batchId)},
               added_by_person_id = ${input.addedBy}, added_at = ${now}, state = 'waiting',
               event_id = ${eventId}, reads = 0, read_json = NULL, problem = NULL, duplicate_of = NULL,
-              read_at = NULL, dismissed_at = NULL, parent_sha256 = ${parent}, cut_page = ${page},
+              said_json = NULL, read_at = NULL, dismissed_at = NULL, parent_sha256 = ${parent}, cut_page = ${page},
               cut_box_json = ${box}, mail_from = ${input.mail?.from ?? null},
               mail_at = ${input.mail?.at ?? null}
             WHERE b.org_id = ${input.orgId} AND b.sha256 = ${file.sha256}
@@ -1196,7 +1289,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
           orgId: input.orgId,
           chatId: input.cardChatId,
           batchId: input.batchId,
-          card: { ...base, text: cardText(base, sourceSlots, 0, 0) },
+          card: { ...base, text: cardText(base, sourceSlots, 0, 0, 0) },
           attachments: input.source._tag === "card" ? fresh.map((file) => file.attachment) : [],
         });
   const where =
@@ -1568,6 +1661,435 @@ const turnBills = Effect.fn("KinBills.turnBills")(function* (
   return new Map(hashes.map((row, index) => [`B${index + 1}`, row]));
 });
 
+const billSpeaker = Effect.fn("KinBills.billSpeaker")(function* (
+  turn: BillTurn,
+  tool: "bills_list" | "bill_set" | "bill_recut",
+  sourceEventId?: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const events = yield* sql<{
+    id: string;
+    chatId: string | null;
+    personId: string | null;
+    body: string | null;
+    owner: number;
+  }>`SELECT e.event_id AS id, m.chat_id AS "chatId", m.author_person_id AS "personId", m.body,
+      ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))} AS owner
+    FROM kin_wakeups w JOIN json_each(w.event_ids) j
+    JOIN kin_events e ON e.org_id = w.org_id AND e.wakeup_id = w.wakeup_id
+      AND e.event_id = j.value AND e.state = 'claimed'
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag = 'chat.message'
+      AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+      AND m.author_person_id = json_extract(e.json, '$.provenance.personId')
+      AND json_extract(e.json, '$.provenance._tag') = 'human'
+      AND json_extract(e.json, '$.origin') IS NULL
+      AND m.author_kind = 'human' AND m.kind = 'text' AND m.status = 'posted'
+      AND m.origin_json IS NULL AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+    WHERE w.org_id = ${turn.orgId} AND w.wakeup_id = ${turn.wakeupId}
+      AND w.agent_id = ${turn.agentId} AND w.status = 'running'
+    ORDER BY j.key`;
+  const first = events[0];
+  const source =
+    sourceEventId === undefined ? first : events.find((row) => row.id === sourceEventId);
+  if (
+    first?.personId == null ||
+    source?.personId == null ||
+    source.chatId === null ||
+    source.body === null ||
+    events.some((row) => row.personId !== first.personId || row.chatId !== first.chatId)
+  )
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${tool} works only in a turn a person started with their own message.`,
+    });
+  if (source.owner !== 1)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the owner or a co-owner changes bills.",
+    });
+  const direct = yield* cardChat(turn.orgId, source.personId, turn.agentId);
+  if (source.chatId !== direct)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Open your direct chat with Finance to work on these bills.",
+    });
+  // Chat replies keep quoted messages separately. Strip pasted quote lines and forwarded mail.
+  const body = source.body
+    .split(/^(?:\s*[- ]*forwarded message\b|\s*begin forwarded message\b|\s*from:\s.+$)/imu)[0]!
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith(">"))
+    .join("\n");
+  return { chatId: direct, personId: KinPersonId.make(source.personId), body };
+});
+
+const chatBatch = Effect.fn("KinBills.chatBatch")(function* (
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  requested: string | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* KinChatRepository;
+  const [found] = yield* sql<{ id: string }>`SELECT b.batch_id AS id
+    FROM kin_messages m JOIN kin_bill_reads b ON b.org_id = m.org_id AND b.card_chat_id = m.chat_id
+      AND m.message_id = 'bills:' || b.batch_id
+    WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.status = 'posted'
+      AND (${requested ?? null} IS NULL OR b.batch_id = ${requested ?? null})
+    ORDER BY m.seq DESC LIMIT 1`;
+  if (found === undefined) return yield* invalid("There is no such batch in this chat.");
+  const id = found.id;
+  const widget = yield* repo.getWidget({ orgId, widgetId: billWidgetId(id) });
+  const slots = Option.flatMap(widget, (one) => CardJson(one.state)).pipe(
+    Option.getOrUndefined,
+  )?.sourceSlots;
+  const rows = yield* batchRows(orgId, id, { includeCut: true });
+  const { nameFor } = billNames(rows, slots);
+  const name = (row: Row) =>
+    nameFor(row)
+      .replace(/^(Photo|File) (\d+)/u, (_, kind: string, n: string) => `${kind[0]}${n}`)
+      .replace(/ · page (\d+)/gu, "@$1")
+      .replace(/ · bill (\d+) of \d+/gu, ".$1");
+  const records = yield* recordsById(
+    orgId,
+    rows.flatMap(({ recordId, duplicateOf }) =>
+      [recordId, duplicateOf].filter((key) => key !== null),
+    ),
+  );
+  const state = (row: Row) => shownState(row, records.get(row.recordId ?? ""));
+  return { id, rows, name, nameFor, records, state };
+});
+
+const missingOf = (problem: string | null) => {
+  const missing = /^Couldn't read: ([^.]+)/u.exec(problem ?? "")?.[1]?.split(", ") ?? [];
+  return missingFields.filter((field) => missing.includes(field));
+};
+
+export const listForChat = Effect.fn("KinBills.listForChat")(function* (
+  turn: BillTurn,
+  batchId?: string,
+) {
+  const { orgId } = turn;
+  const speaker = yield* billSpeaker(turn, "bills_list");
+  yield* markOutside(turn, "bills", [{ k: "service", label: "bills" }]);
+  const batch = yield* chatBatch(orgId, speaker.chatId, batchId);
+  return {
+    batchId: batch.id,
+    bills: batch.rows.flatMap((row) => {
+      const state = batch.state(row);
+      if (row.dismissedAt !== null || row.cut !== 0 || state === "kept") return [];
+      const said = saidOf(row);
+      return [
+        {
+          bill: batch.name(row),
+          state,
+          read: printedOf(row),
+          missing: missingOf(row.problem),
+          ...(row.problem === null ? {} : { problem: row.problem }),
+          ...(said === undefined ? {} : { said: said.values, saidBy: said.by }),
+        },
+      ];
+    }),
+  };
+}, workFailure);
+
+const refusedRead = (row: Row) =>
+  Option.getOrUndefined(decodeRead(row.readJson))?.refused ??
+  (row.state === "unreadable" &&
+  row.problem !== null &&
+  !row.problem.startsWith("Couldn't read:") &&
+  !READ_CLEAN.has(row.problem) &&
+  row.problem !== "It is for 0"
+    ? row.problem
+    : undefined);
+
+const fieldLabel = (field: keyof KinBillSaid) =>
+  field === "paidBy" ? "paid by" : field === "vendor" ? "payee" : field;
+
+const oneLine = (text: string) => text.replace(/\s+/gu, " ").trim();
+const says = (body: string, value: string) =>
+  fold(value) !== "" && ` ${fold(body)} `.includes(` ${fold(value)} `);
+
+const saysDay = (body: string, day: string, today: string) => {
+  if (body.includes(day)) return true;
+  const [year, month, date] = day.split("-");
+  const names = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+  ];
+  const name = names[Number(month) - 1]!;
+  const target = `0?${Number(date)}(?:st|nd|rd|th)?`;
+  const named = `(?:${name}|${name.slice(0, 3)})`;
+  const pattern = new RegExp(`\\b(?:${target} ${named}|${named} ${target})(?: (\\d{4}))?\\b`, "gu");
+  if ([...fold(body).matchAll(pattern)].some((match) => (match[1] ?? today.slice(0, 4)) === year))
+    return true;
+  return [
+    ["today", 0],
+    ["yesterday", -1],
+    ["tomorrow", 1],
+  ].some(
+    ([word, offset]) =>
+      says(body, String(word)) &&
+      iso(Date.parse(today) + Number(offset) * 86_400_000).startsWith(day),
+  );
+};
+
+const saidFieldsMatch = Effect.fn("KinBills.saidFieldsMatch")(function* (
+  orgId: KinOrgId,
+  body: string,
+  fields: Omit<KinBillSaid, "paidBy">,
+) {
+  for (const [field, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    let found = says(body, value);
+    if (field === "date") {
+      const today = dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId));
+      found = saysDay(body, value, today);
+    } else if (field === "amount" || field === "tax") {
+      const figures =
+        body
+          .replace(/\b(?:(?:photo|file|bill)\s+|[pf])\d+(?:[.@]\d+)*/giu, " ")
+          .match(/(?<![\p{L}\p{N}/.-])-?\d+(?:[.,]\d+)*(?![\p{L}\p{N}/-]|\.\d)/gu) ?? [];
+      found =
+        PLAIN_NUMBER.test(value) &&
+        figures.some((figure) => Number(figure.replaceAll(",", "")) === Number(value));
+    } else if (field === "currency" && !found) {
+      const home = yield* homeCurrency(orgId);
+      found =
+        says(body, displayNames.of(value) ?? value) ||
+        [...body.matchAll(/\p{Sc}/gu)].some(([mark]) => currencyOfMark(mark, home) === value);
+    }
+    if (!found) return yield* invalid("Use only values the person's own message gives.");
+  }
+});
+
+const paidByOf = Effect.fn("KinBills.paidByOf")(function* (
+  orgId: KinOrgId,
+  speaker: { readonly personId: KinPersonId; readonly body: string },
+  name: string | undefined,
+) {
+  if (name === undefined) return undefined;
+  const myself = name.toLowerCase() === "me";
+  const found = yield* personNamed(orgId, myself ? speaker.personId : name);
+  if (
+    found._tag !== "found" ||
+    (!myself && !`${fold(found.item.name)} `.startsWith(`${fold(name)} `))
+  )
+    return yield* invalid("The person to be repaid must be on the team.");
+  const body = fold(speaker.body);
+  const by = myself ? "i" : fold(name);
+  const to = myself ? "(?:me|myself)" : by;
+  const paid = new RegExp(
+    `(?<![\\p{L}\\p{N}])${by} (?:personally )?(?:paid|funded|covered)\\b`,
+    "u",
+  );
+  const repaid = new RegExp(
+    `\\b(?:paid by|funded by|pay back|repay|repaid to|reimburse(?:d)?(?: to)?|reimbursement (?:for|to)|owes?|owed to) ${to}(?![\\p{L}\\p{N}])`,
+    "u",
+  );
+  const pocket =
+    myself && /\b(?:out of my (?:own )?pocket|my (?:own|personal) (?:money|card))\b/u.test(body);
+  if (!paid.test(body) && !repaid.test(body) && !pocket)
+    return yield* invalid("The message must say who paid or who is to be repaid.");
+  const def = yield* listDef(orgId, "expenses");
+  if (def !== undefined && !def.fields.some((field) => field.key === FUNDED_BY && !field.retired))
+    return yield* invalid(NO_ROOM_FOR_FUNDING);
+  return found.item;
+});
+
+const withdrawSuggestion = Effect.fn("KinBills.withdrawSuggestion")(function* (
+  orgId: KinOrgId,
+  row: Row,
+) {
+  if (row.recordId === null) return;
+  const existing = (yield* recordsById(orgId, [row.recordId])).get(row.recordId);
+  if (existing === undefined || existing.state === "dropped") return;
+  if (existing.confirmed !== 0) return yield* invalid("The bill's expense is already kept.");
+  const records = yield* KinRecords;
+  yield* records
+    .update(
+      orgId,
+      { actor: { _tag: "system" }, via: "owner" },
+      existing.key,
+      {
+        state: "dropped",
+      },
+      existing.rev,
+    )
+    .pipe(Effect.provideService(DeferCardRefresh, true));
+});
+
+export const setForChat = Effect.fn("KinBills.setForChat")(function* (
+  turn: BillTurn,
+  input: {
+    readonly batchId?: string | undefined;
+    readonly sourceEventId: string;
+    readonly bills: ReadonlyArray<string>;
+    readonly fields: Omit<KinBillSaid, "paidBy"> & { readonly paidBy?: string | undefined };
+  },
+) {
+  const { orgId } = turn;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const speaker = yield* billSpeaker(turn, "bill_set", input.sourceEventId);
+      const batch = yield* chatBatch(orgId, speaker.chatId, input.batchId);
+      const { paidBy: name, ...fields } = input.fields;
+      yield* saidFieldsMatch(orgId, speaker.body, fields);
+      const payer = yield* paidByOf(orgId, speaker, name);
+      const available =
+        fields.category === undefined
+          ? undefined
+          : ((yield* listDef(orgId, "expenses"))?.categories ?? PRESETS.expenses.categories);
+      const category = available?.find(
+        (one) => one.toLowerCase() === fields.category?.toLowerCase(),
+      );
+      if (fields.category !== undefined && category === undefined)
+        return yield* invalid("Choose a category from Expenses.");
+      const values = {
+        ...fields,
+        ...(category === undefined ? {} : { category }),
+        ...(payer === undefined ? {} : { paidBy: payer.id }),
+      };
+      const entries = Object.entries(values) as Array<[keyof KinBillSaid, string]>;
+      if (entries.length === 0) return yield* invalid("Say which fields to change.");
+      const by = Object.fromEntries(entries.map(([key]) => [key, speaker.personId]));
+      const set = listWords(
+        entries.map(
+          ([key, value]) =>
+            `${fieldLabel(key)} set to ${oneLine(key === "paidBy" ? payer!.name : value)}`,
+        ),
+      );
+      const named = new Map(
+        batch.rows
+          .filter((row) => row.cut === 0 && row.dismissedAt === null)
+          .map((row) => [batch.name(row), row]),
+      );
+      const bills = [...new Set(input.bills.map((bill) => bill.toUpperCase()))];
+      const targets = [];
+      for (const bill of bills) {
+        const row = named.get(bill);
+        if (row === undefined) {
+          const choices = [...named.keys()];
+          return yield* invalid(
+            `No bill ${bill} in this batch${choices.length === 0 ? "." : `: ${choices.join(", ")}.`}`,
+          );
+        }
+        const state = batch.state(row);
+        if (state === "kept" || state === "dropped")
+          return yield* invalid(`${bill} is already ${state}: change its expense instead.`);
+        targets.push({ bill, row });
+      }
+      const results = [];
+      for (const { bill, row } of targets) {
+        const old = saidOf(row);
+        const saidJson = yield* encodeSaid({
+          values: { ...old?.values, ...values },
+          by: { ...old?.by, ...by },
+        });
+        yield* sql`UPDATE kin_bill_reads SET said_json = ${saidJson}
+        WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
+        if (row.state === "waiting" || row.state === "reading") {
+          results.push({ bill, result: `${bill}: ${set}. It is still being read.` });
+          continue;
+        }
+        const paperRefusal = refusedRead(row);
+        const outcome = yield* settleRead(
+          orgId,
+          { ...row, saidJson },
+          {
+            readable: paperRefusal === undefined,
+            read: printedOf(row),
+            paperRefusal,
+            keepPaper: true,
+          },
+        );
+        const after = (yield* billRow(orgId, row.sha256))!;
+        let result = `${bill}: ${set}. `;
+        const missing = missingOf(after.problem);
+        if (outcome === "read") result += "It reads cleanly now and waits for the owner's keep.";
+        else if (after.problem === "It is for 0" && fields.amount !== undefined)
+          result = `${bill}: ${set}, so it is no expense.`;
+        else if (after.problem === CHECK_IT.ahead && fields.date !== undefined)
+          result = `${bill}: ${set}, which is after today: check it.`;
+        else if (missing.length > 0) result += `Still missing: ${listWords(missing)}.`;
+        else result += `Check it in Review: ${needReason(after, batch.records)}`;
+        results.push({ bill, result });
+      }
+      yield* refreshCard(orgId, batch.id);
+      yield* touchBills(orgId);
+      return { results };
+    }),
+  );
+}, workFailure);
+
+export const recutForChat = Effect.fn("KinBills.recutForChat")(function* (
+  turn: BillTurn,
+  input: {
+    readonly batchId?: string | undefined;
+    readonly sourceEventId: string;
+    readonly photo: number;
+    readonly words: string;
+  },
+) {
+  const { orgId } = turn;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const speaker = yield* billSpeaker(turn, "bill_recut", input.sourceEventId);
+      const batch = yield* chatBatch(orgId, speaker.chatId, input.batchId);
+      const name = `Photo ${input.photo}`;
+      const photo = batch.rows.find(
+        (row) => row.parentSha256 === null && batch.nameFor(row) === name,
+      );
+      if (photo === undefined || photo.dismissedAt !== null)
+        return yield* invalid(`No ${name.toLowerCase()} in this batch.`);
+      const hashes = new Set([photo.sha256]);
+      const pieces = batch.rows.filter((row) => {
+        if (row.parentSha256 === null || !hashes.has(row.parentSha256)) return false;
+        hashes.add(row.sha256);
+        return true;
+      });
+      const kept = [photo, ...pieces].find((row) => batch.state(row) === "kept");
+      if (kept !== undefined)
+        return yield* invalid(
+          `${name} has a kept bill, ${batch.name(kept)}: it can be cut again once that expense is dropped.`,
+        );
+      if ([photo, ...pieces].some((row) => row.state === "reading" || row.state === "waiting"))
+        return yield* invalid(`${name} is being read now: try again once its card says it's done.`);
+      if (!photoNeedsPreparation(rowAttachment(photo))) return yield* invalid(UNSHOWN_PHOTO);
+      if (!oneLine(speaker.body).includes(oneLine(input.words)))
+        return yield* invalid("Use the person's own words about how to cut the photo.");
+      for (const row of [photo, ...pieces]) yield* withdrawSuggestion(orgId, row);
+      if (pieces.length > 0)
+        yield* sql`DELETE FROM kin_bill_reads WHERE org_id = ${orgId} AND batch_id = ${batch.id}
+        AND sha256 IN ${sql.in(pieces.map((row) => row.sha256))}`;
+      yield* sql`UPDATE kin_bill_reads SET state = 'waiting', event_id = NULL, read_json = NULL,
+      problem = NULL, record_id = NULL, duplicate_of = NULL, read_at = NULL
+      WHERE org_id = ${orgId} AND sha256 = ${photo.sha256}`;
+      yield* queueWaiting(orgId, batch.id, undefined, {
+        hash: photo.sha256,
+        note: oneLine(input.words),
+      });
+      yield* refreshCard(orgId, batch.id);
+      yield* touchBills(orgId);
+      return {
+        result: `${name} goes back to be cut again with those words. The card in this chat shows the new pieces. Say so in one line and stop.`,
+      };
+    }),
+  );
+}, workFailure);
+
 const normalizeMark = (mark: string) => mark.trim().toLowerCase();
 const currenciesByMark = new Map<string, Set<string>>();
 const displayNames = new Intl.DisplayNames(KIN_TEXT_LOCALE, { type: "currency" });
@@ -1605,6 +2127,8 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
     readonly readable: boolean;
     readonly read: KinBillRead;
     readonly cannotRead?: string | undefined;
+    readonly paperRefusal?: string | undefined;
+    readonly keepPaper?: true;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -1612,26 +2136,39 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   const { currencyAssumed: _untrusted, ...printed } = answer.read;
   const home = yield* homeCurrency(orgId);
   const assumed = printed.currency === undefined && printed.currencyMark === undefined;
-  const currency =
+  const paperCurrency =
     printed.currency ??
     (printed.currencyMark === undefined ? home : currencyOfMark(printed.currencyMark, home));
-  const read = {
+  const paper = {
     ...printed,
-    ...(currency === undefined ? {} : { currency }),
+    ...(paperCurrency === undefined ? {} : { currency: paperCurrency }),
     ...(assumed ? { currencyAssumed: true as const } : {}),
   };
-  const json = yield* encodeRead(read).pipe(Effect.orDie);
-  const unreadable = (problem: string) =>
-    sql`UPDATE kin_bill_reads SET state = 'unreadable', read_json = ${json}, problem = ${problem},
-        read_at = ${now}
-      WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`.pipe(Effect.as("unreadable" as const));
-  // The agent's own words about the bill, said as its own and on one line.
+  const corrections = saidOf(row);
+  const { paidBy, ...values } = corrections?.values ?? {};
+  const read = { ...paper, ...values };
+  const currency = read.currency;
   const words = answer.cannotRead?.replace(/\s+/gu, " ").trim();
   const theirs =
     words === undefined || words === ""
       ? undefined
       : `${yield* agentName(orgId, row.agentId)}: ${words}`;
-  if (!answer.readable) return yield* unreadable((theirs ?? COULD_NOT_READ).slice(0, 300));
+  const refused = answer.readable
+    ? undefined
+    : (answer.paperRefusal ?? (theirs ?? COULD_NOT_READ).slice(0, 300));
+  const json = answer.keepPaper
+    ? row.readJson
+    : yield* encodeRead({ ...paper, ...(refused === undefined ? {} : { refused }) }).pipe(
+        Effect.orDie,
+      );
+  const unreadable = Effect.fnUntraced(function* (problem: string) {
+    yield* withdrawSuggestion(orgId, row);
+    yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', read_json = ${json}, problem = ${problem},
+        read_at = ${now}, record_id = NULL, duplicate_of = NULL
+      WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
+    return "unreadable" as const;
+  });
+  if (refused !== undefined) return yield* unreadable(refused);
   if (currency === undefined) return yield* unreadable(UNCLEAR_CURRENCY);
   const missing: Array<string> = [];
   const amount = plainNumber(read.amount, currency);
@@ -1663,12 +2200,13 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
     return yield* unreadable(CHECK_IT.old);
   const twin = yield* sameExpense(orgId, row.sha256, read.vendor, read.date, money, zone);
   if (twin !== undefined) {
+    yield* withdrawSuggestion(orgId, row);
     yield* sql`UPDATE kin_bill_reads SET state = 'duplicate', read_json = ${json},
-        duplicate_of = ${twin}, problem = NULL, read_at = ${now}
+        duplicate_of = ${twin}, problem = NULL, read_at = ${now}, record_id = NULL
       WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
     return "duplicate" as const;
   }
-  const made = yield* makeExpense(orgId, row, read, money, zone, "auto");
+  const made = yield* makeExpense(orgId, row, read, money, zone, "auto", paidBy);
   yield* sql`UPDATE kin_bill_reads SET state = 'read', read_json = ${json}, record_id = ${made},
       problem = NULL, duplicate_of = NULL, read_at = ${now}
     WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
@@ -1695,14 +2233,14 @@ const sameExpense = Effect.fn("KinBills.sameExpense")(function* (
   }>`SELECT r.record_id AS "recordId", r.title, json_extract(r.fields_json, '$.vendor') AS vendor,
       r.date_at AS "dateAt", b.printed
     FROM kin_records r
-    LEFT JOIN (SELECT org_id, sha256, json_extract(read_json, '$.date') AS printed
-      FROM kin_bill_reads) b ON b.org_id = r.org_id AND b.sha256 = substr(r.origin_key, 6)
-        AND r.origin_key = 'bill:' || b.sha256
+    LEFT JOIN (SELECT org_id, sha256, COALESCE(json_extract(said_json, '$.values.date'), json_extract(read_json, '$.date')) AS printed
+      FROM kin_bill_reads) b ON b.org_id = r.org_id AND b.sha256 = substr(r.origin_key, 6, 64)
+        AND (r.origin_key = 'bill:' || b.sha256 OR r.origin_key GLOB 'bill:' || b.sha256 || ':*')
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state != 'dropped'
       AND r.amount_minor = ${money.minor} AND r.currency = ${money.currency}
       AND (r.date_at BETWEEN ${at - 2 * 86_400_000} AND ${at + 2 * 86_400_000}
         OR b.printed = ${day})
-      AND r.origin_key != ${`bill:${hash}`}
+      AND r.origin_key != ${`bill:${hash}`} AND r.origin_key NOT GLOB ${`bill:${hash}:*`}
     ORDER BY r.created_at, r.record_id`;
   const payee = fold(vendor);
   // A mailed bill is dated only once paid, on that day: its own read keeps the printed day.
@@ -1730,6 +2268,7 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
   money: { readonly minor: number; readonly currency: string },
   zone: string,
   how: "auto" | { readonly requestHash: string },
+  paidBy?: KinPersonId,
 ) {
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
@@ -1750,20 +2289,70 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
     askedBy: KinPersonId.make(row.addedBy),
   };
   const fromMail = row.mailFrom !== null && row.mailAt !== null;
+  const funding =
+    paidBy === undefined
+      ? {}
+      : { paidBy: `person:${paidBy}`, [FUNDED_BY]: `person:${paidBy}`, [REIMBURSEMENT]: "owed" };
+  const fields = {
+    vendor: read.vendor ?? "",
+    receipt: [row.attachmentId],
+    ...funding,
+  };
+  const figuredTax =
+    tax !== undefined && "money" in tax && tax.money.minor !== 0 ? tax.money : null;
+  const title = titleOf(read.vendor ?? "", read.date ?? "");
+  const state = fromMail ? "open" : "done";
+  const dateAt = fromMail ? null : endOfDay(read.date ?? "", zone);
+  const origin = `bill:${row.sha256}`;
+  let originKey = origin;
+  if (
+    how === "auto" &&
+    (row.recordId !== null || row.reads > 1 || row.saidJson !== null || row.parentSha256 !== null)
+  ) {
+    const [previous] = yield* sql<{ key: string; rev: number; confirmed: number; state: string }>`
+      SELECT key, rev, confirmed, state FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'expenses'
+        AND (origin_key = ${origin} OR origin_key GLOB ${`${origin}:*`})
+      ORDER BY (record_id IS ${row.recordId}) DESC, confirmed, created_at DESC LIMIT 1`;
+    if (previous?.confirmed === 1) {
+      if (previous.state !== "dropped" || row.recordId !== null)
+        return yield* invalid("The bill's expense is already kept.");
+      // A recut can yield the same bytes. A kept expense later dropped stays in its history.
+      originKey = `${origin}:${row.eventId ?? row.attachmentId}`;
+    } else if (previous !== undefined) {
+      const updated = yield* records
+        .update(
+          orgId,
+          writer,
+          previous.key,
+          {
+            title,
+            state,
+            dateAt,
+            dateAllDay: !fromMail,
+            amount: money,
+            category: category ?? null,
+            fields: { ...fields, tax: figuredTax },
+          },
+          previous.rev,
+        )
+        .pipe(Effect.provideService(DeferCardRefresh, true));
+      return updated.recordId;
+    }
+  }
   const { row: made } = yield* records.create(orgId, writer, {
     list: "expenses",
-    originKey: `bill:${row.sha256}`,
+    originKey,
     ...(how === "auto" ? {} : { requestHash: how.requestHash }),
-    title: titleOf(read.vendor ?? "", read.date ?? ""),
+    title,
     owner: { _tag: "person", personId: KinPersonId.make(row.addedBy) },
-    state: fromMail ? "open" : "done",
+    state,
     amount: money,
-    ...(fromMail ? {} : { dateAt: endOfDay(read.date ?? "", zone), dateAllDay: true }),
+    ...(dateAt === null ? {} : { dateAt, dateAllDay: true }),
     ...(category === undefined ? {} : { category }),
     fields: {
-      vendor: read.vendor ?? "",
-      receipt: [row.attachmentId],
-      ...(tax !== undefined && "money" in tax && tax.money.minor !== 0 ? { tax: tax.money } : {}),
+      ...fields,
+      ...(figuredTax === null ? {} : { tax: figuredTax }),
     },
     notes: fromMail
       ? `Read by Kin from a mail from ${row.mailFrom}, received ${formatKinWhen(row.mailAt, "date", { zone, locale: KIN_TEXT_LOCALE })}.`
@@ -2261,7 +2850,8 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
 ) {
   const record = row.recordId === null ? undefined : records.get(row.recordId);
   const twin = row.duplicateOf === null ? undefined : records.get(row.duplicateOf);
-  const read = Option.getOrElse(decodeRead(row.readJson ?? "{}"), () => ({}));
+  const read = printedOf(row);
+  const said = saidOf(row);
   const attachment = rowAttachment(row);
   const photo = photoNeedsPreparation(attachment)
     ? yield* billPhotoForModel(attachmentsDir, attachment, { cachedOnly: true })
@@ -2284,7 +2874,8 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
       ? {}
       : { preview: { ...file, attachmentId: photo.id, mimeType: photo.mimeType } }),
     state: shownState(row, record),
-    read: read as KinBillRead,
+    read,
+    ...(said === undefined ? {} : { said: said.values, saidBy: said.by }),
     ...(row.problem === null ? {} : { problem: row.problem }),
     ...(row.state === "unreadable" ? checkOf(row.problem) : {}),
     ...(row.state === "unreadable" && row.problem === UNSHOWN_PHOTO ? { wrongKind: true } : {}),
@@ -2429,6 +3020,10 @@ export const keepRead = Effect.fn("KinBills.keepRead")(
           rows.flatMap((row) => (row.recordId === null ? [] : [row.recordId])),
         );
         const eligible = keepableRecords(rows, records);
+        if (input.expect !== undefined) {
+          const corrections = yield* cardCorrections(input.orgId, rows, records, () => "");
+          for (const hash of corrections.hidden) eligible.delete(hash);
+        }
         if (input.expect !== undefined) {
           const current = keepableSummary(eligible);
           if (input.expect.count !== current.count || input.expect.revision !== current.revision)

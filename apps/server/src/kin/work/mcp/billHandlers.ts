@@ -20,6 +20,21 @@ export const handlers = McpToolAccess.toLayer(KinBillToolkit, {
       return yield* Bills.add(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  bill_recut: McpToolAccess.actsAsCaller(
+    Effect.fn("KinBillToolkit.recut")(function* (input) {
+      return yield* Bills.recut(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  bill_set: McpToolAccess.actsAsCaller(
+    Effect.fn("KinBillToolkit.set")(function* (input) {
+      return yield* Bills.set(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  bills_list: McpToolAccess.actsAsCaller(
+    Effect.fn("KinBillToolkit.listBills")(function* (input) {
+      return yield* Bills.listBills(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
   bill_cut: McpToolAccess.actsAsCaller(
     Effect.fn("KinBillToolkit.cut")(function* (input) {
       return yield* Bills.cut(yield* McpInvocationContext, input);

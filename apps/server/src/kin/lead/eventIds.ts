@@ -35,6 +35,8 @@ export const TURN_ONLY_EVENT_TOOLS: ReadonlySet<string> = new Set(["kin_cancel"]
 /** Tools whose input names the event they act on (`KinToolGate.test.ts` keeps this complete). */
 export const TURN_EVENT_TOOLS: ReadonlySet<string> = new Set([
   "bills_add",
+  "bill_recut",
+  "bill_set",
   "budget_set",
   "company_profile",
   "doc_create",

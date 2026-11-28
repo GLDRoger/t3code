@@ -1203,6 +1203,9 @@ it.effect.each([true, false])(
         const homed = [
           "statement_read",
           "statement_rows",
+          "bills_list",
+          "bill_set",
+          "bill_recut",
           "money_query",
           "money_summary",
           "payment_record",

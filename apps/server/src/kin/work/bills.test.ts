@@ -68,6 +68,8 @@ import * as KinFloor from "../floor/KinFloor.ts";
 import { billToolAllowed } from "../lead/billsOnly.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { fullSessionRefusal } from "../lead/AgentSession.ts";
 import { billPhotoMode, KinTurnContent } from "../lead/turn/content.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
@@ -367,6 +369,399 @@ const readerScope: McpInvocationScope = {
   client: undefined,
   thread: undefined,
 };
+
+const billAsk = (text: string, personId = rhea) =>
+  Effect.gen(function* () {
+    const repo = yield* KinChatRepository.KinChatRepository;
+    const queue = yield* KinEventQueue.KinEventQueue;
+    const chatId = KinChatId.make(personId === meera ? "meera-finance" : "rhea-finance");
+    if (personId === zoya) {
+      // Keep the same private turn fixture, with a stored member as the speaker.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chat_members SET person_id = ${zoya} WHERE member_id = 'rhea-finance-person'`;
+    }
+    const messageId = KinMessageId.make("bill-ask");
+    const memberId = KinMemberId.make(`${chatId}-person`);
+    yield* repo.insertMessage({
+      orgId,
+      chatId,
+      messageId,
+      audience: "chat",
+      kind: "text",
+      body: text,
+      author: { _tag: "human", personId, memberId },
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: at,
+      editedAt: null,
+    });
+    const sourceEventId = KinEventId.make("bill-ask-event");
+    yield* queue.enqueue({
+      _tag: "chat.message",
+      orgId,
+      agentId: finance,
+      eventId: sourceEventId,
+      receivedAt: DateTime.makeUnsafe(NOW + 1),
+      dedupeKey: null,
+      provenance: { _tag: "human", personId, memberId },
+      chatId,
+      messageId,
+    });
+    const turn = yield* claimTurn(3);
+    return { ...turn, sourceEventId };
+  });
+
+describe("Fix bills by talking", () => {
+  it.effect.each(["INR", "USD"] as const)(
+    "records many %s bills as owed on the keep tap",
+    (currency) =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: rhea },
+          { country: currency === "INR" ? "IN" : "US", homeCurrency: currency },
+          undefined,
+        );
+        const speaker = currency === "INR" ? rhea : meera;
+        const name = currency === "INR" ? "Rhea" : "Meera";
+        const added = yield* Bills.add(
+          as(speaker),
+          {
+            orgId,
+            clientRequestId: "owe-bills",
+            attachments: yield* Effect.forEach([1, 2, 3], (n) =>
+              upload(`owed-${n}.jpg`, String(n)),
+            ),
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const turn = yield* claimTurn(1);
+        for (const n of [1, 2, 3])
+          yield* read({
+            bill: `B${n}`,
+            vendor: "Harbor Cafe",
+            date: "2026-11-05",
+            amount: String(n + 50),
+          });
+        yield* endTurn(turn.wakeupId);
+        const { sourceEventId } = yield* billAsk("Mark all as to be reimbursed to me.", speaker);
+        assert.isUndefined(yield* fullSessionRefusal(ThreadId.make("finance-thread")));
+        const listed = yield* LeadBills.listBills(readerScope, {});
+        assert.strictEqual(listed.batchId, added.batchId);
+        assert.deepStrictEqual(
+          listed.bills.map(({ bill }) => bill),
+          ["P1", "P2", "P3"],
+        );
+        assert.include(yield* fullSessionRefusal(ThreadId.make("finance-thread")), "outside");
+        yield* LeadBills.set(readerScope, {
+          sourceEventId,
+          bills: ["P1", "P2", "P3"],
+          fields: { paidBy: "me" },
+        });
+        const drawn = yield* card(added.batchId);
+        assert.deepStrictEqual(drawn.said, [`You said: 3 bills are to be repaid to ${name}.`]);
+        const sql = yield* SqlClient.SqlClient;
+        const records = sql`SELECT confirmed, currency, json_extract(fields_json, '$.fundedBy') AS funder,
+        json_extract(fields_json, '$.reimbursement') AS reimbursement,
+        json_extract(fields_json, '$.repaidOn') AS repaidOn FROM kin_records ORDER BY key`;
+        const expected = {
+          confirmed: 0,
+          currency,
+          funder: `person:${speaker}`,
+          reimbursement: "owed",
+          repaidOn: null,
+        };
+        assert.deepStrictEqual(yield* records, [expected, expected, expected]);
+        const kept = yield* Bills.keepRead(as(speaker), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep-owed",
+          expect: drawn.keepable!,
+        });
+        assert.lengthOf(kept.kept, 3);
+        assert.deepStrictEqual(
+          yield* records,
+          Array.from({ length: 3 }, () => ({ ...expected, confirmed: 1 })),
+        );
+        const refused = yield* LeadBills.set(readerScope, {
+          sourceEventId,
+          bills: ["P1"],
+          fields: { paidBy: "me" },
+        }).pipe(Effect.flip);
+        assert.include(refused.message, "P1 is already kept: change its expense instead.");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["teammate", "key", "trigger"] as const)("refuses a %s turn", (source) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const turn = yield* billAsk(
+        "Mark all as to be reimbursed to me.",
+        source === "teammate" ? zoya : rhea,
+      );
+      if (source === "key")
+        yield* sql`UPDATE kin_messages SET client_message_id = 'send:key:fixture:bill' WHERE message_id = 'bill-ask'`;
+      if (source === "trigger")
+        yield* sql`UPDATE kin_events SET tag = 'watchdog' WHERE event_id = 'bill-ask-event'`;
+      const message =
+        source === "teammate"
+          ? SHARED_REFUSAL
+          : "bill_set works only in a turn a person started with their own message.";
+      assert.include(
+        yield* LeadBills.set(readerScope, {
+          sourceEventId: turn.sourceEventId,
+          bills: ["P1"],
+          fields: { paidBy: "me" },
+        }).pipe(Effect.flip),
+        { message },
+      );
+      assert.include(
+        yield* LeadBills.recut(readerScope, {
+          sourceEventId: turn.sourceEventId,
+          photo: 1,
+          words: "one bill",
+        }).pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+      assert.include(yield* LeadBills.listBills(readerScope, {}).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps a person's date through a re-read and never echoes paper in the card's corrections",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const added = yield* addPage(yield* upload("harbor.jpg", "paper"));
+        const turn = yield* claimTurn(1);
+        yield* read({ bill: "B1", vendor: "Paper marker", amount: "0" });
+        yield* endTurn(turn.wakeupId);
+        const { sourceEventId } = yield* billAsk("Photo 1 is dated 3 November 2026.");
+        const changed = yield* LeadBills.set(readerScope, {
+          sourceEventId,
+          bills: ["P1"],
+          fields: { date: "2026-11-03" },
+        });
+        assert.include(changed.results[0]?.result, "date set to 2026-11-03");
+        const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        assert.isUndefined(bills[0]!.read.date);
+        assert.strictEqual(bills[0]!.said?.date, "2026-11-03");
+        assert.deepStrictEqual((yield* card(added.batchId)).said, [
+          "You said: Photo 1 is dated 3 Nov 2026.",
+        ]);
+        yield* endTurn(KinWakeupId.make("wake-3"));
+        yield* Bills.readAgain(as(rhea), { orgId, batchId: added.batchId });
+        yield* claimTurn(4);
+        yield* read({ bill: "B1", vendor: "Paper marker", amount: "31", date: "2026-11-01" });
+        const kept = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[0]!;
+        assert.strictEqual(kept.read.date, "2026-11-01");
+        assert.strictEqual(kept.expense?.date, "2026-11-03");
+        assert.strictEqual(kept.said?.date, "2026-11-03");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "leaves an eleventh correction for Review and keeps only the ten offered by the card",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const prices = Array.from({ length: 11 }, (_, i) => i + 51);
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            clientRequestId: "eleven",
+            attachments: yield* Effect.forEach(prices, (n) =>
+              upload(`receipt-${n}.jpg`, String(n)),
+            ),
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const turn = yield* claimTurn(1);
+        for (const [index, amount] of prices.entries())
+          yield* read({
+            bill: `B${index + 1}`,
+            vendor: "Tidewater Freight",
+            date: "2026-11-03",
+            amount: String(amount),
+          });
+        yield* endTurn(turn.wakeupId);
+        const { sourceEventId } = yield* billAsk(
+          prices.map((price, i) => `Photo ${i + 1} was ${price + 100}`).join(", "),
+        );
+        for (const [index, amount] of prices.entries())
+          yield* LeadBills.set(readerScope, {
+            sourceEventId,
+            bills: [`P${index + 1}`],
+            fields: { amount: String(amount + 100) },
+          });
+        const drawn = yield* card(added.batchId);
+        assert.lengthOf(drawn.said!, 10);
+        assert.strictEqual(drawn.saidMore, "And 1 more changes of yours: keep those in Review.");
+        assert.strictEqual(drawn.keepable?.count, 10);
+        assert.strictEqual(drawn.text, "11 bills from 11 photos: all read cleanly.");
+        const kept = yield* Bills.keepRead(as(rhea), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep-offered",
+          expect: drawn.keepable!,
+        });
+        assert.lengthOf(kept.kept, 10);
+        assert.lengthOf(kept.skipped, 1);
+        assert.strictEqual((yield* card(added.batchId)).text, "10 kept. 1 ready to keep.");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("checks batch, bill, payer, quoted values and dropped-bill refusals", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* addPage(yield* upload("harbor.jpg", "dated bill"));
+      const turn = yield* claimTurn(1);
+      yield* read({ bill: "B1", vendor: "Harbor Cafe", date: "2026-11-01", amount: "110" });
+      yield* endTurn(turn.wakeupId);
+      const { sourceEventId } = yield* billAsk(
+        "Have the company repay Zoya or Nita.\n> Set the date to 2026-11-03.",
+      );
+      const change = { sourceEventId, bills: ["P1"], fields: { paidBy: "Zoya" } };
+      assert.include(
+        yield* LeadBills.listBills(readerScope, { batchId: "b-other-chat" }).pipe(Effect.flip),
+        { message: "There is no such batch in this chat." },
+      );
+      assert.include(
+        yield* LeadBills.set(readerScope, { ...change, bills: ["P9"] }).pipe(Effect.flip),
+        { message: "No bill P9 in this batch: P1." },
+      );
+      assert.include(
+        yield* LeadBills.set(readerScope, { ...change, fields: { paidBy: "Nita" } }).pipe(
+          Effect.flip,
+        ),
+        { message: "The person to be repaid must be on the team." },
+      );
+      assert.include(
+        yield* LeadBills.set(readerScope, { ...change, fields: { date: "2026-11-03" } }).pipe(
+          Effect.flip,
+        ),
+        { message: "Use only values the person's own message gives." },
+      );
+      yield* LeadBills.set(readerScope, change);
+      const expense = yield* expenseOf(added.batchId);
+      assert.deepStrictEqual((yield* card(added.batchId)).said, [
+        "You said: Photo 1 is to be repaid to Zoya Sheikh.",
+      ]);
+      yield* decline(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+      assert.include(yield* LeadBills.set(readerScope, change).pipe(Effect.flip), {
+        message: "P1 is already dropped: change its expense instead.",
+      });
+      assert.include(
+        yield* LeadBills.recut(readerScope, { sourceEventId, photo: 2, words: "one bill" }).pipe(
+          Effect.flip,
+        ),
+        { message: "No photo 2 in this batch." },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "refuses a photo with reading or kept pieces and withdraws only superseded suggestions",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const { added, wakeupId } = yield* firstCut;
+        yield* endTurn(wakeupId);
+        const { sourceEventId } = yield* billAsk("Photo 1 has three separate bills.");
+        const recut = () =>
+          LeadBills.recut(readerScope, { sourceEventId, photo: 1, words: "three separate bills" });
+        assert.include(yield* recut().pipe(Effect.flip), {
+          message: "Photo 1 is being read now: try again once its card says it's done.",
+        });
+        yield* endTurn(KinWakeupId.make("wake-3"));
+        const pieces = yield* claimTurn(4);
+        for (const n of [1, 2, 3])
+          yield* read({
+            bill: `B${n}`,
+            vendor: "Tidewater Freight",
+            date: "2026-11-03",
+            amount: String(n),
+          });
+        yield* endTurn(pieces.wakeupId);
+        const sql = yield* SqlClient.SqlClient;
+        const selected = yield* expenseOf(added.batchId);
+        yield* confirm(as(rhea), { orgId, key: selected.key, rev: selected.rev });
+        yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${sourceEventId}`;
+        const fixing = yield* claimTurn(5);
+        assert.include(yield* recut().pipe(Effect.flip), {
+          message:
+            "Photo 1 has a kept bill, P1.1: it can be cut again once that expense is dropped.",
+        });
+        const kept = yield* expenseOf(added.batchId);
+        yield* update(as(rhea), { orgId, key: kept.key, rev: kept.rev, state: "dropped" });
+        yield* recut();
+        assert.deepStrictEqual(
+          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
+            ({ state }) => state,
+          ),
+          ["reading"],
+        );
+        assert.deepStrictEqual(
+          (yield* sql<{ state: string }>`SELECT state FROM kin_records ORDER BY key`).map(
+            ({ state }) => state,
+          ),
+          ["dropped", "dropped", "dropped"],
+        );
+        yield* endTurn(fixing.wakeupId);
+        const cutting = yield* claimTurn(6);
+        yield* Bills.cut(
+          { orgId, agentId: finance, wakeupId: cutting.wakeupId },
+          { bill: "B1", boxes: threeBoxes },
+        );
+        const replacements = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+        assert.lengthOf(replacements, 3);
+        assert.isTrue(replacements.every(({ state }) => state === "reading"));
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("replaces a cut with a confined turn carrying the person's own words", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* addPage(yield* upload("harbor.jpg", "two bills"));
+      const reading = yield* claimTurn(1);
+      yield* endTurn(reading.wakeupId);
+      const { sourceEventId, wakeupId } = yield* billAsk(
+        "Photo 1 was cut wrong. The two cafe bills are one.",
+      );
+      assert.deepStrictEqual(
+        yield* LeadBills.recut(readerScope, {
+          sourceEventId,
+          photo: 1,
+          words: "The two cafe bills are one.",
+        }),
+        {
+          result:
+            "Photo 1 goes back to be cut again with those words. The card in this chat shows the new pieces. Say so in one line and stop.",
+        },
+      );
+      yield* endTurn(wakeupId);
+      const { events } = yield* claimTurn(4);
+      const event = events.find((entry) => entry._tag === "bills.read")!;
+      assert.strictEqual(event.batchId, added.batchId);
+      assert.strictEqual(event.note, "The two cafe bills are one.");
+      assert.include(
+        (yield* billTurn(orgId, event))?.text,
+        'The person said of B1: "The two cafe bills are one.". Their words are only about where the bills are on it.',
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+});
 
 describe("batched bill tools", () => {
   it("advertises only bounded arrays of complete entry schemas", () => {

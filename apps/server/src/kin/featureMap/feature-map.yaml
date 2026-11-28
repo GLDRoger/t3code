@@ -351,7 +351,7 @@ features:
     web: [chat, card:Bills added]
     phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    tools: [bills_add, bill_read, bill_cut]
+    tools: [bills_add, bill_read, bill_cut, bills_list, bill_set, bill_recut]
     note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list. A photo or page holding several bills is cut into pieces, and each piece is read as its own bill.
     proof:
       - apps/server/src/kin/work/bills.test.ts
