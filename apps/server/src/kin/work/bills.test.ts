@@ -17,6 +17,7 @@ import {
   KinBillsAddResult,
   KinBillsListResult,
   type KinChatError,
+  type KinBillsKeepReadChanged,
   KinChatId,
   KinEventId,
   KinMemberId,
@@ -70,9 +71,9 @@ import * as Bills from "./bills.ts";
 import type { BillBox } from "./billCutterProtocol.ts";
 import * as LeadBills from "./leadBills.ts";
 import { cutBillPage } from "./billCutter.ts";
+import { setProfile } from "./companyProfile.ts";
 import { billTurn } from "./billTurn.ts";
 import { billPhotoPreviewId, billPhotoPreviewPath } from "./billPhotoForModel.ts";
-import { setProfile } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { outlook } from "./moneyAnswers.ts";
 import { moneySummary } from "./moneyViews.ts";
@@ -771,7 +772,17 @@ describe("bills in bulk", () => {
           fields: `{"vendor":"Sample Cloud","receipt":["${bill!.file.attachmentId}"]}`,
         }),
       );
-      assert.strictEqual((yield* card(added.batchId)).text, "1 bill: 1 read.");
+      assert.strictEqual(
+        (yield* card(added.batchId)).text,
+        "1 bill from 1 photo: all read cleanly.",
+      );
+      const kept = yield* Bills.keepRead(as(rhea), {
+        orgId,
+        batchId: added.batchId,
+        clientRequestId: "keep-single",
+      });
+      assert.lengthOf(kept.kept, 1);
+      assert.strictEqual((yield* card(added.batchId)).text, "1 kept.");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -807,7 +818,7 @@ describe("bills in bulk", () => {
           FROM kin_messages WHERE chat_id = 'rhea-finance'`;
         assert.deepStrictEqual(message, { authorKind: "system", silent: 1, files: 3 });
         const first = yield* card(added.batchId);
-        assert.strictEqual(first.text, "Reading 3 bills: 0 done.");
+        assert.strictEqual(first.text, "Reading 3 files.");
         assert.deepStrictEqual(first.awaiting, []);
         // One group of three, queued below anyone's message to Finance.
         const queued = yield* sql<{
@@ -857,10 +868,12 @@ describe("bills in bulk", () => {
         assert.lengthOf(yield* billRows, 3);
 
         // A member reaches none of it.
-        const reason = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+        const reason = <A, R>(
+          effect: Effect.Effect<A, KinChatError | KinBillsKeepReadChanged, R>,
+        ) =>
           effect.pipe(
             Effect.flip,
-            Effect.map((error) => error.reason),
+            Effect.map((error) => (error._tag === "KinChatError" ? error.reason : error._tag)),
           );
         assert.deepStrictEqual(
           [
@@ -1041,7 +1054,7 @@ describe("bills in bulk", () => {
         assert.deepStrictEqual(yield* spent(), []);
 
         const done = yield* card(added.batchId);
-        assert.strictEqual(done.text, "3 bills: 2 read, 1 couldn't be read.");
+        assert.strictEqual(done.text, "3 bills from 3 photos: 2 read cleanly, 1 needs you.");
         // Its message says what the card says, so a chat list's line never reads "Reading…".
         const [message] = yield* (yield* SqlClient.SqlClient)<{ body: string }>`SELECT body
           FROM kin_messages WHERE org_id = ${orgId} AND message_id = ${`bills:${added.batchId}`}`;
@@ -1080,6 +1093,220 @@ describe("bills in bulk", () => {
           [[], ["It wasn't read cleanly."]],
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "the stored card follows each read, totals and edit, and keeps only the drawn set",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: rhea },
+          { homeCurrency: "USD" },
+          undefined,
+        );
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            attachments: yield* Effect.forEach(
+              ["cafe", "cloud", "freight", "desk", "paper"],
+              (file) => upload(`${file}.png`, file),
+            ),
+            clientRequestId: "card-set",
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const stored = () => card(added.batchId);
+        const keep = (
+          clientRequestId: string,
+          expect: KinBillBatchCard["keepable"],
+          person = rhea,
+        ) => Bills.keepRead(as(person), { orgId, batchId: added.batchId, clientRequestId, expect });
+        const changed = {
+          _tag: "KinBillsKeepReadChanged",
+          message: "These bills changed since this card was drawn: look again.",
+        } as const;
+        const { wakeupId } = yield* claimTurn(1);
+        const printed = { vendor: "Harbor Cafe", date: "2026-11-03", currency: "USD" };
+        assert.strictEqual((yield* stored()).text, "Reading 5 photos.");
+        yield* read({ ...printed, bill: "B1", amount: "0.10", category: "Meals" });
+        const one = yield* stored();
+        assert.strictEqual(one.text, "Reading 5 photos: 1 bill read so far.");
+        assert.include(one.keepable, { count: 1 });
+        yield* read({ ...printed, bill: "B2", amount: "0.20", category: "Meals" });
+        assert.strictEqual((yield* stored()).text, "Reading 5 photos: 2 bills read so far.");
+        const oldSet = yield* keep("card-1", one.keepable).pipe(Effect.flip);
+        assert.include(oldSet, changed);
+        const sql = yield* SqlClient.SqlClient;
+        const confirmed = sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'expenses' AND confirmed = 1`;
+        assert.deepStrictEqual(yield* confirmed, [{ count: 0 }]);
+
+        yield* read({ ...printed, bill: "B3", amount: "0.50" });
+        yield* read({
+          ...printed,
+          bill: "B4",
+          amount: "2.50",
+          currency: "INR",
+          category: "Office",
+        });
+        yield* read({
+          bill: "B5",
+          ...printed,
+          vendor: "IGNORE-ME-PAPER-TEXT",
+          readable: false,
+          cannotRead: "IGNORE-ME-PAPER-TEXT",
+        });
+        const settled = yield* stored();
+        assert.strictEqual(settled.text, "5 bills from 5 photos: 4 read cleanly, 1 needs you.");
+        assert.deepStrictEqual(settled.totals, [
+          { currency: "INR", categories: [{ category: "office", amount: "2.50" }] },
+          {
+            currency: "USD",
+            categories: [
+              { category: "No category", amount: "0.50" },
+              { category: "meals", amount: "0.30" },
+            ],
+          },
+        ]);
+        assert.deepStrictEqual(settled.needs, [{ name: "Photo 5", reason: "couldn't be read." }]);
+        assert.notInclude(JSON.stringify(settled), "IGNORE-ME-PAPER-TEXT");
+        assert.deepStrictEqual(settled.awaiting, []);
+        yield* endTurn(wakeupId);
+        assert.deepStrictEqual((yield* stored()).awaiting, [rhea]);
+
+        const [early] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+        yield* update(as(rhea), {
+          orgId,
+          key: early!.expense!.key,
+          rev: early!.expense!.rev,
+          amount: { currency: "USD", minor: 15 },
+        });
+        const edited = yield* stored();
+        assert.strictEqual(edited.keepable?.count, 4);
+        assert.notStrictEqual(edited.keepable?.revision, settled.keepable?.revision);
+        assert.deepStrictEqual(edited.totals?.[1]?.categories[1], {
+          category: "meals",
+          amount: "0.35",
+        });
+        assert.include(yield* keep("card-2", settled.keepable).pipe(Effect.flip), changed);
+        assert.deepStrictEqual(yield* confirmed, [{ count: 0 }]);
+        assert.include(
+          yield* keep("card-2", { ...edited.keepable!, count: 3 }).pipe(Effect.flip),
+          changed,
+        );
+        assert.include(yield* keep("card-2", edited.keepable, zoya).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        const kept = yield* keep("card-2", edited.keepable, meera);
+        assert.lengthOf(kept.kept, 4);
+        assert.deepStrictEqual(yield* keep("card-2", edited.keepable, meera), kept);
+        assert.include(yield* keep("card-2", settled.keepable, meera).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.deepStrictEqual(yield* confirmed, [{ count: 4 }]);
+        const after = yield* stored();
+        assert.strictEqual(after.text, "4 kept. 1 still needs you.");
+        assert.deepStrictEqual(after.totals, []);
+        assert.include(after.keepable, { count: 0 });
+        yield* Bills.dismiss(as(rhea), { orgId, sha256: added.added[4]!.sha256 });
+        assert.strictEqual((yield* stored()).text, "4 kept.");
+        assert.deepStrictEqual((yield* stored()).needs, []);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("needs lines use code's reasons, with at most five bills on the stored card", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: yield* Effect.forEach([1, 2, 3, 4, 5, 6], (i) =>
+            upload(`${i}.png`, String(i)),
+          ),
+          clientRequestId: "needs",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const first = yield* claimTurn(1);
+      yield* read({ bill: "B1", vendor: "Harbor Cafe", amount: "3", currency: "INR" });
+      yield* read({ bill: "B2", vendor: "Harbor Cafe", date: "2026-11-03", currency: "INR" });
+      yield* read({ bill: "B3", amount: "3", date: "2026-11-03", currency: "INR" });
+      yield* read({ bill: "B4", vendor: "Harbor Cafe", currency: "INR" });
+      yield* read({ bill: "B5", readable: false, cannotRead: "Two different totals." });
+      yield* endTurn(first.wakeupId);
+      const second = yield* claimTurn(2);
+      yield* read({ bill: "B1", readable: false, cannotRead: "IGNORE-ME-PAPER-TEXT" });
+      yield* endTurn(second.wakeupId);
+      const stored = yield* card(added.batchId);
+      assert.strictEqual(stored.text, "6 bills from 6 photos: 0 read cleanly, 6 need you.");
+      assert.deepStrictEqual(stored.needs, [
+        { name: "Photo 1", reason: "no date printed." },
+        { name: "Photo 2", reason: "no amount printed." },
+        { name: "Photo 3", reason: "no payee printed." },
+        { name: "Photo 4", reason: "missing date and amount." },
+        { name: "Photo 5", reason: "two different totals." },
+      ]);
+      assert.strictEqual(stored.needsMore, 1);
+      yield* Bills.dismiss(as(rhea), { orgId, sha256: added.added[0]!.sha256 });
+      const fewer = yield* card(added.batchId);
+      assert.strictEqual(fewer.needsMore, 0);
+      assert.deepStrictEqual(fewer.needs?.at(-1), { name: "Photo 6", reason: "couldn't be read." });
+      for (const file of added.added.slice(1, 5))
+        yield* Bills.dismiss(as(rhea), { orgId, sha256: file.sha256 });
+      assert.strictEqual(
+        (yield* card(added.batchId)).text,
+        "1 bill from 6 photos: 0 read cleanly, 1 needs you.",
+      );
+      yield* Bills.dismiss(as(rhea), { orgId, sha256: added.added[5]!.sha256 });
+      assert.strictEqual((yield* card(added.batchId)).text, "No bills to keep.");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("the second file stays Photo 2 when cut and the PDF after it stays File 3", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [
+            yield* upload("harbor.png", "harbor"),
+            yield* photoPage,
+            yield* upload("inkspot.pdf", "%PDF-1.4 inkspot", "application/pdf"),
+          ],
+          clientRequestId: "cut-order",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      assert.strictEqual((yield* card(added.batchId)).text, "Reading 3 files.");
+      const { wakeupId } = yield* claimTurn(1);
+      yield* Bills.cut({ orgId, agentId: finance, wakeupId }, { bill: "B2", boxes: threeBoxes });
+      const mine = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+      assert.deepStrictEqual(
+        mine.map((one) => one.name ?? one.file.name),
+        [
+          "Photo 1",
+          "Photo 2 · bill 1 of 3",
+          "Photo 2 · bill 2 of 3",
+          "Photo 2 · bill 3 of 3",
+          "File 3",
+        ],
+      );
+      assert.deepStrictEqual(
+        mine.map((one) => one.file.name),
+        [
+          "harbor.png",
+          "Photo 2 · bill 1 of 3",
+          "Photo 2 · bill 2 of 3",
+          "Photo 2 · bill 3 of 3",
+          "inkspot.pdf",
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("an amount is a plain number in the printed currency; anything else is not read", () =>
@@ -1290,7 +1517,12 @@ describe("bills in bulk", () => {
           ],
         );
         const checked = yield* card(added.batchId);
-        assert.strictEqual(checked.text, "5 bills: 2 read, 3 need a check.");
+        assert.strictEqual(checked.text, "5 bills from 5 photos: 2 read cleanly, 3 need you.");
+        assert.deepStrictEqual(checked.needs, [
+          { name: "Photo 1", reason: "the amount is far above the rest of Expenses: check it." },
+          { name: "Photo 2", reason: "the date is more than ten years back: check it." },
+          { name: "Photo 3", reason: "the date is after today: check it." },
+        ]);
         assert.deepInclude(checked.counts, { unreadable: 3, check: 3 });
         assert.deepInclude((yield* Bills.list(as(rhea), { orgId })).batches[0]!.states, {
           unreadable: 3,
@@ -1543,7 +1775,7 @@ describe("bills in bulk", () => {
           ["scan.png", "reading", null],
         ],
       );
-      assert.strictEqual((yield* card(added.batchId)).text, "Reading 2 bills: 1 done.");
+      assert.strictEqual((yield* card(added.batchId)).text, "Reading 2 photos.");
       // Not a read in question: reading it again is still offered.
       const [heic] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
       assert.isUndefined(heic!.readClean);
@@ -1768,8 +2000,13 @@ describe("bills in bulk", () => {
         );
         assert.strictEqual(
           (yield* card(added.batchId)).text,
-          "3 bills: 1 looks like a duplicate, 2 couldn't be read.",
+          "3 bills from 3 photos: 0 read cleanly, 3 need you.",
         );
+        assert.deepStrictEqual((yield* card(added.batchId)).needs, [
+          { name: "Photo 1", reason: `looks like ${recorded.row.key}, already recorded.` },
+          { name: "Photo 2", reason: "couldn't be read." },
+          { name: "Photo 3", reason: "the amount is zero: no expense." },
+        ]);
         const [duplicate, blurred, zero] = list.bills;
 
         // Added anyway: its own suggested expense, once, however often asked.
@@ -1800,14 +2037,28 @@ describe("bills in bulk", () => {
           { reason: "not_found" },
         );
 
+        const afterAnyway = yield* card(added.batchId);
+        assert.include(afterAnyway.keepable, { count: 1 });
+        assert.deepStrictEqual(
+          afterAnyway.needs?.map(({ name }) => name),
+          ["Photo 2", "Photo 3"],
+        );
+
         // Read again queues the blurred one once more; dismissing drops the zero one from the list.
         assert.deepStrictEqual(
           yield* Bills.readAgain(as(rhea), { orgId, sha256: blurred!.sha256 }),
           { queued: 1 },
         );
+        const queuedAgain = yield* card(added.batchId);
+        assert.strictEqual(queuedAgain.text, "Reading 3 photos: 1 bill read so far.");
+        assert.deepStrictEqual(
+          queuedAgain.needs?.map(({ name }) => name),
+          ["Photo 3"],
+        );
         assert.deepStrictEqual(yield* Bills.dismiss(as(rhea), { orgId, sha256: zero!.sha256 }), {
           dismissed: true,
         });
+        assert.deepStrictEqual((yield* card(added.batchId)).needs, []);
         const after = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
         assert.deepStrictEqual(
           after.bills.map((bill) => [bill.state, bill.expense?.key === anyway.expense]),
@@ -1816,7 +2067,10 @@ describe("bills in bulk", () => {
             ["reading", false],
           ],
         );
-        assert.strictEqual((yield* card(added.batchId)).text, "Reading 3 bills: 2 done.");
+        assert.strictEqual(
+          (yield* card(added.batchId)).text,
+          "Reading 3 photos: 1 bill read so far.",
+        );
 
         // An unread one typed by hand with its file as the receipt is answered by that expense.
         const again = yield* claimTurn(2);
@@ -1917,7 +2171,7 @@ describe("bills in bulk", () => {
             ["lost-again.png", "reading", undefined],
           ],
         );
-        assert.strictEqual((yield* card(again.batchId)).text, "Reading 3 bills: 1 done.");
+        assert.strictEqual((yield* card(again.batchId)).text, "Reading 3 photos.");
         // The dropped expense comes back the way any dropped entry does: its state set again.
         const dropped = (yield* Bills.list(as(rhea), { orgId, batchId: first.batchId })).bills[0]!;
         assert.strictEqual(dropped.state, "dropped");
@@ -1971,6 +2225,7 @@ describe("bills in bulk", () => {
         (widget) => Option.getOrThrow(widget).revision,
       );
       const before = yield* revision;
+      assert.strictEqual((yield* card(added.batchId)).text, "Reading 1 photo.");
       const { events } = yield* claimTurn(1);
       // Midnight in Kolkata, when the day's limit resets: two turns held, one change.
       const reset = Date.parse("2026-11-20T18:30:00.000Z");
@@ -1986,7 +2241,7 @@ describe("bills in bulk", () => {
       // Its turn starts: reading again, in the card's own words.
       yield* Bills.resumed(orgId, events);
       const reading = yield* card(added.batchId);
-      assert.strictEqual(reading.text, "Reading 1 bill: 0 done.");
+      assert.strictEqual(reading.text, "Reading 1 photo.");
       assert.isUndefined(reading.pausedUntil);
     }).pipe(Effect.provide(layer)),
   );
@@ -2525,7 +2780,7 @@ describe("bill_cut", () => {
           [
             ["page.png", "read", added.batchId, 0],
             ...threeBoxes.map((_, i) => [
-              `page.png · ${i + 1} of 3`,
+              `Photo 1 · bill ${i + 1} of 3`,
               "waiting",
               added.batchId,
               i + 1,
@@ -2557,7 +2812,7 @@ describe("bill_cut", () => {
         assert.include(yield* card(added.batchId), {
           total: 3,
           done: 0,
-          text: "Reading 3 bills: 0 done.",
+          text: "Reading 1 photo.",
         });
         assert.deepStrictEqual((yield* card(added.batchId)).counts, {
           read: 0,
@@ -2619,7 +2874,10 @@ describe("bill_cut", () => {
         [1, 0, 0],
       );
       assert.deepStrictEqual(yield* spent(), [{ minor: 100, currency: "INR" }]);
-      assert.strictEqual((yield* card(added.batchId)).text, "3 bills: 3 read.");
+      assert.strictEqual((yield* card(added.batchId)).text, "1 kept. 2 ready to keep.");
+      assert.deepStrictEqual((yield* card(added.batchId)).totals, [
+        { currency: "INR", categories: [{ category: "No category", amount: "5.00" }] },
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2634,9 +2892,9 @@ describe("bill_cut", () => {
         assert.deepStrictEqual(
           mine.bills.map((row) => [row.file.name, row.file.mimeType, row.state]),
           [
-            ["page.png · 1 of 3", "image/jpeg", "reading"],
-            ["page.png · 2 of 3", "image/jpeg", "reading"],
-            ["page.png · 3 of 3", "image/jpeg", "reading"],
+            ["Photo 1 · bill 1 of 3", "image/jpeg", "reading"],
+            ["Photo 1 · bill 2 of 3", "image/jpeg", "reading"],
+            ["Photo 1 · bill 3 of 3", "image/jpeg", "reading"],
           ],
         );
         const repo = yield* KinChatRepository.KinChatRepository;
@@ -2688,8 +2946,8 @@ describe("bill_cut", () => {
           yield* sql`SELECT name, cut_page AS page FROM kin_bill_reads WHERE org_id = ${orgId}
             AND batch_id = ${added.batchId} AND parent_sha256 IS NOT NULL ORDER BY position`,
           [
-            { name: "pages.pdf · page 1 · 1 of 1", page: 1 },
-            { name: "pages.pdf · page 2 · 1 of 1", page: 2 },
+            { name: "File 1 · page 1 · bill 1 of 1", page: 1 },
+            { name: "File 1 · page 2 · bill 1 of 1", page: 2 },
           ],
         );
       }).pipe(Effect.provide(layer)),
@@ -2735,12 +2993,12 @@ describe("bill_cut", () => {
         });
         assert.deepStrictEqual(
           (yield* billRows).map((row) => row.name),
-          ["page.png", "single.png", "page.png · 1 of 1"],
+          ["page.png", "single.png", "Photo 1 · bill 1 of 1"],
         );
         const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM kin_bill_reads WHERE org_id = ${orgId} ORDER BY position`,
-          [{ name: "page.png" }, { name: "page.png · 1 of 1" }, { name: "single.png" }],
+          [{ name: "page.png" }, { name: "Photo 1 · bill 1 of 1" }, { name: "single.png" }],
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -2793,7 +3051,7 @@ describe("bill_cut", () => {
         const list = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
         assert.deepStrictEqual(
           list.bills.map((row) => row.file.name),
-          ["page.png · 1 of 2"],
+          ["Photo 1 · bill 1 of 2"],
         );
         assert.include((yield* card(added.batchId)).counts, { already: 1 });
       }).pipe(Effect.provide(layer)),

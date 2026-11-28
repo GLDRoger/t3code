@@ -53,3 +53,7 @@ On 2026-11-27, against the repayment Undo (`feat/kin-repaid-undo-contest` at `0f
 **Re-confirmed 2026-11-28** for `fix/kin-sec-negated-visibility-nulls` on kin `68da5258875` (5 rules hold over 647,684 states, 8/8 variants caught). `teamView.ts` treats missing document provenance as a denied read. The stream model represents task rows and their resume cursors.
 
 **Re-confirmed 2026-11-28** on train 14 grown (twelve steps joined on kin `19fff00b325`: the seven security steps, today's kin, four more security fixes and one wording step; no spec change, all 5 rules hold over 647,684 states in 8 s; 8/8 variants caught in 12 s). The one covered file changed, `teamView.ts`, changes by step 10 only, as its line above says: a missing author or audience on a draft or picture version reads as not granted. It narrows what a teammate reads and changes no stream event.
+
+**Re-confirmed 2026-11-28** for the bills chat card (train 13 base `5ec5553ef2b`; all 5 rules hold over 647,684 states; 8/8 variants caught). `KinRecords.update` refreshes only an expense's bill-batch card. The Work stream, cursor, scope, and change notices are unchanged.
+
+**Re-confirmed 2026-11-28** on train 15 (the phone fix, bills round 2 and the phone look's fixes, seven steps joined on kin `19fff00b325`; no spec change, all 5 rules hold over 647,684 states; 8/8 variants caught). `work/KinRecords.ts` differs from kin only by the bills chat card's refresh in `update` (step 2, above); the other steps touch no covered file. The Work stream, cursor, scope and change notices are unchanged.

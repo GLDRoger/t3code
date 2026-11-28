@@ -61,3 +61,7 @@ On 2026-11-27, against the advertised record-writer core (`perf/kin-advertised-c
 **Re-confirmed 2026-11-28** for `fix/kin-sec-negated-visibility-nulls` on kin `68da5258875` (10 rules hold over 244,584 states, 12/12 variants caught). The two `teamView.ts` predicates apply to document versions. The Tasks model represents task visibility, hand-offs, and notices.
 
 **Re-confirmed 2026-11-28** on train 14 grown (twelve steps joined on kin `19fff00b325`: the seven security steps, today's kin, four more security fixes and one wording step; no spec change, all 10 rules hold over 244,584 states in 8 s; 12/12 variants caught in 11 s). The one covered file changed, `teamView.ts`, changes by step 10 only, as its line above says: a missing author or audience on a draft or picture version reads as not granted. No task's holder, hand-off or state changes.
+
+**Re-confirmed 2026-11-28** for the bills chat card (train 13 base `5ec5553ef2b`; all 10 rules hold over 244,584 states; 12/12 variants caught). `KinRecords.update` refreshes only an expense's bill-batch card. Task authority, assignment, hand-back and notices are unchanged.
+
+**Re-confirmed 2026-11-28** on train 15 (the phone fix, bills round 2 and the phone look's fixes, seven steps joined on kin `19fff00b325`; no spec change, all 10 rules hold over 244,584 states; 12/12 variants caught). `work/KinRecords.ts` differs from kin only by the bills chat card's refresh in `update` (step 2, above); the other steps touch no covered file. Task authority, assignment, hand-back and notices are unchanged.
