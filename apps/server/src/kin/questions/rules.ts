@@ -77,7 +77,7 @@ export const namedDue = (
   if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
     return {
       refused:
-        "by is the day you'll take your default, YYYY-MM-DD, from today to a month out; leave it out for the end of their next working day.",
+        "by is the day the answer is due, YYYY-MM-DD, from today to a month out; leave it out for the end of their next working day.",
     };
   return { at };
 };
