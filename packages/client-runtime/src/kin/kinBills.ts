@@ -71,6 +71,7 @@ export const KIN_BILLS = {
     reading: "Reading…",
     read: "Read",
     kept: "Kept",
+    keptToPay: "Kept · to pay",
     dropped: "Dropped",
     unreadable: "Couldn't read this one",
     /** Read cleanly, but its amount or date is the owner's to check. */
@@ -276,6 +277,8 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
 }
 
 function kinBillStateLabel(row: KinBillRow) {
+  if (row.state === "kept" && row.mail !== undefined && row.expense?.state === "open")
+    return KIN_BILLS.state.keptToPay;
   if (row.state === "duplicate")
     return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
   if (row.state !== "unreadable" || row.readClean !== true) return KIN_BILLS.state[row.state];
@@ -296,6 +299,9 @@ function kinBillExpenseFields(
   if (expense.amount === undefined && expense.date === undefined && expense.vendor === undefined)
     return null;
   const category = blank(expense.category);
+  const day =
+    expense.date ??
+    (row.mail !== undefined && expense.state === "open" ? row.read.date : undefined);
   const money = (value: KinSignedMoney | undefined) =>
     value === undefined ? null : kinMoneyText(value, true);
   return [
@@ -303,8 +309,7 @@ function kinBillExpenseFields(
     {
       key: "date",
       label: KIN_BILLS.field.date,
-      value:
-        expense.date === undefined ? null : dayOfYear.format(new Date(`${expense.date}T00:00:00Z`)),
+      value: day === undefined ? null : dayOfYear.format(new Date(`${day}T00:00:00Z`)),
     },
     { key: "amount", label: KIN_BILLS.field.amount, value: money(expense.amount) },
     { key: "tax", label: KIN_BILLS.field.tax, value: money(expense.tax) },

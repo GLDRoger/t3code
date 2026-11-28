@@ -2,7 +2,7 @@ import type { MailArrival, MailAutomation } from "./MailProvider.ts";
 import { senderVerdictForAddress, looksLikeSignInMail } from "./MailText.ts";
 
 const AUTOMATED_SENDER =
-  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?|receipts|billing|invoices?|payments|orders|statements)(?:[+._-]|@)/i;
+  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?|receipts|billing|bills|invoices?|payments|orders|statements)(?:[+._-]|@)/i;
 const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply)(?:[+._-]|@)/i;
 const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 

@@ -883,7 +883,13 @@ const ruleMail = (fake: FakeMail, to: string, at: number, number: number, verifi
 
 const turnOnRule = Effect.fn("test.turnOnRule")(function* (
   connectionId: string,
-  options: { named?: boolean; cap?: number; useCoOwner?: boolean; what?: string } = {},
+  options: {
+    named?: boolean;
+    address?: string;
+    cap?: number;
+    useCoOwner?: boolean;
+    what?: string;
+  } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const connections = yield* KinConnections;
@@ -902,7 +908,12 @@ const turnOnRule = Effect.fn("test.turnOnRule")(function* (
     chatId: KinChatId.make(options.useCoOwner ? `cos-${coOwner}` : "fin-owner"),
     what: options.what ?? "File the bill.",
     match: {
-      from: options.named ? [{ domain: "juniper.example" }] : [],
+      from:
+        options.address !== undefined
+          ? [{ address: options.address }]
+          : options.named
+            ? [{ domain: "juniper.example" }]
+            : [],
       subjectHas: [],
       withFile: null,
       classes: null,
@@ -3223,6 +3234,51 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     return yield* sql`SELECT widget_id FROM kin_bill_senders WHERE widget_id IS NOT NULL`;
   });
 
+  it.effect("offers a billing sender card for bills@ and keeps the owner's mail rule match", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, chat_id)
+          VALUES (${orgId}, 'fin-thread', ${finance}, ${stamp}, 'fin-owner')`;
+        const mailbox = yield* connect(fake, "google", ACCOUNTS);
+        yield* readMail(mailbox);
+        const address = "bills@harborpower.example";
+        const rule = yield* turnOnRule(mailbox, { address });
+        yield* TestClock.adjust("1 minute");
+        const pdf = {
+          to: ACCOUNTS,
+          subject: "November",
+          body: "Harbor Power bill.",
+          files: [{ name: "harbor-power.pdf", mimeType: "application/pdf", data: "JVBERi0xLjQK" }],
+          authResults: ["mx.example; dmarc=pass header.from=harborpower.example"],
+        };
+        const vendor = fake.deliver({ ...pdf, from: address, at: NOW + 1 });
+        const bill = fake.deliver({ ...pdf, from: "Bill <bill@harborpower.example>", at: NOW + 2 });
+        const tick = yield* arrivalTick();
+        yield* tick;
+
+        assert.deepStrictEqual(
+          yield* sql`SELECT s.address, json_extract(w.state_json, '$.question') AS question
+            FROM kin_bill_senders s LEFT JOIN kin_widgets w ON w.org_id = s.org_id AND w.widget_id = s.widget_id
+            WHERE s.org_id = ${orgId} ORDER BY s.address`,
+          [{ address, question: "Read bills from bills@harborpower.example?" }],
+        );
+        assert.deepStrictEqual(
+          (yield* arrivalRows).map((row) => [row.messageId, row.class]),
+          [
+            [vendor.id, "automated_file"],
+            [bill.id, "unknown_person"],
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT message_id AS message, rule_id AS rule, rule_state AS state
+            FROM kin_arrivals WHERE org_id = ${orgId} AND rule_id IS NOT NULL`,
+          [{ message: vendor.id, rule: rule.ruleId, state: "woke" }],
+        );
+      }),
+    ),
+  );
+
   it.effect("offers a held billing sender card only after Money is back on", () =>
     setUp((fake) =>
       Effect.gen(function* () {
@@ -3294,7 +3350,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ["google", ACCOUNTS],
     ["microsoft", HELLO],
   ] as const)(
-    "queues verified PDF mail from %s and keeps Money unchanged until Rhea keeps a bill",
+    "queues verified PDF mail from %s and counts it as To pay when Rhea keeps it",
     ([vendor, to]) => {
       const reads: Array<URL> = [];
       return setUp(
@@ -3346,9 +3402,16 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               },
             );
             yield* Bills.turnEnded(orgId, KinWakeupId.make(turn!.id));
-            const [expense] = yield* sql<{ confirmed: number; ownerId: string; note: string }>`
-          SELECT confirmed, owner_id AS "ownerId", notes AS note FROM kin_records WHERE register_id = 'expenses'`;
-            assert.include(expense, { confirmed: 0, ownerId: owner });
+            const [expense] = yield* sql<{
+              confirmed: number;
+              ownerId: string;
+              note: string;
+              state: string;
+              dateAt: number | null;
+            }>`
+          SELECT confirmed, owner_id AS "ownerId", notes AS note, state, date_at AS "dateAt"
+          FROM kin_records WHERE register_id = 'expenses'`;
+            assert.include(expense, { confirmed: 0, ownerId: owner, state: "open", dateAt: null });
             assert.match(
               expense!.note,
               /^Read by Kin from a mail from billing@inkspot\.example, received .+\.$/,
@@ -3365,16 +3428,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               assert.notInclude(text, billMail.subject);
               assert.notInclude(text, "Inkspot Billing Team");
             }
-            const spent = moneySummary(orgId, NOW, KIN_OWNER_LEVEL).pipe(
-              Effect.map((summary) => summary.spent.thisMonth.total),
-            );
-            assert.deepStrictEqual(yield* spent, []);
-            yield* Bills.keepRead(people(owner), {
+            const summary = moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+            const before = yield* summary;
+            assert.deepStrictEqual(before.spent.thisMonth.total, []);
+            assert.isUndefined(before.toPay);
+            const kept = yield* Bills.keepRead(people(owner), {
               orgId,
               batchId: row!.batchId,
               clientRequestId: "keep-mail",
             });
-            assert.deepStrictEqual(yield* spent, [{ minor: 1000, currency: "USD" }]);
+            assert.lengthOf(kept.kept, 1);
+            const after = yield* summary;
+            assert.deepStrictEqual(after.spent.thisMonth.total, []);
+            assert.deepStrictEqual(after.toPay?.total, [{ minor: 1000, currency: "USD" }]);
             const body = fake.deliver({ ...billMail, to, at: NOW + 2 });
             yield* readMail(box);
             yield* drain();
