@@ -672,61 +672,179 @@ describe("Fix bills by talking", () => {
   );
 
   it.effect(
-    "refuses a photo with reading or kept pieces and withdraws only superseded suggestions",
+    "partial recut keeps two pieces, skips both kinds of overlap and checks the new read for duplicates",
     () =>
       Effect.gen(function* () {
         yield* seed;
         const { added, wakeupId } = yield* firstCut;
         yield* endTurn(wakeupId);
-        const { sourceEventId } = yield* billAsk("Photo 1 has three separate bills.");
-        const recut = () =>
-          LeadBills.recut(readerScope, { sourceEventId, photo: 1, words: "three separate bills" });
-        assert.include(yield* recut().pipe(Effect.flip), {
-          message: "Photo 1 is being read now: try again once its card says it's done.",
-        });
-        yield* endTurn(KinWakeupId.make("wake-3"));
-        const pieces = yield* claimTurn(4);
-        for (const n of [1, 2, 3])
+        const pieces = yield* claimTurn(2);
+        for (const n of [1, 2])
           yield* read({
             bill: `B${n}`,
-            vendor: "Tidewater Freight",
+            vendor: "Harbor Cafe",
             date: "2026-11-03",
             amount: String(n),
           });
+        yield* read({ bill: "B3", readable: false });
         yield* endTurn(pieces.wakeupId);
+        const original = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+        for (const { expense } of original.slice(0, 2))
+          yield* confirm(as(rhea), { orgId, key: expense!.key, rev: expense!.rev });
         const sql = yield* SqlClient.SqlClient;
-        const selected = yield* expenseOf(added.batchId);
-        yield* confirm(as(rhea), { orgId, key: selected.key, rev: selected.rev });
-        yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${sourceEventId}`;
-        const fixing = yield* claimTurn(5);
-        assert.include(yield* recut().pipe(Effect.flip), {
-          message:
-            "Photo 1 has a kept bill, P1.1: it can be cut again once that expense is dropped.",
+        const billRows = sql`SELECT * FROM kin_bill_reads WHERE org_id = ${orgId}
+        AND sha256 IN ${sql.in(original.slice(0, 2).map(({ sha256 }) => sha256))} ORDER BY sha256`;
+        const keptExpenses = sql`SELECT * FROM kin_records WHERE org_id = ${orgId} AND confirmed = 1 ORDER BY key`;
+        const beforeRows = yield* billRows;
+        const beforeExpenses = yield* keptExpenses;
+        const { sourceEventId, wakeupId: fixing } = yield* billAsk(
+          "Photo 1 bill 3 was cut in half.",
+        );
+        const listed = yield* LeadBills.listBills(readerScope, { batchId: added.batchId });
+        assert.deepStrictEqual(
+          listed.bills.map(({ bill, photo }) => [bill, photo]),
+          [["P1.3", "P1"]],
+        );
+        const answer = yield* LeadBills.recut(readerScope, {
+          sourceEventId,
+          photo: "P1.3",
+          words: "Photo 1 bill 3 was cut in half.",
         });
-        const kept = yield* expenseOf(added.batchId);
-        yield* update(as(rhea), { orgId, key: kept.key, rev: kept.rev, state: "dropped" });
-        yield* recut();
+        assert.strictEqual(
+          answer.result,
+          "Photo 1 goes back to be cut again with those words. Kin withdrew 1 piece. The card in this chat shows the new pieces. Say so in one line and stop.",
+        );
+        yield* endTurn(fixing);
+        const cutting = yield* claimTurn(4);
+        const event = cutting.events.find((entry) => entry._tag === "bills.read")!;
+        const prompt = yield* billTurn(orgId, event);
+        const [source] = yield* sql<{ id: string }>`
+          SELECT attachment_id AS id FROM kin_bill_reads WHERE org_id = ${orgId} AND sha256 = ${added.added[0]!.sha256}`;
+        assert.deepStrictEqual(
+          prompt?.attachments.map(({ id }) => id),
+          [source!.id],
+        );
+        assert.include(
+          prompt?.text,
+          'Already kept, leave these alone: [25,50,280,900], [350,50,300,900]. Cut the rest again.\nThe person said of B1: "Photo 1 bill 3 was cut in half."',
+        );
+        assert.include(
+          yield* read({ bill: "B1", vendor: "Harbor Cafe", date: "2026-11-03", amount: "3" }).pipe(
+            Effect.flip,
+          ),
+          { message: "Use bill_cut to cut the rest of this photo." },
+        );
+        const cut = yield* Bills.cut(
+          { orgId, agentId: finance, wakeupId: cutting.wakeupId },
+          {
+            bill: "B1",
+            boxes: [
+              [100, 100, 80, 700],
+              [100, 0, 680, 1000],
+              [700, 60, 275, 870],
+            ],
+          },
+        );
+        assert.include(cut.result, "Skipped 2 boxes that overlap kept bills.");
+        yield* endTurn(cutting.wakeupId);
+        const remaining = yield* claimTurn(5);
+        assert.lengthOf(remaining.events.find((entry) => entry._tag === "bills.read")!.bills, 1);
+        yield* read({ bill: "B1", vendor: "Harbor Cafe", date: "2026-11-03", amount: "1" });
+        yield* endTurn(remaining.wakeupId);
+        assert.deepStrictEqual(yield* billRows, beforeRows);
+        assert.deepStrictEqual(yield* keptExpenses, beforeExpenses);
         assert.deepStrictEqual(
           (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
             ({ state }) => state,
           ),
-          ["reading"],
+          ["kept", "kept", "duplicate"],
         );
-        assert.deepStrictEqual(
-          (yield* sql<{ state: string }>`SELECT state FROM kin_records ORDER BY key`).map(
-            ({ state }) => state,
-          ),
-          ["dropped", "dropped", "dropped"],
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("partial recut refuses all-kept, still-reading and other-company photos", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { added, wakeupId } = yield* firstCut;
+      yield* endTurn(wakeupId);
+      const { sourceEventId, wakeupId: asking } = yield* billAsk("Cut photo 1 Bill 2 again.");
+      const doCut = (batchId = added.batchId) =>
+        LeadBills.recut(readerScope, {
+          sourceEventId,
+          batchId,
+          photo: "P1.2",
+          words: "Cut photo 1 Bill 2 again.",
+        });
+      assert.include(yield* doCut().pipe(Effect.flip), {
+        message: "Photo 1 is being read now: try again once its card says it's done.",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs VALUES ('foreign-org', 'Inkspot Cloud', ${at})`;
+      yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id, name,
+        file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id, widget_id,
+        added_by_person_id, added_at, state)
+        SELECT 'foreign-org', sha256, attachment_id, chat_id, message_id, name,
+        file_type, mime_type, size_bytes, 'foreign-batch', position, agent_id, card_chat_id, widget_id,
+        added_by_person_id, added_at, state FROM kin_bill_reads WHERE parent_sha256 IS NULL`;
+      assert.include(yield* doCut("foreign-batch").pipe(Effect.flip), {
+        message: "There is no such batch in this chat.",
+      });
+      yield* endTurn(asking);
+      const reading = yield* claimTurn(4);
+      for (const n of [1, 2, 3])
+        yield* read({
+          bill: `B${n}`,
+          vendor: "Harbor Cafe",
+          date: "2026-11-03",
+          amount: String(n),
+        });
+      yield* endTurn(reading.wakeupId);
+      yield* Bills.keepRead(as(rhea), {
+        orgId,
+        batchId: added.batchId,
+        clientRequestId: "keep-all-pieces",
+      });
+      yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${sourceEventId}`;
+      yield* claimTurn(5);
+      assert.include(yield* doCut().pipe(Effect.flip), {
+        message: "Every bill on this photo is already kept.",
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([false, true])(
+    "partial recut preserves a dismissed piece unless the words name it (%s)",
+    (named) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const { added, wakeupId } = yield* firstCut;
+        yield* endTurn(wakeupId);
+        const reading = yield* claimTurn(2);
+        yield* endTurn(reading.wakeupId);
+        const rows = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+        const dismissed = rows[1]!.sha256;
+        yield* Bills.dismiss(as(rhea), { orgId, sha256: dismissed });
+        const words = named ? "Cut Photo 1 bill 2 again." : "Cut Photo 1 again.";
+        const { sourceEventId, wakeupId: asking } = yield* billAsk(words);
+        const answer = yield* LeadBills.recut(readerScope, { sourceEventId, photo: 1, words });
+        assert.include(answer.result, named ? "Kin withdrew 3 pieces." : "Kin withdrew 2 pieces.");
+        const sql = yield* SqlClient.SqlClient;
+        const saved =
+          yield* sql`SELECT 1 FROM kin_bill_reads WHERE sha256 = ${dismissed} AND dismissed_at IS NOT NULL`;
+        assert.lengthOf(saved, named ? 0 : 1);
+        yield* endTurn(asking);
+        const cut = yield* claimTurn(4);
+        const result = yield* Bills.cut(
+          { orgId, agentId: finance, wakeupId: cut.wakeupId },
+          {
+            bill: "B1",
+            boxes: [
+              [355, 55, 290, 890],
+              [710, 60, 245, 875],
+            ],
+          },
         );
-        yield* endTurn(fixing.wakeupId);
-        const cutting = yield* claimTurn(6);
-        yield* Bills.cut(
-          { orgId, agentId: finance, wakeupId: cutting.wakeupId },
-          { bill: "B1", boxes: threeBoxes },
-        );
-        const replacements = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
-        assert.lengthOf(replacements, 3);
-        assert.isTrue(replacements.every(({ state }) => state === "reading"));
+        assert.strictEqual(result.result.includes("overlaps a dismissed bill"), !named);
       }).pipe(Effect.provide(layer)),
   );
 
@@ -747,7 +865,7 @@ describe("Fix bills by talking", () => {
         }),
         {
           result:
-            "Photo 1 goes back to be cut again with those words. The card in this chat shows the new pieces. Say so in one line and stop.",
+            "Photo 1 goes back to be cut again with those words. Kin withdrew 0 pieces. The card in this chat shows the new pieces. Say so in one line and stop.",
         },
       );
       yield* endTurn(wakeupId);

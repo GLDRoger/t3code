@@ -9,6 +9,7 @@ import {
   KinAgentId,
   type KinAttachment,
   KinBillBatchCard,
+  KinBillBox,
   KinBillRead,
   KinBillSaid,
   KinBillSaidBy,
@@ -76,7 +77,14 @@ import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { personNamed } from "../people/personNamed.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billPhotoForModel, isBillPdf as isPdf } from "./billPhotoForModel.ts";
-import { MAX_BILL_BOXES, refuseBillPage, type BillBox } from "./billCutterProtocol.ts";
+import {
+  BILL_GRID,
+  MAX_BILL_BOXES,
+  paddedBillBox,
+  refuseBillPage,
+  validBillBox,
+  type BillBox,
+} from "./billCutterProtocol.ts";
 import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { billReader } from "./billReader.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
@@ -184,6 +192,11 @@ const printedOf = (row: Row): KinBillRead => {
 const CutPages = Schema.fromJsonString(Schema.Array(Schema.Int));
 const decodeCutPages = Schema.decodeUnknownOption(CutPages);
 const encodeCutPages = Schema.encodeEffect(CutPages);
+const BoxJson = Schema.fromJsonString(KinBillBox);
+const encodeBox = Schema.encodeEffect(BoxJson);
+const decodeBox = Schema.decodeUnknownOption(BoxJson);
+const decodeBoxes = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(KinBillBox)));
+const storedBoxes = (json: string | null) => Option.getOrUndefined(decodeBoxes(json)) ?? [];
 const NOT_CUT = "json_type(read_json) IS NOT 'array'";
 const SourceSlot = Schema.Struct({ id: Schema.String, photo: Schema.Boolean });
 type SourceSlot = typeof SourceSlot.Type;
@@ -230,6 +243,7 @@ type Row = {
   readonly dismissedAt: number | null;
   readonly parentSha256: string | null;
   readonly cutPage: number | null;
+  readonly cutBoxJson: string | null;
   readonly cut: number;
   readonly mailFrom: string | null;
   readonly mailAt: number | null;
@@ -248,7 +262,7 @@ const COLUMNS = `sha256, attachment_id AS "attachmentId", preview_id AS "preview
   widget_id AS "widgetId", added_by_person_id AS "addedBy", added_at AS "addedAt", state,
   event_id AS "eventId", reads, read_json AS "readJson", said_json AS "saidJson", problem, duplicate_of AS "duplicateOf",
   record_id AS "recordId", dismissed_at AS "dismissedAt", parent_sha256 AS "parentSha256",
-  cut_page AS "cutPage", json_type(read_json) IS 'array' AS cut,
+  cut_page AS "cutPage", cut_box_json AS "cutBoxJson", json_type(read_json) IS 'array' AS cut,
   ${mailColumn("mail_from")} AS "mailFrom", ${mailColumn("mail_at")} AS "mailAt"`;
 
 const batchRows = Effect.fn("KinBills.batchRows")(function* (
@@ -570,7 +584,12 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   orgId: KinOrgId,
   batchId: string,
   prepared: ReadonlyMap<string, ChatAttachment | undefined> | undefined,
-  recut?: { readonly hash: string; readonly note: string },
+  recut?: {
+    readonly hash: string;
+    readonly note: string;
+    readonly keptBoxes: ReadonlyArray<BillBox>;
+    readonly dismissedBoxes: ReadonlyArray<BillBox>;
+  },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
@@ -608,14 +627,39 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   for (const row of waiting)
     shown = (yield* indexPreview(orgId, row, prepared?.get(row.attachmentId))) || shown;
   if (shown) yield* touchBills(orgId);
-  const groups = billGroups(
-    waiting.filter((row) => row.sha256 !== recut?.hash),
-    prepared,
+  const priorIds = waiting.flatMap((row) =>
+    row.parentSha256 === null && row.eventId !== null ? [row.eventId] : [],
   );
-  const photo = waiting.find((row) => row.sha256 === recut?.hash);
-  if (photo !== undefined) groups.unshift([photo]);
+  const prior =
+    priorIds.length === 0
+      ? []
+      : yield* sql<{
+          hash: string;
+          note: string;
+          kept: string | null;
+          dismissed: string | null;
+        }>`SELECT json_extract(json, '$.bills[0]') AS hash, json_extract(json, '$.note') AS note,
+      json_extract(json, '$.keptBoxes') AS kept, json_extract(json, '$.dismissedBoxes') AS dismissed
+    FROM kin_events WHERE org_id = ${orgId} AND event_id IN ${sql.in(priorIds)}
+      AND tag = 'bills.read' AND json_type(json, '$.note') IS 'text'
+      AND json_array_length(json, '$.bills') = 1`;
+  const recuts = new Map(
+    prior.map(({ hash, note, kept, dismissed }) => [
+      hash,
+      { note, keptBoxes: storedBoxes(kept), dismissedBoxes: storedBoxes(dismissed) },
+    ]),
+  );
+  if (recut !== undefined) recuts.set(recut.hash, recut);
+  const groups = [
+    ...waiting.filter((row) => recuts.has(row.sha256)).map((row) => [row]),
+    ...billGroups(
+      waiting.filter((row) => !recuts.has(row.sha256)),
+      prepared,
+    ),
+  ];
   for (const group of groups) {
     const first = group[0]!;
+    const protection = recuts.get(first.sha256);
     const reads = Math.max(...group.map((row) => row.reads)) + 1;
     const key = `${orgId}:${batchId}:${group.map((row) => row.sha256).join(",")}:${reads}`;
     const eventId = hashedEventId("bills", key);
@@ -633,9 +677,15 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
           chatId: KinChatId.make(first.cardChatId),
           batchId,
           bills: hashes,
-          ...(photo !== undefined && first === photo && recut !== undefined
-            ? { note: recut.note }
-            : {}),
+          ...(protection === undefined
+            ? {}
+            : {
+                note: protection.note,
+                ...(protection.keptBoxes.length === 0 ? {} : { keptBoxes: protection.keptBoxes }),
+                ...(protection.dismissedBoxes.length === 0
+                  ? {}
+                  : { dismissedBoxes: protection.dismissedBoxes }),
+              }),
           ...(prepared !== undefined || group.every((row) => isPdf(row) || isText(row))
             ? { photosPrepared: true }
             : {}),
@@ -767,12 +817,12 @@ const billNames = (rows: ReadonlyArray<Row>, slots: ReadonlyArray<SourceSlot> | 
   const nameFor = (row: Row): string => {
     if (row.parentSha256 === null) return roots.get(row.attachmentId) ?? `File ${row.position + 1}`;
     const parent = byHash.get(row.parentSha256);
-    const piece = / · (?:bill )?(\d{1,2}) of (\d{1,2})$/u.exec(row.name);
+    const piece = pieceNumber(row.name);
     if (parent === undefined || piece === null) return `File ${row.position + 1}`;
     const page = isPdf(rowAttachment(parent)) ? ` · page ${row.cutPage ?? 1}` : "";
     return `${nameFor(parent)}${page} · bill ${piece[1]} of ${piece[2]}`;
   };
-  return { sources, nameFor };
+  return { sources, nameFor, byHash };
 };
 
 const missingFields = ["date", "amount", "who was paid", "currency", "tax"];
@@ -944,7 +994,8 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     already: stored.counts.already + newlyAlready,
   };
   const total = rows.length + counts.already;
-  const status = pending === 0 ? ("done" as const) : ("reading" as const);
+  const reader = all.find((row) => row.state === "waiting" || row.state === "reading")?.agentId;
+  const status = reader === undefined ? ("done" as const) : ("reading" as const);
   const held =
     pause === null
       ? undefined
@@ -977,7 +1028,6 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     needsMore: Math.max(0, problemRows.length - 5),
     ...(pausedUntil === undefined ? {} : { pausedUntil: iso(pausedUntil) }),
   };
-  const reader = rows.find((row) => row.state === "waiting" || row.state === "reading")?.agentId;
   const text = cardText(base, sources, kept, problemRows.length, keepable.size);
   const card: StoredCard = {
     ...base,
@@ -1653,7 +1703,11 @@ const turnBills = Effect.fn("KinBills.turnBills")(function* (
   const hashes = yield* sql<{
     hash: string;
     eventId: string;
-  }>`SELECT j.value AS hash, e.event_id AS "eventId"
+    recut: number;
+    kept: string | null;
+    dismissed: string | null;
+  }>`SELECT j.value AS hash, e.event_id AS "eventId", json_type(e.json, '$.note') IS 'text' AS recut,
+      json_extract(e.json, '$.keptBoxes') AS kept, json_extract(e.json, '$.dismissedBoxes') AS dismissed
     FROM kin_events e, json_each(e.json, '$.bills') j
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag = 'bills.read' AND e.state = 'claimed'
@@ -1744,7 +1798,12 @@ const chatBatch = Effect.fn("KinBills.chatBatch")(function* (
     Option.getOrUndefined,
   )?.sourceSlots;
   const rows = yield* batchRows(orgId, id, { includeCut: true });
-  const { nameFor } = billNames(rows, slots);
+  const { nameFor, byHash } = billNames(rows, slots);
+  const rootOf = (row: Row): Row | undefined => {
+    if (row.parentSha256 === null) return row;
+    const parent = byHash.get(row.parentSha256);
+    return parent === undefined ? undefined : rootOf(parent);
+  };
   const name = (row: Row) =>
     nameFor(row)
       .replace(/^(Photo|File) (\d+)/u, (_, kind: string, n: string) => `${kind[0]}${n}`)
@@ -1757,7 +1816,7 @@ const chatBatch = Effect.fn("KinBills.chatBatch")(function* (
     ),
   );
   const state = (row: Row) => shownState(row, records.get(row.recordId ?? ""));
-  return { id, rows, name, nameFor, records, state };
+  return { id, rows, name, nameFor, records, state, byHash, rootOf };
 });
 
 const missingOf = (problem: string | null) => {
@@ -1779,9 +1838,12 @@ export const listForChat = Effect.fn("KinBills.listForChat")(function* (
       const state = batch.state(row);
       if (row.dismissedAt !== null || row.cut !== 0 || state === "kept") return [];
       const said = saidOf(row);
+      const root = row.parentSha256 === null ? undefined : batch.rootOf(row);
+      const photo = root === undefined ? undefined : batch.name(root);
       return [
         {
           bill: batch.name(row),
+          ...(photo?.startsWith("P") ? { photo } : {}),
           state,
           read: printedOf(row),
           missing: missingOf(row.problem),
@@ -2033,12 +2095,34 @@ export const setForChat = Effect.fn("KinBills.setForChat")(function* (
   );
 }, workFailure);
 
+const pieceNumber = (name: string) => / · (?:bill )?(\d{1,4}) of (\d{1,4})$/u.exec(name);
+const inOriginalPhoto = (piece: Row, byHash: ReadonlyMap<string, Row>) => {
+  let box = Option.getOrUndefined(decodeBox(piece.cutBoxJson));
+  let parent = byHash.get(piece.parentSha256 ?? "");
+  while (box !== undefined && parent?.parentSha256 != null) {
+    const frame = Option.getOrUndefined(decodeBox(parent.cutBoxJson));
+    if (frame === undefined) return undefined;
+    const [x, y, w, h] = paddedBillBox(frame);
+    const [left, top, width, height] = box;
+    const x1 = Math.floor(x + (left * w) / BILL_GRID);
+    const y1 = Math.floor(y + (top * h) / BILL_GRID);
+    const x2 = Math.ceil(x + ((left + width) * w) / BILL_GRID);
+    const y2 = Math.ceil(y + ((top + height) * h) / BILL_GRID);
+    box = [x1, y1, x2 - x1, y2 - y1];
+    parent = byHash.get(parent.parentSha256);
+  }
+  return parent === undefined ? undefined : box;
+};
+
+const namesPiece = (body: string, short: string, name: string) =>
+  says(body, short) || says(body, name.replace(/ of \d+/gu, ""));
+
 export const recutForChat = Effect.fn("KinBills.recutForChat")(function* (
   turn: BillTurn,
   input: {
     readonly batchId?: string | undefined;
     readonly sourceEventId: string;
-    readonly photo: number;
+    readonly photo: number | string;
     readonly words: string;
   },
 ) {
@@ -2048,43 +2132,84 @@ export const recutForChat = Effect.fn("KinBills.recutForChat")(function* (
     Effect.gen(function* () {
       const speaker = yield* billSpeaker(turn, "bill_recut", input.sourceEventId);
       const batch = yield* chatBatch(orgId, speaker.chatId, input.batchId);
-      const name = `Photo ${input.photo}`;
-      const photo = batch.rows.find(
-        (row) => row.parentSha256 === null && batch.nameFor(row) === name,
-      );
-      if (photo === undefined || photo.dismissedAt !== null)
-        return yield* invalid(`No ${name.toLowerCase()} in this batch.`);
-      const hashes = new Set([photo.sha256]);
-      const pieces = batch.rows.filter((row) => {
-        if (row.parentSha256 === null || !hashes.has(row.parentSha256)) return false;
-        hashes.add(row.sha256);
-        return true;
-      });
-      const kept = [photo, ...pieces].find((row) => batch.state(row) === "kept");
-      if (kept !== undefined)
+      const typed = typeof input.photo === "number" ? `P${input.photo}` : input.photo;
+      const picked = batch.rows.find((row) => batch.name(row) === typed);
+      const photo = picked === undefined ? undefined : batch.rootOf(picked);
+      if (photo === undefined || photo.dismissedAt !== null || !batch.name(photo).startsWith("P"))
         return yield* invalid(
-          `${name} has a kept bill, ${batch.name(kept)}: it can be cut again once that expense is dropped.`,
+          typeof input.photo === "number"
+            ? `No photo ${input.photo} in this batch.`
+            : `No bill ${typed} in this batch.`,
         );
+      const name = batch.nameFor(photo);
+      const pieces = batch.rows.filter((row) => row !== photo && batch.rootOf(row) === photo);
       if ([photo, ...pieces].some((row) => row.state === "reading" || row.state === "waiting"))
         return yield* invalid(`${name} is being read now: try again once its card says it's done.`);
+      const leaves = pieces.filter((row) => row.cut === 0);
+      const kept = leaves.filter((row) => batch.state(row) === "kept");
+      const dismissed = leaves.filter(
+        (row) =>
+          row.dismissedAt !== null &&
+          !namesPiece(speaker.body, batch.name(row), batch.nameFor(row)),
+      );
+      if (
+        batch.state(photo) === "kept" ||
+        (photo.state === "read" && kept.length > 0 && kept.length === leaves.length)
+      )
+        return yield* invalid("Every bill on this photo is already kept.");
+      if (
+        photo.state === "read" &&
+        dismissed.length > 0 &&
+        kept.length + dismissed.length === leaves.length
+      )
+        return yield* invalid("Name the dismissed bill to cut it again.");
       if (!photoNeedsPreparation(rowAttachment(photo))) return yield* invalid(UNSHOWN_PHOTO);
       if (!oneLine(speaker.body).includes(oneLine(input.words)))
         return yield* invalid("Use the person's own words about how to cut the photo.");
-      for (const row of [photo, ...pieces]) yield* withdrawSuggestion(orgId, row);
-      if (pieces.length > 0)
+
+      const retained = new Set([photo.sha256]);
+      const keptBoxes: Array<BillBox> = [];
+      const dismissedBoxes: Array<BillBox> = [];
+      for (const [rows, boxes] of [
+        [kept, keptBoxes],
+        [dismissed, dismissedBoxes],
+      ] as const) {
+        for (const row of rows) {
+          const box = inOriginalPhoto(row, batch.byHash);
+          if (box === undefined)
+            return yield* invalid(
+              "Kin couldn't locate an already kept or dismissed bill on this photo.",
+            );
+          boxes.push(box);
+          for (
+            let at: Row | undefined = row;
+            at !== undefined && !retained.has(at.sha256);
+            at = batch.byHash.get(at.parentSha256 ?? "")
+          )
+            retained.add(at.sha256);
+        }
+      }
+      const withdraw = pieces.filter((row) => !retained.has(row.sha256));
+      for (const row of [photo, ...withdraw]) yield* withdrawSuggestion(orgId, row);
+      if (withdraw.length > 0)
         yield* sql`DELETE FROM kin_bill_reads WHERE org_id = ${orgId} AND batch_id = ${batch.id}
-        AND sha256 IN ${sql.in(pieces.map((row) => row.sha256))}`;
-      yield* sql`UPDATE kin_bill_reads SET state = 'waiting', event_id = NULL, read_json = NULL,
+        AND sha256 IN ${sql.in(withdraw.map((row) => row.sha256))}`;
+      // A partial recut still has review rows of its own. Keep the source out of Review while it runs.
+      const cutSource = retained.size > 1 ? "[]" : null;
+      yield* sql`UPDATE kin_bill_reads SET state = 'waiting', event_id = NULL, read_json = ${cutSource},
       problem = NULL, record_id = NULL, duplicate_of = NULL, read_at = NULL
       WHERE org_id = ${orgId} AND sha256 = ${photo.sha256}`;
       yield* queueWaiting(orgId, batch.id, undefined, {
         hash: photo.sha256,
         note: oneLine(input.words),
+        keptBoxes,
+        dismissedBoxes,
       });
       yield* refreshCard(orgId, batch.id);
       yield* touchBills(orgId);
+      const withdrawn = counted(withdraw.filter((row) => row.cut === 0).length, "piece");
       return {
-        result: `${name} goes back to be cut again with those words. The card in this chat shows the new pieces. Say so in one line and stop.`,
+        result: `${name} goes back to be cut again with those words. Kin withdrew ${withdrawn}. The card in this chat shows the new pieces. Say so in one line and stop.`,
       };
     }),
   );
@@ -2416,6 +2541,8 @@ export const answerMany = Effect.fn("KinBills.answerMany")(function* (
               const row = yield* billRow(orgId, file.hash);
               if (row === undefined || row.state !== "reading" || row.eventId !== file.eventId)
                 return readAnswer(id, "answered");
+              if (file.kept !== null || file.dismissed !== null)
+                return yield* invalid("Use bill_cut to cut the rest of this photo.");
               const outcome = yield* settleRead(orgId, row, input);
               touched.add(row.batchId);
               return readAnswer(id, outcome);
@@ -2482,12 +2609,24 @@ const cutTarget = Effect.fn("KinBills.cutTarget")(function* (
     return yield* cutRefusal(
       "A crop of a crop can't be cut again. Use bill_read and leave unreadable fields blank.",
     );
-  return { row, pdf, page, pages: pages ?? [], eventId: file.eventId };
+  return {
+    row,
+    pdf,
+    page,
+    pages: pages ?? [],
+    eventId: file.eventId,
+    recut: file.recut === 1,
+    keptBoxes: storedBoxes(file.kept),
+    dismissedBoxes: storedBoxes(file.dismissed),
+  };
 });
 
-const encodeBox = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Tuple([Schema.Int, Schema.Int, Schema.Int, Schema.Int])),
-);
+const overlapsBill = ([x, y, w, h]: BillBox, [a, b, p, q]: BillBox) => {
+  const intersection =
+    Math.max(0, Math.min(x + w, a + p) - Math.max(x, a)) *
+    Math.max(0, Math.min(y + h, b + q) - Math.max(y, b));
+  return 2 * intersection > Math.min(w * h, p * q);
+};
 
 const prepareCut = Effect.fn("KinBills.prepareCut")(function* (
   turn: BillTurn,
@@ -2496,17 +2635,47 @@ const prepareCut = Effect.fn("KinBills.prepareCut")(function* (
 ) {
   const id = input.bill.trim().toUpperCase();
   const target = yield* cutTarget(turn, id, input.page);
-  if (input.boxes.length === 0 || input.boxes.length > MAX_BILL_BOXES)
+  if (
+    input.boxes.length === 0 ||
+    input.boxes.length > MAX_BILL_BOXES ||
+    !input.boxes.every(validBillBox)
+  )
     return yield* cutRefusal(refuseBillPage("box").problem);
+  let kept = 0;
+  let dismissed = 0;
+  const boxes = input.boxes.filter((box) => {
+    if (target.keptBoxes.some((other) => overlapsBill(box, other))) {
+      kept += 1;
+      return false;
+    }
+    if (target.dismissedBoxes.some((other) => overlapsBill(box, other))) {
+      dismissed += 1;
+      return false;
+    }
+    return true;
+  });
+  const skipped = [
+    kept === 0
+      ? ""
+      : kept === 1
+        ? "Skipped 1 box that overlaps a kept bill."
+        : `Skipped ${kept} boxes that overlap kept bills.`,
+    dismissed === 0
+      ? ""
+      : dismissed === 1
+        ? "Skipped 1 box that overlaps a dismissed bill."
+        : `Skipped ${dismissed} boxes that overlap dismissed bills.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (boxes.length === 0) return yield* cutRefusal(skipped);
   const bytes = yield* fileBytes({
     ...target.row,
     id: target.row.attachmentId,
     type: target.row.fileType,
   }).pipe(Effect.mapError((error) => cutRefusal(error.message)));
   const result = yield* cutBillPage(
-    target.pdf
-      ? { kind: "pdf", page: target.page, bytes, boxes: input.boxes }
-      : { kind: "photo", bytes, boxes: input.boxes },
+    target.pdf ? { kind: "pdf", page: target.page, bytes, boxes } : { kind: "photo", bytes, boxes },
   );
   if (result.outcome._tag === "refused") return yield* cutRefusal(result.outcome.problem);
   const store = yield* KinAttachmentStore;
@@ -2521,21 +2690,21 @@ const prepareCut = Effect.fn("KinBills.prepareCut")(function* (
         sizeBytes: bytes.byteLength,
         index,
         hash: sha256(bytes),
-        boxJson: yield* encodeBox(input.boxes[index]!).pipe(Effect.orDie),
+        boxJson: yield* encodeBox(boxes[index]!).pipe(Effect.orDie),
       };
     }).pipe(Effect.uninterruptible),
   );
-  return { id, input, target, crops };
+  return { id, input, target, crops, skipped };
 }, workFailure);
 
 const applyCut = Effect.fn("KinBills.applyCut")(function* (
   turn: BillTurn,
-  { id, input, target, crops }: Effect.Success<ReturnType<typeof prepareCut>>,
+  { id, input, target, crops, skipped }: Effect.Success<ReturnType<typeof prepareCut>>,
 ) {
   const { orgId } = turn;
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* KinChatRepository;
-  const { row, pdf, page, pages, eventId } = yield* cutTarget(turn, id, input.page);
+  const { row, pdf, page, pages, eventId, recut } = yield* cutTarget(turn, id, input.page);
   if (row.attachmentId !== target.row.attachmentId || eventId !== target.eventId)
     return yield* cutRefusal(`${id} is already answered.`);
   const chatId = KinChatId.make(row.cardChatId);
@@ -2548,7 +2717,19 @@ const applyCut = Effect.fn("KinBills.applyCut")(function* (
     orgId,
     crops.map((crop) => crop.hash),
   );
-  const seen = new Set([row.sha256, ...(row.parentSha256 === null ? [] : [row.parentSha256])]);
+  const rows = yield* batchRows(orgId, row.batchId, { includeCut: true });
+  const retained = recut ? rows.filter((one) => one.parentSha256 === row.sha256) : [];
+  const directHashes = new Set(retained.map((one) => one.sha256));
+  const protectedHashes = recut
+    ? rows
+        .filter((one) => directHashes.has(one.parentSha256 ?? "") || directHashes.has(one.sha256))
+        .map((one) => one.sha256)
+    : [];
+  const seen = new Set([
+    row.sha256,
+    ...(row.parentSha256 === null ? [] : [row.parentSha256]),
+    ...protectedHashes,
+  ]);
   const fresh = crops.filter(({ hash }) => {
     const prior = known.get(hash);
     if (seen.has(hash) || (prior !== undefined && !prior.revive)) return false;
@@ -2559,13 +2740,26 @@ const applyCut = Effect.fn("KinBills.applyCut")(function* (
   const sourceSlots = Option.flatMap(widget, (found) => CardJson(found.state)).pipe(
     Option.getOrUndefined,
   )?.sourceSlots;
-  const names = billNames(yield* batchRows(orgId, row.batchId, { includeCut: true }), sourceSlots);
+  const names = billNames(rows, sourceSlots);
   const name = names.nameFor(row) + (pdf ? ` · page ${page}` : "");
-  const files = fresh.map(({ attachmentId, sizeBytes, index, hash, boxJson }) => ({
+  const occupied = new Set(
+    retained.flatMap((one) => {
+      const parts = pieceNumber(one.name);
+      return parts === null ? [] : [Number(parts[1])];
+    }),
+  );
+  let next = 1;
+  const numbers = fresh.map(({ index }) => {
+    if (!recut) return index + 1;
+    while (occupied.has(next)) next += 1;
+    return next++;
+  });
+  const total = recut ? Math.max(...numbers, ...occupied, 1) : crops.length;
+  const files = fresh.map(({ attachmentId, sizeBytes, hash, boxJson }, index) => ({
     attachment: {
       type: "image" as const,
       id: attachmentId,
-      name: `${name} · bill ${index + 1} of ${crops.length}`,
+      name: `${name} · bill ${numbers[index]} of ${total}`,
       mimeType: "image/jpeg",
       sizeBytes,
     },
@@ -2575,14 +2769,16 @@ const applyCut = Effect.fn("KinBills.applyCut")(function* (
     boxJson,
   }));
   if (files.length > 0) {
-    const [last] = yield* sql<{
-      position: number;
-    }>`SELECT COALESCE(MAX(position), ${row.position}) AS position
-  FROM kin_bill_reads WHERE org_id = ${orgId} AND batch_id = ${row.batchId}
-    AND parent_sha256 = ${row.sha256} AND cut_page < ${page}`;
-    const after = last!.position;
-    yield* sql`UPDATE kin_bill_reads SET position = position + ${files.length}
-  WHERE org_id = ${orgId} AND batch_id = ${row.batchId} AND position > ${after}`;
+    let after = rows.at(-1)?.position ?? row.position;
+    if (!recut) {
+      const [last] = yield* sql<{ position: number }>`
+        SELECT COALESCE(MAX(position), ${row.position}) AS position
+        FROM kin_bill_reads WHERE org_id = ${orgId} AND batch_id = ${row.batchId}
+          AND parent_sha256 = ${row.sha256} AND cut_page < ${page}`;
+      after = last!.position;
+      yield* sql`UPDATE kin_bill_reads SET position = position + ${files.length}
+        WHERE org_id = ${orgId} AND batch_id = ${row.batchId} AND position > ${after}`;
+    }
     yield* insertBills({
       orgId,
       batchId: row.batchId,
@@ -2621,7 +2817,7 @@ WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
         : "each comes back as its own bill.";
   return {
     bill: id,
-    result: `${pieces}; ${whatNext}`,
+    result: `${pieces}; ${whatNext}${skipped === "" ? "" : ` ${skipped}`}`,
     used: files.map(({ attachment }) => attachment.id),
     batchId: row.batchId,
     already,

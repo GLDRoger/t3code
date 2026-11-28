@@ -17,6 +17,9 @@ import {
   BILL_MODEL_IMAGE_BYTES,
   MAX_BILL_BOXES,
   refuseBillPage,
+  BILL_GRID,
+  paddedBillBox,
+  validBillBox,
   type BillBox,
   type BillPage,
   type BillPageOutcome,
@@ -27,8 +30,6 @@ const PDF_PIXELS = 12_000_000;
 const PDF_SCALE = 300 / 72;
 const PDF_CROP_LONG_EDGE = 2500;
 const CROP_QUALITY = 85;
-const GRID = 1000;
-const PAD = 20;
 const HEIC_BRANDS = /^(heic|heix|hevc|hevx|heim|heis|hevm|hevs)$/;
 
 const isHeic = (bytes: NodeBuffer.Buffer) => {
@@ -40,15 +41,6 @@ const isHeic = (bytes: NodeBuffer.Buffer) => {
   }
   return false;
 };
-
-const validBox = ([x, y, width, height]: BillBox) =>
-  [x, y, width, height].every(Number.isInteger) &&
-  x >= 0 &&
-  y >= 0 &&
-  width >= 50 &&
-  height >= 50 &&
-  x + width <= GRID &&
-  y + height <= GRID;
 
 const makeJpeg = async (
   source: Canvas | Image,
@@ -93,11 +85,12 @@ const cut = async (
   const maxEdge = pdfCropLongEdge ?? Math.max(width, height);
   const crops: Array<Uint8Array> = [];
   let bytes = 0;
-  for (const [x, y, w, h] of boxes) {
-    const left = Math.floor((Math.max(0, x - PAD) * width) / GRID);
-    const top = Math.floor((Math.max(0, y - PAD) * height) / GRID);
-    const right = Math.ceil((Math.min(GRID, x + w + PAD) * width) / GRID);
-    const bottom = Math.ceil((Math.min(GRID, y + h + PAD) * height) / GRID);
+  for (const box of boxes) {
+    const [x, y, w, h] = paddedBillBox(box);
+    const left = Math.floor((x * width) / BILL_GRID);
+    const top = Math.floor((y * height) / BILL_GRID);
+    const right = Math.ceil(((x + w) * width) / BILL_GRID);
+    const bottom = Math.ceil(((y + h) * height) / BILL_GRID);
     const crop = await makeJpeg(
       source,
       left,
@@ -188,7 +181,7 @@ export const runBillCutterWorker = async (request: string) => {
   let outcome: BillPageOutcome;
   try {
     const page = JSON.parse(request) as BillPage;
-    if (page.boxes.length > MAX_BILL_BOXES || !page.boxes.every(validBox)) {
+    if (page.boxes.length > MAX_BILL_BOXES || !page.boxes.every(validBillBox)) {
       outcome = refuseBillPage("box");
     } else {
       const chunks: Array<NodeBuffer.Buffer> = [];

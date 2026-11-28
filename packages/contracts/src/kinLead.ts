@@ -15,7 +15,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { KIN_BILLS_PER_TURN } from "./kinBills.ts";
+import { KIN_BILLS_PER_TURN, KinBillBox } from "./kinBills.ts";
 import {
   KinAgentId,
   KinAuthor,
@@ -1050,6 +1050,8 @@ export const KinEvent = Schema.Union([
     batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
     photosPrepared: Schema.optionalKey(Schema.Literal(true)),
     note: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(300))),
+    keptBoxes: Schema.optionalKey(Schema.Array(KinBillBox)),
+    dismissedBoxes: Schema.optionalKey(Schema.Array(KinBillBox)),
     bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(KIN_BILLS_PER_TURN),

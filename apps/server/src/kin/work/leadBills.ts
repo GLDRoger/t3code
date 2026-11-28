@@ -215,7 +215,7 @@ const BatchId = Schema.optional(KinBillBatchId).annotate({
   description: "The id of a batch in this chat. Omit for the latest batch.",
 });
 const ShortBill = Schema.String.check(
-  Schema.isPattern(/^[PF]\d{1,4}(?:@\d{1,5})?(?:\.\d{1,2}){0,2}$/u),
+  Schema.isPattern(/^[PF]\d{1,4}(?:@\d{1,5})?(?:\.\d{1,4}){0,2}$/u),
 );
 export const ListInput = Schema.Struct({ batchId: BatchId });
 export const ListResult = Schema.Struct({
@@ -223,6 +223,7 @@ export const ListResult = Schema.Struct({
   bills: Schema.Array(
     Schema.Struct({
       bill: ShortBill,
+      photo: Schema.optional(Schema.String.check(Schema.isPattern(/^P\d{1,4}$/u))),
       state: KinBillState,
       read: KinBillRead,
       missing: Schema.Array(Schema.String),
@@ -270,8 +271,12 @@ export const set = leadTool(
 export const RecutInput = Schema.Struct({
   batchId: BatchId,
   sourceEventId: TurnEvent,
-  photo: Schema.Int.check(Schema.isGreaterThan(0)).annotate({
-    description: "The photo number in the batch, such as 3 for Photo 3.",
+  photo: Schema.Union([
+    Schema.Int.check(Schema.isGreaterThan(0)),
+    Schema.String.check(Schema.isPattern(/^P\d{1,4}(?:\.\d{1,4}){0,2}$/u)),
+  ]).annotate({
+    description:
+      "The photo number or short name, such as 3 or P3, or a piece's short name, such as P3.2.",
   }),
   words: KinToolText(300, "The person's exact words about where the bills are on the photo."),
 });

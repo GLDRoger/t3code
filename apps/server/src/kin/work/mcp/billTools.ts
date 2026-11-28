@@ -75,7 +75,7 @@ export const KinBillToolkit = turnEventToolkit(
   Tool.make("bill_recut", {
     ...shared,
     description:
-      'Cut a photo again when the person says its cut was wrong, with their words about what is on it, such as "the two cafe bills are one". Kin cuts it again in the background with those words and puts the new pieces in place of the ones not yet kept.',
+      'Cut a photo again when the person says its cut was wrong, with their words about what is on it, such as "the two cafe bills are one". Kin cuts the photo again in the background with those words, leaves kept pieces alone, and replaces the pieces still to review.',
     parameters: Bills.RecutInput,
     success: Bills.RecutResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

@@ -23,6 +23,13 @@ import { KinRecordKey, KinRecordState } from "./kinWork.ts";
 
 export const KIN_BILL_BATCH_CARD = "bill_batch";
 export const KIN_BILLS_PER_TURN = 12;
+
+/** A rectangle on the upright original photo's 0–1000 grid. */
+export const KinBillBox = Schema.Tuple([Schema.Int, Schema.Int, Schema.Int, Schema.Int]).check(
+  Schema.makeFilter(
+    ([x, y, w, h]) => x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= 1000 && y + h <= 1000,
+  ),
+);
 /** Files one add takes, as one chat message does. */
 const KIN_BILLS_MAX_FILES = 100;
 
