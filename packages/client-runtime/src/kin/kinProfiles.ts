@@ -73,6 +73,7 @@ export const KIN_GITHUB_LOGIN = {
   none: "Not set",
   mineHint: "Kin uses it to find your pull requests when you ask an agent to review them.",
   theirHint: "Kin uses it to find their pull requests when they ask an agent to review them.",
+  ownerSets: "The owner or a co-owner sets this on your page in Team.",
   set: "Add GitHub username…",
   change: "Change",
   remove: "Remove",
