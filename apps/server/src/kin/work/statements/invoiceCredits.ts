@@ -104,6 +104,7 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
     evidence !== undefined ? 1 : only !== undefined && "fromDay" in only ? Infinity : LOOKED_AT;
   const currency = only !== undefined && "currency" in only ? only.currency : null;
   const maxMinor = only !== undefined && "maxMinor" in only ? only.maxMinor : null;
+  const minMinor = evidence?.minMinor ?? null;
   const recordId = only !== undefined && "recordId" in only ? only.recordId : null;
   const from = only !== undefined && "fromDay" in only ? startOfDay(only.fromDay, zone) : null;
   const through =
@@ -125,10 +126,11 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
       AND r.amount_minor > 0 AND r.date_at IS NOT NULL
       AND (${currency} IS NULL OR COALESCE(r.currency, ${def.currency}) = ${currency})
       AND (${maxMinor} IS NULL OR r.amount_minor <= ${maxMinor})
+      AND (${minMinor} IS NULL OR r.amount_minor >= ${minMinor})
       ${recordId === null ? sql`` : sql`AND r.record_id = ${recordId}`}
       ${from === null ? sql`` : sql`AND r.date_at >= ${from}`}
       ${through === null ? sql`` : sql`AND r.date_at <= ${through}`}
-      ${evidence === undefined ? sql`` : sql`AND r.amount_minor >= ${evidence.minMinor} AND ${bankSource(sql)}`}
+      ${evidence === undefined ? sql`` : sql`AND ${bankSource(sql)}`}
       AND ${countedEntry(sql)} AND ${noAgentHand(sql)} AND ${notRemovedAlert(sql)}
       ${cursor === undefined ? sql`` : sql`AND (r.date_at, r.record_id) < (${cursor.dateAt}, ${cursor.recordId})`}
     ORDER BY r.date_at DESC, r.record_id DESC
