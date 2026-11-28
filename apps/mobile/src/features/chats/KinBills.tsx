@@ -10,7 +10,7 @@ import {
   kinBillBatchSentence,
   kinBillCounts,
   kinBillExpenseStart,
-  kinBillRowView,
+  kinBillRowViews,
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsOutcome,
@@ -59,6 +59,7 @@ import {
 import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAssetUrl } from "../../state/assets";
 import { uploadComposerAttachmentShared } from "../../state/composer-attachment-uploads";
+import { KinAddressSentence } from "./components/KinSenderAddress";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { createBillPhotoAttachment, preparePickedBillPhoto } from "./kinBillPhoto";
 import { forgetKinSharedFile } from "./kinSharedFileInbox";
@@ -472,12 +473,10 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
   const now = new Date(useNowMinuteMs());
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const skipped = actions.kept?.skipped;
-  const views = rows.map((row) =>
-    kinBillRowView(row, {
-      categoryLabel: (category) => kinCategoryLabel(category, expenses),
-      ...(skipped === undefined ? {} : { skipped }),
-    }),
-  );
+  const views = kinBillRowViews(rows, {
+    categoryLabel: (category) => kinCategoryLabel(category, expenses),
+    ...(skipped === undefined ? {} : { skipped }),
+  });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const openKey = (task: string) => navigation.navigate("KinWorkItem", { ...base, task });
   const run = (view: KinBillRowView, action: KinBillAction) => {
@@ -613,22 +612,22 @@ function BillThumb(props: {
   readonly environmentId: EnvironmentId;
   readonly onPreview: (source: FilePreviewSource) => void;
 }) {
-  const { file, pdf } = props.view;
+  const { file, pdf, asFile } = props.view;
   const resource = {
     _tag: "attachment" as const,
     attachmentId: file.attachmentId,
     fileName: file.name,
     mimeType: pdf ? "application/pdf" : file.mimeType,
   };
-  // A PDF opens from the host when tapped; only a photo draws from it here.
-  const uri = useAssetUrl(props.environmentId, pdf ? null : resource);
+  // A file opens from the host when tapped; only a photo draws from it here.
+  const uri = useAssetUrl(props.environmentId, asFile ? null : resource);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Open ${file.name}`}
       onPress={() =>
         props.onPreview({
-          kind: pdf ? "pdf" : "image",
+          kind: pdf ? "pdf" : asFile ? "document" : "image",
           name: file.name,
           mimeType: resource.mimeType,
           environmentId: props.environmentId,
@@ -637,7 +636,7 @@ function BillThumb(props: {
       }
       className="size-16 items-center justify-center overflow-hidden rounded-xl border border-border bg-subtle-strong active:opacity-70"
     >
-      {pdf ? (
+      {asFile ? (
         <SymbolView name="doc.text" size={22} tintColorClassName="accent-icon-muted" />
       ) : uri === null ? null : (
         <ExpoImage
@@ -697,9 +696,11 @@ const BillRow = memo(function BillRow(props: {
           ))}
         </View>
         {view.mailLine === null ? null : (
-          <Text textRole="footnote" className="text-foreground-muted">
-            {view.mailLine}
-          </Text>
+          <KinAddressSentence
+            text={view.mailLine}
+            textRole="footnote"
+            className="text-foreground-muted"
+          />
         )}
         <Text textRole="footnote" className="min-h-4 text-foreground-muted">
           {note ?? ""}
@@ -720,7 +721,7 @@ const BillRow = memo(function BillRow(props: {
               size="compact"
               tone={action === "keep" || action === "addAnyway" ? "secondary" : "text"}
               label={label(view, action)}
-              accessibilityLabel={`${label(view, action)}: ${view.file.name}`}
+              accessibilityLabel={`${label(view, action)}: ${view.name}`}
               disabled={props.busy && CHANGES.has(action)}
               onPress={() => props.onAction(view, action)}
             />

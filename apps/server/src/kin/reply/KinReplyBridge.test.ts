@@ -301,6 +301,8 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly postError?: KinChatError;
   readonly onNotice?: () => void;
   readonly leadName?: string;
+  /** What the turn was given, as the runner says it on begin. */
+  readonly opening?: { readonly attachments?: boolean; readonly bills?: boolean };
   /** Wakes on this event instead, given the org and the lead's direct chat. */
   readonly event?: (context: {
     readonly owner: PersonIdentity;
@@ -475,6 +477,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     wakeupId,
     threadId,
     startedAt: row!.startedAt,
+    ...input.opening,
   });
   yield* begin;
   const projectId = (yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId))
@@ -1901,6 +1904,34 @@ it.effect("labels each phase of a wake-up once per change and clears when the re
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make("never-began") });
     assert.deepStrictEqual(shown(), []);
     assert.strictEqual(yield* Queue.size(updates), 3);
+  }).pipe(Effect.provide(layer)),
+);
+
+const openingLine = Effect.fn("test.openingLine")(function* (
+  given: NonNullable<Parameters<typeof setup>[0]["opening"]>,
+) {
+  const { fake, owner, services, direct } = yield* setup({ ask: "Hi", opening: given });
+  const presence = Context.get(services, KinPresence);
+  const all = yield* Context.get(services, KinChatHub).subscribeAll;
+  const first = yield* all.pipe(
+    Stream.filter((event) => event.type === "presence.updated" && event.presence != null),
+    Stream.take(1),
+    Stream.runDrain,
+    Effect.forkScoped,
+  );
+  yield* Queue.offer(fake.live, turnEvent("1"));
+  yield* Fiber.join(first);
+  return presence.lines(owner.orgId, direct.chatId).map((line) => line.label);
+});
+
+it.effect.each([
+  [{}, "Thinking"],
+  [{ attachments: true }, "Looking at what you sent"],
+  // A quiet bills read, from mail or a photo: nobody sent anything in this turn.
+  [{ attachments: true, bills: true }, "Reading bills"],
+] as const)("opens a turn given %j on %j", ([given, label]) =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(yield* openingLine(given), [label]);
   }).pipe(Effect.provide(layer)),
 );
 
