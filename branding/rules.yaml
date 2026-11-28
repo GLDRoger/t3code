@@ -788,6 +788,16 @@ leaks:
         - ops/kin/host/retire-workers.sh
         - ops/kin/host/setup.sh
         - ops/kin/host/update.sh
+    - reason: The shell denies the source host's original state and build clone by their on-disk names.
+      leak: t3-home
+      text: '^\.t3$'
+      files:
+        - apps/server/src/kin/claudeConfinement.ts
+        - apps/server/src/kin/lead/turn/providers/claude.ts
+    - reason: The shell denies the source host's original clone; this is a path, not a product name.
+      leak: scheme-name
+      text: "^t3code$"
+      files: [apps/server/src/kin/claudeConfinement.ts]
     - reason: >-
         kin-verify drives the unbranded dev client from a source checkout (T3's dev scheme and
         bundle id); nobody runs it from the branded copy.
