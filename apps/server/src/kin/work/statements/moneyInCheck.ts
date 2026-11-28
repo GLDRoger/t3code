@@ -264,12 +264,13 @@ const pairPayments = (
       .filter(({ p }) => otherPayer(b, p, clients) === undefined),
   );
   const payOffers = Map.groupBy(offers, (pair) => pair.p.paymentId);
-  return [...Map.groupBy(offers, (pair) => pair.b.recordId).values()].flatMap((options) => {
+  const pairs = [...Map.groupBy(offers, (pair) => pair.b.recordId).values()].flatMap((options) => {
     const winner = best(options);
     return winner !== undefined && best(payOffers.get(winner.p.paymentId) ?? []) === winner
       ? [winner]
       : [];
   });
+  return { pairs, offers };
 };
 
 const notAtBank = (p: Payment, statements: ReadonlyArray<BankCoverage>): Line => {
@@ -359,13 +360,20 @@ const readCheck = Effect.fn("KinMoneyInCheck.read")(function* (
     b.category !== "payment received";
   const lostTie = (b: Credit) =>
     b.state === state?.explained && b.state !== state.open && b.category === "payment received";
-  const paired = pairPayments(
+  const { pairs: paired, offers } = pairPayments(
     credits.filter((b) => !tied.has(b.recordId) && !otherMoney(b) && !lostTie(b)),
     pending,
     clients,
   );
   const pairedBank = new Set(paired.map(({ b }) => b.recordId));
   const pairedPay = new Set(paired.map(({ p }) => p.paymentId));
+  // An exact pair code couldn't settle: neither side may be called missing from the other.
+  const loose = offers.filter(
+    (o) => !o.amountDiffers && !pairedBank.has(o.b.recordId) && !pairedPay.has(o.p.paymentId),
+  );
+  const looseBank = Map.groupBy(loose, (o) => o.b.recordId);
+  const loosePay = Map.groupBy(loose, (o) => o.p.paymentId);
+  const unsettled = `, and Kin can't tell which goes with which.`;
   const lines: Array<Line> = [];
   for (const b of banks) {
     const paid = tied.get(b.recordId) ?? [];
@@ -385,9 +393,21 @@ const readCheck = Effect.fn("KinMoneyInCheck.read")(function* (
     )
       lines.push(pairedLine(pair));
   }
-  for (const p of pending)
-    if (paymentFits(p) && paymentInRange(p) && !pairedPay.has(p.paymentId))
-      lines.push(notAtBank(p, statements));
+  for (const p of pending) {
+    if (!paymentFits(p) || !paymentInRange(p) || pairedPay.has(p.paymentId)) continue;
+    const alike = loosePay.get(p.paymentId)?.map((o) => o.b.key);
+    lines.push(
+      alike === undefined
+        ? notAtBank(p, statements)
+        : {
+            id: `payment:${p.paymentId}`,
+            group: "differs",
+            day: p.paidOn,
+            payments: [paymentLine(p)],
+            text: `${onKin(p)}${names(p)}; ${alike.join(", ")} at the bank ${alike.length === 1 ? "is" : "are"} like it${unsettled}`,
+          },
+    );
+  }
 
   const left = credits.filter(
     (b) => accountFits(b) && bankInRange(b) && !tied.has(b.recordId) && !pairedBank.has(b.recordId),
@@ -401,6 +421,18 @@ const readCheck = Effect.fn("KinMoneyInCheck.read")(function* (
     )).map((r) => [r.credit.recordId, r]),
   );
   for (const b of unmatched) {
+    const alike = looseBank.get(b.recordId)?.map((o) => o.p);
+    if (alike !== undefined) {
+      if (client === undefined || alike.some(paymentFits))
+        lines.push(
+          bankLine(
+            b,
+            "differs",
+            `${bankWords(b)}, is like the payment${alike.length === 1 ? "" : "s"} recorded on ${alike.map((p) => p.key).join(", ")}${unsettled}`,
+          ),
+        );
+      continue;
+    }
     const offer = ranked.get(b.recordId);
     const first =
       offer?.recorded === undefined && offer?.first.length === 1

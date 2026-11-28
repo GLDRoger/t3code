@@ -306,6 +306,41 @@ it.effect.each(groups)("$label", (example) =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("an exact pair Kin can't settle is a difference, never missing from either side", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* statement(1, { through: 28 });
+    yield* bank(1, { day: 20, minor: 5_000 });
+    yield* bank(2, { day: 20, minor: 5_000 });
+    yield* payment(1, { day: 20, minor: 5_000 });
+    yield* bank(3, { day: 10 });
+    yield* payment(2, { day: 9 });
+    yield* payment(3, { day: 11 });
+    const { lines, text } = yield* checkMoneyIn(org, range, now);
+    assert.deepStrictEqual(
+      lines.map((line) => [line.group, line.bank ?? line.payments[0]?.key]),
+      [
+        ["differs", "INV-2"],
+        ["differs", "BNK-3"],
+        ["differs", "INV-3"],
+        ["differs", "BNK-1"],
+        ["differs", "BNK-2"],
+        ["differs", "INV-1"],
+      ],
+    );
+    assert.notInclude(text, "has no credit like it");
+    assert.notInclude(text, "Kin can't tell what it is");
+    assert.include(
+      text,
+      "INV-1: ₹50.00 recorded as received 20 Nov from Juniper Cold Chain; BNK-1, BNK-2 at the bank are like it, and Kin can't tell which goes with which.",
+    );
+    assert.include(
+      text,
+      "BNK-3, ₹120.00 received 10 Nov, is like the payments recorded on INV-2, INV-3, and Kin can't tell which goes with which.",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("an explained transfer counts, but is not a listed payment", () =>
   Effect.gen(function* () {
     yield* seed;
