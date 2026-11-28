@@ -106,8 +106,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   rewrites its character and says so in a line. The character is a private doc in **Docs**, and its
   history brings an older one back. A character never changes what an agent may do.
 - **It does, then tells.** Inside the company an agent acts and tells you in a line: it moves a
-  task, drafts a doc, fixes a record. It asks only what only you know, once, with the default it
-  will take. Say "undo it" and it puts back what it just changed. To let it do something without
+  task, drafts a doc, fixes a record. It asks only what only you know, once, with the answer it
+  suggests. Say "undo it" and it puts back what it just changed. To let it do something without
   asking every time, say so ("Finance may always draft payment reminders"); it remembers.
 - **One reply per message.** Each message gets one answer. If the agent starts something longer,
   such as a coding job, it says so and comes back in the chat when there's news.
@@ -170,7 +170,7 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   [Who agents work as](#who-agents-work-as) for what holds it to that.
 
 **Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
-its default and day, and you can answer it right there.
+what happens if you don't answer, and you can answer it right there.
 
 ### An agent's page
 

@@ -361,6 +361,13 @@ it.effect("a plain default waits at its day while a sealed task default is taken
         },
         "Tidewater Freight reminder",
       );
+      // Waiting on you promises no answer the day would take.
+      assert.deepStrictEqual(
+        (yield* repo.listOpenWaiting({ orgId, personId: owner.personId })).map(
+          (item) => item.ask?.default,
+        ),
+        [null],
+      );
       const legacy = yield* ask(
         {
           question: "What should happen with the Harbor Bank reminder?",
