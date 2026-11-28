@@ -570,7 +570,11 @@ const setUpWithGate = <E, R>(
     }).pipe(Effect.provide(layerFor(fake, gates, gate(cards))));
   });
 const setUp = <E>(
-  body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
+  body: (
+    fake: FakeMail,
+    cards: Array<Card>,
+    gates: Gates,
+  ) => Effect.Effect<void, E, Env | Scope.Scope>,
   gates: Gates = {},
 ) => setUpWithGate(gateFor, body, gates);
 type Env =
@@ -827,6 +831,27 @@ const watchMail = Effect.fn("test.watchMail")(function* () {
   );
   yield* sources.get("kin-pulse-outside") ?? Effect.void;
 }, Effect.scoped);
+const arrivalTick = Effect.fn("test.arrivalTick")(function* () {
+  let tick = Effect.void;
+  yield* Layer.build(ArrivalFeed.liveLayer).pipe(
+    Effect.provideService(Scheduler, {
+      register: <E, R>(_name: string, run: Effect.Effect<void, E, R>) =>
+        Effect.context<R>().pipe(
+          Effect.map((context) => {
+            tick = run.pipe(Effect.provideContext(context), Effect.orDie);
+          }),
+        ),
+    }),
+    Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+  );
+  return tick;
+});
+
+const setMoney = Effect.fn("test.setMoney")(function* (on: boolean) {
+  const { rev } = yield* KinShell.get(orgId);
+  yield* KinShell.set(orgId, owner, rev, [{ id: "money", on }]);
+});
+
 const arrivalRows = Effect.gen(function* () {
   return yield* (yield* SqlClient.SqlClient)<{
     messageId: string;
@@ -2632,8 +2657,65 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       sender: "ravi@lumen.example",
       wakes: 0,
     },
-  ])("with Money off, $name", ({ service, from, sender, wakes }) =>
-    setUp((fake) =>
+    {
+      name: "an approved billing sender has no queue row, reader turn or bills card",
+      billing: "approved",
+    },
+    {
+      name: "an undecided billing sender has no candidate, held mail or card",
+      billing: "undecided",
+    },
+    {
+      name: "a matching mail rule still runs on an approved billing sender's mail",
+      billing: "approved",
+      rule: true,
+    },
+  ] as const)("with Money off, $name", (test) => {
+    if ("billing" in test)
+      return setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const mailbox = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(mailbox);
+          yield* setMoney(false);
+          if (test.billing === "approved") yield* approved();
+          const rule = "rule" in test ? yield* turnOnRule(mailbox) : undefined;
+          yield* TestClock.adjust("1 minute");
+          const mail = fake.deliver({
+            ...pdfMail,
+            subject: "Inkspot Cloud invoice",
+            to: ACCOUNTS,
+          });
+          const tick = yield* arrivalTick();
+          yield* tick;
+          assert.deepInclude((yield* arrivalRows)[0], {
+            messageId: mail.id,
+            class: "automated_notice",
+          });
+          assert.deepStrictEqual(
+            (yield* storedRuleEvents).map(({ event }) =>
+              event._tag === "pulse" ? event.rule?.ruleId : undefined,
+            ),
+            rule === undefined ? [] : [rule.ruleId],
+          );
+          assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_bill_reads`, []);
+          assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_events WHERE tag = 'bills.read'`, []);
+          assert.deepStrictEqual(
+            yield* sql`SELECT 1 FROM kin_widgets WHERE type = 'bill_batch'`,
+            [],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT 1 FROM kin_bill_senders WHERE state = 'candidate'`,
+            [],
+          );
+          assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_bill_sender_mail`, []);
+          assert.deepStrictEqual(yield* billingCards, []);
+          assert.deepStrictEqual(yield* billLedger, []);
+        }),
+      );
+    const { service, from, wakes } = test;
+    const sender = "sender" in test ? test.sender : undefined;
+    return setUp((fake) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const address = service === "google" ? ACCOUNTS : HELLO;
@@ -2658,8 +2740,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           WHERE org_id = ${orgId} AND tag = 'pulse'`;
         assert.lengthOf(woken, wakes);
       }),
-    ),
-  );
+    );
+  });
 
   it.effect(
     "wakes once for an automated notice with the same outside mark as an unknown sender",
@@ -3136,6 +3218,64 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     return yield* sql<{ state: string; reason: string | null }>`SELECT state, reason
       FROM kin_bill_mail ORDER BY queued_at, connection_id, message_id`;
   });
+  const billingCards = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql`SELECT widget_id FROM kin_bill_senders WHERE widget_id IS NOT NULL`;
+  });
+
+  it.effect("offers a held billing sender card only after Money is back on", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, chat_id)
+          VALUES (${orgId}, 'fin-thread', ${finance}, ${stamp}, 'fin-owner')`;
+        const mailbox = yield* connect(fake, "google", ACCOUNTS);
+        yield* readMail(mailbox);
+        yield* TestClock.adjust("1 minute");
+        fake.deliver({ ...pdfMail, subject: "Inkspot Cloud invoice", to: ACCOUNTS });
+        yield* readMail(mailbox);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_senders WHERE state = 'candidate'`, 1);
+        yield* setMoney(false);
+        const tick = yield* arrivalTick();
+        yield* tick;
+        assert.deepStrictEqual(yield* billingCards, []);
+        yield* setMoney(true);
+        yield* TestClock.adjust("1 minute");
+        yield* tick;
+        assert.lengthOf(yield* billingCards, 1);
+      }),
+    ),
+  );
+
+  it.effect("reads a queued bill once on the first tick after Money is back on", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const mailbox = yield* connect(fake, "google", ACCOUNTS);
+        yield* readMail(mailbox);
+        yield* approved();
+        yield* TestClock.adjust("1 minute");
+        fake.deliver({ ...pdfMail, to: ACCOUNTS });
+        yield* readMail(mailbox);
+        assert.deepStrictEqual(yield* billLedger, [{ state: "waiting", reason: null }]);
+
+        yield* setMoney(false);
+        const tick = yield* arrivalTick();
+        yield* tick;
+        assert.deepStrictEqual(yield* billLedger, [{ state: "waiting", reason: null }]);
+        assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_bill_reads`, []);
+
+        yield* setMoney(true);
+        yield* TestClock.adjust("5 seconds");
+        yield* tick;
+        assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
+        yield* TestClock.adjust("1 minute");
+        yield* tick;
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_events WHERE tag = 'bills.read'`, 1);
+      }),
+    ),
+  );
   const mailChange = (state: "removed" | "declined") =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -3864,6 +4004,57 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       },
     );
   });
+
+  it.effect("refuses Read since with Money off before searching mail", () => {
+    const searches: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          yield* setMoney(false);
+          fake.deliver({ ...pdfMail, to: ACCOUNTS });
+          assert.include(yield* Effect.flip(catchUp()), {
+            message: "Turn Money on to read bills from mail.",
+          });
+          assert.deepStrictEqual(searches, []);
+          assert.deepStrictEqual(yield* caughtIds, []);
+        }),
+      {
+        mailRead: (url) => {
+          if (searchList(url)) searches.push(url);
+        },
+      },
+    );
+  });
+
+  it.effect.each(["Approve", "Decline then Add"] as const)(
+    "with Money off, Settings can %s without queueing held mail",
+    (action) =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const mailbox = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(mailbox);
+          yield* TestClock.adjust("1 minute");
+          fake.deliver({ ...pdfMail, subject: "Inkspot Cloud invoice", to: ACCOUNTS });
+          yield* readMail(mailbox);
+          assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_sender_mail`, 1);
+          yield* setMoney(false);
+          if (action === "Approve") {
+            yield* BillSenders.decide(orgId, owner, inkspot, "approved");
+          } else {
+            yield* BillSenders.decide(orgId, owner, inkspot, "declined");
+            assert.isUndefined(yield* BillSenders.add(orgId, owner, inkspot));
+          }
+          const list = yield* BillSenders.list(orgId, owner);
+          assert.include(list.rows[0], { address: inkspot, state: "approved" });
+          assert.deepStrictEqual(yield* billLedger, []);
+          yield* BillSenders.decide(orgId, owner, inkspot, "removed");
+          assert.deepStrictEqual((yield* BillSenders.list(orgId, owner)).rows, []);
+        }),
+      ),
+  );
 
   it.effect(
     "refuses catch-up for Zoya, agent:finance, a removed person or an unapproved sender",
