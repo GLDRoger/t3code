@@ -133,6 +133,7 @@ import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { answerShellChange } from "../shell/changes.ts";
 import { KinRefreshHub, KinRefreshObserver, KinWorkRefresh } from "./KinRefreshHub.ts";
+import { replaceSystemNotice } from "./systemNotice.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
 import { withLinks } from "./messageLinks.ts";
@@ -293,6 +294,9 @@ export class KinChatService extends Context.Service<
       readonly chatId: KinChatId;
       readonly eventIds: ReadonlyArray<KinEventId>;
     }) => Effect.Effect<void, ServiceError>;
+    readonly replaceSystemNotice: (
+      input: Parameters<typeof replaceSystemNotice>[0],
+    ) => Effect.Effect<void, ServiceError>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
       readonly orgId: KinOrgId;
@@ -3012,6 +3016,16 @@ const make = Effect.gen(function* () {
         yield* hub.publish({ type: "message.changed", orgId, message });
       }
     }, transaction),
+    replaceSystemNotice: Effect.fn("KinChatService.replaceSystemNotice")(
+      function* (input: Parameters<typeof replaceSystemNotice>[0]) {
+        yield* replaceSystemNotice(input);
+      },
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(Repository.KinChatRepository, repo),
+      Effect.provideService(Hub.KinChatHub, hub),
+      Effect.mapError(dismissError),
+      transaction,
+    ),
     notice: Effect.fn("KinChatService.notice")(function* (input) {
       yield* requireRecord(repo.getChat(input));
       if (input.waitingFor !== undefined)
