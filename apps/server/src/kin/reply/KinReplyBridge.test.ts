@@ -3846,6 +3846,26 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("an update refused for a reason Kin didn't give reads the agent's own fallback", () =>
+  Effect.gen(function* () {
+    const { bridge, orgId, wakeupId, sql, posted } = yield* setupSend({
+      ask: "Is the loading slot booked?",
+    });
+    // Malformed event JSON makes the stop check fail with an error that carries no reason.
+    yield* sql`UPDATE kin_events SET state = 'done', json = '{' WHERE wakeup_id = ${wakeupId}`;
+    const before = yield* posted;
+    const refused = yield* Effect.flip(
+      bridge.update({ orgId, wakeupId, text: "Checking the loading slot." }),
+    );
+    assert.strictEqual(refused.reason, "withheld");
+    assert.strictEqual(
+      refused.message,
+      "Not shown, for a reason Kin didn't give; your message stays as it was posted. Don't try the same update again.",
+    );
+    assert.deepStrictEqual(yield* posted, before);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a progress update restarts the working timer when its old deadline falls during the post",
   () =>
@@ -4834,7 +4854,7 @@ it.effect("an unknown refusal shows Retry and logs the rejecting error once", ()
     yield* expectWithheldNotice(
       turn,
       "kin-no-reply",
-      "Finance's reply couldn't be posted: Kin couldn't save it. Send your message again.",
+      "Finance's reply couldn't be posted: Kin couldn't post it for a reason it didn't expect, and logged why. Ask again, and if this line comes back, tell whoever looks after Kin.",
     );
     assert.deepStrictEqual(
       logs.filter(
