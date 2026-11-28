@@ -272,6 +272,7 @@ export class KinTurnContent extends Context.Service<
         }
 
         const kept: Array<{ file: ChatAttachment; unavailable: boolean }> = [];
+        const copies: Array<string> = [];
         let bytes = 0;
         for (const source of files.toReversed()) {
           if (kept.length === TURN_FILES.count) break;
@@ -289,12 +290,18 @@ export class KinTurnContent extends Context.Service<
           if (image && bytes + file.sizeBytes > TURN_FILES.imageBytes) break;
           if (image) bytes += file.sizeBytes;
           kept.push({ file: file ?? source, unavailable: file === undefined });
+          // The copy's path is all a provider names; tools take the original's id and bytes.
+          if (file !== undefined && file.id !== source.id)
+            copies.push(
+              `[The attached image "${source.name}" is a copy of file ${source.id}, whose original is saved at: ${resolveAttachmentPath({ attachmentsDir, attachment: source })}]`,
+            );
         }
         kept.reverse();
         const own = kept.flatMap(({ file, unavailable }) =>
           !unavailable && shownAsPicture(file) ? [file] : [],
         );
-        return yield* prepareFiles(input, kept, own, files.length - kept.length);
+        const text = [input.text, ...copies.reverse()].join("\n\n");
+        return yield* prepareFiles({ ...input, text }, kept, own, files.length - kept.length);
       });
       return KinTurnContent.of({ prepare });
     }),

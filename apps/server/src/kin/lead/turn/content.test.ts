@@ -142,7 +142,7 @@ it.effect(
       assert.strictEqual(attachments[1]?.id, pageImageId(contract.id, 1));
       assert.match(
         text,
-        /^Read these\n\n\[Attached image "Shelf\.heic" is saved at: [^\n]+\]\n\n\[Attached file "Contract\.pdf" is saved at: /,
+        /^Read these\n\n\[The attached image "chart\.png" is a copy of file kin-chat-photo, whose original is saved at: [^\n]+\/kin-chat-photo\.png\]\n\n\[Attached image "Shelf\.heic" is saved at: [^\n]+\]\n\n\[Attached file "Contract\.pdf" is saved at: /,
       );
       assert.include(text, '[Text of "Contract.pdf", 1 pages]\n--- Page 1 ---\n');
       assert.include(text, "Retainer: 40 hours a month");
@@ -297,9 +297,12 @@ it.effect(
         many.attachments.reduce((sum, one) => sum + one.sizeBytes, 0),
         PDF_PAGE_IMAGES.bytesPerTurn,
       );
+      const lines = many.text.split("\n\n");
+      assert.strictEqual(lines.length, 22);
+      assert.match(lines[1]!, /^\[The attached image "IMG_2\.jpg" is a copy of file /);
       assert.strictEqual(
-        many.text,
-        "These are this month's bills\n\n[2 of the attached files aren't shown: too many for one turn. bills_add reads bills and receipts among them in the background.]",
+        lines.at(-1),
+        "[2 of the attached files aren't shown: too many for one turn. bills_add reads bills and receipts among them in the background.]",
       );
     }).pipe(Effect.provide(layer("kin-turn-content-budget-"))),
 );
@@ -322,10 +325,16 @@ it.effect(
       const content = yield* KinTurnContent;
       const show = () => content.prepare({ text: "Look", attachments: [photo] });
       const {
+        text,
         attachments: [first],
       } = yield* show();
       assert.isDefined(first);
       assert.strictEqual(first!.mimeType, "image/jpeg");
+      // The model's only trace of a file's id and of its full-size bytes.
+      assert.strictEqual(
+        text,
+        `Look\n\n[The attached image "Harbor Cafe.png" is a copy of file ${photo.id}, whose original is saved at: ${original}]`,
+      );
       const copyPath = resolveAttachmentPath({ attachmentsDir: dir, attachment: first! })!;
       const copy = yield* fs.readFile(copyPath);
       assert.deepStrictEqual(readImageDimensions(copy), { width: 1568, height: 1176 });
@@ -375,7 +384,10 @@ it.effect(
       const broken = file("kin-chat-broken-pdf", "Broken.pdf", "application/pdf");
       yield* fs.makeDirectory(resolveAttachmentPath({ attachmentsDir: dir, attachment: broken })!);
       const failed = yield* content.prepare({ text: "Bills", attachments: [good, broken] });
-      assert.strictEqual(failed.text, "Bills");
+      assert.match(
+        failed.text,
+        /^Bills\n\n\[The attached image "Good\.png" is a copy of file kin-chat-good, [^\n]+\]$/,
+      );
       assert.deepStrictEqual(
         failed.attachments.map(({ name, mimeType }) => [name, mimeType]),
         [["Good.png", "image/jpeg"]],
