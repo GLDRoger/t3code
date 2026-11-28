@@ -712,7 +712,7 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
     ],
     [
       "only the lower header carries a claimed pass",
-      ["mx.google.com; none", "mx.example; dmarc=pass header.from=client.example"],
+      ["mx.google.com; none", "mx.google.com; dmarc=pass header.from=client.example"],
       "not checked",
     ],
     [
@@ -737,7 +737,7 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
       [
         "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
       ],
-      "passed",
+      "not checked",
     ],
   ] as const)("reports the sender check for %s", ([, authResults, verdict]) =>
     run(provider, ({ fake, call }) =>
@@ -751,7 +751,10 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
           authResults,
         });
         const thread = yield* call(MAIL_TOOL.read, { threadId: message.threadId });
-        assert.strictEqual(thread.messages[0].senderCheck, verdict);
+        assert.strictEqual(
+          thread.messages[0].senderCheck,
+          provider === MAIL_PROVIDERS.microsoft ? "not checked" : verdict,
+        );
       }),
     ),
   );

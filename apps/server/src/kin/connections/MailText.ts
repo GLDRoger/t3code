@@ -119,11 +119,15 @@ const segments = (header: string) => {
 const PROPERTY = /^\s*([a-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s"]+)/;
 
 /**
- * The receiving server's verdicts: only the topmost `Authentication-Results`, the one it added,
- * since a sender can write its own lower down. Read as RFC 8601 results, never as loose text.
+ * Gmail puts its own `Authentication-Results` above any results carried with the message.
+ * Require its receiver name on that first header before reading the RFC 8601 results.
  */
-const receiverVerdicts = (results: ReadonlyArray<string>) =>
-  segments((results[0] ?? "").toLowerCase()).flatMap((segment): Array<Verdict> => {
+const receiverVerdicts = (results: ReadonlyArray<string>) => {
+  const header = (results[0] ?? "").toLowerCase();
+  const receiver = /^\s*mx\.google\.com\s*;/.exec(header);
+  if (receiver === null) return [];
+
+  return segments(header.slice(receiver[0].length)).flatMap((segment): Array<Verdict> => {
     const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
     if (head === null) return [];
     const props = new Map<string, string>();
@@ -138,6 +142,7 @@ const receiverVerdicts = (results: ReadonlyArray<string>) =>
     }
     return [{ method: head[1]!, result: head[2]!, props }];
   });
+};
 
 const domainIn = (value: string | undefined) =>
   value?.slice(value.lastIndexOf("@") + 1).replace(/\.$/, "");

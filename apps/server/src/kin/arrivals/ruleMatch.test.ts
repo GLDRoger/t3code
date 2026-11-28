@@ -21,9 +21,9 @@ const header = {
   fromAddress: " Billing@juniper.example ",
   subject: "Re: Invoice 42!",
   hasFile: true,
-  authResults: ["mx.example; dmarc=pass header.from=juniper.example"],
+  authResults: ["mx.google.com; dmarc=pass header.from=juniper.example"],
 };
-const passed = (domain: string) => [`mx.example; dmarc=pass header.from=${domain}`];
+const passed = (domain: string) => [`mx.google.com; dmarc=pass header.from=${domain}`];
 const arrival = { connectionId: "company", class: "known_biller" };
 
 describe("mail rule matching", () => {
@@ -163,18 +163,18 @@ describe("mail rule matching", () => {
     [
       "DMARC fail overrides both passes, named",
       {},
-      { authResults: ["mx.example; dmarc=fail; dkim=pass; spf=pass"] },
+      { authResults: ["mx.google.com; dmarc=fail; dkim=pass; spf=pass"] },
       {},
       "held_unverified",
     ],
     ["no results, named", {}, { authResults: [] }, {}, "held_unverified"],
-    ["only DKIM, named", {}, { authResults: ["mx.example; dkim=pass"] }, {}, "held_unverified"],
+    ["only DKIM, named", {}, { authResults: ["mx.google.com; dkim=pass"] }, {}, "held_unverified"],
     [
       "DKIM and SPF pass, named",
       {},
       {
         authResults: [
-          "mx.example; dkim=PASS header.d=juniper.example; spf=pass smtp.mailfrom=bounce@mail.juniper.example",
+          "mx.google.com; dkim=PASS header.d=juniper.example; spf=pass smtp.mailfrom=bounce@mail.juniper.example",
         ],
       },
       {},
@@ -185,7 +185,7 @@ describe("mail rule matching", () => {
       {},
       {
         authResults: [
-          "mx.example; dkim=pass header.d=else.example; spf=pass smtp.mailfrom=bounce@else.example",
+          "mx.google.com; dkim=pass header.d=else.example; spf=pass smtp.mailfrom=bounce@else.example",
         ],
       },
       {},
@@ -203,7 +203,7 @@ describe("mail rule matching", () => {
       {},
       {
         authResults: [
-          "mx.example; spf=pass (mx.example: domain of dmarc=pass+header.from=juniper.example@else.example designates 192.0.2.9 as permitted sender) smtp.mailfrom=dmarc=pass+header.from=juniper.example@else.example; dmarc=fail (p=NONE) header.from=juniper.example",
+          "mx.google.com; spf=pass (mx.example: domain of dmarc=pass+header.from=juniper.example@else.example designates 192.0.2.9 as permitted sender) smtp.mailfrom=dmarc=pass+header.from=juniper.example@else.example; dmarc=fail (p=NONE) header.from=juniper.example",
         ],
       },
       {},
@@ -214,7 +214,7 @@ describe("mail rule matching", () => {
       {},
       {
         authResults: [
-          'mx.example; spf=pass smtp.mailfrom="x;dmarc=pass header.from=juniper.example"@else.example; dmarc=fail header.from=juniper.example',
+          'mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=juniper.example"@else.example; dmarc=fail header.from=juniper.example',
         ],
       },
       {},
@@ -225,7 +225,7 @@ describe("mail rule matching", () => {
       {},
       {
         authResults: [
-          "mx.example; spf=pass smtp.mailfrom=else.example",
+          "mx.google.com; spf=pass smtp.mailfrom=else.example",
           ...passed("juniper.example"),
         ],
       },
@@ -236,14 +236,14 @@ describe("mail rule matching", () => {
     [
       "DMARC fail, no From",
       { from: [] },
-      { authResults: ["mx.example; dmarc=fail"] },
+      { authResults: ["mx.google.com; dmarc=fail"] },
       {},
       "held_unverified",
     ],
     [
       "SPF softfail, no From",
       { from: [] },
-      { authResults: ["mx.example; spf=softfail"] },
+      { authResults: ["mx.google.com; spf=softfail"] },
       {},
       "held_unverified",
     ],

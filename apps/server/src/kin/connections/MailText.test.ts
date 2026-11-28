@@ -44,14 +44,40 @@ describe("MailText", () => {
   });
 
   it.each([
-    [["mx; dkim=pass; spf=pass; dmarc=pass header.from=client.example"], "passed"],
-    [["mx; dkim=pass; spf=fail; dmarc=fail header.from=client.example"], "failed"],
     [
-      ["mx; dkim=pass header.d=client.example; spf=pass smtp.mailfrom=reply@mail.client.example"],
+      "a Gmail DMARC pass",
+      [
+        "mx.google.com;\r\n       dkim=pass header.i=@harborbank.example header.s=sel1;\r\n       spf=pass smtp.mailfrom=alerts@harborbank.example;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=harborbank.example",
+      ],
       "passed",
     ],
-    [[], "not checked"],
-  ])("reads the receiving server's check of the sender", (results, verdict) => {
-    expect(senderVerdict(results, "client.example")).toBe(verdict);
+    [
+      "a Gmail DMARC fail",
+      ["mx.google.com; dkim=pass; spf=fail; dmarc=fail header.from=harborbank.example"],
+      "failed",
+    ],
+    [
+      "aligned DKIM and SPF",
+      [
+        "mx.google.com; dkim=pass header.d=harborbank.example; spf=pass smtp.mailfrom=alerts@mail.harborbank.example",
+      ],
+      "passed",
+    ],
+    ["a pass with no receiver name", ["dmarc=pass header.from=harborbank.example"], "not checked"],
+    [
+      "a pass at the top from a different server",
+      ["mx.relay.example; dmarc=pass header.from=harborbank.example", "mx.google.com; none"],
+      "not checked",
+    ],
+    [
+      "a Microsoft 365 header without a receiver name",
+      [
+        "spf=pass smtp.mailfrom=harborbank.example; dkim=pass (signature was verified) header.d=harborbank.example; dmarc=pass action=none header.from=harborbank.example; compauth=pass reason=100",
+      ],
+      "not checked",
+    ],
+    ["no header", [], "not checked"],
+  ])("reads the receiving server's verdict for %s", (_name, results, verdict) => {
+    expect(senderVerdict(results, "harborbank.example")).toBe(verdict);
   });
 });

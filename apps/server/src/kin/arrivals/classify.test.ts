@@ -70,7 +70,7 @@ describe("classify", () => {
         "d: a client's address that fails DMARC is a stranger, even naming an invoice",
         mail("Ana <ana@lumen.example>", {
           subject: "INV-4: new bank details",
-          authResults: ["mx.example; dmarc=fail (p=reject) header.from=lumen.example"],
+          authResults: ["mx.google.com; dmarc=fail (p=reject) header.from=lumen.example"],
         }),
         "failed_checks",
         "chief",
@@ -323,7 +323,7 @@ describe("classify", () => {
     ],
     [
       "a lower header claims DMARC passed but the receiver has only an SPF softfail",
-      ["mx.google.com; spf=softfail", "mx.example; dmarc=pass header.from=lumen.example"],
+      ["mx.google.com; spf=softfail", "mx.relay.example; dmarc=pass header.from=lumen.example"],
     ],
     [
       "DMARC passes for a different domain and the receiver reports a failed DKIM check",
