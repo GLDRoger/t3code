@@ -551,6 +551,10 @@ it.effect(
         client_read: "record changes and contacts",
         money_summary: "record changes (including payments)",
         money_query: "record changes (including payments)",
+        money_in_check: {
+          uncovered:
+            "alert coverage can change without a record change; each check reads a fresh snapshot and posts a new historical card",
+        },
         dates_query: "record changes; ends carry: zone",
         deal_stages: "ends carry: lists",
         pulse_read: "pulse facts",
