@@ -1141,7 +1141,7 @@ export function makeKinClient<R, ER>(
       tag: KIN_PEOPLE_WS_METHODS.peopleSetPlaces,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
     }),
-    /** A person's own GitHub username, or a teammate's for the owner level; null clears it. */
+    /** A GitHub username, set by the owner level; null clears it, which anyone may do for their own. */
     personSetGithubLogin: createKinRpcCommand(runtime, {
       label: "kin:person:set-github-login",
       tag: KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin,
