@@ -16,6 +16,8 @@ import { Base64 } from "effect/encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import {
@@ -2178,6 +2180,28 @@ export const kinCallRead = <I>(
   if (read === undefined) return { input, refused: KIN_CALL_REFUSAL };
   const { arguments: _arguments, reason: _reason, ...rest } = input;
   return { input: { ...rest, ...read } };
+};
+
+// Kin's decoder lifts a list's own fields from fields to the row and refuses what Kin refuses.
+const recordWriteDecoders = new Map(
+  (["record_create", "record_update"] as const).map((name) => [
+    name,
+    Schema.decodeUnknownExit(
+      Schema.toCodecJson(KinWorkToolkit.tools[name].parametersSchema as Schema.Codec<unknown>),
+    ),
+  ]),
+);
+/** A record write as Kin reads it, either shape of a list's own field alike, or Kin's refusal. */
+export const kinRecordRead = (
+  name: string,
+  input: Record<string, unknown>,
+): { readonly input: Record<string, unknown>; readonly refused?: string } => {
+  const decode = recordWriteDecoders.get(name as "record_create");
+  if (decode === undefined) return { input };
+  const exit = decode(input);
+  if (Exit.isSuccess(exit)) return { input: exit.value as Record<string, unknown> };
+  const error: unknown = Cause.squash(exit.cause);
+  return { input, refused: error instanceof Error ? error.message : String(error) };
 };
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.

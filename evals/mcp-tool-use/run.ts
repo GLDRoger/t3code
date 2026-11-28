@@ -96,6 +96,7 @@ import {
   kinBillsOf,
   kinSessionOf,
   kinCallRead,
+  kinRecordRead,
   KIN_KEY_PREFIX,
   kinToolVisible,
   kinTurnBlocks,
@@ -2610,6 +2611,10 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   const kin = kinCallRead(name, input);
   if (kin.refused !== undefined) return failed(kin.refused);
   input = kin.input;
+  // A record write's mock answers the call as Kin reads it, and Kin's refusal fails it.
+  const record = kinRecordRead(name, input);
+  if (record.refused !== undefined) return failed(record.refused);
+  input = record.input;
   if (name === "ToolSearch") {
     const max = typeof input.max_results === "number" ? input.max_results : 5;
     const found = searchTools(base, valueText(input.query), max);
