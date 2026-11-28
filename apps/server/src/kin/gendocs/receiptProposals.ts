@@ -59,6 +59,7 @@ export const ReceiptRequest = Schema.Struct({
       another: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
+  noBankEvidence: Schema.optionalKey(Schema.Literal(true)),
   /** An agent's payment_record void: the payment `paymentId` on `key` taken back by the tap. */
   takeBack: Schema.optionalKey(Schema.Struct({ key: Schema.String, paymentId: Schema.String })),
   towards: Schema.optionalKey(Schema.String),
@@ -257,6 +258,9 @@ const alreadyOn = (against: NonNullable<Snapshot["against"]>) =>
 const payerOf = (snapshot: Snapshot) =>
   snapshot.client?.title ?? ("billedTo" in snapshot ? snapshot.billedTo : undefined);
 
+const NO_BANK_EVIDENCE =
+  "No bank statement or alert shows this money yet. This rests on what Kin was told.";
+
 /** The card's lines: figures from the records, the agent's own words labelled as its note. */
 export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   const note = [
@@ -265,7 +269,8 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
     request.reference === undefined ? undefined : `ref ${request.reference}`,
   ].filter((one) => one !== undefined);
   const against = snapshot.against;
-  if (request.received !== undefined) return paymentLines(snapshot, request.received);
+  if (request.received !== undefined)
+    return paymentLines(snapshot, request.received, request.noBankEvidence === true);
   if (request.takeBack !== undefined) return takeBackLines(snapshot, request.takeBack.key);
   return [
     `Client: ${payerOf(snapshot) ?? "none named"}`,
@@ -296,7 +301,7 @@ const owedAfter = (snapshot: Snapshot, received: Received) => {
 };
 
 /** A payment's card: who paid, how much in which currency, the day and the invoice, from Kin. */
-const paymentLines = (snapshot: Snapshot, received: Received) => {
+const paymentLines = (snapshot: Snapshot, received: Received, noBankEvidence: boolean) => {
   const against = snapshot.against;
   const left = owedAfter(snapshot, received);
   return [
@@ -326,6 +331,7 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
           "A payment of the same amount on the same day is already recorded on it; Confirm adds a second one.",
         ]
       : []),
+    ...(noBankEvidence ? [NO_BANK_EVIDENCE] : []),
     ...(received.note === undefined ? [] : [`Agent's note: ${received.note}`]),
   ];
 };
@@ -459,6 +465,7 @@ export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input:
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
+  const { noBankEvidence: _noBankEvidence, ...identity } = input.request;
   const json = stableStringify(input.request);
   const snapshot = stableStringify(input.snapshot);
   // A payment's ask in one turn is one card whatever its figures do; its first snapshot stands.
@@ -466,7 +473,7 @@ export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input:
     input.request.received === undefined && input.request.takeBack === undefined ? snapshot : "";
   const proposalId = `rp_${NodeCrypto.createHash("sha256")
     .update(
-      `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${figures}`,
+      `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${stableStringify(identity)}:${figures}`,
     )
     .digest("hex")
     .slice(0, 16)}`;
