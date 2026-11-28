@@ -2,7 +2,9 @@ import { useAtomValue } from "@effect/atom-react";
 import type {
   KinAttachment,
   KinBillBatchSummary,
+  KinBillRead,
   KinBillRow,
+  KinBillSha256,
   KinBillsListResult,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -171,6 +173,24 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
           setProblem({ key: view.key, text: outcome.problem });
         }
       },
+      /** Every bill reading again can change, asked for together, each as its own Read again. */
+      readUnreadAgain: async (views: ReadonlyArray<KinBillRowView>) => {
+        if (busy !== null || views.length === 0) return;
+        setBusy("again");
+        setProblem(null);
+        const outcomes = await Promise.all(
+          views.map((view) =>
+            kinListSend({
+              online,
+              send: () => readAgain({ environmentId, input: { orgId, sha256: view.row.sha256 } }),
+            }),
+          ),
+        );
+        setBusy(null);
+        const [failed] = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.problem]));
+        if (failed !== undefined) setProblem({ key: "all", text: failed });
+        refresh();
+      },
       keepAll: async () => {
         if (busy !== null) return;
         setBusy("all");
@@ -192,6 +212,42 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
         } else {
           setProblem({ key: "all", text: outcome.problem });
         }
+      },
+    };
+  }
+
+  /**
+   * Fix and keep: a bill not read cleanly kept with the person's own figures. Every list of bills
+   * reads again after, as after an add, since the editor may be a screen of its own.
+   */
+  function useKinBillFix(target: KinScreenTarget) {
+    const { environmentId, orgId } = target;
+    const addAnyway = useAtomCommand(kinClient.billsAddAnyway, { reportFailure: false });
+    const [requestId] = useState(newId);
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    return {
+      busy,
+      problem,
+      save: async (sha256: KinBillSha256, entered: KinBillRead) => {
+        if (busy) return false;
+        setBusy(true);
+        setProblem(null);
+        const outcome = await kinListSend({
+          online: () => kinHostConnected(environmentId),
+          send: () =>
+            addAnyway({
+              environmentId,
+              input: { orgId, sha256, clientRequestId: requestId, entered },
+            }),
+        });
+        setBusy(false);
+        if (!outcome.ok) {
+          setProblem(outcome.problem);
+          return false;
+        }
+        registry.update(kinClient.billsAdded({ environmentId, input: { orgId } }), (n) => n + 1);
+        return true;
       },
     };
   }
@@ -251,5 +307,5 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
     };
   }
 
-  return { useKinBillBatches, useKinBillBatch, useKinBillActions, useKinBillsAdd };
+  return { useKinBillBatches, useKinBillBatch, useKinBillActions, useKinBillFix, useKinBillsAdd };
 }

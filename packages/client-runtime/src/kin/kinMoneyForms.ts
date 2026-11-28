@@ -76,6 +76,7 @@ export const KIN_MONEY_FORMS = {
     amountPlaceholder: "Such as 2,350",
     /** Under the amount: an amount below zero is a refund or credit. */
     amountRefundHint: "For a refund, put a minus in front: -500.",
+    currency: "Currency",
     paidOn: "Paid on",
     paidOnHint: "A day still ahead saves it as to pay.",
     vendor: "Who was paid",
@@ -385,8 +386,10 @@ export function kinInvoiceInput(
 
 export interface KinExpenseDraft {
   readonly title: string;
-  /** As typed: a plain number is in the company's currency, a symbol or code names its own. */
+  /** As typed: a plain number is in `currency`, a symbol or code names its own. */
   readonly amount: string;
+  /** The currency picked for a plain number; empty is the company's. */
+  readonly currency: string;
   /** `YYYY-MM-DD`. */
   readonly paidOn: string;
   readonly vendor: string;
@@ -402,6 +405,7 @@ export interface KinExpenseDraft {
 export const kinExpenseDraft = (today: string): KinExpenseDraft => ({
   title: "",
   amount: "",
+  currency: "",
   paidOn: today,
   vendor: "",
   category: "",
@@ -418,6 +422,7 @@ export const kinExpenseTyped = (draft: KinExpenseDraft, opened: KinExpenseDraft)
   draft.amount.trim() !== "" ||
   draft.vendor.trim() !== "" ||
   draft.paidOn !== opened.paidOn ||
+  draft.currency !== opened.currency ||
   draft.category !== "" ||
   draft.paidWith !== "" ||
   draft.fundedBy !== "" ||
@@ -461,7 +466,7 @@ export function kinExpenseInput(
 ): KinMoneyFormCheck<KinNewExpenseInput> {
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.expenseWhat };
-  const read = parseKinMoney(draft.amount, options.currency);
+  const read = parseKinMoney(draft.amount, draft.currency || options.currency);
   if (!("money" in read) || read.money.minor === 0)
     return { ok: false, problem: KIN_MONEY_FORMS.problem.amount };
   const amount = read.money;
