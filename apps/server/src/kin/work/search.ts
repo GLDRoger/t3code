@@ -1,11 +1,15 @@
 import * as KinShell from "../shell/KinShell.ts";
 import { registerSectionColumns, sectionOfList, sectionOfRegister } from "../shell/sections.ts";
-import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
+import {
+  KIN_CAMPAIGN_SOURCE,
+  KIN_MONEY_SEARCH_KINDS,
+  type KinOrgId,
+  type KinSearchKind,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sectionsOf } from "./docBody.ts";
-import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, isSuggestion, keptEntry, sensitiveNow } from "./recordRows.ts";
 import {
@@ -16,7 +20,18 @@ import {
   teamListSearchText,
 } from "./searchIndex.ts";
 import { findBankList } from "./statements/bankList.ts";
-import { ownMoneyDraft, seenBy, teamLists, type KinViewer } from "./teamView.ts";
+import {
+  clientsPlaceSeenBy,
+  leadsEntryProject,
+  leadsProject,
+  listMoneySeenBy,
+  notesSeenBy,
+  ownMoneyDraft,
+  privateListField,
+  seenBy,
+  teamLists,
+  type KinViewer,
+} from "./teamView.ts";
 
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
@@ -53,6 +68,7 @@ type Row = {
   readonly clientKey: string | null;
   readonly part: "public" | "sensitive";
   readonly snippet: string;
+  readonly body: string | null;
 };
 
 const KINDS: ReadonlyArray<KinSearchKind> = ["work", "clients", "contacts", "projects", "docs"];
@@ -71,11 +87,39 @@ const wordsOf = (text: string) =>
     .filter((word) => word !== "")
     .slice(0, 12);
 
-/** Every word must match, or with `any` one of them; the last may be the start of one. */
-const ftsQuery = (words: ReadonlyArray<string>, any: boolean) =>
-  words
-    .map((word, index) => `"${word}"${index === words.length - 1 ? "*" : ""}`)
-    .join(any ? " OR " : " ");
+const withoutGrouping = (text: string) =>
+  text.replace(/\b\d{1,3}(?:,\d{3})+\b|\b\d{1,2}(?:,\d{2})+,\d{3}\b/g, (amount) =>
+    amount.replaceAll(",", ""),
+  );
+const ungroupedNumber = /\b\d{4,}\b/;
+const searchTerms = (text: string) =>
+  Array.from(text.matchAll(/"([^"]+)"|([^"]+)/g))
+    .flatMap((match) => {
+      const words = wordsOf(withoutGrouping(match[1] ?? match[2] ?? ""));
+      return match[1] === undefined || words.length === 0 ? words : [words.join(" ")];
+    })
+    .slice(0, 12);
+
+const groupedDigits = (digits: string, width: number): string =>
+  digits.length <= 3
+    ? digits
+    : digits.slice(0, -3).replace(new RegExp(`(?<=\\d)(?=(?:\\d{${width}})+$)`, "g"), " ") +
+      " " +
+      digits.slice(-3);
+
+/** Each term must match, or with `any` one of them. The last word may be incomplete. */
+const ftsQuery = (terms: ReadonlyArray<string>, any: boolean) =>
+  terms
+    .map((term, index) => {
+      const suffix = index === terms.length - 1 ? "*" : "";
+      const forms = new Set([term]);
+      if (ungroupedNumber.test(term))
+        for (const width of [3, 2])
+          forms.add(term.replace(/\b\d{4,}\b/g, (digits) => groupedDigits(digits, width)));
+      const match = [...forms].map((form) => `"${form}"${suffix}`);
+      return match.length === 1 ? match[0] : `(${match.join(" OR ")})`;
+    })
+    .join(any ? " OR " : " AND ");
 
 const around = (text: string, words: ReadonlyArray<string>) => {
   const lower = text.toLowerCase();
@@ -115,6 +159,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const terms = searchTerms(input.text);
   const words = wordsOf(input.text);
   const indexed = yield* searchIndexed();
   if (words.length === 0)
@@ -148,6 +193,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ? [
           sql`(r.register_id IN ${sql.in(bank === undefined ? KIN_MONEY_SEARCH_KINDS : [...KIN_MONEY_SEARCH_KINDS, bank.id])} OR NOT ${sensitiveNow(sql)}
             OR ${ownDraftOf(sql, input.scope)})`,
+          sql`(r.register_id <> 'deals' OR ${clientsPlaceSeenBy(sql, input.scope)})`,
         ]
       : []),
     seenBy(sql, input.scope),
@@ -167,40 +213,65 @@ export const search = Effect.fn("KinSearch.search")(function* (
             AND ${seenBy(sql, input.scope)})) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
   const wordColumns = sql`${columns}, (SELECT g.archived_at FROM kin_registers g
-    WHERE g.org_id = r.org_id AND g.register_id = r.register_id) AS "archivedAt"`;
-  const find = (any: boolean) => {
+    WHERE g.org_id = r.org_id AND g.register_id = r.register_id) AS "archivedAt",
+    CASE WHEN r.register_id = 'docs' THEN ${docBody(sql)} END AS body`;
+  const find = Effect.fnUntraced(function* (any: boolean) {
     const regular = [...where, sql`NOT (${onTeamList})`];
-    return Effect.gen(function* () {
-      const found = indexed
-        ? yield* sql<Row>`SELECT ${wordColumns}, m.part,
-            snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
-          FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
-          JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
-          WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
-            AND ${sql.and([...regular, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
-          ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
-          LIMIT ${input.limit * 2}`
-        : yield* scan(sql, words, any, regular, wordColumns, input.viewer, input.limit * 2);
-      if (shared.length === 0) return found;
-      // Match and show the same allowed text even if the FTS row predates the list's definition.
-      const opened = yield* scan(
-        sql,
-        words,
-        any,
-        [...where, onTeamList],
-        wordColumns,
-        input.viewer,
-        input.limit * 2,
-        teamListSearchText(sql),
-      );
-      return [...opened, ...found];
-    });
-  };
+    const team = input.viewer === "team";
+    // The old index is usable only for rows whose entire indexed text is readable.
+    const readableIndex = sql`(r.fields_json = '{}' AND
+      (r.register_id = 'work' OR (r.register_id = 'docs' AND r.notes = '')))`;
+    const limit = input.limit * 2;
+    const indexedRows = indexed
+      ? yield* sql<Row>`SELECT ${wordColumns}, m.part,
+          snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
+        FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
+        JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
+        WHERE kin_search MATCH ${ftsQuery(terms, any)} AND m.org_id = ${orgId}
+          AND ${sql.and(team ? [...regular, readableIndex, sql`m.part = 'public'`] : regular)}
+        ORDER BY ${team ? sql`` : sql`bm25(kin_search, 4.0, 1.0, 2.0),`}
+          r.updated_at DESC, r.record_id
+        LIMIT ${limit}`
+      : [];
+    const scanned =
+      !indexed || team
+        ? yield* scan(
+            sql,
+            terms,
+            any,
+            indexed ? [...regular, sql`NOT ${readableIndex}`] : regular,
+            wordColumns,
+            input.viewer,
+            limit,
+            team ? teamSearchText(sql, input.scope) : undefined,
+          )
+        : [];
+    const found = team
+      ? [...indexedRows, ...scanned].sort(
+          (a, b) => b.updatedAt - a.updatedAt || (a.recordId < b.recordId ? -1 : 1),
+        )
+      : [...indexedRows, ...scanned];
+    if (shared.length === 0) return found;
+    const opened = yield* scan(
+      sql,
+      terms,
+      any,
+      [...where, onTeamList],
+      wordColumns,
+      input.viewer,
+      limit,
+      team
+        ? teamSearchText(sql, input.scope, true)
+        : sql`r.title || ' ' || ${teamListSearchText(sql)}`,
+    );
+    return [...opened, ...found];
+  });
   const keyed =
     keys.length === 0 || (!allKeys && keyRegisters.length === 0)
       ? []
       : (yield* sql<Row & Parameters<typeof sectionOfRegister>[0]>`
           SELECT ${columns}, g.archived_at AS "archivedAt", 'public' AS part, r.title AS snippet,
+            NULL AS body,
             ${registerSectionColumns(sql)}
           FROM kin_records r JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
           WHERE ${sql.and([...visible, sql`r.key IN ${sql.in(keys)}`])}
@@ -221,26 +292,18 @@ export const search = Effect.fn("KinSearch.search")(function* (
     wordRegisters.length > 0 &&
     keyed.length === 0 &&
     every.length === 0 &&
-    words.length > 1 &&
+    terms.length > 1 &&
     input.widen === true &&
     input.limit > 0;
   const rows = [...keyed, ...(widened ? yield* find(true) : every)];
   const seen = new Set<string>();
   const best = rows.filter((row) => !seen.has(row.recordId) && seen.add(row.recordId));
   const shown = best.slice(0, input.limit);
-  const docs = yield* latestOf(
-    orgId,
-    shown
-      .slice(keyed.length)
-      .filter((row) => listOf(row.registerId) === "docs")
-      .map((row) => row.recordId),
-  );
   const hits = shown.map((row): Hit => {
-    const body = docs.get(row.recordId)?.body;
     const section =
-      body === undefined
+      row.body === null
         ? undefined
-        : sectionsOf(body).find((part) =>
+        : sectionsOf(row.body).find((part) =>
             words[widened ? "some" : "every"]((word) => part.text.toLowerCase().includes(word)),
           );
     return {
@@ -289,40 +352,110 @@ const withoutIds = (snippet: string) =>
     .replace(/\s{2,}/g, " ")
     .trim();
 
-/** Without FTS5: every word, or with `any` one of them, somewhere in the same text, newest first. */
+const docBody = (sql: SqlClient.SqlClient) => sql`COALESCE((SELECT v.body FROM kin_doc_versions v
+  WHERE v.org_id = r.org_id AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
+
+const fieldsIn = (
+  sql: SqlClient.SqlClient,
+  keys: ReadonlyArray<string>,
+  allowed = sql`1 = 1`,
+) => sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
+  WHERE j.key IN ${sql.in(keys)} AND j.type <> 'object' AND (${allowed})), '')`;
+
+const teamSearchText = (sql: SqlClient.SqlClient, viewer: KinViewer, shared = false) => {
+  const clients = clientsPlaceSeenBy(sql, viewer);
+  const projectLead = leadsProject(sql, viewer);
+  const notes = shared
+    ? sql`r.notes`
+    : sql`CASE WHEN r.register_id = 'docs' THEN '' ELSE ${notesSeenBy(sql, viewer)} END`;
+  const listFields = sql`COALESCE((SELECT group_concat(j.value, ' ')
+    FROM json_each(r.fields_json) j
+    JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    JOIN json_each(g.definition_json, '$.fields') f ON json_extract(f.value, '$.key') = j.key
+    WHERE j.type IN ('text', 'integer', 'real')
+      AND json_extract(f.value, '$.type') NOT IN ('person', 'link', 'file', 'money')
+      AND j.key NOT IN ('payment', 'payments')
+      AND (${listMoneySeenBy(sql, viewer)} OR NOT ${privateListField(sql, sql`j.key`)})), '')`;
+  const projects = fieldsIn(
+    sql,
+    ["repos", "billing", "startsOn", "renewsOn", "noticeDays", "audience"],
+    sql`(j.key <> 'billing' OR ${projectLead})`,
+  );
+  const work = fieldsIn(
+    sql,
+    ["reason", "where", "size"],
+    sql`(j.key = 'reason' OR ${leadsEntryProject(sql, viewer)})`,
+  );
+  // The deal page resolves stage and campaign references to names.
+  const deal = fieldsIn(
+    sql,
+    ["source", "lostReason", "concerns"],
+    sql`(
+    (j.key = 'source' AND j.value NOT LIKE ${KIN_CAMPAIGN_SOURCE + "%"})
+    OR (j.key = 'lostReason' AND r.state = 'dropped') OR j.key = 'concerns')`,
+  );
+  const fields = shared
+    ? listFields
+    : sql`CASE r.register_id
+    WHEN 'projects' THEN ${projects}
+    WHEN 'clients' THEN CASE WHEN ${clients} THEN
+      ${fieldsIn(
+        sql,
+        ["address", "source", "tags"],
+        sql`j.key <> 'source'
+        OR j.value NOT LIKE ${KIN_CAMPAIGN_SOURCE + "%"}`,
+      )} ELSE '' END
+    WHEN 'contacts' THEN ${fieldsIn(
+      sql,
+      ["role", "tags", "email", "phone", "emails", "phones"],
+      sql`(j.key IN ('role', 'tags') OR ${clients})`,
+    )}
+    WHEN 'deals' THEN ${deal}
+    WHEN 'work' THEN ${work} || ' ' || ${stepText(sql)}
+    WHEN 'docs' THEN ${docBody(sql)}
+    ELSE ${listFields}
+  END`;
+  return sql`r.title || ' ' || ${notes} || ' ' || ${fields}`;
+};
+
+/** Scan the allowed text, newest first, including when SQLite has no FTS5. */
 const scan = Effect.fnUntraced(function* (
   sql: SqlClient.SqlClient,
-  words: ReadonlyArray<string>,
+  terms: ReadonlyArray<string>,
   any: boolean,
   where: ReadonlyArray<ReturnType<SqlClient.SqlClient["and"]>>,
   columns: ReturnType<SqlClient.SqlClient["and"]>,
   viewer: Viewer,
   limit: number,
-  safeListText?: ReturnType<SqlClient.SqlClient["and"]>,
+  readableText?: ReturnType<SqlClient.SqlClient["and"]>,
 ) {
-  const body = sql`COALESCE((SELECT v.body FROM kin_doc_versions v WHERE v.org_id = r.org_id
-    AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
-  // The scan reads fields only for the owner: which are sensitive is the index's job.
-  const fields =
-    viewer === "owner" && safeListText === undefined ? sql`r.fields_json || ' ' ||` : sql``;
   const shown =
-    safeListText === undefined
-      ? sql`r.title || ' ' || r.notes || ' ' || ${body} || ' ' || ${stepText(sql)}`
-      : sql`r.title || ' ' || ${safeListText}`;
-  const text = sql`lower(${shown} || ' ' || ${fields} ${docKindWords(sql)})`;
+    readableText ??
+    sql`r.title || ' ' || r.notes || ' ' || ${docBody(sql)} || ' ' || ${stepText(sql)}`;
+  const fields =
+    viewer === "owner" && readableText === undefined ? sql`r.fields_json || ' '` : sql`''`;
+  const text = sql`lower(contents || ' ' || extra)`;
+  const matches = terms.map((term) =>
+    ungroupedNumber.test(term)
+      ? sql`instr(replace(${text}, ',', ''), ${term}) > 0`
+      : sql`instr(${text}, ${term}) > 0`,
+  );
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
-    SELECT ${columns}, ${shown} AS text
-    FROM kin_records r
-    WHERE ${sql.and([
-      ...where,
-      ((found) => (any ? sql.or(found) : sql.and(found)))(
-        words.map((word) => sql`instr(${text}, ${word}) > 0`),
-      ),
-    ])}
-    ORDER BY r.updated_at DESC, r.record_id LIMIT ${limit}`;
+    WITH readable AS MATERIALIZED (
+      SELECT r.org_id, r.record_id, r.updated_at, ${shown} AS contents,
+        (${fields} || ${docKindWords(sql)}) AS extra
+      FROM kin_records r WHERE ${sql.and(where)}
+    ), matched AS (
+      SELECT org_id, record_id, contents FROM readable
+      WHERE ${any ? sql.or(matches) : sql.and(matches)}
+      ORDER BY updated_at DESC, record_id LIMIT ${limit}
+    )
+    SELECT ${columns}, m.contents AS text FROM matched m
+    JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
+    ORDER BY r.updated_at DESC, r.record_id`;
   return rows.map(({ text: found, ...row }): Row => ({
     ...row,
     part: "public",
-    snippet: around(found, words),
+    snippet: around(found, terms),
   }));
 });
