@@ -2,12 +2,18 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  KinMailRule,
+  KinMailRuleCardState,
   KinMailRuleCreateInput,
   KinMailRuleHistory,
   KinMailRuleMatch,
   KinMailRuleRunNow,
 } from "./kinMailRules.ts";
 
+const encodeCard = Schema.encodeSync(KinMailRuleCardState);
+const decodeCard = Schema.decodeUnknownSync(KinMailRuleCardState);
+const encodeRule = Schema.encodeSync(KinMailRule);
+const decodeRule = Schema.decodeUnknownSync(KinMailRule);
 const valid = Schema.is(KinMailRuleCreateInput);
 const isMatch = Schema.is(KinMailRuleMatch);
 
@@ -76,4 +82,60 @@ it("decodes bounded run outcomes and hold reasons while keeping earlier history 
   const held = { ...row, state: "held_paused", runOutcome: "held", holdReason: "setter_demoted" };
   expect(decode({ entries: [ended, held] }).entries).toEqual([ended, held]);
   expect(() => decode({ entries: [{ ...held, holdReason: "raw message" }] })).toThrow();
+});
+
+it("round-trips removal time and still lets older card decoders read the decision", () => {
+  const { decision, ...fields } = KinMailRuleCardState.fields;
+  const { status, ruleId, by } = decision.members[1].fields;
+  const oldCard = Schema.Struct({
+    ...fields,
+    decision: Schema.Union([
+      decision.members[0],
+      Schema.Struct({ status, ruleId, by }),
+      decision.members[2],
+      decision.members[3],
+    ]),
+  });
+  const old = {
+    mailbox: { connectionId: "mail", label: "Mail" },
+    lead: { agentId: "finance", name: "Finance" },
+    match: filters,
+    fromAscii: [],
+    what: "File the bill.",
+    monthlyCap: 30,
+    contentSha256: "a".repeat(64),
+    expiresAt: 1000,
+    decision: { status: "on", ruleId: "rule", by: { personId: "rhea", name: "Rhea" } },
+  };
+  const updated = { ...old, decision: { ...old.decision, removedAt: "2026-11-27T12:00:00.000Z" } };
+  expect(encodeCard(decodeCard(old))).toEqual(old);
+  expect(encodeCard(decodeCard(updated))).toEqual(updated);
+  expect(Schema.decodeUnknownSync(oldCard)(updated)).toEqual(old);
+});
+
+it("round-trips a rule's optional last run time", () => {
+  const old = {
+    orgId: "org",
+    connectionId: "mail",
+    ruleId: "rule",
+    match: filters,
+    wordingChanged: false,
+    what: "File the bill.",
+    agentId: "finance",
+    chatId: "rhea-finance",
+    saidBy: "rhea",
+    setterName: "Rhea",
+    state: "on",
+    pausedWhy: null,
+    monthlyCap: 30,
+    month: "2026-11",
+    fired: 1,
+    atLimit: false,
+    lastWakeAt: 1000,
+    createdAt: 0,
+    updatedAt: 1000,
+  };
+  const updated = { ...old, lastRanAt: "2026-11-27T12:00:00.000Z" };
+  expect(encodeRule(decodeRule(old))).toEqual(old);
+  expect(encodeRule(decodeRule(updated))).toEqual(updated);
 });
