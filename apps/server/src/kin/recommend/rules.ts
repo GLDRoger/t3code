@@ -1,3 +1,4 @@
+import { normalizeAddress } from "../connections/MailSignals.ts";
 import {
   KIN_DAILY_LIMIT_STEPS,
   KinAgentId,
@@ -23,7 +24,6 @@ import {
   BANK_SENDER_RULE,
   liveHeldMail,
   list as listSenders,
-  normalizeAddress,
 } from "../work/statements/bankSenderRows.ts";
 import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { companyName } from "../work/companyProfile.ts";

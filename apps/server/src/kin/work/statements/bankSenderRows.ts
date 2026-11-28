@@ -6,17 +6,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { normalizeAddress } from "../../connections/MailSignals.ts";
 import { MAIL_PRESETS } from "../../connections/mailProviders.ts";
 import { DAY_MS } from "../../durations.ts";
-
-export const normalizeAddress = (value: string | null | undefined) => {
-  const address = value?.trim().toLowerCase();
-  return address !== undefined &&
-    address.length <= 254 &&
-    /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(address)
-    ? address
-    : undefined;
-};
 
 export const quietBankSenderAddresses = Effect.fn("KinBankSenders.quietAddresses")(function* (
   orgId: KinOrgId,
