@@ -829,6 +829,16 @@ it.effect(
   },
 );
 
+it("a missing GitHub username points to the owner level, never the asker's own settings", () => {
+  for (const said of [
+    ASK_REFUSAL.noLogin("Zoya Sheikh"),
+    READ_REFUSAL.noLogin(LEDGER, "Zoya Sheikh"),
+  ]) {
+    assert.include(said, "the owner or a co-owner sets");
+    assert.notInclude(said, "You →");
+  }
+});
+
 // Each review queued is a turn of the asker's: the daily limit holds per pull request, as
 // ChatWake holds it per message, and never for the owner or a co-owner.
 it.effect("the daily limit holds per pull request, and never for a co-owner", () => {

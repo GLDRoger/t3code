@@ -1751,9 +1751,11 @@ features:
     web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
     roles: { owner: web, co_owner: web, lead: web, member: web }
     note: >-
-      The host sends it only on a profile its reader may change and refuses one another person
-      already has, without saying whose. Settings → Profile on the web shows the same row. Agents
-      can't set it: people_update has no field for it.
+      The owner and co-owners set it, their own and a teammate's; a member or lead sees their own
+      read-only, saying who sets it, and the host lets them only clear it. The host sends it only
+      on a profile its reader may change and refuses one another person already has, without
+      saying whose. Settings → Profile on the web shows the same row. Agents can't set it:
+      people_update has no field for it.
     proof:
       - packages/client-runtime/src/kin/kinProfiles.test.ts
       - apps/web/src/kin/KinProfileSheet.browser.test.tsx
