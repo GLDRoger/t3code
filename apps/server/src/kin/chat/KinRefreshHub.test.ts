@@ -233,7 +233,7 @@ describe("KinRefreshHub", () => {
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
         // A bill's smaller copy is ready (`work/bills.ts`, outside any transaction): Money's
-        // topic moves for the owner, and she hears nothing at all.
+        // topic moves for the owner, and the teammate hears nothing at all.
         const heard = [...(yield* Queue.takeAll(ownerSees))].at(-1) ?? start;
         yield* (yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "moneyStatements");
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);

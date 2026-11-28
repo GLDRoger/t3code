@@ -2351,7 +2351,7 @@ describe("bill picture copies made after the answer", () => {
         const { batchId } = yield* Effect.gen(function* () {
           const added = yield* addPage(attachment, "deleted");
           yield* Deferred.await(entered);
-          // Rhea clears her chat with Finance: the card's file goes, as KinChatService does it.
+          // Rhea clears the chat with Finance: the card's file goes, as KinChatService does it.
           const [row] = yield* previewIds;
           yield* sql`DELETE FROM kin_message_attachments
             WHERE org_id = ${orgId} AND attachment_id = ${row!.attachment}`;
