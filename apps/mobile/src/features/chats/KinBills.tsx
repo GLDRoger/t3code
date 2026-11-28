@@ -9,11 +9,13 @@ import {
   KIN_BILLS,
   kinBillBatchSentence,
   kinBillExpenseStart,
+  kinBillFixStart,
   kinBillReviewCounts,
   kinBillRowViews,
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsOutcome,
+  kinBillsUnreadAgain,
   kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
@@ -64,7 +66,7 @@ import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { createBillPhotoAttachment, preparePickedBillPhoto } from "./kinBillPhoto";
 import { forgetKinSharedFile } from "./kinSharedFileInbox";
 import type { KinSharedFile } from "./state/kinSharedFile";
-import { kinBillChoices, kinExpenseParamsOfBill } from "./state/kinBillsPick";
+import { kinBillChoices, kinBillFixParamsOf, kinExpenseParamsOfBill } from "./state/kinBillsPick";
 import { useKinHomeCurrency, useKinLists, kinListsOf } from "./state/useKinMoney";
 import {
   useKinBillActions,
@@ -502,6 +504,15 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
             view.file.name,
           ),
         );
+      case "fix":
+        return navigation.navigate(
+          "KinBillFix",
+          kinBillFixParamsOf(
+            base,
+            { sha256: view.row.sha256, name: view.file.name },
+            kinBillFixStart(view.row, home, expenses?.categories ?? []),
+          ),
+        );
     }
   };
   const title = batch === null ? KIN_BILLS.added : KIN_BILLS.batchTitle(batch.addedAt, now);
@@ -522,6 +533,7 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
     );
   const counts = kinBillReviewCounts(batch?.states ?? null, rows);
   const canKeepAll = actions.allowed && kinBillsCanKeepAll(counts);
+  const unread = kinBillsUnreadAgain(views);
   return (
     <Frame title={title} onBack={back} onRefresh={refresh}>
       <LegendList<KinBillRowView>
@@ -547,6 +559,15 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
                 disabled={!canKeepAll || actions.busy !== null}
                 loading={actions.busy === "all"}
                 onPress={() => void actions.keepAll()}
+              />
+            ) : null}
+            {actions.allowed && unread.length > 0 ? (
+              <Button
+                tone="secondary"
+                label={KIN_BILLS.readUnreadAgain(unread.length)}
+                disabled={actions.busy !== null}
+                loading={actions.busy === "again"}
+                onPress={() => void actions.readUnreadAgain(unread)}
               />
             ) : null}
             {actions.kept === null ? null : (
@@ -598,6 +619,7 @@ const CHANGES: ReadonlySet<KinBillAction> = new Set([
   "byHand",
   "readAgain",
   "edit",
+  "fix",
 ]);
 
 const label = (view: KinBillRowView, action: KinBillAction) =>
@@ -650,6 +672,7 @@ function BillThumb(props: {
           source={assetImageSource(props.environmentId, shown, uri)}
           style={{ width: 64, height: 64 }}
           contentFit="cover"
+          contentPosition="top"
           recyclingKey={picture.attachmentId}
           accessibilityIgnoresInvertColors
         />
@@ -746,7 +769,11 @@ const BillRow = memo(function BillRow(props: {
             <Button
               key={action}
               size="compact"
-              tone={action === "keep" || action === "addAnyway" ? "secondary" : "text"}
+              tone={
+                action === "keep" || action === "addAnyway" || action === "fix"
+                  ? "secondary"
+                  : "text"
+              }
               label={label(view, action)}
               accessibilityLabel={`${label(view, action)}: ${view.name}`}
               disabled={props.busy && CHANGES.has(action)}

@@ -29,6 +29,14 @@ import {
 } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_BILL_TO, kinBillToOffered } from "@t3tools/client-runtime/kin/kinBillTo";
 import {
+  KIN_BILLS,
+  kinBillCurrencies,
+  kinBillFixInput,
+  kinBillFixNeeds,
+  type KinBillFixDraft,
+} from "@t3tools/client-runtime/kin/kinBills";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
+import {
   KIN_GST_STATE_NAMES,
   KIN_WORK_FORM_COPY,
   kinIndiaFields,
@@ -37,6 +45,7 @@ import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWo
 import {
   EnvironmentId,
   KIN_DEFAULT_HOME_CURRENCY,
+  KinBillSha256,
   KinOrgId,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -56,6 +65,7 @@ import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
+import { KinDayField } from "./components/KinDayField";
 import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
 import {
@@ -66,7 +76,13 @@ import {
   useKinLists,
   useKinWorkFiles,
 } from "./state/useKinMoney";
-import { kinExpenseStartOf, type KinExpenseNewParams } from "./state/kinBillsPick";
+import {
+  kinBillFixStartOf,
+  kinExpenseStartOf,
+  type KinBillFixParams,
+  type KinExpenseNewParams,
+} from "./state/kinBillsPick";
+import { useKinBillFix } from "./state/useKinBills";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
 import {
   kinWorkChoicesAtom,
@@ -79,6 +95,7 @@ import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
+const decodeBill = Schema.decodeUnknownOption(KinBillSha256);
 
 const targetOf = (params: { readonly environmentId: string; readonly orgId: string }) => {
   const environmentId = Option.getOrNull(decodeEnvironmentId(params.environmentId));
@@ -632,6 +649,16 @@ function ExpenseForm(
       <Slip line={slip} />
       <ListSection>
         <PickRow
+          label={KIN_MONEY_FORMS.expense.currency}
+          value={draft.currency || currency}
+          shown={kinCurrencyName(draft.currency || currency)}
+          options={kinBillCurrencies(currency, opened.currency).map((one) => ({
+            id: one,
+            title: kinCurrencyName(one),
+          }))}
+          onPick={(picked) => set({ currency: picked === currency ? "" : picked })}
+        />
+        <PickRow
           label={KIN_MONEY_FORMS.expense.paidOn}
           icon="clock"
           value={draft.paidOn}
@@ -715,6 +742,163 @@ function ExpenseForm(
           </Text>
         </>
       ) : null}
+    </KinWorkFrame>
+  );
+}
+
+/** Fix and keep on the phone: a bill not read cleanly, its read filled in, kept on save. */
+export function KinBillFixScreen({ route }: StaticScreenProps<KinBillFixParams>) {
+  const navigation = useNavigation();
+  const target = targetOf(route.params);
+  const bill = Option.getOrNull(decodeBill(route.params.bill));
+  if (target === null || bill === null)
+    return (
+      <KinWorkFrame title={KIN_BILLS.fix.title} onClose={() => navigation.goBack()}>
+        <EmptyState variant="plain" {...KIN_BILLS.gone} />
+      </KinWorkFrame>
+    );
+  return <BillFixForm {...target} bill={bill} params={route.params} />;
+}
+
+function BillFixForm(
+  props: KinWorkTarget & { readonly bill: KinBillSha256; readonly params: KinBillFixParams },
+) {
+  const navigation = useNavigation();
+  const now = new Date(useNowMinuteMs());
+  const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const [opened] = useState(() => kinBillFixStartOf(props.params, home));
+  const [draft, setDraft] = useState<KinBillFixDraft>(opened);
+  const [problem, setProblem] = useState<string | null>(null);
+  const fix = useKinBillFix(props);
+  const lists = useKinLists(props, { enabled: true });
+  const categories = kinExpenseChoices(
+    lists.state._tag === "ready"
+      ? kinListsOf(lists).find((one) => one.list === "expenses")
+      : undefined,
+  ).categories;
+  const saved = useRef(false);
+  const typed = JSON.stringify(draft) !== JSON.stringify(opened);
+  usePreventRemove(typed || fix.busy, ({ data }) => {
+    if (saved.current) return navigation.dispatch(data.action);
+    if (fix.busy) return;
+    Dialog.alert(KIN_MONEY_FORMS.discard.expense, KIN_MONEY_FORMS.discard.detail, [
+      { text: KIN_MONEY_FORMS.discard.keep, style: "cancel" },
+      {
+        text: KIN_MONEY_FORMS.discard.discard,
+        style: "destructive",
+        onPress: () => navigation.dispatch(data.action),
+      },
+    ]);
+  });
+  const needs = new Set<string>(kinBillFixNeeds(draft));
+  const copy = KIN_BILLS.fix;
+  const field = KIN_BILLS.field;
+  const needed = (key: keyof KinBillFixDraft) => (needs.has(key) ? copy.needed : undefined);
+  const set = (patch: Partial<KinBillFixDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+    setProblem(null);
+  };
+  const days = [0, 1, 2].map((back) => {
+    const day = new Date(now);
+    day.setDate(day.getDate() - back);
+    return { day: kinWorkDayOf(day), label: kinWorkDueLabel(kinWorkDayOf(day), now) };
+  });
+  const save = async () => {
+    const checked = kinBillFixInput(draft);
+    if (!checked.ok) return setProblem(checked.problem);
+    if (!(await fix.save(props.bill, checked.entered))) return;
+    saved.current = true;
+    navigation.goBack();
+  };
+  const category = categories.find((one) => one.value === draft.category);
+  const shown = problem ?? fix.problem;
+  return (
+    <KinWorkFrame
+      title={copy.title}
+      form
+      showTop={shown}
+      onClose={() => navigation.goBack()}
+      confirm={{
+        label: copy.keep,
+        onPress: () => void save(),
+        loading: fix.busy,
+        disabled: fix.busy,
+      }}
+    >
+      <Text textRole="footnote" className="px-2 text-foreground-muted">
+        {copy.hint}
+      </Text>
+      {shown === null ? null : <Notice message={shown} tone="danger" />}
+      <KinWorkTextField
+        label={field.vendor}
+        value={draft.vendor}
+        maxLength={200}
+        hint={needed("vendor")}
+        onChangeText={(vendor) => set({ vendor })}
+      />
+      <ListSection>
+        <KinDayField
+          label={field.date}
+          icon="clock"
+          day={draft.date === "" ? null : draft.date}
+          zone={null}
+          now={now}
+          none={null}
+          hint={needed("date") ?? null}
+          choices={days}
+          latest={days[0]!.day}
+          onPick={(date) => set({ date: date ?? "" })}
+        />
+      </ListSection>
+      <KinWorkTextField
+        label={field.amount}
+        value={draft.amount}
+        placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+        keyboard="numbers"
+        hint={needed("amount")}
+        onChangeText={(amount) => set({ amount })}
+      />
+      <ListSection>
+        <PickRow
+          label={copy.currency}
+          value={draft.currency}
+          shown={kinCurrencyName(draft.currency)}
+          options={kinBillCurrencies(home, opened.currency).map((one) => ({
+            id: one,
+            title: kinCurrencyName(one),
+          }))}
+          onPick={(currency) => set({ currency })}
+        />
+      </ListSection>
+      <KinWorkTextField
+        label={field.tax}
+        value={draft.tax}
+        keyboard="numbers"
+        onChangeText={(tax) => set({ tax })}
+      />
+      {categories.length === 0 ? null : (
+        <ListSection>
+          <PickRow
+            label={field.category}
+            value={draft.category}
+            shown={category?.label ?? KIN_MONEY_FORMS.expense.noCategory}
+            options={[
+              { id: "", title: KIN_MONEY_FORMS.expense.noCategory },
+              ...categories.map((one) => ({ id: one.value, title: one.label })),
+            ]}
+            onPick={(picked) => set({ category: picked })}
+          />
+        </ListSection>
+      )}
+      <KinWorkTextField
+        label={field.number}
+        value={draft.number}
+        maxLength={200}
+        onChangeText={(number) => set({ number })}
+      />
+      <Text textRole="footnote" className="px-2 text-foreground-muted">
+        {`${copy.receipt}: ${props.params.receiptName}`}
+      </Text>
     </KinWorkFrame>
   );
 }

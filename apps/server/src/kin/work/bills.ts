@@ -25,6 +25,7 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinSignedMoney,
   KinWidgetId,
   type KinWakeupId,
@@ -1460,7 +1461,13 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
   read: KinBillRead,
   money: { readonly minor: number; readonly currency: string },
   zone: string,
-  how: "auto" | { readonly requestHash: string },
+  how:
+    | "auto"
+    | {
+        readonly requestHash: string;
+        /** The owner-level person whose own figures these are, typed in place of the read. */
+        readonly by?: { readonly personId: KinPersonId; readonly name: string };
+      },
 ) {
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
@@ -1477,11 +1484,12 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
       : parseKinMoney(printedTax, read.currency);
   const [adder] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${row.addedBy}`;
+  const by = how === "auto" ? undefined : how.by;
   const writer: Writer = {
-    actor: { _tag: "system" },
+    actor: by === undefined ? { _tag: "system" } : { _tag: "person", personId: by.personId },
     via: "owner",
     chatId: KinChatId.make(row.cardChatId),
-    askedBy: KinPersonId.make(row.addedBy),
+    askedBy: by?.personId ?? KinPersonId.make(row.addedBy),
   };
   const fromMail = row.mailFrom !== null && row.mailAt !== null;
   const { row: made } = yield* records.create(orgId, writer, {
@@ -1499,9 +1507,12 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
       receipt: [row.attachmentId],
       ...(tax !== undefined && "money" in tax && tax.money.minor !== 0 ? { tax: tax.money } : {}),
     },
-    notes: fromMail
-      ? `Read by Kin from a mail from ${row.mailFrom}, received ${formatKinWhen(row.mailAt, "date", { zone, locale: KIN_TEXT_LOCALE })}.`
-      : `Read by Kin from a photo ${adder?.name ?? "someone"} added.`,
+    notes:
+      by !== undefined
+        ? `Entered by ${by.name} from a bill Kin couldn't read cleanly.`
+        : fromMail
+          ? `Read by Kin from a mail from ${row.mailFrom}, received ${formatKinWhen(row.mailAt, "date", { zone, locale: KIN_TEXT_LOCALE })}.`
+          : `Read by Kin from a photo ${adder?.name ?? "someone"} added.`,
     sensitive: true,
     confirmed: false,
     source: { chatId: KinChatId.make(row.chatId), messageId: KinMessageId.make(row.messageId) },
@@ -1554,7 +1565,10 @@ export const answer = Effect.fn("KinBills.answer")(function* (
       const row = yield* billRow(turn.orgId, file.hash);
       if (row === undefined || row.state !== "reading" || row.eventId !== file.eventId)
         return readAnswer(id, "answered");
-      return readAnswer(id, yield* settleRead(turn.orgId, row, input));
+      const outcome = yield* settleRead(turn.orgId, row, input);
+      // The list reads again on the card's change: a read shows as it lands, not at turn end.
+      yield* refreshCard(turn.orgId, row.batchId);
+      return readAnswer(id, outcome);
     }),
   );
 }, workFailure);
@@ -2117,7 +2131,27 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
   );
 }, workFailure);
 
-/** `kin.bills.addAnyway`: a duplicate's own suggested expense, as a clean read would have made. */
+/** The figures an owner typed for a bill not read cleanly, as a clean read would need them. */
+const enteredMoney = (entered: KinBillRead) => {
+  if (blankText(entered.vendor) || notAVendor(entered.vendor!)) return "Enter who was paid.";
+  if (entered.date === undefined) return "Enter the date.";
+  const amount = plainNumber(entered.amount, entered.currency);
+  const money =
+    amount === undefined || entered.currency === undefined
+      ? undefined
+      : parseKinMoney(amount, entered.currency);
+  if (money === undefined || "error" in money || money.money.minor === 0)
+    return "Enter the amount.";
+  if (entered.tax !== undefined && plainNumber(entered.tax, entered.currency) === undefined)
+    return "The tax isn't a number.";
+  return money.money;
+};
+const blankText = (value: string | undefined) => value === undefined || value.trim() === "";
+
+/**
+ * `kin.bills.addAnyway`: a duplicate's own suggested expense, as a clean read would have made; or,
+ * with `entered`, a bill not read cleanly kept with the person's own figures, as Keep keeps one.
+ */
 export const addAnyway = Effect.fn("KinBills.addAnyway")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinBillsAddAnywayInput,
@@ -2137,21 +2171,49 @@ export const addAnyway = Effect.fn("KinBills.addAnyway")(function* (
     Effect.gen(function* () {
       const row = yield* billRow(input.orgId, input.sha256);
       if (row === undefined) return yield* notFound;
-      if (row.state !== "duplicate" || row.recordId !== null)
+      const { entered } = input;
+      if (entered !== undefined) {
+        if (row.state !== "unreadable" || row.recordId !== null || row.dismissedAt !== null)
+          return yield* invalid("Only a bill not read cleanly is kept with figures typed in.");
+      } else if (row.state !== "duplicate" || row.recordId !== null)
         return yield* invalid("Only a bill that looks like a duplicate is added anyway.");
-      const read = Option.getOrElse(decodeRead(row.readJson ?? "{}"), () => ({})) as KinBillRead;
+      const read =
+        entered ?? (Option.getOrElse(decodeRead(row.readJson ?? "{}"), () => ({})) as KinBillRead);
       const amount = plainNumber(read.amount, read.currency);
-      const money =
+      const printed =
         amount === undefined || read.currency === undefined
           ? undefined
           : parseKinMoney(amount, read.currency);
-      if (money === undefined || "error" in money) return yield* invalid("Its amount is unread.");
+      const money =
+        entered !== undefined
+          ? enteredMoney(entered)
+          : printed === undefined || "error" in printed
+            ? "Its amount is unread."
+            : printed.money;
+      if (typeof money === "string") return yield* invalid(money);
       const zone = yield* ownerZone(input.orgId);
-      const made = yield* makeExpense(input.orgId, row, read, money.money, zone, { requestHash });
-      yield* sql`UPDATE kin_bill_reads SET state = 'read', record_id = ${made}
+      const [named] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+        WHERE org_id = ${input.orgId} AND person_id = ${person.personId}`;
+      const made = yield* makeExpense(input.orgId, row, read, money, zone, {
+        requestHash,
+        ...(entered === undefined
+          ? {}
+          : { by: { personId: person.personId, name: named?.name ?? "the owner" } }),
+      });
+      // The person's figures are what the bill says now; no read is left in question.
+      const json =
+        entered === undefined ? row.readJson : yield* encodeRead(entered).pipe(Effect.orDie);
+      yield* sql`UPDATE kin_bill_reads SET state = 'read', record_id = ${made}, read_json = ${json},
+          problem = NULL
         WHERE org_id = ${input.orgId} AND sha256 = ${row.sha256}`;
-      const [record] = yield* sql<{ key: string }>`SELECT key FROM kin_records
-        WHERE org_id = ${input.orgId} AND record_id = ${made}`;
+      const [record] = yield* sql<{ key: string; rev: number }>`SELECT key, rev
+        FROM kin_records WHERE org_id = ${input.orgId} AND record_id = ${made}`;
+      if (entered !== undefined)
+        yield* confirm(people, {
+          orgId: input.orgId,
+          key: KinRecordKey.make(record!.key),
+          rev: record!.rev,
+        });
       const result = { expense: record!.key };
       yield* keepAnswer(
         input.orgId,

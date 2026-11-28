@@ -2,5 +2,10 @@ import { makeKinBillsHooks } from "@t3tools/client-runtime/kin/react/kinBillsHoo
 
 import { kinHookApp } from "./kinHookApp";
 
-export const { useKinBillBatches, useKinBillBatch, useKinBillActions, useKinBillsAdd } =
-  makeKinBillsHooks(kinHookApp);
+export const {
+  useKinBillBatches,
+  useKinBillBatch,
+  useKinBillActions,
+  useKinBillFix,
+  useKinBillsAdd,
+} = makeKinBillsHooks(kinHookApp);

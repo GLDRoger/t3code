@@ -255,6 +255,11 @@ export const KinBillsAddAnywayInput = Schema.Struct({
   orgId: KinOrgId,
   sha256: KinBillSha256,
   clientRequestId: RequestId,
+  /**
+   * A bill not read cleanly, kept with the person's own figures in place of the read: its
+   * expense is made from these, as the person's, and kept at once. Older hosts refuse it.
+   */
+  entered: Schema.optional(KinBillRead),
 });
 export type KinBillsAddAnywayInput = typeof KinBillsAddAnywayInput.Type;
 export const KinBillsAddAnywayResult = Schema.Struct({ expense: KinRecordKey });

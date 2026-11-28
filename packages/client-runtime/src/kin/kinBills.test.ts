@@ -16,6 +16,10 @@ import {
   kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFileRefusal,
+  kinBillFixInput,
+  kinBillFixNeeds,
+  kinBillFixStart,
+  kinBillsUnreadAgain,
   kinBillReviewCounts,
   kinBillRowView,
   kinBillRowViews,
@@ -118,6 +122,35 @@ describe("a bill on the review list", () => {
       }),
     );
     expect([kind.label, kind.actions]).toEqual(["Couldn't read this one", ["byHand", "dismiss"]]);
+    // Anything read at all is fixed in place, with what was read; by hand is for a blank read.
+    const partly: ReadonlyArray<[Partial<KinBillRow>, ReadonlyArray<string>]> = [
+      [
+        { problem: "Couldn't read: date", read: { vendor: "Harbor Cafe", amount: "1200" } },
+        ["fix", "readAgain", "dismiss"],
+      ],
+      [
+        { problem: "Finance: The photo is blurred.", read: { number: "HC-12" } },
+        ["fix", "readAgain", "dismiss"],
+      ],
+      [
+        {
+          problem: "The amount is far above the rest of Expenses: check it.",
+          readClean: true,
+          check: "amount",
+          read: { vendor: "Harbor Cafe", amount: "120000", currency: "INR", date: "2026-11-06" },
+        },
+        ["fix", "dismiss"],
+      ],
+      [
+        { problem: "Couldn't read: amount", read: { vendor: "  " } },
+        ["byHand", "readAgain", "dismiss"],
+      ],
+    ];
+    for (const [overrides, actions] of partly)
+      expect(
+        kinBillRowView(row({ state: "unreadable", expense: undefined, ...overrides })).actions,
+      ).toEqual(actions);
+    expect(KIN_BILLS.action.fix).toBe("Fix and keep");
     expect(kinBillRowView(row({ state: "unreadable", problem: "It is for 0" })).problem).toBe(
       "It is for 0",
     );
@@ -219,8 +252,8 @@ describe("a bill on the review list", () => {
     const view = kinBillRowView(row(dateOnly));
     expect([view.label, view.problem, view.actions]).toEqual([
       "Needs its date",
-      "Every other figure was read: enter the date by hand, or read it again.",
-      ["byHand", "readAgain", "dismiss"],
+      "Every other figure was read: fix the date and keep it, or read it again.",
+      ["fix", "readAgain", "dismiss"],
     ]);
     expect(view.accessibilityLabel).not.toContain("Couldn't read");
     // The reading agent's own words about it stay whole.
@@ -708,6 +741,46 @@ describe("a batch", () => {
     });
   });
 
+  it("counts only bills whose read has landed, and says what is still being read apart", () => {
+    const counts = (states: Partial<KinBillBatchSummary["states"]>) => ({
+      reading: 0,
+      read: 0,
+      kept: 0,
+      dropped: 0,
+      duplicate: 0,
+      unreadable: 0,
+      ...states,
+    });
+    // From the first second: nothing read yet is no bill count at all.
+    expect(kinBillBatchSentence(counts({ reading: 17 }), 17)).toBe("17 being read.");
+    // A photo cut into pieces grows what is being read; the bills counted only ever grow.
+    expect(kinBillBatchSentence(counts({ reading: 35, unreadable: 1 }), 36)).toBe(
+      "1 bill so far: 1 couldn't be read. 35 more being read.",
+    );
+    expect(kinBillBatchSentence(counts({ reading: 4, read: 6, unreadable: 37 }), 47)).toBe(
+      "43 bills so far: 6 to keep, 37 couldn't be read. 4 more being read.",
+    );
+    expect(kinBillBatchSentence(counts({ read: 10, unreadable: 37 }), 47)).toBe(
+      "47 bills: 10 to keep, 37 couldn't be read.",
+    );
+  });
+
+  it("offers to read again every bill that reading again can change", () => {
+    const unread = (n: number, overrides: Partial<KinBillRow> = {}) =>
+      row({ sha256: SHA(n), state: "unreadable", expense: undefined, ...overrides });
+    const views = kinBillRowViews([
+      unread(1, { problem: "Finance: The photo is blurred." }),
+      unread(2, { problem: "Couldn't read: date", read: { vendor: "Harbor Cafe" } }),
+      unread(3, { problem: "The date is after today: check it.", readClean: true, check: "date" }),
+      unread(4, { problem: "Kin can't read this kind of photo.", wrongKind: true }),
+      row({ sha256: SHA(5) }),
+      row({ sha256: SHA(6), state: "reading", expense: undefined }),
+    ]);
+    expect(kinBillsUnreadAgain(views).map((view) => view.key)).toEqual([SHA(1), SHA(2)]);
+    expect(KIN_BILLS.readUnreadAgain(2)).toBe("Read the 2 unread again");
+    expect(KIN_BILLS.readUnreadAgain(1)).toBe("Read the unread one again");
+  });
+
   it("says how many Keep all kept, and why each other one wasn't", () => {
     expect(kinBillsKeptAll({ kept: ["EXP-1", "EXP-2"], skipped: [] }).said).toBe(
       "Kept 2 expenses.",
@@ -773,19 +846,87 @@ describe("a bill typed by hand", () => {
     });
     expect(kinBillExpenseStart(unread, "INR", ["software", "travel"])).toEqual({
       receipt: "kin-chat-1",
+      title: "Sample Cloud",
       vendor: "Sample Cloud",
       paidOn: "2026-11-02",
+      // No currency read: the amount comes in, in the company's, for the person to change.
+      amount: "49.00",
+      currency: "INR",
       category: "software",
     });
     const home = row({ read: { amount: "2350.75", currency: "INR" } });
     const start = kinBillExpenseStart(home, "INR", []);
-    expect(start).toEqual({ receipt: "kin-chat-1", amount: "2350.75" });
-    // The form reads the plain number back in the company's currency.
-    expect(parseKinMoney(start.amount ?? "", "INR")).toEqual({
+    expect(start).toEqual({ receipt: "kin-chat-1", amount: "2350.75", currency: "INR" });
+    // The form reads the plain number back in the currency it starts with.
+    expect(parseKinMoney(start.amount ?? "", start.currency ?? "INR")).toEqual({
       money: { minor: 235075, currency: "INR" },
     });
+    // An amount in another currency comes in too, with its currency picked.
     expect(
       kinBillExpenseStart(row({ read: { amount: "1200.50", currency: "CAD" } }), "INR", []),
-    ).toEqual({ receipt: "kin-chat-1" });
+    ).toEqual({ receipt: "kin-chat-1", amount: "1200.50", currency: "CAD" });
+  });
+});
+
+describe("a bill not read cleanly, fixed and kept", () => {
+  const partly = row({
+    state: "unreadable",
+    expense: undefined,
+    problem: "Couldn't read: date",
+    read: {
+      vendor: "Harbor Cafe",
+      amount: "1200",
+      currency: "USD",
+      tax: "60",
+      category: "Meals",
+      number: "HC-12",
+    },
+  });
+
+  it("starts with every figure read, the missing ones marked as needed", () => {
+    const draft = kinBillFixStart(partly, "INR", ["meals", "travel"]);
+    expect(draft).toEqual({
+      vendor: "Harbor Cafe",
+      date: "",
+      amount: "1200",
+      currency: "USD",
+      tax: "60",
+      category: "meals",
+      number: "HC-12",
+    });
+    expect(kinBillFixNeeds(draft)).toEqual(["date"]);
+    // Nothing read for the currency: the company's own.
+    const blank = kinBillFixStart(row({ state: "unreadable", read: {} }), "INR", []);
+    expect([blank.currency, kinBillFixNeeds(blank)]).toEqual(["INR", ["vendor", "date", "amount"]]);
+  });
+
+  it("keeps only once every needed figure is in, each as plain figures in its currency", () => {
+    const draft = kinBillFixStart(partly, "INR", ["meals"]);
+    expect(kinBillFixInput(draft)).toEqual({ ok: false, problem: "Enter the date." });
+    expect(kinBillFixInput({ ...draft, date: "2026-11-06", amount: "0" })).toEqual({
+      ok: false,
+      problem: "Enter the amount.",
+    });
+    expect(kinBillFixInput({ ...draft, date: "2026-11-06", tax: "some" })).toEqual({
+      ok: false,
+      problem: "The tax isn't an amount.",
+    });
+    expect(
+      kinBillFixInput({ ...draft, date: "2026-11-06", amount: "1,250.5", number: " ", tax: "" }),
+    ).toEqual({
+      ok: true,
+      entered: {
+        vendor: "Harbor Cafe",
+        date: "2026-11-06",
+        amount: "1250.50",
+        currency: "USD",
+        category: "meals",
+      },
+    });
+    // A code typed with the amount names its own currency.
+    expect(kinBillFixInput({ ...draft, date: "2026-11-06", amount: "JPY 1200" })).toMatchObject({
+      ok: true,
+      entered: { amount: "1200", currency: "JPY", tax: "60" },
+    });
   });
 });
