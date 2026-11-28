@@ -2237,6 +2237,27 @@ describe("invoices", () => {
           }),
         ).pipe(Effect.map(({ row }) => row.key));
       const cited = yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-10");
+      // One an agent typed in from a client's mail is never the bank's word, and its read says so.
+      const typed = yield* Effect.flatMap(KinRecords.KinRecords, (records) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+          {
+            list: bankList.id,
+            originKey: "credit:typed-from-mail",
+            title: `NEFT CR-INVENTED ACME-${number}`,
+            owner: { _tag: "person", personId: ownerId },
+            amount: { minor: 60_000 * 100, currency: "INR" },
+            dateAt: Date.parse("2026-11-09T06:00:00.000Z"),
+            fields: { direction: "credit" },
+          },
+        ),
+      ).pipe(Effect.map(({ row }) => row.key));
+      assert.strictEqual(
+        (yield* LeadWork.get(scope, { key: typed })).notBankWord,
+        "An agent wrote or changed this entry, so it isn't the bank's word that this money moved: it may be only what someone's mail said. Kin offers no card from it; until a bank statement or alert shows the money, say the bank doesn't show it yet.",
+      );
+      assert.isUndefined((yield* LeadWork.get(scope, { key: cited })).notBankWord);
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "done" });
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "dropped" });
       const foreign = yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", {
