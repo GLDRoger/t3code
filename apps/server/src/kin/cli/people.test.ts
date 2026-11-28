@@ -11,6 +11,7 @@ import * as Path from "effect/Path";
 import * as Runtime from "effect/Runtime";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
+import * as NodeUtil from "node:util";
 import { vi } from "vite-plus/test";
 
 import {
@@ -71,7 +72,8 @@ const runningHost = Effect.gen(function* () {
 it.effect("describes the command and each subcommand in --help", () =>
   Effect.gen(function* () {
     yield* run(["--help"]);
-    const help = (yield* TestConsole.logLines).join("\n");
+    // CI forces colour, which puts escape codes between help's columns.
+    const help = NodeUtil.stripVTControlCharacters((yield* TestConsole.logLines).join("\n"));
     for (const line of [
       "Invite people to this host's Kin",
       "invites          List the org's invites",
