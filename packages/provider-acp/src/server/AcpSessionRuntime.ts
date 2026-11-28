@@ -2324,7 +2324,15 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     const initializeResult = yield* runLoggedRequest(
       "initialize",
       initializePayload,
-      withStartupTimeout("initialize", acp.agent.initialize(initializePayload)),
+      withStartupTimeout("initialize", acp.agent.initialize(initializePayload)).pipe(
+        Effect.catchCauseIf(Cause.hasInterruptsOnly, (cause) =>
+          Ref.get(terminationErrorRef).pipe(
+            Effect.flatMap(
+              Option.match({ onNone: () => Effect.failCause(cause), onSome: Effect.fail }),
+            ),
+          ),
+        ),
+      ),
     );
     yield* options.onInitialized?.(initializeResult) ?? Effect.void;
     return initializeResult;

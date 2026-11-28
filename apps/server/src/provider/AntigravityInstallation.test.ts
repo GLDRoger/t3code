@@ -673,6 +673,83 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Antigravity inst
       }),
   );
 
+  // Windows has no POSIX sh.
+  it.effect.skipIf(hostPlatform === "win32")(
+    "reports a runtime that exits immediately with a non-zero status as failed",
+    () =>
+      Effect.gen(function* () {
+        const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const spawner = ChildProcessSpawner.make((command) =>
+          ChildProcess.isStandardCommand(command) &&
+          String(command.command).endsWith(executableName)
+            ? realSpawner.spawn(
+                ChildProcess.make("sh", ["-c", "echo 'missing shared library' >&2; exit 127"], {
+                  stdin: "pipe",
+                  stdout: "pipe",
+                  stderr: "pipe",
+                }),
+              )
+            : realSpawner.spawn(command),
+        );
+        const { installation } = yield* makeHarness({ useDefaultValidation: true, spawner });
+        yield* installation.start;
+        expect(yield* terminalState(installation)).toMatchObject({
+          phase: "failed",
+          message: "The downloaded Antigravity runtime could not start in this environment.",
+        });
+      }),
+  );
+
+  // Windows has no POSIX sh.
+  it.effect.skipIf(hostPlatform === "win32")(
+    "reports an explicit cancel during ACP startup as cancelled",
+    () =>
+      Effect.gen(function* () {
+        const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const initializing = yield* Deferred.make<void>();
+        const spawner = ChildProcessSpawner.make((command) =>
+          ChildProcess.isStandardCommand(command) &&
+          String(command.command).endsWith(executableName)
+            ? realSpawner
+                .spawn(
+                  ChildProcess.make("sh", ["-c", "while IFS= read -r line; do :; done"], {
+                    stdin: "pipe",
+                    stdout: "pipe",
+                    stderr: "pipe",
+                  }),
+                )
+                .pipe(
+                  Effect.map((child) =>
+                    ChildProcessSpawner.makeHandle({
+                      ...child,
+                      stdin: child.stdin.pipe(
+                        Sink.mapInputEffect((chunk: Uint8Array) =>
+                          Deferred.succeed(initializing, undefined).pipe(Effect.as(chunk)),
+                        ),
+                      ),
+                    }),
+                  ),
+                )
+            : realSpawner.spawn(command),
+        );
+        const { installation, stagingReleased } = yield* makeHarness({
+          previous: true,
+          useDefaultValidation: true,
+          spawner,
+        });
+        const started = yield* installation.start;
+        yield* Deferred.await(initializing);
+        expect(
+          yield* installation.cancel(started.operationId ?? "missing-operation-id"),
+        ).toMatchObject({
+          phase: "cancelled",
+          message: "Installation cancelled. The previous runtime is unchanged.",
+        });
+        yield* Deferred.await(stagingReleased);
+        yield* expectPreviousRelease(installation);
+      }),
+  );
+
   it.effect.each(["downloaded", "existing", "concurrent"] as const)(
     "reports a verification timeout for a %s runtime without changing the active release",
     (source) =>

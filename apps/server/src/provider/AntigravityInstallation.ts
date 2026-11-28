@@ -217,7 +217,9 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     );
   const gate = yield* Semaphore.make(1);
   const leases = new Map<string, number>();
-  let running: { readonly operationId: string; readonly fiber: Fiber.Fiber<void> } | undefined;
+  let running:
+    | { readonly operationId: string; readonly fiber: Fiber.Fiber<void>; cancelRequested: boolean }
+    | undefined;
   const state = yield* SubscriptionRef.make<ProviderInstallState>({
     driver: DRIVER,
     operationId: null,
@@ -1337,7 +1339,10 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
                   if (value.operationId !== operationId || value.phase === "succeeded")
                     return value;
                   const error = Cause.findErrorOption(exit.cause);
-                  const cancelled = Cause.hasInterruptsOnly(exit.cause);
+                  const cancelled =
+                    running?.operationId === operationId &&
+                    running.cancelRequested &&
+                    Cause.hasInterruptsOnly(exit.cause);
                   return {
                     ...value,
                     phase: cancelled ? "cancelled" : "failed",
@@ -1358,7 +1363,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
           ),
         );
         const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
-        running = { operationId, fiber };
+        running = { operationId, fiber, cancelRequested: false };
         return next;
       }).pipe(Effect.uninterruptible),
     );
@@ -1375,6 +1380,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
           );
         }
         if (running?.operationId === operationId && isRunning(current)) {
+          running.cancelRequested = true;
           yield* Fiber.interrupt(running.fiber);
         }
         return yield* SubscriptionRef.get(state);
