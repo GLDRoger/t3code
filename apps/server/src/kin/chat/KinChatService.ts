@@ -2159,9 +2159,10 @@ const make = Effect.gen(function* () {
     const itemId = kinDeferralItemIdFromWidgetId(identity.value.orgId, input.widgetId);
     if (itemId === null) return undefined;
     const { orgId, personId } = identity.value;
-    const item = yield* attached
-      .read(orgId, KinMemoryItemId.make(itemId))
-      .pipe(asPersonWaits, Effect.orElseSucceed(() => undefined));
+    const item = yield* attached.read(orgId, KinMemoryItemId.make(itemId)).pipe(
+      asPersonWaits,
+      Effect.orElseSucceed(() => undefined),
+    );
     if (item === undefined || Option.isNone(item) || input.actionId !== "monday") return item;
     const target = yield* tapTarget(identity.value, input.widgetId).pipe(Effect.option);
     if (Option.isNone(target)) return item;

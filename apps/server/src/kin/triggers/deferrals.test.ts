@@ -662,6 +662,90 @@ it.effect("a Monday tap waits on GitHub only briefly, then moves it without GitH
   }).pipe(Effect.provide(layerFor([linked])));
 });
 
+// Only an owner-level tap on the open card as drawn may wait on GitHub.
+it.effect.each(["owner", "member", "stale", "closed"] as const)(
+  "a Monday tap reads GitHub only from an owner-level person on the open card: %s",
+  (who) => {
+    const linked = makeDeferral("def-1", { links: [issue] });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+      yield* tick(headsUpAt);
+      if (who === "member") yield* joinChat("zoya", "member");
+      if (who === "closed") assert.equal(outcome(yield* tap("cancel")), "ok");
+      let reads = 0;
+      const counting = {
+        readRepo: () =>
+          Effect.sync(() => {
+            reads++;
+            return new Map([[12, { state: "open", assignees: [], linkedPrs: [] }] as const]);
+          }),
+      };
+      const repo = yield* Repository.KinChatRepository;
+      const current = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).revision;
+      const result = yield* (yield* Chat.KinChatService)
+        .act(
+          {
+            _tag: "person",
+            orgId,
+            personId: KinPersonId.make(who === "member" ? "zoya" : `owner-${orgId}`),
+          },
+          {
+            widgetId,
+            revision: who === "stale" ? current - 1 : current,
+            actionId: "monday",
+            value: "def-1",
+            clientActionId: `monday-${who}`,
+          },
+        )
+        .pipe(Effect.provideService(KinDeferralGithubReader, counting), Effect.result);
+      assert.equal(outcome(result) === "ok", who === "owner");
+      assert.equal(reads, who === "owner" ? 1 : 0);
+    }).pipe(Effect.provide(layerFor([linked])));
+  },
+);
+
+it.effect("two Monday taps at once: one moves it, with the GitHub state that tap read", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("meera", "co_owner");
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const go = yield* Deferred.make<void>();
+    const gated = (state: "open" | "closed", reading: Deferred.Deferred<void>) => ({
+      readRepo: () =>
+        Deferred.succeed(reading, undefined).pipe(
+          Effect.andThen(Deferred.await(go)),
+          Effect.as(new Map([[12, { state, assignees: [], linkedPrs: [] }] as const])),
+        ),
+    });
+    const readingA = yield* Deferred.make<void>();
+    const readingB = yield* Deferred.make<void>();
+    const rhea = yield* tap("monday").pipe(
+      Effect.provideService(KinDeferralGithubReader, gated("open", readingA)),
+      Effect.forkChild,
+    );
+    const meera = yield* tap("monday", "meera").pipe(
+      Effect.provideService(KinDeferralGithubReader, gated("closed", readingB)),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(readingA);
+    yield* Deferred.await(readingB);
+    yield* Deferred.succeed(go, undefined);
+    const outcomes = [outcome(yield* Fiber.join(rhea)), outcome(yield* Fiber.join(meera))];
+    assert.sameMembers(outcomes, ["ok", "widget_changed"]);
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    const winner = outcomes[0] === "ok" ? "open" : "closed";
+    assert.deepInclude(JSON.parse(row!.snapshot), {
+      github: [{ link: issue, state: winner, assignees: [], linkedPrs: [] }],
+    });
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+  }).pipe(Effect.provide(layerFor([linked])));
+});
+
 it.effect("a card in Rhea's chat names Meera when Meera asked", () => {
   const meera = makeDeferral("def-2", { said_by: "meera" });
   return Effect.gen(function* () {
