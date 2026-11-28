@@ -12,7 +12,7 @@ import {
   KinWidgetId,
 } from "./kinChat.ts";
 import { KIN_BILL_SENDER_RPC_SCOPES } from "./kinBillSenders.ts";
-import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
+import { KinCurrency, KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
 import { KinRecordKey, KinRecordState } from "./kinWork.ts";
 
 /**
@@ -74,6 +74,11 @@ const BatchCounts = Schema.Struct({
   already: NonNegativeInt,
 });
 
+const Keepable = Schema.Struct({
+  count: NonNegativeInt,
+  revision: Schema.String.check(Schema.isPattern(/^[0-9a-f]{24}$/)),
+});
+
 /**
  * The batch's one card, in the adding person's direct chat with the reading agent, updated in
  * place while Kin reads and once at the end. `text` always says the whole of it in words.
@@ -97,6 +102,25 @@ export const KinBillBatchCard = Schema.Struct({
    * absent once reading goes on.
    */
   pausedUntil: Schema.optional(IsoDateTime),
+  /** Exact unkept amounts, largest category first within each currency. */
+  totals: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        currency: KinCurrency,
+        categories: Schema.Array(
+          Schema.Struct({
+            category: Label,
+            amount: Schema.String.check(Schema.isPattern(/^-?\d+(?:\.\d+)?$/)),
+          }),
+        ),
+      }),
+    ),
+  ),
+  needs: Schema.optional(
+    Schema.Array(Schema.Struct({ name: Label, reason: Text })).check(Schema.isMaxLength(5)),
+  ),
+  needsMore: Schema.optional(NonNegativeInt),
+  keepable: Schema.optional(Keepable),
 });
 export type KinBillBatchCard = typeof KinBillBatchCard.Type;
 
@@ -181,6 +205,8 @@ export type KinBillBatchSummary = typeof KinBillBatchSummary.Type;
 export const KinBillRow = Schema.Struct({
   sha256: KinBillSha256,
   batchId: KinBillBatchId,
+  /** A batch-local name. The file keeps its own name. */
+  name: Schema.optional(Label),
   /** Opened with `assets.createUrl`, as any file on an entry. */
   file: KinFileRef,
   mail: Schema.optional(
@@ -235,6 +261,8 @@ export const KinBillsKeepReadInput = Schema.Struct({
   orgId: KinOrgId,
   batchId: KinBillBatchId,
   clientRequestId: RequestId,
+  /** If present, only the set drawn with this count and revision may be kept. */
+  expect: Schema.optional(Keepable),
 });
 export type KinBillsKeepReadInput = typeof KinBillsKeepReadInput.Type;
 export const KinBillsKeepReadResult = Schema.Struct({
@@ -250,6 +278,10 @@ export const KinBillsKeepReadResult = Schema.Struct({
   ),
 });
 export type KinBillsKeepReadResult = typeof KinBillsKeepReadResult.Type;
+export class KinBillsKeepReadChanged extends Schema.TaggedError<KinBillsKeepReadChanged>()(
+  "KinBillsKeepReadChanged",
+  { message: Schema.String },
+) {}
 
 export const KinBillsAddAnywayInput = Schema.Struct({
   orgId: KinOrgId,
@@ -300,7 +332,7 @@ export const KinBillRpcs = [
   Rpc.make(KIN_BILL_WS_METHODS.keepRead, {
     payload: KinBillsKeepReadInput,
     success: KinBillsKeepReadResult,
-    error,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError, KinBillsKeepReadChanged]),
   }),
   Rpc.make(KIN_BILL_WS_METHODS.addAnyway, {
     payload: KinBillsAddAnywayInput,

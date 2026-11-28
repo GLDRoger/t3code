@@ -14,6 +14,7 @@ import {
   KinBillsAddAnywayResult,
   KinBillsAddResult,
   type KinBillsDismissInput,
+  KinBillsKeepReadChanged,
   type KinBillsKeepReadInput,
   KinBillsKeepReadResult,
   type KinBillsListInput,
@@ -28,6 +29,7 @@ import {
   KinSignedMoney,
   KinWidgetId,
   type KinWakeupId,
+  formatKinMoney,
   formatKinWhen,
   isKinCurrency,
   KIN_TEXT_LOCALE,
@@ -80,7 +82,7 @@ import { currencyDigits, dayIn, farAbove, largestIn } from "./money.ts";
 import { fold } from "./nameMatch.ts";
 import { confirm, theOwner } from "./ownerWork.ts";
 import { endOfDay, ownerZone, workFailure } from "./recordRows.ts";
-import { presetList } from "./registers.ts";
+import { listDef, presetList } from "./registers.ts";
 import { notAVendor } from "./vendorName.ts";
 
 /**
@@ -168,7 +170,16 @@ const CutPages = Schema.fromJsonString(Schema.Array(Schema.Int));
 const decodeCutPages = Schema.decodeUnknownOption(CutPages);
 const encodeCutPages = Schema.encodeEffect(CutPages);
 const NOT_CUT = "json_type(read_json) IS NOT 'array'";
-const CardJson = Schema.decodeUnknownOption(KinBillBatchCard);
+const SourceSlot = Schema.Struct({ id: Schema.String, photo: Schema.Boolean });
+type SourceSlot = typeof SourceSlot.Type;
+// Keep the original file order even when a cut inserts rows or a duplicate leaves no row.
+const StoredCard = Schema.Struct({
+  ...KinBillBatchCard.fields,
+  sourceSlots: Schema.optional(Schema.Array(SourceSlot)),
+});
+type StoredCard = typeof StoredCard.Type;
+const CardJson = Schema.decodeUnknownOption(StoredCard);
+const sameCard = Schema.toEquivalence(StoredCard);
 const Stored = Schema.fromJsonString(Schema.Unknown);
 const decodeStored = Schema.decodeEffect(Stored);
 const encodeStored = Schema.encodeEffect(Stored);
@@ -202,6 +213,8 @@ type Row = {
   readonly recordId: string | null;
   readonly dismissedAt: number | null;
   readonly parentSha256: string | null;
+  readonly cutPage: number | null;
+  readonly cut: number;
   readonly mailFrom: string | null;
   readonly mailAt: number | null;
 };
@@ -219,6 +232,7 @@ const COLUMNS = `sha256, attachment_id AS "attachmentId", preview_id AS "preview
   widget_id AS "widgetId", added_by_person_id AS "addedBy", added_at AS "addedAt", state,
   event_id AS "eventId", reads, read_json AS "readJson", problem, duplicate_of AS "duplicateOf",
   record_id AS "recordId", dismissed_at AS "dismissedAt", parent_sha256 AS "parentSha256",
+  cut_page AS "cutPage", json_type(read_json) IS 'array' AS cut,
   ${mailColumn("mail_from")} AS "mailFrom", ${mailColumn("mail_at")} AS "mailAt"`;
 
 const batchRows = Effect.fn("KinBills.batchRows")(function* (
@@ -292,9 +306,12 @@ const cardChat = Effect.fn("KinBills.cardChat")(function* (
   return yield* directChatWith(sql, orgId, personId, agentId);
 });
 
-const countText = (count: number) => `${count} bill${count === 1 ? "" : "s"}`;
+const counted = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+const countText = (count: number) => counted(count, "bill");
+const sourceText = (slots: ReadonlyArray<SourceSlot>) =>
+  counted(slots.length, slots.every((file) => file.photo) ? "photo" : "file");
 /** The card's words, the whole truth for a client that draws no card. */
-const cardText = (card: Omit<KinBillBatchCard, "text">) => {
+const legacyCardText = (card: Omit<KinBillBatchCard, "text">) => {
   const count = countText(card.total) + (card.from === "mail" ? " from mail" : "");
   if (card.status === "reading") return `Reading ${count}: ${card.done} done.`;
   const parts = [
@@ -318,6 +335,30 @@ const cardText = (card: Omit<KinBillBatchCard, "text">) => {
   return `${count}: ${parts.length === 0 ? "none to read" : parts.join(", ")}.`;
 };
 
+const cardText = (
+  card: Omit<KinBillBatchCard, "text">,
+  slots: ReadonlyArray<SourceSlot>,
+  kept: number,
+  needs: number,
+) => {
+  if (card.from === "mail" || card.pausedUntil !== undefined) return legacyCardText(card);
+  const clean = card.keepable?.count ?? 0;
+  if (card.status === "reading") {
+    const read = clean + kept;
+    return `Reading ${sourceText(slots)}${read === 0 ? "" : `: ${countText(read)} read so far`}.`;
+  }
+  const needsYou = needs === 1 ? "needs you" : "need you";
+  if (kept > 0) {
+    const left = [
+      clean > 0 ? `${clean} ready to keep` : undefined,
+      needs > 0 ? `${needs} still ${needsYou}` : undefined,
+    ].filter((part) => part !== undefined);
+    return `${kept} kept.${left.length === 0 ? "" : ` ${left.join(", ")}.`}`;
+  }
+  if (clean + needs === 0) return "No bills to keep.";
+  return `${countText(clean + needs)} from ${sourceText(slots)}: ${needs === 0 ? "all read cleanly" : `${clean} read cleanly, ${needs} ${needsYou}`}.`;
+};
+
 /**
  * Posts the batch's card, Kin's own, for the adder alone, silent while Kin reads; the bills' files
  * ride on it when they were added from Money, so every rule for a chat's files holds for them.
@@ -326,7 +367,7 @@ const postCard = Effect.fn("KinBills.postCard")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: KinChatId;
   readonly batchId: string;
-  readonly card: KinBillBatchCard;
+  readonly card: StoredCard;
   readonly attachments: ReadonlyArray<KinAttachment>;
 }) {
   const repo = yield* KinChatRepository;
@@ -632,6 +673,113 @@ const recordsById = Effect.fn("KinBills.recordsById")(function* (
   return new Map(rows.map((row) => [row.recordId, row]));
 });
 
+const keepableRecords = (rows: ReadonlyArray<Row>, records: ReadonlyMap<string, RecordBrief>) =>
+  new Map(
+    rows.flatMap((row) => {
+      const record = row.recordId === null ? undefined : records.get(row.recordId);
+      return row.dismissedAt === null &&
+        row.state === "read" &&
+        record?.confirmed === 0 &&
+        (record.state === "done" ||
+          (record.state === "open" && row.mailFrom !== null && row.mailAt !== null))
+        ? [[row.sha256, record] as const]
+        : [];
+    }),
+  );
+
+const keepableSummary = (records: ReadonlyMap<string, RecordBrief>) => ({
+  count: records.size,
+  revision: sha256(
+    JSON.stringify([...records].map(([bill, record]) => [bill, record.recordId, record.rev])),
+  ).slice(0, 24),
+});
+
+const cardTotals = (
+  records: ReadonlyMap<string, RecordBrief>,
+  categories: ReadonlyArray<string>,
+) => {
+  const sums = new Map<string, Map<string, bigint>>();
+  for (const { minor, currency, category } of records.values()) {
+    if (minor === null || currency === null) continue;
+    const label = category !== null && categories.includes(category) ? category : "No category";
+    const byCategory = sums.get(currency) ?? new Map<string, bigint>();
+    byCategory.set(label, (byCategory.get(label) ?? 0n) + BigInt(minor));
+    sums.set(currency, byCategory);
+  }
+  return [...sums.keys()].sort().map((currency) => ({
+    currency,
+    categories: [...sums.get(currency)!]
+      .sort(([a, left], [b, right]) =>
+        left > right ? -1 : left < right ? 1 : a < b ? -1 : a > b ? 1 : 0,
+      )
+      .map(([category, minor]) => ({
+        category,
+        amount: formatKinMoney(minor, currency, { bare: true, cents: "always" }),
+      })),
+  }));
+};
+
+const sourceSlot = (file: ChatAttachment): SourceSlot => ({
+  id: file.id,
+  photo: !isPdf(file) && (file.type === "image" || mimeOf(file).startsWith("image/")),
+});
+
+const billNames = (rows: ReadonlyArray<Row>, slots: ReadonlyArray<SourceSlot> | undefined) => {
+  const byHash = new Map(rows.map((row) => [row.sha256, row]));
+  const sources =
+    slots ??
+    rows.filter((row) => row.parentSha256 === null).map((row) => sourceSlot(rowAttachment(row)));
+  const roots = new Map<string, string>();
+  for (const [i, { id, photo }] of sources.entries())
+    if (!roots.has(id)) roots.set(id, `${photo ? "Photo" : "File"} ${i + 1}`);
+  const nameFor = (row: Row): string => {
+    if (row.parentSha256 === null) return roots.get(row.attachmentId) ?? `File ${row.position + 1}`;
+    const parent = byHash.get(row.parentSha256);
+    const piece = / · (?:bill )?(\d{1,2}) of (\d{1,2})$/u.exec(row.name);
+    if (parent === undefined || piece === null) return `File ${row.position + 1}`;
+    const page = isPdf(rowAttachment(parent)) ? ` · page ${row.cutPage ?? 1}` : "";
+    return `${nameFor(parent)}${page} · bill ${piece[1]} of ${piece[2]}`;
+  };
+  return { sources, nameFor };
+};
+
+const missingFields = ["date", "amount", "who was paid", "currency", "tax"];
+const listWords = (words: ReadonlyArray<string>) =>
+  words.length <= 1 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+
+const needReason = (row: Row, records: ReadonlyMap<string, RecordBrief>) => {
+  if (row.state === "duplicate") {
+    const twin = row.duplicateOf === null ? undefined : records.get(row.duplicateOf);
+    if (twin !== undefined) return `looks like ${twin.key}, already recorded.`;
+    return "looks like an expense already recorded.";
+  }
+  if (row.state === "read" && row.recordId !== null && records.has(row.recordId))
+    return "the expense's state changed: check it.";
+  switch (row.problem) {
+    case CHECK_IT.farAbove:
+      return "the amount is far above the rest of Expenses: check it.";
+    case CHECK_IT.ahead:
+      return "the date is after today: check it.";
+    case CHECK_IT.old:
+      return "the date is more than ten years back: check it.";
+    case "It is for 0":
+      return "the amount is zero: no expense.";
+    case UNSHOWN_PHOTO:
+      return "Kin can't read this kind of photo: add it as a JPEG or PNG.";
+  }
+  // Recognize only the exact reader example; no word from the reader goes onto the card.
+  if (row.problem !== null && /^[^:]+: two different totals[.!]?$/iu.test(row.problem))
+    return "two different totals.";
+  const missing = /^Couldn't read: ([^.]+)/u.exec(row.problem ?? "")?.[1]?.split(", ") ?? [];
+  const known = missingFields
+    .filter((field) => missing.includes(field))
+    .map((field) => (field === "who was paid" ? "payee" : field));
+  if (known.length === 1)
+    return known[0] === "tax" ? "the tax amount needs a check." : `no ${known[0]} printed.`;
+  if (known.length > 1) return `missing ${listWords(known)}.`;
+  return "couldn't be read.";
+};
+
 /**
  * Redraws a batch's card from its rows: progress while Kin reads, the counts when done. Once done
  * it waits on the adder while a bill still needs them, which rings them once; else it closes.
@@ -641,8 +789,17 @@ const recordsById = Effect.fn("KinBills.recordsById")(function* (
 const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
   orgId: KinOrgId,
   batchId: string,
-  pause?: number | null,
-  newlyAlready = 0,
+  {
+    pause,
+    newlyAlready = 0,
+    appended = [],
+    progressOnly = false,
+  }: {
+    readonly pause?: number | null;
+    readonly newlyAlready?: number;
+    readonly appended?: ReadonlyArray<SourceSlot>;
+    readonly progressOnly?: boolean;
+  } = {},
 ) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
@@ -652,10 +809,33 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
   const stored = Option.getOrUndefined(CardJson(found.value.state));
   if (stored === undefined) return;
   const now = yield* Clock.currentTimeMillis;
-  const rows = yield* batchRows(orgId, batchId);
+  const all = yield* batchRows(orgId, batchId, { includeCut: true });
+  const rows = all.filter((row) => row.cut === 0);
   const records = yield* recordsById(
     orgId,
-    rows.flatMap((row) => (row.recordId === null ? [] : [row.recordId])),
+    rows.flatMap(({ recordId, duplicateOf }) =>
+      [recordId, duplicateOf].filter((id) => id !== null),
+    ),
+  );
+  const keepable = keepableRecords(rows, records);
+  const sourceSlots =
+    stored.sourceSlots === undefined
+      ? undefined
+      : appended.length === 0
+        ? stored.sourceSlots
+        : [...stored.sourceSlots, ...appended];
+  const { sources, nameFor } = billNames(all, sourceSlots);
+  const kept = rows.filter(
+    (row) =>
+      row.dismissedAt === null && shownState(row, records.get(row.recordId ?? "")) === "kept",
+  ).length;
+  const problemRows = rows.filter(
+    (row) =>
+      row.dismissedAt === null &&
+      !keepable.has(row.sha256) &&
+      ["read", "duplicate", "unreadable"].includes(
+        shownState(row, records.get(row.recordId ?? "")),
+      ),
   );
   const pending = rows.filter((row) => row.state === "waiting" || row.state === "reading").length;
   const counts = {
@@ -684,38 +864,45 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     total,
     done: total - pending,
     counts,
+    ...(sourceSlots === undefined ? {} : { sourceSlots }),
+    keepable: keepableSummary(keepable),
+    totals: cardTotals(
+      keepable,
+      keepable.size === 0 ? [] : ((yield* listDef(orgId, "expenses"))?.categories ?? []),
+    ),
+    needs: problemRows
+      .slice(0, 5)
+      .map((row) => ({ name: nameFor(row), reason: needReason(row, records) })),
+    needsMore: Math.max(0, problemRows.length - 5),
     ...(pausedUntil === undefined ? {} : { pausedUntil: iso(pausedUntil) }),
   };
   const reader = rows.find((row) => row.state === "waiting" || row.state === "reading")?.agentId;
-  const card: KinBillBatchCard = {
+  const text = cardText(base, sources, kept, problemRows.length);
+  const card: StoredCard = {
     ...base,
     text:
       pausedUntil === undefined || reader === undefined
-        ? cardText(base)
-        : `${cardText(base)} Paused until ${yield* clockTime(orgId, pausedUntil)}: today's limit for ${yield* agentName(orgId, reader)} is used up.`,
+        ? text
+        : `${text} Paused until ${yield* clockTime(orgId, pausedUntil)}: today's limit for ${yield* agentName(orgId, reader)} is used up.`,
   };
   const open = rows.some((row) => {
     if (row.dismissedAt !== null) return false;
     const shown = shownState(row, records.get(row.recordId ?? ""));
     return shown === "read" || shown === "duplicate" || shown === "unreadable";
   });
-  const awaiting = open && (stored.from === "mail" || status === "done") ? [stored.addedBy] : [];
-  const closed = status === "done" && !open;
+  const awaiting = progressOnly
+    ? found.value.awaiting
+    : open && (stored.from === "mail" || status === "done")
+      ? [stored.addedBy]
+      : [];
+  const closed = progressOnly ? found.value.closedAt !== null : status === "done" && !open;
+  const rowName = sourceSlots === undefined ? undefined : nameFor;
   if (
-    stored.text === card.text &&
-    stored.pausedUntil === card.pausedUntil &&
-    stored.status === card.status &&
-    stored.done === card.done &&
-    stored.total === card.total &&
-    stored.counts.already === card.counts.already &&
-    stored.counts.read === card.counts.read &&
-    stored.counts.duplicate === card.counts.duplicate &&
-    stored.counts.unreadable === card.counts.unreadable &&
-    stored.counts.check === card.counts.check &&
+    sameCard(stored, card) &&
     found.value.awaiting.length === awaiting.length &&
     (found.value.closedAt !== null) === closed
   )
-    return;
+    return rowName;
   const at = iso(yield* Clock.currentTimeMillis);
   const widget = yield* repo.updateWidget({
     ...found.value,
@@ -727,14 +914,40 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     updatedAt: at,
   });
   yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
-  if (stored.text === card.text) return;
-  // A chat list's line is the card message's body: it says what the card says now.
-  const messageId = KinMessageId.make(`bills:${batchId}`);
-  yield* sql`UPDATE kin_messages SET body = ${card.text}
-    WHERE org_id = ${orgId} AND message_id = ${messageId}`;
-  const message = yield* repo.getMessage({ orgId, messageId });
-  if (Option.isSome(message))
-    yield* sql.afterCommit(hub.publish({ type: "message.changed", orgId, message: message.value }));
+  if (stored.text !== card.text) {
+    // A chat list's line is the card message's body: it says what the card says now.
+    const messageId = KinMessageId.make(`bills:${batchId}`);
+    yield* sql`UPDATE kin_messages SET body = ${card.text}
+      WHERE org_id = ${orgId} AND message_id = ${messageId}`;
+    const message = yield* repo.getMessage({ orgId, messageId });
+    if (Option.isSome(message))
+      yield* sql.afterCommit(
+        hub.publish({ type: "message.changed", orgId, message: message.value }),
+      );
+  }
+  return rowName;
+});
+
+const DeferCardRefresh = Context.Reference("t3/kin/work/bills/DeferCardRefresh", {
+  defaultValue: () => false,
+});
+
+export const refreshForExpense = Effect.fn("KinBills.refreshForExpense")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
+  if (yield* DeferCardRefresh) return;
+  const repo = yield* Effect.serviceOption(KinChatRepository);
+  const hub = yield* Effect.serviceOption(KinChatHub);
+  if (Option.isNone(repo) || Option.isNone(hub)) return;
+  const sql = yield* SqlClient.SqlClient;
+  const batches = yield* sql<{ batchId: string }>`SELECT DISTINCT batch_id AS "batchId"
+    FROM kin_bill_reads WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+  for (const { batchId } of batches)
+    yield* refreshCard(orgId, batchId).pipe(
+      Effect.provideService(KinChatRepository, repo.value),
+      Effect.provideService(KinChatHub, hub.value),
+    );
 });
 
 /** A time on the company's clock, as the card's words say it. */
@@ -764,7 +977,9 @@ export const paused = Effect.fn("KinBills.paused")(function* (
   if (batches.size === 0) return;
   const sql = yield* SqlClient.SqlClient;
   yield* sql.withTransaction(
-    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, until), { discard: true }),
+    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, { pause: until }), {
+      discard: true,
+    }),
   );
 });
 /** A bills turn starting: its batches' cards say they are reading again. */
@@ -776,7 +991,9 @@ export const resumed = Effect.fn("KinBills.resumed")(function* (
   if (batches.size === 0) return;
   const sql = yield* SqlClient.SqlClient;
   yield* sql.withTransaction(
-    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, null), { discard: true }),
+    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, { pause: null }), {
+      discard: true,
+    }),
   );
 });
 
@@ -947,8 +1164,14 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
     seen.add(file.sha256);
     fresh.push(file);
   }
+  const sourceSlots = input.prepared.accepted.map(({ attachment }) => sourceSlot(attachment));
   const base = {
     batchId: input.batchId,
+    sourceSlots,
+    keepable: keepableSummary(new Map()),
+    totals: [],
+    needs: [],
+    needsMore: 0,
     status: "reading" as const,
     total: fresh.length + already.length,
     done: already.length,
@@ -965,7 +1188,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
           orgId: input.orgId,
           chatId: input.cardChatId,
           batchId: input.batchId,
-          card: { ...base, text: cardText(base) },
+          card: { ...base, text: cardText(base, sourceSlots, 0, 0) },
           attachments: input.source._tag === "card" ? fresh.map((file) => file.attachment) : [],
         });
   const where =
@@ -1108,7 +1331,10 @@ const appendMailBills = Effect.fn("KinBills.appendMailBills")(function* (
       attachmentId: unique.get(hash)!.attachment.id,
     });
   yield* queueWaiting(orgId, batchId, undefined);
-  yield* refreshCard(orgId, batchId, undefined, files.length - added.length);
+  yield* refreshCard(orgId, batchId, {
+    newlyAlready: files.length - added.length,
+    appended: files.map(({ attachment }) => sourceSlot(attachment)),
+  });
   for (const oldBatch of new Set(added.map((hash) => known.get(hash)?.batchId)))
     if (oldBatch !== undefined && oldBatch !== batchId) yield* refreshCard(orgId, oldBatch);
   return added;
@@ -1554,7 +1780,10 @@ export const answer = Effect.fn("KinBills.answer")(function* (
       const row = yield* billRow(turn.orgId, file.hash);
       if (row === undefined || row.state !== "reading" || row.eventId !== file.eventId)
         return readAnswer(id, "answered");
-      return readAnswer(id, yield* settleRead(turn.orgId, row, input));
+      const outcome = yield* settleRead(turn.orgId, row, input);
+      // The turn's end still decides when the card rings.
+      yield* refreshCard(turn.orgId, row.batchId, { progressOnly: true });
+      return readAnswer(id, outcome);
     }),
   );
 }, workFailure);
@@ -1666,7 +1895,15 @@ export const cut = Effect.fn("KinBills.cut")(function* (turn: BillTurn, input: C
           seen.add(hash);
           return true;
         });
-        const name = pdf ? `${row.name} · page ${page}` : row.name;
+        const widget = yield* repo.getWidget({ orgId, widgetId: billWidgetId(row.batchId) });
+        const sourceSlots = Option.flatMap(widget, (found) => CardJson(found.state)).pipe(
+          Option.getOrUndefined,
+        )?.sourceSlots;
+        const names = billNames(
+          yield* batchRows(orgId, row.batchId, { includeCut: true }),
+          sourceSlots,
+        );
+        const name = names.nameFor(row) + (pdf ? ` · page ${page}` : "");
         const files = yield* Effect.forEach(fresh, ({ bytes, index, hash, box }) =>
           Effect.gen(function* () {
             const id = yield* store
@@ -1677,7 +1914,7 @@ export const cut = Effect.fn("KinBills.cut")(function* (turn: BillTurn, input: C
               attachment: {
                 type: "image" as const,
                 id,
-                name: `${name} · ${index + 1} of ${crops.length}`,
+                name: `${name} · bill ${index + 1} of ${crops.length}`,
                 mimeType: "image/jpeg",
                 sizeBytes: bytes.byteLength,
               },
@@ -1720,7 +1957,7 @@ export const cut = Effect.fn("KinBills.cut")(function* (turn: BillTurn, input: C
         read_at = ${yield* Clock.currentTimeMillis}
       WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`;
         const already = crops.length - fresh.length;
-        yield* refreshCard(orgId, row.batchId, undefined, already);
+        yield* refreshCard(orgId, row.batchId, { newlyAlready: already });
         for (const batchId of new Set(
           fresh.flatMap(({ hash }) => {
             const prior = known.get(hash);
@@ -1903,6 +2140,7 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
   records: ReadonlyMap<string, RecordBrief>,
   zone: string,
   attachmentsDir: string,
+  name: string | undefined,
 ) {
   const record = row.recordId === null ? undefined : records.get(row.recordId);
   const twin = row.duplicateOf === null ? undefined : records.get(row.duplicateOf);
@@ -1921,6 +2159,7 @@ const rowView = Effect.fn("KinBills.rowView")(function* (
   return {
     sha256: row.sha256,
     batchId: row.batchId,
+    ...(name === undefined ? {} : { name }),
     file,
     ...(photo === undefined ||
     (photo.id !== row.attachmentId &&
@@ -1958,7 +2197,7 @@ export const list = Effect.fn("KinBills.list")(function* (
       const any = yield* batchRows(input.orgId, input.batchId, { includeCut: true });
       if (any.length === 0) return yield* notFound;
     }
-    yield* sql.withTransaction(refreshCard(input.orgId, input.batchId));
+    const nameFor = yield* sql.withTransaction(refreshCard(input.orgId, input.batchId));
     const shown = all.slice(offset, offset + PAGE);
     const zone = yield* ownerZone(input.orgId);
     const records = yield* recordsById(
@@ -1970,9 +2209,13 @@ export const list = Effect.fn("KinBills.list")(function* (
     const { attachmentsDir } = yield* ServerConfig.ServerConfig;
     return {
       batches: [],
-      bills: yield* Effect.forEach(shown, (row) => rowView(row, records, zone, attachmentsDir), {
-        concurrency: 4,
-      }),
+      bills: yield* Effect.forEach(
+        shown,
+        (row) => rowView(row, records, zone, attachmentsDir, nameFor?.(row)),
+        {
+          concurrency: 4,
+        },
+      ),
       ...(offset + PAGE < all.length ? { next: offset + PAGE } : {}),
     };
   }
@@ -2035,87 +2278,102 @@ export const list = Effect.fn("KinBills.list")(function* (
  * `kin.bills.keepRead`: keeps, as `kin.work.confirm` does, every expense of the batch still a
  * suggestion whose bill was read cleanly; the rest are skipped with why. One transaction.
  */
-export const keepRead = Effect.fn("KinBills.keepRead")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  input: KinBillsKeepReadInput,
-) {
-  const person = yield* theOwner(people, input.orgId);
-  const stored = yield* storedAnswer(
-    input.orgId,
-    person.personId,
-    "keepRead",
-    input.clientRequestId,
-    input.batchId,
-  );
-  if (stored !== undefined) return yield* decodeKept(stored);
-  const sql = yield* SqlClient.SqlClient;
-  return yield* sql.withTransaction(
-    Effect.gen(function* () {
-      const again = yield* storedAnswer(
-        input.orgId,
-        person.personId,
-        "keepRead",
-        input.clientRequestId,
-        input.batchId,
-      );
-      if (again !== undefined) return yield* decodeKept(again);
-      const rows = (yield* batchRows(input.orgId, input.batchId)).filter(
-        (row) => row.dismissedAt === null,
-      );
-      if (rows.length === 0) return yield* notFound;
-      const records = yield* recordsById(
-        input.orgId,
-        rows.flatMap((row) => (row.recordId === null ? [] : [row.recordId])),
-      );
-      const kept: Array<string> = [];
-      const skipped: Array<KinBillsKeepReadResult["skipped"][number]> = [];
-      for (const row of rows) {
-        const record = row.recordId === null ? undefined : records.get(row.recordId);
-        const shown = shownState(row, record);
-        if (shown === "kept" || shown === "dropped") continue;
-        const why =
-          row.state !== "read" || record === undefined
-            ? shown === "reading"
-              ? "Still being read."
-              : shown === "duplicate"
-                ? "It looks like an expense already recorded."
-                : shown === "unreadable"
-                  ? READ_CLEAN.get(row.problem ?? "") === "amount"
-                    ? "Its amount needs a check."
-                    : READ_CLEAN.has(row.problem ?? "")
-                      ? "Its date needs a check."
-                      : "It wasn't read cleanly."
-                  : "It has no expense of its own."
-            : record.state !== "done" &&
-                !(record.state === "open" && row.mailFrom !== null && row.mailAt !== null)
-              ? "Its state was changed."
-              : undefined;
-        if (why !== undefined || record === undefined) {
+export const keepRead = Effect.fn("KinBills.keepRead")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinBillsKeepReadInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const inputHash =
+      input.expect === undefined
+        ? input.batchId
+        : sha256(yield* encodeStored([input.batchId, input.expect.count, input.expect.revision]));
+    const stored = yield* storedAnswer(
+      input.orgId,
+      person.personId,
+      "keepRead",
+      input.clientRequestId,
+      inputHash,
+    );
+    if (stored !== undefined) return yield* decodeKept(stored);
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const again = yield* storedAnswer(
+          input.orgId,
+          person.personId,
+          "keepRead",
+          input.clientRequestId,
+          inputHash,
+        );
+        if (again !== undefined) return yield* decodeKept(again);
+        const rows = (yield* batchRows(input.orgId, input.batchId)).filter(
+          (row) => row.dismissedAt === null,
+        );
+        const records = yield* recordsById(
+          input.orgId,
+          rows.flatMap((row) => (row.recordId === null ? [] : [row.recordId])),
+        );
+        const eligible = keepableRecords(rows, records);
+        if (input.expect !== undefined) {
+          const current = keepableSummary(eligible);
+          if (input.expect.count !== current.count || input.expect.revision !== current.revision)
+            return yield* new KinBillsKeepReadChanged({
+              message: "These bills changed since this card was drawn: look again.",
+            });
+        }
+        if (rows.length === 0) return yield* notFound;
+        const kept: Array<string> = [];
+        const skipped: Array<KinBillsKeepReadResult["skipped"][number]> = [];
+        for (const row of rows) {
+          const record = row.recordId === null ? undefined : records.get(row.recordId);
+          const shown = shownState(row, record);
+          if (shown === "kept" || shown === "dropped") continue;
+          const ready = eligible.get(row.sha256);
+          if (ready !== undefined) {
+            yield* confirm(people, { orgId: input.orgId, key: ready.key, rev: ready.rev }).pipe(
+              Effect.provideService(DeferCardRefresh, true),
+            );
+            kept.push(ready.key);
+            continue;
+          }
+          const why =
+            row.state !== "read" || record === undefined
+              ? shown === "reading"
+                ? "Still being read."
+                : shown === "duplicate"
+                  ? "It looks like an expense already recorded."
+                  : shown === "unreadable"
+                    ? READ_CLEAN.get(row.problem ?? "") === "amount"
+                      ? "Its amount needs a check."
+                      : READ_CLEAN.has(row.problem ?? "")
+                        ? "Its date needs a check."
+                        : "It wasn't read cleanly."
+                    : "It has no expense of its own."
+              : "Its state was changed.";
           skipped.push({
             sha256: row.sha256,
             ...(record === undefined ? {} : { key: record.key }),
             ...(shown === "unreadable" && READ_CLEAN.has(row.problem ?? "") ? { check: true } : {}),
-            why: why ?? "It has no expense of its own.",
+            why,
           });
-          continue;
         }
-        yield* confirm(people, { orgId: input.orgId, key: record.key, rev: record.rev });
-        kept.push(record.key);
-      }
-      const result = { kept, skipped } satisfies KinBillsKeepReadResult;
-      yield* keepAnswer(
-        input.orgId,
-        person.personId,
-        "keepRead",
-        input.clientRequestId,
-        input.batchId,
-        result,
-      );
-      yield* refreshCard(input.orgId, input.batchId);
-      return result;
-    }),
-  );
-}, workFailure);
+        const result = { kept, skipped } satisfies KinBillsKeepReadResult;
+        yield* keepAnswer(
+          input.orgId,
+          person.personId,
+          "keepRead",
+          input.clientRequestId,
+          inputHash,
+          result,
+        );
+        yield* refreshCard(input.orgId, input.batchId);
+        return result;
+      }),
+    );
+  },
+  Effect.catchIf(
+    (error) => error._tag !== "KinBillsKeepReadChanged",
+    (error) => workFailure(Effect.fail(error)),
+  ),
+);
 
 /** `kin.bills.addAnyway`: a duplicate's own suggested expense, as a clean read would have made. */
 export const addAnyway = Effect.fn("KinBills.addAnyway")(function* (

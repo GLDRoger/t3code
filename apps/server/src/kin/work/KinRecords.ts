@@ -3533,6 +3533,16 @@ const make = Effect.gen(function* () {
             },
             { wake: true },
           );
+        if (
+          list === "expenses" &&
+          (row.confirmed === 0 ||
+            unkeeping ||
+            (row.state !== state && (row.state === "dropped" || state === "dropped")))
+        ) {
+          // Bills uses KinRecords to settle and keep; don't load the chat stack during module init.
+          const { refreshForExpense } = yield* Effect.promise(() => import("./bills.ts"));
+          yield* refreshForExpense(orgId, row.recordId).pipe(provideSql);
+        }
         return updated;
       }),
     );
