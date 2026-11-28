@@ -36,7 +36,7 @@ import { approvalOf } from "../questions/approval.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { listedOnSharedThread } from "./SharedTools.ts";
+import { listedOnSharedThread, SHARED_TOOLS } from "./SharedTools.ts";
 import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "./billsOnly.ts";
 import { TRIAGE_THREAD_PREFIX, TRIAGE_TOOLS } from "./outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
@@ -73,8 +73,7 @@ const t3Tools: ReadonlySet<string> = new Set(
   T3_TOOLKITS.flatMap((toolkit) => Object.keys(toolkit.tools)),
 );
 /**
- * Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. A toolkit
- * missing from the list above would be shown to every agent: `AgentSession.test.ts` reads the folder.
+ * T3 tools Kin classifies, including those it hides. Tests check upstream's registrations.
  */
 export const isT3Tool = (name: string) => t3Tools.has(name);
 
@@ -125,11 +124,33 @@ const governingTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
   }
 });
 
+const followsOthersAnswer = Effect.fn("KinAgentSession.followsOthersAnswer")(function* (
+  turn: Turn,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  // The first card carries the asking turn. A card raised again cannot replace that provenance.
+  const rows = yield* sql`SELECT 1 FROM kin_events e
+    LEFT JOIN kin_questions q ON q.org_id = e.org_id AND q.agent_id = e.agent_id
+      AND q.question_id = json_extract(e.json, '$.subject.questionId')
+    LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+    LEFT JOIN kin_widgets card ON card.org_id = q.org_id AND card.widget_id = q.widget_id
+    LEFT JOIN kin_messages m ON m.org_id = card.org_id AND m.message_id = card.message_id
+    LEFT JOIN kin_wakeups asked ON asked.org_id = q.org_id AND asked.agent_id = q.agent_id
+      AND asked.wakeup_id = m.source_wakeup_id
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
+      AND e.tag = 'deferral.due' AND json_extract(e.json, '$.subject.type') = 'question'
+      AND json_extract(e.json, '$.subject.answered') = 1
+      AND (q.person_id IS NOT a.owner_person_id
+        OR (q.for_person_id IS NOT NULL AND q.for_person_id IS NOT a.owner_person_id)
+        OR asked.audience IS NOT 'owner_only' OR asked.shared_since IS NOT NULL
+        OR asked.aborted_at IS NOT NULL)
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
 /**
  * Why a thread's built-in tools (shell, edits, web, sub-agents) may not run now, or `undefined`
- * when they may: the turn it follows (`governingTurn`) is owner-only, not aborted for its
- * audience, has read no outside text, and is no approved draft's (`approvalOf`), whose content a
- * teammate's turn wrote. No such turn admits nothing. A delegated task follows its asking turn.
+ * when they may. A delegated task follows its asking turn, including its provenance.
  */
 export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal")(
   function* (threadId: ThreadId) {
@@ -139,6 +160,8 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
     if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
     if ((yield* effectiveAudience(turn)) !== "owner_only") return SESSION_REFUSAL.shared;
     if (yield* outsideRead(turn)) return SESSION_REFUSAL.outside;
+    if (yield* followsOthersAnswer(turn))
+      return "Blocked. This turn carries a question answer from outside the owner's own conversation. Ask the owner to start the work in a fresh turn.";
     return undefined;
   },
   Effect.catchCause((cause) =>
@@ -273,6 +296,8 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   name: string,
   threadId: ThreadId,
 ) {
+  const leadTool = leadT3Tools.has(name);
+  if (!leadTool && (isT3Tool(name) || !Object.hasOwn(SHARED_TOOLS, name))) return false;
   // A bills turn's reader may be any lead: it lists the bills tools whatever its seat.
   if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
   if (threadId.startsWith(TRIAGE_THREAD_PREFIX)) return TRIAGE_TOOLS.has(name);
@@ -289,8 +314,8 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
     const lead = yield* threadSeat(threadId);
     return lead === undefined || !leftToHome(name, lead);
   }
-  if (!isT3Tool(name)) return true;
-  if (!leadT3Tools.has(name) || shared) return false;
+  if (!leadTool) return true;
+  if (shared) return false;
   return !codingT3Tools.has(name) || (yield* threadSeat(threadId))?.seat === "engineering";
 });
 
