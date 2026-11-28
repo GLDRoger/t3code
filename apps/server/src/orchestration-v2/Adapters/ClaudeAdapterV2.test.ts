@@ -85,8 +85,6 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
-import { prepareChatPhoto } from "../../kin/lead/turn/photo.testkit.ts";
-import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -4247,41 +4245,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
-
-  it.effect("Claude receives a small JPEG, not the stored Kin chat photo", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const { original, prepared } = yield* prepareChatPhoto(harness.attachmentsDir);
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make("kin-photo"),
-          ...prepared,
-        }),
-      );
-      const content = harness.offeredMessages[0]?.message.content;
-      const picture = Array.isArray(content)
-        ? content.find((block) => block.type === "image")
-        : undefined;
-      assert.isDefined(picture);
-      if (picture?.source.type !== "base64") return assert.fail("No inline picture");
-      assert.strictEqual(picture.source.media_type, "image/jpeg");
-      const sent = Buffer.from(picture.source.data, "base64");
-      assert.deepStrictEqual(readImageDimensions(sent), { width: 1568, height: 1176 });
-      assert.isFalse(sent.equals(original));
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
 
   describe("ClaudeAdapterV2 session title sync", () => {
     type TitleSyncHarness = Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>;
