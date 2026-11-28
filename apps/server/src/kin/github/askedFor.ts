@@ -25,6 +25,8 @@ export const UNFINISHED = "unfinished";
 
 export const postedLine = (ref: string, head: string, url: string) =>
   `Review posted on ${ref} at ${head.slice(0, 7)}: ${url}`;
+export const reviewAccessRefused = (ref: string) =>
+  `Kin couldn't confirm GitHub access to ${ref}. Ask again once access is restored.`;
 export const unfinishedLine = (ref: string) =>
   `The review of ${ref} did not finish. Ask again to retry.`;
 const unsureLine = (ref: string) =>
@@ -197,6 +199,7 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     title: string | null;
     author: string | null;
     askerName: string | null;
+    accessRefused: number;
   }>`SELECT e.event_id AS "eventId", e.agent_id AS "agentId",
       json_extract(e.json, '$.askedBy') AS "personId",
       json_extract(e.json, '$.trigger.key') AS key, json_extract(e.json, '$.repo') AS repo,
@@ -208,7 +211,9 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
       l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId",
       l.name AS "agentName", json_extract(e.json, '$.trigger.title') AS title,
       COALESCE(ap.display_name, json_extract(e.json, '$.trigger.author')) AS author,
-      p.display_name AS "askerName"
+      p.display_name AS "askerName",
+      json_extract(e.json, '$._reviewAccessRefusedIn') IS e.wakeup_id
+        AND e.wakeup_id IS NOT NULL AS "accessRefused"
     FROM kin_events e
     LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
     LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
@@ -320,7 +325,9 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
             ? postedLine(ref, event.head ?? "", receipt.url)
             : receipt._tag === "unknown"
               ? unsureLine(ref)
-              : unfinishedLine(ref),
+              : event.accessRefused === 1
+                ? reviewAccessRefused(ref)
+                : unfinishedLine(ref),
         now,
       },
     );
