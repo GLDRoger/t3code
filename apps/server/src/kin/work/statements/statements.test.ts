@@ -61,7 +61,7 @@ import * as OwnerStatements from "../ownerStatements.ts";
 import { defineList, PRESETS, presetDefinition } from "../registers.ts";
 import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
-import { answerCurrencyCard } from "./statementReview.ts";
+import { answerCurrencyCard, recordedPayments } from "./statementReview.ts";
 import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
@@ -645,6 +645,10 @@ describe("bank statements", () => {
         });
       // Before the statement it is the owner's word, and Kin can't see the bank.
       assert.deepStrictEqual(yield* seen(), [["person"], null]);
+      const unbacked = recordedPayments(orgId, "2026-10-01").pipe(
+        Effect.map((payments) => payments.map((payment) => payment.key)),
+      );
+      assert.include(yield* unbacked, keys.exact);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       const payments = () =>
         sql<{ voided: number | null }>`SELECT voided_at AS voided FROM kin_record_payments p
@@ -653,10 +657,12 @@ describe("bank statements", () => {
       const through = (yield* seen())[1];
       assert.isString(through);
       assert.deepStrictEqual(yield* seen(), [["statement"], through]);
+      assert.notInclude(yield* unbacked, keys.exact);
       yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
       // Undone, the line no longer backs it: it is the owner's word again.
       assert.deepStrictEqual(yield* seen(), [["person"], null]);
+      assert.include(yield* unbacked, keys.exact);
     }).pipe(Effect.provide(layer)),
   );
 

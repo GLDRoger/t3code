@@ -317,7 +317,8 @@ export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(func
       AND ${keptEntry(sql)} AND p.withheld = 0 AND p.paid_on >= ${sinceDay}
       AND p.origin_key NOT LIKE ${`${BANK_CREDIT_ORIGIN}%`}
       AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
-        WHERE e.org_id = p.org_id AND e.payment_id = p.payment_id)
+        WHERE e.org_id = p.org_id AND (e.payment_id = p.payment_id
+          OR (e.target_record_id = p.record_id AND json_extract(e.prior_json, '$.matched') = p.payment_id)))
     ORDER BY p.paid_on, p.payment_id`;
   return rows.map(({ fieldsJson, ...row }) => ({
     ...row,
