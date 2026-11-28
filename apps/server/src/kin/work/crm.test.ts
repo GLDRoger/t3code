@@ -1060,7 +1060,11 @@ it.effect.each(fieldTurns)(
           }
         }
         const cell = `${op} ${target} ${JSON.stringify(value)}`;
-        assert.strictEqual(seen.nested, seen.top, cell);
+        const nestedOutcome =
+          seen.top !== OK && Object.values(sent.nested.fields).includes(null)
+            ? `${seen.top} Nothing was written.`
+            : seen.top;
+        assert.strictEqual(seen.nested, nestedOutcome, cell);
         if (seen.top === OK) {
           // Each twin has a client of its own.
           const { partyId: _top, ...top } = after.top as Record<string, unknown>;
