@@ -741,7 +741,7 @@ const harbor = "notices@harborbank.example";
 const withSender = (fromAddress: string, text: string, id = "gate") => ({
   ...alert(`<${id}@invented.example>`, text),
   fromAddress,
-  authResults: [`mx.invented.example; dmarc=pass header.from=${fromAddress.split("@")[1]}`],
+  authResults: [`mx.google.com; dmarc=pass header.from=${fromAddress.split("@")[1]}`],
 });
 const takeOne = (message: ReturnType<typeof alert>) =>
   takeAlerts(orgId, {
@@ -1029,7 +1029,7 @@ const material = (
   unread: true,
   messageId: `<${threadId}@invented.example>`,
   references: null,
-  authResults: [`mx.invented.example; ${auth}`],
+  authResults: [`mx.google.com; ${auth}`],
   body: { text: body, attachments: [] },
 });
 

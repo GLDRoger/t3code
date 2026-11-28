@@ -39,7 +39,12 @@ import { mailRuleContentHash } from "./ruleContent.ts";
 import { holdRuleMail, stopQueuedRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
 import { recordManualRuleMail, wakeRuleMail, type WakeMail } from "./ruleWake.ts";
-import { mailRuleMatchProblem, mailRuleSharedEnding, matchMailRule } from "./ruleMatch.ts";
+import {
+  mailRuleHeaderFacts,
+  mailRuleMatchProblem,
+  mailRuleSharedEnding,
+  matchMailRule,
+} from "./ruleMatch.ts";
 import {
   badMailRule as badRule,
   checkMailRuleOwner as stillOwner,
@@ -73,6 +78,7 @@ const tapUsed = failure(
 );
 const oldResume = failure("invalid_state", "Tap Resume again to turn on this mail rule.");
 const unavailable = failure("unavailable", "Kin couldn't load or save mail rules. Try again.");
+const unreadableMail = failure("unavailable", "Kin couldn't read that mail.");
 const decodeMatch = Schema.decodeUnknownOption(MatchJson);
 const decodeRefs = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 const isChatError = Schema.is(KinChatError);
@@ -119,6 +125,11 @@ type Candidate = WakeMail & {
   readonly hasFile: 0 | 1 | null;
   readonly senderCheck: "passed" | "failed" | "not checked" | null;
 };
+
+type HeaderFacts = Pick<
+  Parameters<typeof matchMailRule>[1],
+  "subject" | "fromAddress" | "senderCheck"
+>;
 
 const toPreviewMail = ({ arrivalId, fromAddress, receivedAt }: Candidate) => ({
   arrivalId,
@@ -428,15 +439,15 @@ const make = Effect.gen(function* () {
   const select = (
     rule: KinMailRuleMatch & { readonly connectionId: string },
     row: Candidate,
-    subject: string | undefined,
     options: { readonly subject?: "defer" },
+    facts?: Partial<HeaderFacts>,
   ) =>
     matchMailRule(
       rule,
       {
         ...row,
         hasFile: row.hasFile === null ? null : row.hasFile === 1,
-        ...(subject === undefined ? {} : { subject }),
+        ...facts,
       },
       options,
     );
@@ -461,7 +472,7 @@ const make = Effect.gen(function* () {
         yield* companyMailbox(orgId, rule.connectionId);
         const filter = { connectionId: rule.connectionId, ...rule.match };
         const rows = (yield* candidates(orgId, rule.connectionId)).filter(
-          (row) => select(filter, row, undefined, { subject: "defer" }) !== "no_match",
+          (row) => select(filter, row, { subject: "defer" }) !== "no_match",
         );
         return { rule, match: rule.match, rows, snapshot };
       }),
@@ -504,7 +515,7 @@ const make = Effect.gen(function* () {
     for (const row of [...checked].reverse()) {
       const subject = subjects.get(row.messageId);
       if (subject !== undefined && looksLikeSignInMail(subject, "")) continue;
-      const match = select(filter, row, subject, {});
+      const match = select(filter, row, {}, subject === undefined ? undefined : { subject });
       if (match === "no_match") continue;
       const limit = monthlyMailRuleLimit(
         { ...counter, monthlyCap: rule.monthlyCap ?? DEFAULT_MAIL_RULE_CAP },
@@ -538,30 +549,53 @@ const make = Effect.gen(function* () {
       yield* directLead(orgId, row.saidBy, row.agentId, row.chatId);
       return { row, mailbox, filter: { connectionId: row.connectionId, ...match } };
     });
-    const { row, filter, eligible } = yield* sql.withTransaction(
+    const { row, filter, eligible, checksSender } = yield* sql.withTransaction(
       Effect.gen(function* () {
         const { row, filter } = yield* runnable();
-        const eligible = (yield* candidates(orgId, filter.connectionId)).filter(
-          (candidate) => select(filter, candidate, undefined, { subject: "defer" }) === "match",
-        );
-        return { row, filter, eligible };
+        const checksSender = filter.from.length > 0;
+        // A stored verdict cannot admit or eliminate a sender-filtered candidate.
+        const eligible = (yield* candidates(orgId, filter.connectionId)).filter((candidate) => {
+          const result = select(
+            filter,
+            candidate,
+            { subject: "defer" },
+            checksSender ? { senderCheck: null } : undefined,
+          );
+          return checksSender ? result !== "no_match" : result === "match";
+        });
+        return { row, filter, eligible, checksSender };
       }),
     );
-    let chosen = filter.subjectHas.length === 0 ? eligible[0] : undefined;
-    if (filter.subjectHas.length > 0) {
+    let chosen: { candidate: Candidate; facts?: Partial<HeaderFacts> } | undefined;
+    if (checksSender || filter.subjectHas.length > 0) {
       for (const candidate of eligible.slice(0, RUN_HEADERS)) {
-        const [header] = yield* connections.arrivals(orgId, filter.connectionId, [
-          candidate.messageId,
-        ]);
-        if (
-          header?._tag === "read" &&
-          !looksLikeSignInMail(header.arrival.subject, "") &&
-          select(filter, candidate, header.arrival.subject, {}) === "match"
-        ) {
-          chosen = candidate;
+        const read = connections.arrivals(
+          orgId,
+          filter.connectionId,
+          [candidate.messageId],
+          checksSender ? () => false : undefined,
+        );
+        const [header] = yield* checksSender
+          ? read.pipe(Effect.mapError(() => unreadableMail))
+          : read;
+        if (header?._tag !== "read") {
+          if (checksSender) return yield* unreadableMail;
+          continue;
+        }
+        const { subject } = header.arrival;
+        if (looksLikeSignInMail(subject, "")) continue;
+        const sender = checksSender ? mailRuleHeaderFacts(header.arrival) : undefined;
+        const facts =
+          sender === undefined
+            ? { subject }
+            : { subject, fromAddress: sender.fromAddress, senderCheck: sender.senderCheck };
+        if (select(filter, candidate, {}, facts) === "match") {
+          chosen = { candidate, facts };
           break;
         }
       }
+    } else if (eligible[0] !== undefined) {
+      chosen = { candidate: eligible[0] };
     }
     return yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -581,7 +615,7 @@ const make = Effect.gen(function* () {
             status: "no_match",
             message: "No mail in the last 30 days matches this rule.",
           } satisfies KinMailRuleRunNow;
-        const arrivalId = chosen.arrivalId;
+        const arrivalId = chosen.candidate.arrivalId;
         const [stored] = yield* sql<Candidate>`SELECT arrival_id AS "arrivalId",
         connection_id AS "connectionId", message_id AS "messageId", thread_id AS "threadId",
         COALESCE(rule_mail_key, mail_key) AS "mailKey", from_address AS "fromAddress", received_at AS "receivedAt",
@@ -590,14 +624,23 @@ const make = Effect.gen(function* () {
           AND connection_id = ${current.connectionId}`;
         if (
           stored === undefined ||
-          select(filter, stored, undefined, { subject: "defer" }) !== "match"
+          (checksSender && stored.messageId !== chosen.candidate.messageId) ||
+          select(filter, stored, { subject: "defer" }, chosen.facts) !== "match"
         )
           return {
             status: "no_match",
             message: "No mail in the last 30 days matches this rule.",
           } satisfies KinMailRuleRunNow;
         const now = yield* Clock.currentTimeMillis;
-        const eventId = yield* wakeRuleMail(current, mailbox, stored, [], 0, now, true);
+        const eventId = yield* wakeRuleMail(
+          current,
+          mailbox,
+          { ...stored, ...chosen.facts },
+          [],
+          0,
+          now,
+          true,
+        );
         if (eventId === undefined) return yield* unavailable;
         yield* recordManualRuleMail(current, arrivalId, eventId);
         yield* refresh.touch(orgId, "connections");
