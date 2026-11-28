@@ -97,6 +97,7 @@ export const kinLintOverrides = [
   {
     files: [
       "apps/server/src/kin/**/rpcHandlers.ts",
+      "apps/server/src/kin/**/mcp.ts",
       "apps/server/src/kin/**/mcp/**",
       "apps/server/src/kin/mcp/**",
     ],
