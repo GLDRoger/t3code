@@ -1562,6 +1562,12 @@ const turnBills = Effect.fn("KinBills.turnBills")(function* (
   return new Map(hashes.map((row, index) => [`B${index + 1}`, row]));
 });
 
+/** A currency given wins; with none, the company's, marked as assumed by Kin alone. */
+const withCurrency = ({ currencyAssumed: _untrusted, ...given }: KinBillRead, home: string) =>
+  given.currency === undefined
+    ? { ...given, currency: home, currencyAssumed: true as const }
+    : { ...given, currency: given.currency };
+
 /** One bill's answer, by plain rules: a clean read becomes one suggested expense or a duplicate. */
 const settleRead = Effect.fn("KinBills.settleRead")(function* (
   orgId: KinOrgId,
@@ -1574,13 +1580,9 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  const { currencyAssumed: _untrusted, ...printed } = answer.read;
   const home = yield* homeCurrency(orgId);
-  const currency = printed.currency ?? home;
-  const read =
-    printed.currency === undefined
-      ? { ...printed, currency, currencyAssumed: true as const }
-      : printed;
+  const read = withCurrency(answer.read, home);
+  const { currency } = read;
   const json = yield* encodeRead(read).pipe(Effect.orDie);
   const missing: Array<string> = [];
   const amount = plainNumber(read.amount, currency);
@@ -2386,14 +2388,11 @@ export const keepRead = Effect.fn("KinBills.keepRead")(
 );
 
 /** The figures an owner typed for a bill not read cleanly, as a clean read would need them. */
-const enteredMoney = (entered: KinBillRead) => {
+const enteredMoney = (entered: KinBillRead & { readonly currency: string }) => {
   if (blankText(entered.vendor) || notAVendor(entered.vendor!)) return "Enter who was paid.";
   if (entered.date === undefined) return "Enter the date.";
   const amount = plainNumber(entered.amount, entered.currency);
-  const money =
-    amount === undefined || entered.currency === undefined
-      ? undefined
-      : parseKinMoney(amount, entered.currency);
+  const money = amount === undefined ? undefined : parseKinMoney(amount, entered.currency);
   if (money === undefined || "error" in money || money.money.minor === 0)
     return "Enter the amount.";
   if (entered.tax !== undefined && plainNumber(entered.tax, entered.currency) === undefined)
@@ -2425,7 +2424,10 @@ export const addAnyway = Effect.fn("KinBills.addAnyway")(function* (
     Effect.gen(function* () {
       const row = yield* billRow(input.orgId, input.sha256);
       if (row === undefined) return yield* notFound;
-      const { entered } = input;
+      const entered =
+        input.entered === undefined
+          ? undefined
+          : withCurrency(input.entered, yield* homeCurrency(input.orgId));
       if (entered !== undefined) {
         if (row.state !== "unreadable" || row.recordId !== null || row.dismissedAt !== null)
           return yield* invalid("Only a bill not read cleanly is kept with figures typed in.");

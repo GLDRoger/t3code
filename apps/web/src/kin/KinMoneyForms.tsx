@@ -24,6 +24,7 @@ import {
   kinBillCurrencies,
   kinBillFixInput,
   kinBillFixNeeds,
+  kinBillName,
   type KinBillFixDraft,
 } from "@t3tools/client-runtime/kin/kinBills";
 import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
@@ -756,7 +757,7 @@ export function KinBillFixDialog(
         </div>
       )}
       <p className="text-sm text-muted-foreground">
-        {copy.receipt}: {props.row.file.name}
+        {copy.receipt}: {kinBillName(props.row)}
       </p>
       <Problem text={problem ?? fix.problem} />
     </FormDialog>

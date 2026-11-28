@@ -4,6 +4,7 @@ import {
   kinBillExpenseStart,
   kinBillFixStart,
   kinBillIsPdf,
+  kinBillName,
   kinBillReviewCounts,
   kinBillRowViews,
   kinBillsButton,
@@ -574,7 +575,7 @@ function KinBillBatchReview(
           {...props}
           start={{
             draft: kinBillExpenseStart(byHand, home, expenses?.categories ?? []),
-            receipt: byHand.file,
+            receipt: { ...byHand.file, name: kinBillName(byHand) },
           }}
           onClose={() => setByHand(null)}
         />
@@ -640,6 +641,7 @@ const BillRow = memo(function BillRow(props: {
   const { view, src } = props;
   const opens = props.original ?? src;
   const { file } = view;
+  const name = kinBillName(view.row);
   const actions = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
   return (
@@ -647,7 +649,7 @@ const BillRow = memo(function BillRow(props: {
       {view.asFile ? (
         <a
           {...(opens === null ? {} : { href: opens, download: file.name })}
-          aria-label={`Open ${file.name}`}
+          aria-label={`Open ${name}`}
           aria-disabled={opens === null}
           className={cn(
             "flex size-16 shrink-0 flex-col items-center justify-center gap-1 border border-border/80 px-1 text-muted-foreground",
@@ -655,17 +657,17 @@ const BillRow = memo(function BillRow(props: {
           )}
         >
           <FileIcon aria-hidden className="size-5" />
-          <span className="w-full truncate text-center text-3xs">{file.name}</span>
+          <span className="w-full truncate text-center text-3xs">{name}</span>
         </a>
       ) : src === null ? (
         <span className="block size-16 shrink-0 rounded-lg border border-border/80 bg-muted" />
       ) : (
         <button
           type="button"
-          aria-label={`Open ${file.name}`}
+          aria-label={`Open ${name}`}
           onClick={() =>
             openExpandedImagePreview(props.previewKey, {
-              images: [{ src: opens ?? src, name: file.name, mimeType: file.mimeType }],
+              images: [{ src: opens ?? src, name, mimeType: file.mimeType }],
               index: 0,
             })
           }
@@ -675,7 +677,7 @@ const BillRow = memo(function BillRow(props: {
             name={file.name}
             mimeType={view.picture.mimeType}
             src={src}
-            alt={file.name}
+            alt={name}
             loading="lazy"
             decoding="async"
             className="block size-full object-cover object-top"

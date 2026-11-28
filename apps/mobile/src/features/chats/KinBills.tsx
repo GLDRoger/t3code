@@ -10,6 +10,7 @@ import {
   kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFixStart,
+  kinBillName,
   kinBillReviewCounts,
   kinBillRowViews,
   kinBillsButton,
@@ -501,7 +502,7 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
           kinExpenseParamsOfBill(
             base,
             kinBillExpenseStart(view.row, home, expenses?.categories ?? []),
-            view.file.name,
+            kinBillName(view.row),
           ),
         );
       case "fix":
@@ -509,7 +510,7 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
           "KinBillFix",
           kinBillFixParamsOf(
             base,
-            { sha256: view.row.sha256, name: view.file.name },
+            { sha256: view.row.sha256, name: kinBillName(view.row) },
             kinBillFixStart(view.row, home, expenses?.categories ?? []),
           ),
         );
@@ -636,6 +637,7 @@ function BillThumb(props: {
   readonly onPreview: (source: FilePreviewSource) => void;
 }) {
   const { file, picture, pdf, asFile } = props.view;
+  const name = kinBillName(props.view.row);
   const resource = {
     _tag: "attachment" as const,
     attachmentId: file.attachmentId,
@@ -653,11 +655,11 @@ function BillThumb(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open ${file.name}`}
+      accessibilityLabel={`Open ${name}`}
       onPress={() =>
         props.onPreview({
           kind: pdf ? "pdf" : asFile ? "document" : "image",
-          name: file.name,
+          name,
           mimeType: resource.mimeType,
           environmentId: props.environmentId,
           resource,

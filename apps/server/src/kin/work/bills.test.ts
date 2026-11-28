@@ -2147,8 +2147,10 @@ describe("bills in bulk", () => {
         assert.include(yield* keep(as(meera), cafe!.sha256, noDate).pipe(Effect.flip), {
           message: "Enter the date.",
         });
-        const kept = yield* keep(as(meera), cafe!.sha256);
-        assert.deepStrictEqual(yield* keep(as(meera), cafe!.sha256), kept);
+        // A currency left out is the company's, marked as assumed by Kin alone.
+        const { currency: _currency, ...noCurrency } = entered;
+        const kept = yield* keep(as(meera), cafe!.sha256, noCurrency);
+        assert.deepStrictEqual(yield* keep(as(meera), cafe!.sha256, noCurrency), kept);
         const after = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
         assert.deepStrictEqual(
           after.map((bill) => [bill.state, bill.expense?.key]),
@@ -2165,7 +2167,7 @@ describe("bills in bulk", () => {
           category: "meals",
           state: "done",
         });
-        assert.strictEqual(after[0]!.read.number, "HC-12");
+        assert.include(after[0]!.read, { number: "HC-12", currency: "INR", currencyAssumed: true });
         // Every figure on it is Meera's: the expense is hers from its first change.
         const changes = yield* sql<{ kind: string; actor: string; id: string }>`SELECT c.kind,
             c.actor_kind AS actor, c.actor_id AS id
@@ -2183,6 +2185,18 @@ describe("bills in bulk", () => {
             clientRequestId: "plain",
           }).pipe(Effect.flip),
           { reason: "invalid_state" },
+        );
+        // A currency the person chose wins, whatever the client says was assumed.
+        const typed = yield* keep(as(rhea), cloud!.sha256, {
+          ...entered,
+          vendor: "Cloud Hosting",
+          currency: "USD",
+          currencyAssumed: true,
+        });
+        const usd = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[1]!;
+        assert.deepStrictEqual(
+          [usd.expense?.key, usd.expense?.amount, usd.read.currency, usd.read.currencyAssumed],
+          [typed.expense, { minor: 125_000, currency: "USD" }, "USD", undefined],
         );
       }).pipe(Effect.provide(layer)),
   );

@@ -19,6 +19,7 @@ import {
   kinBillFixInput,
   kinBillFixNeeds,
   kinBillFixStart,
+  kinBillName,
   kinBillsUnreadAgain,
   kinBillReviewCounts,
   kinBillRowView,
@@ -332,14 +333,27 @@ describe("telling bills on one review apart", () => {
       mail: { from: "billing@inkspot.example", receivedAt: "2026-11-27T08:00:00.000Z" },
     });
 
-  it("names each by vendor and amount once read, else by its number in the batch", () => {
-    const names = kinBillRowViews([
+  it("names each by vendor and amount once read, else as the host names it, else by its number", () => {
+    const views = kinBillRowViews([
       mailed(1, { vendor: "Inkspot Cloud", amount: "49", currency: "USD" }),
       mailed(2, { vendor: "Inkspot Cloud", amount: "120", currency: "USD" }),
       mailed(3, {}),
       mailed(4, { vendor: "Inkspot Cloud" }),
-    ]).map((view) => view.name);
-    expect(names).toEqual(["Inkspot Cloud, $49.00", "Inkspot Cloud, $120.00", "Bill 3", "Bill 4"]);
+      { ...mailed(5, {}), name: "Photo 3 · bill 2 of 3" },
+    ]);
+    expect(views.map((view) => view.name)).toEqual([
+      "Inkspot Cloud, $49.00",
+      "Inkspot Cloud, $120.00",
+      "Bill 3",
+      "Bill 4",
+      "Photo 3 · bill 2 of 3",
+    ]);
+    // Read aloud and on its receipt line by the host's name, else the file's.
+    expect(views.map((view) => kinBillName(view.row))).toEqual([
+      ...Array(4).fill("Mail from billing@inkspot.example, 27 Nov.txt"),
+      "Photo 3 · bill 2 of 3",
+    ]);
+    expect(views[4]!.accessibilityLabel.startsWith("Photo 3 · bill 2 of 3. ")).toBe(true);
   });
 
   it("adds the number when two read the same", () => {

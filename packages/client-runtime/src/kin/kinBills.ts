@@ -427,9 +427,8 @@ export function kinBillRowView(
     name:
       vendor !== null && amount !== null
         ? `${vendor}, ${amount}`
-        : options.position === undefined
-          ? row.file.name
-          : `Bill ${options.position}`,
+        : (row.name ??
+          (options.position === undefined ? row.file.name : `Bill ${options.position}`)),
     label,
     tone: TONE[row.state],
     fields,
@@ -440,7 +439,7 @@ export function kinBillRowView(
     skipped: options.skipped?.get(row.sha256) ?? null,
     mailLine,
     accessibilityLabel: [
-      row.file.name,
+      kinBillName(row),
       label,
       ...read,
       ...(problem === null ? [] : [problem]),
@@ -525,6 +524,9 @@ export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
       : `${total}${counts.reading > 0 ? " so far" : ""}: ${parts.join(", ")}.`;
   return counts.reading === 0 ? line : `${line} ${counts.reading} more being read.`;
 }
+
+/** A bill's name in its batch, as the host's card says it ("Photo 3 · bill 2 of 3"), else its file's. */
+export const kinBillName = (row: Pick<KinBillRow, "name" | "file">) => row.name ?? row.file.name;
 
 /** The bills "Read the unread again" asks for: each one whose own Read again is offered. */
 export const kinBillsUnreadAgain = (views: ReadonlyArray<KinBillRowView>) =>
