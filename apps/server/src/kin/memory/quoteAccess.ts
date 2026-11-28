@@ -97,7 +97,7 @@ const quotedFront = (text: string) => {
 };
 
 /** The item's text with no `quote` in its front matter, every other field as it was. */
-const withoutQuote = (text: string) => {
+export const withoutQuote = (text: string) => {
   const quoted = quotedFront(text);
   if (quoted === undefined) return text;
   quoted.doc.delete("quote");

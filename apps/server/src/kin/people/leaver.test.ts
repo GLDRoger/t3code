@@ -953,6 +953,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_schedules: "agent_id said_by",
   kin_session_bindings: "person_id",
   kin_shadow_entries: "agent_id",
+  // A retired lead's landing is history; only live leads land (`MemoryWriter.landShadows`).
+  kin_shadow_landings: "agent_id",
   kin_social_posts: "agent_id confirmed_by",
   kin_tasks_keys: "person_id",
   kin_team_agents: "agent_id set_by",

@@ -3,6 +3,7 @@ import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   KinAgentId,
   KinChatId,
@@ -10,12 +11,14 @@ import {
   KinOrgId,
   KinPersonId,
   type MemoryItemHead,
+  type VcsError,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -24,7 +27,9 @@ import * as Memory from "./Memory.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
+import * as PullRequests from "./MemoryPullRequests.ts";
 import { journalEntry } from "./journal.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
 import {
   authorise,
@@ -1969,4 +1974,1250 @@ it.effect(
       ),
       Effect.scoped,
     ),
+);
+
+// A lead that wrote at L0 before leads worked on the default branch kept its notes on its shadow
+// branch, and nothing landed them.
+const landingFixture = <E>(
+  run: (input: {
+    readonly setLevel: (level: "L0" | "L2") => void;
+    readonly bare: (args: ReadonlyArray<string>) => Effect.Effect<string, VcsError>;
+    readonly notices: ReadonlyArray<{
+      readonly branch: string;
+      readonly reason: string;
+      readonly owner?: string;
+    }>;
+    /** Runs `effect` once, inside the next secret scan `when` picks: in the middle of a landing. */
+    readonly duringScan: (
+      effect: Effect.Effect<void, never, SqlClient.SqlClient>,
+      when?: (paths: ReadonlyArray<string>) => boolean,
+    ) => void;
+  }) => Effect.Effect<
+    void,
+    E,
+    | Memory.Memory
+    | Writer.MemoryWriter
+    | Repository.KinChatRepository
+    | SqlClient.SqlClient
+    | FileSystem.FileSystem
+    | Vcs.VcsProcess
+  >,
+  options: { readonly offGitHubPullRequests?: boolean } = {},
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const vcs = yield* Vcs.VcsProcess;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const source = `${root}/seed`;
+    const remote = `${root}/remote.git`;
+    const git = (cwd: string, args: ReadonlyArray<string>) =>
+      vcs
+        .run({ operation: "test.writer", command: "git", cwd, args })
+        .pipe(Effect.map((r) => r.stdout.trim()));
+    yield* fs.makeDirectory(`${source}/people`, { recursive: true });
+    yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+    yield* fs.writeFileString(`${source}/INDEX.md`, "# Memory index\n");
+    yield* git(source, ["init", "-b", "main"]);
+    yield* git(source, ["add", "--", "."]);
+    yield* git(source, [
+      "-c",
+      "user.name=Fixture Bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    yield* git(root, ["clone", "--bare", "--", source, remote]);
+    let level: "L0" | "L2" = "L0";
+    const notices: Array<{ branch: string; reason: string; owner?: string }> = [];
+    let duringScan:
+      | {
+          readonly effect: Effect.Effect<void, never, SqlClient.SqlClient>;
+          readonly when: (paths: ReadonlyArray<string>) => boolean;
+        }
+      | undefined;
+    const scan = Layer.effect(
+      Scan.KinSecretScan,
+      Effect.gen(function* () {
+        const real = yield* Scan.KinSecretScan;
+        const sql = yield* SqlClient.SqlClient;
+        return Scan.KinSecretScan.of({
+          scan: (input) =>
+            Effect.suspend(() => {
+              const once = duringScan;
+              if (once === undefined || !once.when(input.files.map((file) => file.path)))
+                return Effect.void;
+              duringScan = undefined;
+              return once.effect;
+            }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.andThen(real.scan(input)),
+            ),
+        });
+      }),
+    ).pipe(Layer.provide(Scan.layer));
+    const config = Layer.succeed(MemoryConfig, {
+      baseDirectory: root,
+      directMainPush: true,
+      repositories: [{ orgId, repoUrl: remote, path: "state" }],
+    });
+    const layer = Writer.layer.pipe(
+      Layer.provideMerge(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+        ),
+      ),
+      Layer.provideMerge(Repository.layer),
+      Layer.provide(
+        Layer.succeed(Memory.MemoryRecoveryHooks, {
+          notify: (notice) => Effect.sync(() => void notices.push(notice)),
+        }),
+      ),
+      Layer.provide(config),
+      Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Writer.MemoryWriterAuthority, {
+          resolve: (_org: KinOrgId, wakeupId: string) =>
+            Effect.succeed({
+              orgId,
+              wakeupId,
+              agentId,
+              level,
+              timeZone: "UTC",
+              startedAt: "2026-11-08T00:00:00.000Z",
+              eventIds: [],
+              sources: new Map(),
+            }),
+        }),
+      ),
+      Layer.provide(scan),
+      Layer.provide(
+        options.offGitHubPullRequests === true
+          ? Layer.mock(PullRequests.MemoryPullRequests)({})
+          : Layer.empty,
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+      // The owner's direct chat with the lead, the one chat a lead was in before K035.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'direct', 'owner-lead', 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('owner-in-owner-chat', ${orgId}, 'owner-chat', 'person', 'owner', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('lead-in-owner-chat', ${orgId}, 'owner-chat', 'agent', ${agentId}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'owner-chat')`;
+      // When K035 ran: leads stopped working on their shadow branch then.
+      yield* sql`UPDATE kin_sql_migrations SET created_at = '2026-11-10 12:42:41'
+        WHERE migration_id = 35`;
+      yield* memory.ensureCheckouts(orgId);
+      yield* memory.prepareWakeup(orgId);
+      yield* run({
+        setLevel: (next) => {
+          level = next;
+        },
+        bare: (args) => git(root, [`--git-dir=${remote}`, ...args]),
+        notices,
+        duringScan: (effect, when = () => true) => {
+          duringScan = { effect, when };
+        },
+      });
+    }).pipe(Effect.provide(layer));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        gitLayer,
+        NodeServices.layer,
+        Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  );
+// Commits made inside are dated before the cut-over, as an L0 lead's were.
+const beforeCutOver = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-01T00:00:00Z")),
+    () => effect,
+    () => Effect.sync(() => vi.unstubAllEnvs()),
+  );
+// A wake-up of the lead's own that ran before the cut-over, as its stored row shows, and its commit.
+const wokeBeforeCutOver = (writer: Writer.MemoryWriter["Service"], wakeupId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES (${wakeupId}, ${orgId}, ${agentId}, 'fixture', ${Date.parse(preCutOver)}, 'completed', '[]')`;
+    return yield* beforeCutOver(writer.commitWakeup(orgId, wakeupId, "completed"));
+  });
+const personNote = (id: string, title: string) => ({
+  path: `people/${id}.md`,
+  content: fixtureItem({
+    id,
+    kind: "person",
+    title,
+    due: null,
+    on_due: undefined,
+    review_by: null,
+    links: [`person:${id}`],
+  }),
+});
+// Commits onto a recorded branch with no wake-up, as a purge does or as an older Kin could have.
+const commitDirectly = (
+  bare: (args: ReadonlyArray<string>) => Effect.Effect<string, VcsError>,
+  branch: string,
+  change: {
+    readonly add?: Record<string, string>;
+    readonly remove?: ReadonlyArray<string>;
+    /** A history of its own, as a replaced or recovered branch has. */
+    readonly orphan?: boolean;
+    /** The commit's parents in place of the branch's head, as a merge has. */
+    readonly parents?: ReadonlyArray<string>;
+    readonly message?: string;
+  },
+  date?: string,
+) =>
+  Effect.gen(function* () {
+    const memory = yield* Memory.Memory;
+    const vcs = yield* Vcs.VcsProcess;
+    const fs = yield* FileSystem.FileSystem;
+    const { writer: checkout } = yield* memory.ensureCheckouts(orgId);
+    const git = (args: ReadonlyArray<string>) =>
+      vcs
+        .run({
+          operation: "test.writer",
+          command: "git",
+          cwd: checkout,
+          args,
+          env: {
+            GIT_INDEX_FILE: `${checkout}/.git/test-direct-index`,
+            GIT_AUTHOR_NAME: "Fixture Bot",
+            GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+            GIT_COMMITTER_NAME: "Fixture Bot",
+            GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+            ...(date === undefined ? {} : { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }),
+          },
+        })
+        .pipe(Effect.map((r) => r.stdout.trim()));
+    const before = yield* git(["rev-parse", `refs/heads/${branch}`]);
+    yield* git(["read-tree", before]);
+    for (const path of change.remove ?? []) yield* git(["update-index", "--force-remove", path]);
+    for (const [path, content] of Object.entries(change.add ?? {})) {
+      const blob = `${checkout}/.git/test-direct-blob`;
+      yield* fs.writeFileString(blob, content);
+      const sha = yield* git(["hash-object", "-w", "--", blob]);
+      yield* git(["update-index", "--add", "--cacheinfo", `100644,${sha},${path}`]);
+    }
+    const commit = yield* git([
+      "commit-tree",
+      yield* git(["write-tree"]),
+      ...(change.orphan === true
+        ? []
+        : (change.parents ?? [before]).flatMap((parent) => ["-p", parent])),
+      "-m",
+      change.message ?? "direct",
+    ]);
+    const remote = yield* bare(["rev-parse", "--absolute-git-dir"]);
+    yield* git(["push", "--", remote, `+${commit}:refs/heads/${branch}`]);
+    yield* git(["update-ref", `refs/heads/${branch}`, commit, before]);
+    yield* memory.record(orgId, branch, before, commit);
+  });
+const preCutOver = "2026-11-01T00:00:00Z";
+// The owner's message in their chat with the lead, as stored when it was said.
+let saidSeq = 100;
+const said = (messageId: string, createdAt: string, status = "posted") =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES (${messageId}, ${orgId}, 'owner-chat', ${saidSeq++}, 'human', 'owner',
+        'owner-in-owner-chat', 'owner', 'text', ${FIXTURE_SAID}, '[]', ${status}, ${createdAt})`;
+  });
+// What the owner will be told, one held line per lead (`deliverHeld` posts it).
+const toldOwner = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ holdId: string; chatId: string; kind: string; body: string }>`SELECT
+      hold_id AS "holdId", chat_id AS "chatId", kind, body FROM kin_held_posts
+    WHERE kind LIKE 'kin-memory:shadow-landed:%' ORDER BY kind`;
+});
+const landedMarks = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
+    FROM kin_shadow_landings WHERE org_id = ${orgId} AND landed_at IS NOT NULL
+    ORDER BY agent_id`;
+  return rows.map((row) => row.agentId);
+});
+// While on, the remote takes a landing and then the transaction that marks it fails.
+const marksFail = (on: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const event of ["INSERT", "UPDATE"])
+      yield* sql.unsafe(
+        on
+          ? `CREATE TRIGGER no_mark_${event} BEFORE ${event} ON kin_shadow_landings
+            WHEN NEW.landed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'no mark'); END`
+          : `DROP TRIGGER no_mark_${event}`,
+      );
+  });
+
+it.effect("an L0 lead's shadow notes land on the default branch and its index, once", () =>
+  landingFixture(({ bare, setLevel }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      const main = () => bare(["rev-parse", "main"]);
+      // No shadow branch yet: nothing to land.
+      const untouched = yield* main();
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* main(), untouched);
+
+      yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      assert.include(yield* bare(["show", `${shadow}:INDEX.md`]), "owner-repos");
+      assert.notInclude(yield* bare(["show", "main:INDEX.md"]), "owner-repos");
+
+      yield* writer.landShadows(orgId);
+      const landed = yield* main();
+      assert.notStrictEqual(landed, untouched);
+      assert.strictEqual(
+        yield* bare(["show", "main:people/owner-repos.md"]),
+        yield* bare(["show", `${shadow}:people/owner-repos.md`]),
+      );
+      assert.include(yield* bare(["show", "main:INDEX.md"]), "owner-repos");
+      assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "journal/");
+
+      // Later shadow writes (a chat the owner didn't place the lead in) stay off the default branch.
+      yield* writer.stage(orgId, "wake1", personNote("teammate-only", "Said in someone's group"));
+      yield* writer.commitWakeup(orgId, "wake1", "completed");
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* main(), landed);
+
+      // A lead now on the default branch reads what it wrote at L0.
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake2", personNote("sam", "Sam runs billing"));
+      const index = yield* bare([
+        "show",
+        `${(yield* writer.commitWakeup(orgId, "wake2", "completed")).commit}:INDEX.md`,
+      ]);
+      assert.include(index, "owner-repos");
+    }),
+  ),
+);
+
+it.effect("a shadow note written after the cut-over stays off the default branch", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // After the cut-over, an L0 write comes from a chat the owner didn't place the lead in.
+      yield* writer.stage(orgId, "wake1", personNote("teammate-only", "Said in someone's group"));
+      yield* writer.commitWakeup(orgId, "wake1", "completed");
+
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/owner-repos.md"]), "two main repos");
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.notInclude(tree, "teammate-only");
+      assert.notInclude(yield* bare(["show", "main:INDEX.md"]), "teammate-only");
+      assert.include(yield* bare(["show", `${shadow}:people/teammate-only.md`]), "someone's group");
+    }),
+  ),
+);
+
+it.effect(
+  "a shadow note the default branch also changed or deleted keeps the default branch's",
+  () =>
+    landingFixture(({ bare, setLevel }) =>
+      Effect.gen(function* () {
+        const writer = yield* Writer.MemoryWriter;
+        const shadow = Memory.shadowBranch(agentId);
+        setLevel("L2");
+        const gone = personNote("gone", "Gone soon");
+        yield* writer.stage(orgId, "wake0", gone);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        setLevel("L0");
+        yield* writer.stage(orgId, "wake1", personNote("sam", "Sam, as the shadow has it"));
+        yield* writer.stage(orgId, "wake1", personNote("alex", "Alex leads design"));
+        yield* writer.stage(orgId, "wake1", {
+          ...gone,
+          content: gone.content.replace('status: "open"', 'status: "done"'),
+        });
+        yield* wokeBeforeCutOver(writer, "wake1");
+        setLevel("L2");
+        yield* writer.stage(orgId, "wake2", personNote("sam", "Sam, as the default branch has it"));
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // A purge-like deletion on the default branch.
+        yield* commitDirectly(bare, "main", { remove: ["people/gone.md"] });
+
+        yield* writer.landShadows(orgId);
+        assert.include(yield* bare(["show", "main:people/sam.md"]), "as the default branch has it");
+        assert.include(yield* bare(["show", `${shadow}:people/sam.md`]), "as the shadow has it");
+        assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+        assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/gone.md");
+        assert.deepStrictEqual(
+          (yield* toldOwner).map((row) => row.body),
+          [
+            "Some of Lead's earlier notes weren't added to Memory:\n- people/gone.md: This note was removed from Memory, so Kin left it out.\n- people/sam.md: Memory had a different version, so Kin kept it.",
+          ],
+        );
+      }),
+    ),
+);
+
+it.effect("one lead that cannot land leaves the next lead's notes landing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      // Sorts first, and its recorded shadow branch is missing from the checkout.
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('a-lead', ${orgId}, 'Ada', 'lead', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('a-lead', ${orgId}, 'Ada', 'L0', 0, '{}', '[]', 'owner-chat')`;
+      yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+        VALUES (${orgId}, 'kin/shadow/a-lead', ${yield* bare(["rev-parse", "main"])})`;
+      yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/owner-repos.md"]), "two main repos");
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+    }),
+  ),
+);
+
+it.effect("the owner is told which shadow notes stayed behind and why, once", () =>
+  landingFixture(({ bare, notices }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      const token = ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6";
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      const key = personNote("key", "The deploy key");
+      yield* commitDirectly(
+        bare,
+        shadow,
+        {
+          add: {
+            "people/broken.md": "Not a note any more\n",
+            [key.path]: key.content.replace("Invented fixture body.", `Deploy with ${token}`),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.notInclude(tree, "people/broken.md");
+      assert.notInclude(tree, "people/key.md");
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/broken.md: It couldn't be read.\n- people/key.md: It looked like it held a password or key.",
+        ],
+      );
+      assert.notInclude(JSON.stringify(notices), "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6");
+
+      const landed = yield* bare(["rev-parse", "main"]);
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), landed);
+      assert.lengthOf(yield* toldOwner, 1);
+    }),
+  ),
+);
+
+it.effect("a held note whose name looks like a key is not named to the owner or in the log", () =>
+  landingFixture(({ bare, notices }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      const token = ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6";
+      const legacy = `people/${token}.md`;
+      // A file from before notes had front matter: no index lists it, so no commit is refused.
+      yield* commitDirectly(bare, "main", { add: { [legacy]: "Legacy text\n" } });
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, shadow, { add: { [legacy]: "The shadow's text\n" } }, preCutOver);
+      yield* commitDirectly(bare, "main", { add: { [legacy]: "Memory's text\n" } });
+
+      yield* writer.landShadows(orgId);
+      assert.notInclude(JSON.stringify(notices), token);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      assert.strictEqual(yield* bare(["show", `main:${legacy}`]), "Memory's text");
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- One note: Memory had a different version, so Kin kept it.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a shadow note lands without the quote of a message deleted since", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const quoted = fixtureItem({
+        id: "sam",
+        kind: "person",
+        title: "Sam runs billing",
+        due: null,
+        on_due: undefined,
+        review_by: null,
+        links: ["person:sam"],
+        source: "kin:chat:owner-chat:message:deleted-message",
+        quote: FIXTURE_QUOTE,
+      });
+      yield* said("deleted-message", "2026-10-30T00:00:00.000Z", "deleted");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        { add: { "people/sam.md": quoted } },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const sam = yield* bare(["show", "main:people/sam.md"]);
+      assert.include(sam, "Sam runs billing");
+      assert.notInclude(sam, FIXTURE_QUOTE);
+    }),
+  ),
+);
+
+it.effect("a chat cleared while a shadow lands leaves no quote of it on the default branch", () =>
+  landingFixture(({ bare, duringScan }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const sql = yield* SqlClient.SqlClient;
+      const chats = yield* Repository.KinChatRepository;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('m-said', ${orgId}, 'owner-chat', 1, 'human', 'owner', 'owner-in-owner-chat', 'owner',
+          'text', ${FIXTURE_SAID}, '[]', 'posted', '2026-10-30T00:00:00.000Z')`;
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/sam.md": fixtureItem({
+              id: "sam",
+              kind: "person",
+              title: "Sam runs billing",
+              due: null,
+              on_due: undefined,
+              review_by: null,
+              links: ["person:sam"],
+              source: "kin:chat:owner-chat:message:m-said",
+              quote: FIXTURE_QUOTE,
+            }),
+          },
+        },
+        preCutOver,
+      );
+      // The owner clears the chat after its notes were checked, as the commit is scanned.
+      duringScan(
+        chats
+          .clearChat({
+            orgId,
+            chatId: KinChatId.make("owner-chat"),
+            clearedAt: "2026-11-12T00:00:00.000Z",
+            clearedAtMs: 0,
+          })
+          .pipe(Effect.asVoid, Effect.orDie),
+        (paths) => paths.includes("INDEX.md"),
+      );
+
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/sam.md"]), "Sam runs billing");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId} AND chat_id = 'owner-chat'`,
+        0,
+      );
+      assert.notInclude(yield* bare(["log", "-p", "main"]), FIXTURE_QUOTE);
+    }),
+  ),
+);
+
+it.effect("a shadow commit at the cut-over's own second stays off the default branch", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      yield* said("m-early", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // K035 ran at 12:42:41; this commit's second is the same one. Its note cites the owner's
+      // message from before then, so only the cut-off holds it.
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/same-second.md": fixtureItem({
+              id: "same-second",
+              kind: "person",
+              title: "Said that second",
+              due: null,
+              on_due: undefined,
+              review_by: null,
+              links: ["person:same-second"],
+              source: "kin:chat:owner-chat:message:m-early",
+            }),
+          },
+        },
+        "2026-11-10T12:42:41Z",
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/alex.md");
+      assert.notInclude(tree, "people/same-second.md");
+    }),
+  ),
+);
+
+it.effect("a shadow note not from the owner in their own chat with the lead stays behind", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('sam', ${orgId}, 'sam', 'Sam', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('group-chat', ${orgId}, 'team_group', 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('owner-in-group', ${orgId}, 'group-chat', 'person', 'owner', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('sam-in-group', ${orgId}, 'group-chat', 'person', 'sam', 'member', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('lead-in-group', ${orgId}, 'group-chat', 'agent', ${agentId}, 'member', ${at})`;
+      const note = (id: string, fields: Record<string, unknown>) =>
+        fixtureItem({
+          id,
+          kind: "person",
+          title: `About ${id}`,
+          due: null,
+          on_due: undefined,
+          review_by: null,
+          links: [`person:${id}`],
+          ...fields,
+        });
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/owners.md": note("owners", { source: "kin:chat:owner-chat:message:m1" }),
+            "people/members.md": note("members", {
+              source: "kin:chat:owner-chat:message:m2",
+              said_by: "sam",
+              trust: "member",
+            }),
+            "people/grouped.md": note("grouped", { source: "kin:chat:group-chat:message:m3" }),
+            "people/elsewhere.md": note("elsewhere", {
+              source: "kin:chat:chat-on-another-host:message:m4",
+            }),
+            "people/woken.md": note("woken", {
+              source: "wakeup:not-run-here",
+              said_by: agentId,
+              trust: "agent",
+            }),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/owners.md");
+      for (const left of ["members", "grouped", "elsewhere", "woken"])
+        assert.notInclude(tree, `people/${left}.md`);
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/elsewhere.md: Kin couldn't confirm where it came from, so it left it out.\n- people/grouped.md: Kin couldn't confirm where it came from, so it left it out.\n- people/members.md: Kin couldn't confirm where it came from, so it left it out.\n- people/woken.md: Kin couldn't confirm where it came from, so it left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+// Review of 220745f: a commit's date can be set by whoever wrote it, so a chat-cited note is bound
+// by its message's stored time.
+it.effect("a chat-cited shadow note lands only when its message was said before the cut-over", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const cites = (id: string, message: string) =>
+        fixtureItem({
+          id,
+          kind: "person",
+          title: `About ${id}`,
+          due: null,
+          on_due: undefined,
+          review_by: null,
+          links: [`person:${id}`],
+          source: `kin:chat:owner-chat:message:${message}`,
+        });
+      yield* said("m-before", "2026-10-30T00:00:00.000Z");
+      // K035 ran at 12:42:41; this was said later that second.
+      yield* said("m-after", "2026-11-10T12:42:41.500Z");
+      // SQLite's zoneless form is UTC, not the server's local time.
+      yield* said("m-plain-before", "2026-10-30 00:00:00");
+      yield* said("m-plain-after", "2026-11-10 14:00:00");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/before.md": cites("before", "m-before"),
+            "people/after.md": cites("after", "m-after"),
+            "people/missing.md": cites("missing", "m-missing"),
+            "people/plain-before.md": cites("plain-before", "m-plain-before"),
+            "people/plain-after.md": cites("plain-after", "m-plain-after"),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/before.md");
+      assert.notInclude(tree, "people/after.md");
+      assert.notInclude(tree, "people/missing.md");
+      assert.include(tree, "people/plain-before.md");
+      assert.notInclude(tree, "people/plain-after.md");
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/after.md: Kin couldn't confirm where it came from, so it left it out.\n- people/missing.md: Kin couldn't confirm where it came from, so it left it out.\n- people/plain-after.md: Kin couldn't confirm where it came from, so it left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a landing whose commit fails leaves what a retired note was shared as", () =>
+  landingFixture(({ bare, setLevel }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const known = personNote("known", "Known to the team");
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake0", known);
+      yield* wokeBeforeCutOver(writer, "wake0");
+      const id = KinMemoryItemId.make("known");
+      yield* authorise(
+        orgId,
+        id,
+        fingerprint(yield* memory.readItemQuietly(orgId, id)),
+        "owner_setting",
+      );
+      setLevel("L0");
+      yield* writer.stage(orgId, "wake1", {
+        path: known.path,
+        content: fixtureItem({
+          id: "known",
+          kind: "person",
+          title: "Known to the team",
+          due: null,
+          on_due: undefined,
+          review_by: null,
+          links: ["person:known"],
+          invalid_at: "2026-10-31T00:00:00.000Z",
+        }),
+      });
+      yield* wokeBeforeCutOver(writer, "wake1");
+      // Someone else moved the default branch on, so the landing's push is rejected.
+      const moved = yield* bare([
+        "-c",
+        "user.name=Fixture Bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit-tree",
+        "main^{tree}",
+        "-p",
+        "main",
+        "-m",
+        "elsewhere",
+      ]);
+      yield* bare(["update-ref", "refs/heads/main", moved]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), moved);
+      assert.deepStrictEqual(yield* landedMarks, []);
+      assert.isTrue((yield* storedLabels(orgId)).shared.has(id));
+    }),
+  ),
+);
+
+it.effect("a shadow with no single base shared with the default branch lands nothing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // The default branch was replaced since: what it removed on purpose must not come back.
+      yield* commitDirectly(bare, "main", { orphan: true });
+      const before = yield* bare(["rev-parse", "main"]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), before);
+      assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/alex.md");
+      assert.include(yield* bare(["show", `${shadow}:people/alex.md`]), "Alex leads design");
+      assert.deepStrictEqual(yield* landedMarks, []);
+    }),
+  ),
+);
+
+it.effect("a shadow note with the id of another note on the default branch stays behind", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, "main", {
+        add: {
+          "people/onboarding.md": personNote("onboarding", "Onboarding, as a person").content,
+        },
+      });
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "claims/onboarding.md": fixtureItem({
+              id: "onboarding",
+              kind: "claim",
+              title: "Onboarding, as a claim",
+              due: null,
+              on_due: undefined,
+              review_by: null,
+              links: ["person:onboarding"],
+              source: "kin:chat:owner-chat:message:m1",
+            }),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/alex.md");
+      assert.notInclude(tree, "claims/onboarding.md");
+      yield* memory.syncCheckout(orgId);
+      assert.strictEqual(
+        (yield* memory.readItem(orgId, KinMemoryItemId.make("onboarding"))).head.title,
+        "Onboarding, as a person",
+      );
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- claims/onboarding.md: It clashes with another note in Memory, so Kin left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("each lead's note of what stayed behind survives a restart and posts on its own", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      const vcs = yield* Vcs.VcsProcess;
+      const at = "2026-11-08T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse("2026-11-12T12:00:00.000Z"));
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('b-lead', ${orgId}, 'Bea', 'lead', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('bea-chat', ${orgId}, 'direct', 'owner-bea', 0, ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('b-lead', ${orgId}, 'Bea', 'L0', 0, '{}', '[]', 'bea-chat')`;
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // Bea's shadow branch, from the default branch as each lead's began.
+      const { writer: checkout } = yield* memory.ensureCheckouts(orgId);
+      const main = yield* bare(["rev-parse", "main"]);
+      yield* vcs.run({
+        operation: "test.writer",
+        command: "git",
+        cwd: checkout,
+        args: ["update-ref", "refs/heads/kin/shadow/b-lead", main],
+      });
+      yield* bare(["update-ref", "refs/heads/kin/shadow/b-lead", main]);
+      yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+        VALUES (${orgId}, 'kin/shadow/b-lead', ${main})`;
+      for (const branch of [Memory.shadowBranch(agentId), "kin/shadow/b-lead"])
+        yield* commitDirectly(
+          bare,
+          branch,
+          { add: { "people/broken.md": "Not a note\n" } },
+          preCutOver,
+        );
+
+      yield* writer.landShadows(orgId);
+      assert.deepStrictEqual(yield* landedMarks, ["b-lead", agentId]);
+      // A restart here, before anything posted: the lines wait in what was stored with the marks.
+      const posted: Array<{ messageId: string; chatId: string; body: string }> = [];
+      const chat = (fail: boolean) => ({
+        dismissArrival: () => Effect.die("No arrival note"),
+        notice: (input: {
+          readonly messageId: string;
+          readonly chatId: string;
+          readonly body: string;
+        }) =>
+          fail
+            ? Effect.die("The server stopped")
+            : Effect.sync(() => posted.push(input)).pipe(Effect.as({} as never)),
+      });
+      yield* Effect.exit(deliverHeld(orgId, chat(true)));
+      assert.lengthOf(posted, 0);
+      yield* writer.landShadows(orgId);
+      yield* deliverHeld(orgId, chat(false));
+      yield* deliverHeld(orgId, chat(false));
+      assert.deepStrictEqual(
+        posted.map(({ messageId, chatId, body }) => ({ messageId, chatId, body })),
+        [
+          {
+            messageId: `kin-held:shadow-landed:${orgId}:b-lead`,
+            chatId: "bea-chat",
+            body: "Some of Bea's earlier notes weren't added to Memory:\n- people/broken.md: It couldn't be read.",
+          },
+          {
+            messageId: `kin-held:shadow-landed:${orgId}:${agentId}`,
+            chatId: "owner-chat",
+            body: "Some of Lead's earlier notes weren't added to Memory:\n- people/broken.md: It couldn't be read.",
+          },
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("pull-request mode with a memory repo off GitHub skips landing quietly", () =>
+  landingFixture(
+    ({ bare, notices }) =>
+      Effect.gen(function* () {
+        const writer = yield* Writer.MemoryWriter;
+        yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+        yield* wokeBeforeCutOver(writer, "wake0");
+        const memory = yield* Memory.Memory;
+        const before = yield* bare(["rev-parse", "main"]);
+        const anchored = yield* memory.anchor(orgId, "main");
+        const count = notices.length;
+
+        yield* writer.landShadows(orgId);
+        assert.strictEqual(yield* bare(["rev-parse", "main"]), before);
+        assert.strictEqual(yield* memory.anchor(orgId, "main"), anchored);
+        assert.deepStrictEqual(yield* landedMarks, []);
+        assert.lengthOf(notices, count);
+      }),
+    { offGitHubPullRequests: true },
+  ),
+);
+
+// A shadow note citing the owner's message `m1` in their chat with the lead.
+const cited = (id: string, title: string, extra: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id,
+    kind: "person",
+    title,
+    due: null,
+    on_due: undefined,
+    review_by: null,
+    links: [`person:${id}`],
+    source: "kin:chat:owner-chat:message:m1",
+    ...extra,
+  });
+
+it.effect("a shadow note whose id only a held-back note would free stays behind too", () =>
+  landingFixture(({ bare, setLevel }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake0", personNote("a", "A, as Memory has it"));
+      yield* writer.stage(orgId, "wake0", personNote("b", "B, as Memory has it"));
+      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      setLevel("L0");
+      yield* writer.stage(orgId, "wake1", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake1");
+      // `people/a.md` now holds `b`, which clashes, so Memory's `a` stays and `people/c.md` clashes.
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/a.md": cited("b", "B, as the shadow has it"),
+            "people/c.md": cited("a", "A, moved by the shadow"),
+          },
+        },
+        preCutOver,
+      );
+
+      yield* writer.landShadows(orgId);
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.include(tree, "people/alex.md");
+      assert.notInclude(tree, "people/c.md");
+      yield* memory.syncCheckout(orgId);
+      for (const [id, title] of [
+        ["a", "A, as Memory has it"],
+        ["b", "B, as Memory has it"],
+      ] as const)
+        assert.strictEqual(
+          (yield* memory.readItem(orgId, KinMemoryItemId.make(id))).head.title,
+          title,
+        );
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/a.md: It clashes with another note in Memory, so Kin left it out.\n- people/c.md: It clashes with another note in Memory, so Kin left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect(
+  "a shadow note with the id of a note only the reader's lenient parse loads stays behind",
+  () =>
+    landingFixture(({ bare }) =>
+      Effect.gen(function* () {
+        const writer = yield* Writer.MemoryWriter;
+        const memory = yield* Memory.Memory;
+        yield* said("m1", "2026-10-30T00:00:00.000Z");
+        yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+        yield* wokeBeforeCutOver(writer, "wake0");
+        // An older note whose quote isn't text: reads drop the quote and still load it.
+        yield* commitDirectly(bare, "main", {
+          add: {
+            "people/legacy.md": cited("legacy", "Legacy, as Memory has it", { quote: [1, 2] }),
+          },
+        });
+        yield* commitDirectly(
+          bare,
+          Memory.shadowBranch(agentId),
+          { add: { "people/legacy-copy.md": cited("legacy", "Legacy, as the shadow has it") } },
+          preCutOver,
+        );
+
+        yield* writer.landShadows(orgId);
+        const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+        assert.include(tree, "people/alex.md");
+        assert.notInclude(tree, "people/legacy-copy.md");
+        yield* memory.syncCheckout(orgId);
+        assert.strictEqual(
+          (yield* memory.readItem(orgId, KinMemoryItemId.make("legacy"))).head.title,
+          "Legacy, as Memory has it",
+        );
+      }),
+    ),
+);
+
+it.effect("a retry after a landing the remote took marks it and brings back nothing removed", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        {
+          add: {
+            "people/sam.md": cited("sam", "Sam runs billing", { quote: FIXTURE_QUOTE }),
+            "people/broken.md": "Not a note\n",
+          },
+        },
+        preCutOver,
+      );
+      yield* marksFail(true);
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      assert.notInclude(yield* bare(["show", "main:people/sam.md"]), FIXTURE_QUOTE);
+      assert.deepStrictEqual(yield* landedMarks, []);
+      assert.deepStrictEqual(yield* toldOwner, []);
+      yield* marksFail(false);
+      yield* memory.syncCheckout(orgId);
+      // Before the retry, someone removes a landed note from Memory.
+      yield* commitDirectly(bare, "main", { remove: ["people/alex.md"] });
+      const removed = yield* bare(["rev-parse", "main"]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), removed);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/broken.md: It couldn't be read.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a shadow whose history crosses the default branch's twice lands nothing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // Each branch merges the other's tip in turn: a criss-cross, with two best bases.
+      yield* commitDirectly(bare, shadow, { add: { "rules.md": "Shadow rules\n" } }, preCutOver);
+      yield* commitDirectly(bare, "main", { add: { "rules.md": "Default rules\n" } });
+      const fromShadow = yield* bare(["rev-parse", shadow]);
+      const fromMain = yield* bare(["rev-parse", "main"]);
+      yield* commitDirectly(bare, shadow, { parents: [fromShadow, fromMain] }, preCutOver);
+      yield* commitDirectly(bare, "main", { parents: [fromMain, fromShadow] });
+      assert.lengthOf((yield* bare(["merge-base", "--all", "main", shadow])).split("\n"), 2);
+      const before = yield* bare(["rev-parse", "main"]);
+
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), before);
+      assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/alex.md");
+      assert.deepStrictEqual(yield* landedMarks, []);
+    }),
+  ),
+);
+
+it.effect("a retry after a landing the remote took decides nothing until it can fetch", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const sql = yield* SqlClient.SqlClient;
+      const fs = yield* FileSystem.FileSystem;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      // The shadow's only note is cited from the owner's chat.
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        { remove: ["people/alex.md"], add: { "people/sam.md": cited("sam", "Sam runs billing") } },
+        preCutOver,
+      );
+      yield* marksFail(true);
+      yield* writer.landShadows(orgId);
+      yield* marksFail(false);
+      assert.include(yield* bare(["show", "main:people/sam.md"]), "Sam runs billing");
+      const landed = yield* bare(["rev-parse", "main"]);
+      // A note's source is cleared, and the remote can't be reached for the retry.
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'm1'`;
+      const remote = yield* bare(["rev-parse", "--absolute-git-dir"]);
+      yield* fs.rename(remote, `${remote}.away`);
+      yield* writer.landShadows(orgId);
+      assert.deepStrictEqual(yield* landedMarks, []);
+      assert.deepStrictEqual(yield* toldOwner, []);
+
+      yield* fs.rename(`${remote}.away`, remote);
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* bare(["rev-parse", "main"]), landed);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+      assert.deepStrictEqual(yield* toldOwner, []);
+    }),
+  ),
+);
+
+it.effect("a commit that only copies a landing's message marks nothing", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      const shadowHead = yield* bare(["rev-parse", shadow]);
+      yield* commitDirectly(bare, "main", {
+        add: { "rules.md": "Other rules\n" },
+        message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
+      });
+
+      yield* writer.landShadows(orgId);
+      assert.include(
+        (yield* bare(["ls-tree", "-r", "--name-only", "main"])).split("\n"),
+        "people/alex.md",
+      );
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+    }),
+  ),
+);
+
+it.effect("a note held for a clash is still told as a clash after its source is cleared", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      yield* said("m1", "2026-10-30T00:00:00.000Z");
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, "main", {
+        add: { "people/onboarding.md": personNote("onboarding", "Onboarding").content },
+      });
+      yield* commitDirectly(
+        bare,
+        Memory.shadowBranch(agentId),
+        { add: { "people/onboarding-copy.md": cited("onboarding", "Onboarding, again") } },
+        preCutOver,
+      );
+      yield* marksFail(true);
+      yield* writer.landShadows(orgId);
+      yield* marksFail(false);
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      yield* memory.syncCheckout(orgId);
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'm1'`;
+
+      yield* writer.landShadows(orgId);
+      assert.deepStrictEqual(yield* landedMarks, [agentId]);
+      assert.deepStrictEqual(
+        (yield* toldOwner).map((row) => row.body),
+        [
+          "Some of Lead's earlier notes weren't added to Memory:\n- people/onboarding-copy.md: It clashes with another note in Memory, so Kin left it out.",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("a file Memory doesn't read, with a note's id, doesn't hold that note back", () =>
+  landingFixture(({ bare }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      yield* writer.stage(orgId, "wake0", personNote("sam", "Sam runs billing"));
+      yield* wokeBeforeCutOver(writer, "wake0");
+      yield* commitDirectly(bare, "main", {
+        add: { "people/sam.md.bak": personNote("sam", "Sam, an old copy").content },
+      });
+
+      yield* writer.landShadows(orgId);
+      assert.include(
+        (yield* bare(["ls-tree", "-r", "--name-only", "main"])).split("\n"),
+        "people/sam.md",
+      );
+      yield* memory.syncCheckout(orgId);
+      assert.strictEqual(
+        (yield* memory.readItem(orgId, KinMemoryItemId.make("sam"))).head.title,
+        "Sam runs billing",
+      );
+      assert.deepStrictEqual(yield* toldOwner, []);
+    }),
+  ),
 );

@@ -357,6 +357,35 @@ const decodeHead = Schema.decodeEffect(MemoryItemHead);
 export const folders: ReadonlyArray<string> = itemFolders;
 
 export const maxBlobBytes = 256 * 1024;
+
+/** Whether `load` reads a tree entry as a memory item, by its path and mode alone. */
+const isItemEntry = (relative: string, mode: string) =>
+  ["100644", "100755"].includes(mode) &&
+  relative.endsWith(".md") &&
+  itemFolders.some((folder) => relative.startsWith(`${folder}/`));
+const itemFolder = (kind: string) => (kind === "person" ? "people" : `${kind}s`);
+/** The id `load` reads `bytes` at `relative` under, by its own rule; none when it skips the file. */
+export const admittedId = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  relative: string,
+  mode: string,
+  bytes: Uint8Array,
+) {
+  if (!isItemEntry(relative, mode) || bytes.length > maxBlobBytes) return undefined;
+  const text = yield* Effect.try({
+    try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    catch: () => "not UTF-8",
+  }).pipe(Effect.option);
+  if (text._tag === "None") return undefined;
+  const parsed = yield* parseFrontMatter(orgId, relative, text.value, false, true).pipe(
+    Effect.option,
+  );
+  if (parsed._tag === "None") return undefined;
+  const { frontMatter } = parsed.value;
+  if (!relative.startsWith(`${itemFolder(frontMatter.kind)}/`)) return undefined;
+  const head = yield* decodeHead({ ...frontMatter, orgId, path: relative }).pipe(Effect.option);
+  return head._tag === "Some" ? head.value.id : undefined;
+});
 // Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.
 const checkoutBatchBytes = 16 * 1024 * 1024;
 
@@ -843,10 +872,8 @@ const make = Effect.gen(function* () {
     const entries = verifiedEntries
       .filter(
         ({ relative, mode }) =>
-          ["100644", "100755"].includes(mode) &&
-          relative.endsWith(".md") &&
-          (itemFolders.some((folder) => relative.startsWith(`${folder}/`)) ||
-            ["rules.md", "INDEX.md"].includes(relative)),
+          isItemEntry(relative, mode) ||
+          (["100644", "100755"].includes(mode) && ["rules.md", "INDEX.md"].includes(relative)),
       )
       .map((entry) => ({ ...entry, size: sizes.get(entry.sha) ?? Infinity }));
     const pending = [
@@ -928,9 +955,7 @@ const make = Effect.gen(function* () {
       }
       const parsed = parsedBlobs.get(sha);
       if (!parsed) return;
-      const expectedFolder =
-        parsed.frontMatter.kind === "person" ? "people" : `${parsed.frontMatter.kind}s`;
-      if (!relative.startsWith(`${expectedFolder}/`)) {
+      if (!relative.startsWith(`${itemFolder(parsed.frontMatter.kind)}/`)) {
         if (!mismatchWarnings.has(sha)) {
           mismatchWarnings.add(sha);
           return yield* new MemoryItemError({
