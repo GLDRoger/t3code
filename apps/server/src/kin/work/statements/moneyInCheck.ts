@@ -46,7 +46,7 @@ export const MoneyInCheckInput = Schema.Struct({
   account: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}$/))).annotate({
     description: "One bank account, by its last four digits.",
   }),
-  client: Schema.optional(KinRecordKey).annotate({
+  client: Schema.optional(Schema.String.check(Schema.isMaxLength(80))).annotate({
     description: "One client's Kin key, such as C-3.",
   }),
 });
@@ -303,7 +303,7 @@ const readCheck = Effect.fn("KinMoneyInCheck.read")(function* (
   const client =
     input.client === undefined ? undefined : clients.find((one) => one.key === input.client);
   if (input.client !== undefined && client === undefined)
-    return yield* invalid(`No client ${input.client}.`);
+    return yield* invalid(`No client "${input.client}": give the client's key, like C-3.`);
   const def = yield* findBankList(orgId);
   const { covered, statements, seen } = yield* coverageOf(orgId, input, zone, now, def?.id);
   if (input.account !== undefined && !seen.has(input.account))

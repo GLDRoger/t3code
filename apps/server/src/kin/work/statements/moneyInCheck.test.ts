@@ -20,7 +20,8 @@ import { makeMigratedSqliteLayer } from "../../persistence/migratedSqlite.testki
 import { homeCurrency, newCompanyProfileJson } from "../companyProfile.ts";
 import { ensureBankList } from "./bankList.ts";
 import { approveFixtureAlertSender, seedFixtureAlertMailbox } from "./bankAlerts.testkit.ts";
-import { checkMoneyIn, moneyInCheck } from "./moneyInCheck.ts";
+import * as Schema from "effect/Schema";
+import { checkMoneyIn, MoneyInCheckInput, moneyInCheck } from "./moneyInCheck.ts";
 
 const org = KinOrgId.make("tidewater");
 const owner = KinPersonId.make("rhea");
@@ -430,9 +431,12 @@ it.effect(
           { ...range, account: "9999" },
           "No bank account ending 9999 in Bank transactions or the confirmed statements.",
         ],
-        [{ ...range, client: "C-999" }, "No client C-999."],
+        [{ ...range, client: "C-999" }, 'No client "C-999": give the client\'s key, like C-3.'],
+        [{ ...range, client: "Juniper" }, 'No client "Juniper": give the client\'s key, like C-3.'],
       ] as const)
         assert.strictEqual((yield* Effect.flip(checkMoneyIn(org, input, now))).message, message);
+      // A name, not a key, still reaches the refusal that says what to pass.
+      assert.isTrue(Schema.is(MoneyInCheckInput)({ ...range, client: "Juniper" }));
     }).pipe(Effect.provide(layer)),
 );
 

@@ -281,7 +281,7 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
   Tool.make("money_in_check", {
     ...shared,
     dependencies: [...shared.dependencies, KinChatRepository, KinChatHub],
-    description: `Check money received as Kin has it (payments on invoices and receipts) against what the bank shows (Bank transactions from confirmed statements and approved bank alert mails), from from to through, optionally for one account (its last four digits) or one client (C-3). Kin compares them itself and posts one card in this chat: what matches, what the bank shows that Kin doesn't have, what Kin has that the bank doesn't show, and what differs, each with its tap. It returns the counts and what the check covered: say those, not amounts. It reads no mail and records nothing. Only for the owner or a co-owner.`,
+    description: `Check money received as Kin has it (payments on invoices and receipts) against what the bank shows (Bank transactions from confirmed statements and approved bank alert mails), from from to through, optionally for one account (its last four digits) or one client by its Kin key, like C-3. Kin compares them itself and posts one card in this chat, with no buttons: what matches, what the bank shows that Kin doesn't have, what Kin has that the bank doesn't show, and what differs. It returns the counts and what the check covered: say those, not amounts. It reads no mail and records nothing. Only for the owner or a co-owner.`,
     parameters: MoneyIn.MoneyInCheckInput,
     success: MoneyIn.MoneyInCheckResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
