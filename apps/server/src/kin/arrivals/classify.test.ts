@@ -158,6 +158,18 @@ describe("classify", () => {
         undefined,
       ],
       [
+        "h: a PDF from the plural bills inbox with no automation headers",
+        mail("bills@harborpower.example", { subject: "November", hasFile: true }),
+        "automated_file",
+        undefined,
+      ],
+      [
+        "i: a PDF from Bill with no automation headers",
+        mail("Bill <bill@harborpower.example>", { subject: "November", hasFile: true }),
+        "unknown_person",
+        "chief",
+      ],
+      [
         "h: automated mail without one",
         mail("Design Weekly <news@designweekly.example>", {
           listUnsubscribe: true,

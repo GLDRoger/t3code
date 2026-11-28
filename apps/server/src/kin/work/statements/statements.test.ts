@@ -2411,6 +2411,42 @@ describe("bank statement safety", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("pays a kept mailed bill with no day on the debit's day, and undo takes it back", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* TestClock.setTime(Date.parse("2026-10-01T06:00:00.000Z"));
+      const records = yield* KinRecords.KinRecords;
+      // As a bill from mail stands once kept: To pay, with no due or paid day.
+      const { row: bill } = yield* records.create(orgId, owner, {
+        list: "expenses",
+        originKey: "bill:mailed",
+        title: "Inkspot Cloud, Oct 1",
+        owner: { _tag: "person", personId: ownerId },
+        state: "open",
+        amount: { minor: 118_000, currency: "INR" },
+        fields: { vendor: "Inkspot Cloud" },
+      });
+      assert.include(bill, { state: "open", dateAt: null, confirmed: 1 });
+      const result = yield* read(
+        1,
+        "inkspot.csv",
+        csvOf([["2026-10-03", "UPI-INKSPOT CLOUD-pay@invbank", 118_000, null]]),
+      );
+      const { card } = yield* reviewCardOf(result.statement);
+      assert.deepStrictEqual(
+        card.matched.map((one) => one.target.key),
+        [bill.key],
+      );
+      yield* OwnerStatements.apply(people, yield* confirmAll(card));
+      assert.include(yield* records.get(orgId, bill.key), {
+        state: "done",
+        dateAt: Date.parse("2026-10-03T18:29:59.999Z"),
+      });
+      yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+      assert.include(yield* records.get(orgId, bill.key), { state: "open", dateAt: null });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("matches an older expense on a statement listed newest first", () =>
     Effect.gen(function* () {
       yield* seed;

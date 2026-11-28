@@ -9,6 +9,7 @@ import {
   KinBillBatchCard,
   type KinBillRead,
   type KinBillRow,
+  type KinRecordState,
   type KinBillsAddAnywayInput,
   KinBillsAddAnywayResult,
   KinBillsAddResult,
@@ -200,6 +201,12 @@ type Row = {
   readonly mailFrom: string | null;
   readonly mailAt: number | null;
 };
+// A crop keeps its source's provenance through the two supported cuts.
+const mailColumn = (column: "mail_from" | "mail_at") =>
+  `COALESCE(b.${column}, (SELECT COALESCE(parent.${column}, original.${column})
+    FROM kin_bill_reads parent LEFT JOIN kin_bill_reads original
+      ON original.org_id = parent.org_id AND original.sha256 = parent.parent_sha256
+    WHERE parent.org_id = b.org_id AND parent.sha256 = b.parent_sha256))`;
 const COLUMNS = `sha256, attachment_id AS "attachmentId", chat_id AS "chatId",
   message_id AS "messageId", name, file_type AS "fileType", mime_type AS "mimeType",
   size_bytes AS "sizeBytes",
@@ -207,7 +214,7 @@ const COLUMNS = `sha256, attachment_id AS "attachmentId", chat_id AS "chatId",
   widget_id AS "widgetId", added_by_person_id AS "addedBy", added_at AS "addedAt", state,
   event_id AS "eventId", reads, read_json AS "readJson", problem, duplicate_of AS "duplicateOf",
   record_id AS "recordId", dismissed_at AS "dismissedAt", parent_sha256 AS "parentSha256",
-  mail_from AS "mailFrom", mail_at AS "mailAt"`;
+  ${mailColumn("mail_from")} AS "mailFrom", ${mailColumn("mail_at")} AS "mailAt"`;
 
 const batchRows = Effect.fn("KinBills.batchRows")(function* (
   orgId: KinOrgId,
@@ -215,14 +222,14 @@ const batchRows = Effect.fn("KinBills.batchRows")(function* (
   { includeCut = false } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
+  return yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads b
     WHERE org_id = ${orgId} AND batch_id = ${batchId}
       AND ${includeCut ? sql.literal("1") : sql.literal(NOT_CUT)}
     ORDER BY position, sha256`;
 });
 const billRow = Effect.fn("KinBills.billRow")(function* (orgId: KinOrgId, hash: string) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
+  const [row] = yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads b
     WHERE org_id = ${orgId} AND sha256 = ${hash}`;
   return row;
 });
@@ -475,7 +482,7 @@ type RecordBrief = {
   readonly key: string;
   readonly rev: number;
   readonly title: string;
-  readonly state: string;
+  readonly state: KinRecordState;
   readonly confirmed: number;
   readonly minor: number | null;
   readonly currency: string | null;
@@ -1275,19 +1282,25 @@ const sameExpense = Effect.fn("KinBills.sameExpense")(function* (
     recordId: string;
     title: string;
     vendor: unknown;
-    dateAt: number;
-  }>`SELECT record_id AS "recordId", title, json_extract(fields_json, '$.vendor') AS vendor,
-      date_at AS "dateAt"
-    FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = 'expenses' AND state != 'dropped'
-      AND amount_minor = ${money.minor} AND currency = ${money.currency}
-      AND date_at BETWEEN ${at - 2 * 86_400_000} AND ${at + 2 * 86_400_000}
-      AND origin_key != ${`bill:${hash}`}
-    ORDER BY created_at, record_id`;
+    dateAt: number | null;
+    printed: string | null;
+  }>`SELECT r.record_id AS "recordId", r.title, json_extract(r.fields_json, '$.vendor') AS vendor,
+      r.date_at AS "dateAt", b.printed
+    FROM kin_records r
+    LEFT JOIN (SELECT org_id, sha256, json_extract(read_json, '$.date') AS printed
+      FROM kin_bill_reads) b ON b.org_id = r.org_id AND b.sha256 = substr(r.origin_key, 6)
+        AND r.origin_key = 'bill:' || b.sha256
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state != 'dropped'
+      AND r.amount_minor = ${money.minor} AND r.currency = ${money.currency}
+      AND (r.date_at BETWEEN ${at - 2 * 86_400_000} AND ${at + 2 * 86_400_000}
+        OR b.printed = ${day})
+      AND r.origin_key != ${`bill:${hash}`}
+    ORDER BY r.created_at, r.record_id`;
   const payee = fold(vendor);
+  // A mailed bill is dated only once paid, on that day: its own read keeps the printed day.
   return rows.find(
     (one) =>
-      dayIn(one.dateAt, zone) === day &&
+      (one.printed === day || (one.dateAt !== null && dayIn(one.dateAt, zone) === day)) &&
       payee !== "" &&
       (typeof one.vendor === "string" ? fold(one.vendor) === payee : fold(one.title) === payee),
   )?.recordId;
@@ -1299,8 +1312,8 @@ const titleOf = (vendor: string, day: string) => {
 };
 
 /**
- * The bill's one suggested expense: Paid, the file its receipt, funding and who paid unset. Kin
- * writes it for the person who added the bill; its notes say so. A retry finds it by its key.
+ * The bill's one suggested expense. Kin writes it for the person who added the bill.
+ * A retry finds it by its key.
  */
 const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
   orgId: KinOrgId,
@@ -1331,26 +1344,25 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
     chatId: KinChatId.make(row.cardChatId),
     askedBy: KinPersonId.make(row.addedBy),
   };
+  const fromMail = row.mailFrom !== null && row.mailAt !== null;
   const { row: made } = yield* records.create(orgId, writer, {
     list: "expenses",
     originKey: `bill:${row.sha256}`,
     ...(how === "auto" ? {} : { requestHash: how.requestHash }),
     title: titleOf(read.vendor ?? "", read.date ?? ""),
     owner: { _tag: "person", personId: KinPersonId.make(row.addedBy) },
-    state: "done",
+    state: fromMail ? "open" : "done",
     amount: money,
-    dateAt: endOfDay(read.date ?? "", zone),
-    dateAllDay: true,
+    ...(fromMail ? {} : { dateAt: endOfDay(read.date ?? "", zone), dateAllDay: true }),
     ...(category === undefined ? {} : { category }),
     fields: {
       vendor: read.vendor ?? "",
       receipt: [row.attachmentId],
       ...(tax !== undefined && "money" in tax && tax.money.minor !== 0 ? { tax: tax.money } : {}),
     },
-    notes:
-      row.mailFrom !== null && row.mailAt !== null
-        ? `Read by Kin from a mail from ${row.mailFrom}, received ${formatKinWhen(row.mailAt, "date", { zone, locale: KIN_TEXT_LOCALE })}.`
-        : `Read by Kin from a photo ${adder?.name ?? "someone"} added.`,
+    notes: fromMail
+      ? `Read by Kin from a mail from ${row.mailFrom}, received ${formatKinWhen(row.mailAt, "date", { zone, locale: KIN_TEXT_LOCALE })}.`
+      : `Read by Kin from a photo ${adder?.name ?? "someone"} added.`,
     sensitive: true,
     confirmed: false,
     source: { chatId: KinChatId.make(row.chatId), messageId: KinMessageId.make(row.messageId) },
@@ -1677,6 +1689,7 @@ const expenseView = (record: RecordBrief, zone: string) => {
     key: record.key,
     rev: record.rev,
     title: record.title,
+    state: record.state,
     ...(typeof record.vendor === "string" && record.vendor.trim() !== ""
       ? { vendor: record.vendor.trim().slice(0, 200) }
       : {}),
@@ -1764,7 +1777,7 @@ export const list = Effect.fn("KinBills.list")(function* (
   const rows =
     shown.length === 0
       ? []
-      : yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads
+      : yield* sql<Row>`SELECT ${sql.literal(COLUMNS)} FROM kin_bill_reads b
           WHERE org_id = ${input.orgId} AND batch_id IN ${sql.in(shown.map((one) => one.batchId))}
             AND dismissed_at IS NULL AND ${sql.literal(NOT_CUT)}
           ORDER BY batch_id, position`;
@@ -1859,7 +1872,8 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
                       ? "Its date needs a check."
                       : "It wasn't read cleanly."
                   : "It has no expense of its own."
-            : record.state !== "done"
+            : record.state !== "done" &&
+                !(record.state === "open" && row.mailFrom !== null && row.mailAt !== null)
               ? "Its state was changed."
               : undefined;
         if (why !== undefined || record === undefined) {

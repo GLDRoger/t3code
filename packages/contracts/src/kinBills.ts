@@ -13,7 +13,7 @@ import {
 } from "./kinChat.ts";
 import { KIN_BILL_SENDER_RPC_SCOPES } from "./kinBillSenders.ts";
 import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
-import { KinRecordKey } from "./kinWork.ts";
+import { KinRecordKey, KinRecordState } from "./kinWork.ts";
 
 /**
  * Bills in bulk: an owner-level person's bill photos and PDFs, each read once in a quiet turn and
@@ -208,6 +208,7 @@ export const KinBillRow = Schema.Struct({
       key: KinRecordKey,
       rev: NonNegativeInt,
       title: Schema.String,
+      state: Schema.optional(KinRecordState),
       /** Its own figures, which a kept or dropped bill shows in place of what was read. */
       vendor: Schema.optional(Label),
       date: Schema.optional(KinDay),

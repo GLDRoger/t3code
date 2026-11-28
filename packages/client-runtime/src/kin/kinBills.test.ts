@@ -203,6 +203,18 @@ describe("a bill on the review list", () => {
     expect(kinBillRowView(row({ sha256: SHA(2) }), { skipped }).skipped).toBeNull();
   });
 
+  it("shows To pay on the kept mail row only while the expense is open", () => {
+    const mail = { from: "billing@inkspot.example", receivedAt: "2026-11-24T22:30:00.000Z" };
+    const expense = row().expense!;
+    expect(
+      kinBillRowView(row({ state: "kept", mail, expense: { ...expense, state: "open" } })).label,
+    ).toBe("Kept · to pay");
+    expect(
+      kinBillRowView(row({ state: "kept", mail, expense: { ...expense, state: "done" } })).label,
+    ).toBe("Kept");
+    expect(kinBillRowView(row({ state: "kept", mail })).label).toBe("Kept");
+  });
+
   it("says who mailed it and the day it arrived, in the reader's own zone", () => {
     const mail = { from: "billing@inkspot.example", receivedAt: "2026-11-24T22:30:00.000Z" };
     const line = (zone: string) =>
