@@ -1569,6 +1569,7 @@ const turnBills = Effect.fn("KinBills.turnBills")(function* (
 });
 
 const normalizeMark = (mark: string) => mark.trim().toLowerCase();
+const intlCurrencyCodes = new Set(Intl.supportedValuesOf("currency"));
 const currenciesByMark = new Map<string, Set<string>>();
 const displayNames = new Intl.DisplayNames(KIN_TEXT_LOCALE, { type: "currency" });
 for (const currency of KIN_CURRENCY_CODES) {
@@ -1593,8 +1594,20 @@ for (const currency of KIN_CURRENCY_CODES) {
 }
 
 const currencyOfMark = (mark: string, home: string) => {
-  const codes = currenciesByMark.get(normalizeMark(mark));
-  return codes?.has(home) ? home : codes?.size === 1 ? codes.values().next().value : undefined;
+  const code = mark.trim().toUpperCase();
+  if (isKinCurrency(code) && intlCurrencyCodes.has(code)) return { currency: code };
+
+  const key = normalizeMark(mark);
+  // Canadian and Nicaraguan bills both print C$.
+  if (key === "c$") return undefined;
+  const codes = currenciesByMark.get(key);
+  if (codes?.has(home))
+    return codes.size === 1
+      ? { currency: home }
+      : { currency: home, currencyAssumed: true as const };
+  if (codes?.size === 1 && key !== "$" && /\p{Sc}/u.test(key))
+    return { currency: codes.values().next().value };
+  return undefined;
 };
 
 /** One bill's answer, by plain rules: a clean read becomes one suggested expense or a duplicate. */
@@ -1611,15 +1624,14 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   const now = yield* Clock.currentTimeMillis;
   const { currencyAssumed: _untrusted, ...printed } = answer.read;
   const home = yield* homeCurrency(orgId);
-  const assumed = printed.currency === undefined && printed.currencyMark === undefined;
-  const currency =
-    printed.currency ??
-    (printed.currencyMark === undefined ? home : currencyOfMark(printed.currencyMark, home));
-  const read = {
-    ...printed,
-    ...(currency === undefined ? {} : { currency }),
-    ...(assumed ? { currencyAssumed: true as const } : {}),
-  };
+  const resolved =
+    printed.currency !== undefined
+      ? { currency: printed.currency }
+      : printed.currencyMark === undefined
+        ? { currency: home, currencyAssumed: true as const }
+        : currencyOfMark(printed.currencyMark, home);
+  const read = { ...printed, ...resolved };
+  const { currency } = read;
   const json = yield* encodeRead(read).pipe(Effect.orDie);
   const unreadable = (problem: string) =>
     sql`UPDATE kin_bill_reads SET state = 'unreadable', read_json = ${json}, problem = ${problem},
