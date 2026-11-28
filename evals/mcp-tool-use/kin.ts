@@ -1370,6 +1370,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     amount: string | null;
     withheld: string | null;
     paidOn: string | null;
+    note?: string | null;
   }) => {
     const money = (text: string | null) => {
       if (text === null) return undefined;
@@ -1397,6 +1398,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       paidOn,
       ...(amount === undefined ? {} : { amount }),
       ...(withheld === undefined ? {} : { withheld }),
+      ...(input.note == null ? {} : { note: input.note }),
     };
     const snapshot: Snapshot = {
       entry: null,
