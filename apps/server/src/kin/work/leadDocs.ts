@@ -840,6 +840,9 @@ export const pictureNote = (key: string, drawn: boolean) =>
   drawn
     ? `${key} is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc ${key} and that page, changed.`
     : `${key} is a generated picture, and prompt is the prompt it was made from. To change it, call kin_picture with doc ${key} and that prompt, changed.`;
+const mailAttachmentShown = (lead: Lead) =>
+  markOutside(lead, "mail-attachment", [{ k: "service", label: "a mail attachment" }]);
+
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
@@ -866,8 +869,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
   const docVersion = Docs.toVersion(version);
   const by = docVersion.provenance.by;
   const mail = docVersion.file?.source?.kind === "mail";
-  if (mail)
-    yield* markOutside(lead, "mail-attachment", [{ k: "service", label: "a mail attachment" }]);
+  if (mail) yield* mailAttachmentShown(lead);
   const sql = yield* SqlClient.SqlClient;
   const pages = row.originKey.startsWith(PICTURE_DOC_ORIGIN)
     ? yield* sql<{
@@ -1057,6 +1059,18 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
     // A deal reads as a Work entry; any seat may name one, as record_get reads it.
     deals: input.kinds === undefined || input.kinds.length === 0 || input.kinds.includes("work"),
   });
+  const docs = hits.flatMap((hit) => (hit.kind === "docs" ? [hit.recordId] : []));
+  if (docs.length > 0) {
+    const sql = yield* SqlClient.SqlClient;
+    const [mail] = yield* sql`SELECT 1 FROM kin_doc_versions v
+      WHERE v.org_id = ${lead.orgId} AND v.record_id IN ${sql.in(docs)}
+        AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
+          WHERE w.org_id = v.org_id AND w.record_id = v.record_id)
+        AND v.body_kind = 'file'
+        AND CASE WHEN json_valid(v.file_json) THEN json_extract(v.file_json, '$.source.kind') END = 'mail'
+      LIMIT 1`;
+    if (mail !== undefined) yield* mailAttachmentShown(lead);
+  }
   return {
     ...(widened ? { widened: WIDENED } : {}),
     hits: hits.map((hit) => ({
