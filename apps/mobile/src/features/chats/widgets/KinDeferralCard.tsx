@@ -75,19 +75,42 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
   };
 
   // A settled card has nothing left to press, so it shrinks to what it was and how it ended.
-  if (deferral.phase === "closed") {
+  if (deferral.phase === "closed" || deferral.summary !== undefined) {
     return (
       <View
         accessible
         accessibilityLabel={deferral.accessibilityLabel}
         className="gap-0.5 rounded-[16px] border border-border bg-card-alt px-3.5 py-2.5"
       >
-        <Text textRole="caption" className="font-t3-medium text-foreground-muted">
-          {`${deferral.eyebrow} · ${deferral.lines.join(" ").replace(/\.$/, "")}`}
-        </Text>
-        <Text textRole="footnote" numberOfLines={titleLines(2)} className="text-foreground-muted">
-          {deferral.title}
-        </Text>
+        {deferral.summary === undefined ? (
+          <>
+            <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+              {`${deferral.eyebrow} · ${deferral.lines.join(" ").replace(/\.$/, "")}`}
+            </Text>
+            <Text
+              textRole="footnote"
+              numberOfLines={titleLines(2)}
+              className="text-foreground-muted"
+            >
+              {deferral.title}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text
+              textRole="footnote"
+              numberOfLines={titleLines(2)}
+              className="font-t3-medium text-foreground-muted"
+            >
+              {deferral.summary}
+            </Text>
+            {deferral.lines.map((line) => (
+              <Text key={line} textRole="caption" className="text-foreground-muted">
+                {line}
+              </Text>
+            ))}
+          </>
+        )}
         {/* A refused tap is told even when the card closed before its answer came. */}
         {status?.notice == null ? null : (
           <Text

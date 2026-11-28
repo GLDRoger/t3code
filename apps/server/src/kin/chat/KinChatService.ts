@@ -121,6 +121,11 @@ import {
   askedForCard,
   questionForCard,
 } from "../questions/openQuestions.ts";
+import {
+  asPersonWaits,
+  KinDeferralGithubReader,
+  readGithubLinks,
+} from "../triggers/deferralGithub.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -277,6 +282,7 @@ export class KinChatService extends Context.Service<
      */
     readonly attachDeferralItems: (
       read: DeferralItemReader,
+      github?: typeof KinDeferralGithubReader.Service,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly dismissArrival: (input: {
       readonly orgId: KinOrgId;
@@ -674,6 +680,7 @@ const decodeSend = Schema.decodeEffect(KinMessagesSendInput);
 const decodeIntent = Schema.decodeEffect(KinAgentIntent);
 const decodeOwnerCheckCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
 const decodeDeferralCard = Schema.decodeUnknownEffect(KinDeferralCard);
+const decodeDeferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
 const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const decodeReact = Schema.decodeEffect(KinMessagesReactInput);
 const decodeChoice = Schema.decodeUnknownEffect(KinChoiceCardState);
@@ -681,10 +688,15 @@ const decodeChoice = Schema.decodeUnknownEffect(KinChoiceCardState);
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
 const decodeAsker = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
 /** Who asked for a shared chat's own reminder or routine, from its card (`KinCardAsker`). */
-const chatOwnAsker = (widget: KinWidget) =>
-  widget.type === "reminder" || widget.type === "scheduled_task" || widget.type === "deferral"
+const chatOwnAsker = (widget: KinWidget) => {
+  if (widget.type === "deferral") {
+    const card = Option.getOrUndefined(decodeDeferralCardOption(widget.state));
+    return card?.onDue === "remind" ? card.askedBy : undefined;
+  }
+  return widget.type === "reminder" || widget.type === "scheduled_task"
     ? Option.getOrUndefined(decodeAsker(widget.state))?.askedBy
     : undefined;
+};
 /** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -831,7 +843,12 @@ const make = Effect.gen(function* () {
   let onMailRuleTap: MailRuleTapHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
   let onDismiss: ChoiceDismissHandler | undefined;
-  let deferralItems: DeferralItemReader | undefined;
+  let deferralItems:
+    | {
+        readonly read: DeferralItemReader;
+        readonly github: typeof KinDeferralGithubReader.Service | undefined;
+      }
+    | undefined;
   const instanceClock = yield* Clock.Clock;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql.withTransaction(effect).pipe(
@@ -1726,6 +1743,7 @@ const make = Effect.gen(function* () {
         ...widget,
         // A tap's results are the card's own words, shown to whoever may tap it.
         audience: "chat",
+        state: { ...card, closed: "undone" },
         expectedRevision: widget.revision,
         closedAt: at,
         updatedAt: at,
@@ -2134,16 +2152,39 @@ const make = Effect.gen(function* () {
     caller: PersonCaller,
     input: KinWidgetsActInput,
   ) {
-    const read = deferralItems;
-    if (read === undefined || !DEFERRAL_DECISIONS.has(input.actionId)) return undefined;
+    const attached = deferralItems;
+    if (attached === undefined || !DEFERRAL_DECISIONS.has(input.actionId)) return undefined;
     const identity = yield* personFor(caller, input).pipe(Effect.option);
     if (Option.isNone(identity)) return undefined;
     const itemId = kinDeferralItemIdFromWidgetId(identity.value.orgId, input.widgetId);
     if (itemId === null) return undefined;
-    return yield* read(identity.value.orgId, KinMemoryItemId.make(itemId)).pipe(
-      Effect.map((item): DeferralCard.DeferralCommitted | undefined => item),
+    const { orgId, personId } = identity.value;
+    const item = yield* attached.read(orgId, KinMemoryItemId.make(itemId)).pipe(
+      asPersonWaits,
       Effect.orElseSucceed(() => undefined),
     );
+    if (item === undefined || Option.isNone(item) || input.actionId !== "monday") return item;
+    const target = yield* tapTarget(identity.value, input.widgetId).pipe(Effect.option);
+    if (Option.isNone(target)) return item;
+    const { widget } = target.value;
+    const card = Option.getOrUndefined(decodeDeferralCardOption(widget.state));
+    if (
+      widget.type !== "deferral" ||
+      widget.revision !== input.revision ||
+      widget.closedAt !== null ||
+      card?.actions?.includes("monday") !== true ||
+      !(yield* ownerLevel(orgId, personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ))
+    )
+      return item;
+    const reader = attached.github ?? (yield* KinDeferralGithubReader);
+    const githubAtMove = yield* readGithubLinks(orgId, item.value.head.links).pipe(
+      Effect.provideService(KinDeferralGithubReader, reader),
+      asPersonWaits,
+    );
+    return Option.some({ ...item.value, githubAtMove });
   });
   /** The cards a newer one replaced say what was chosen on it, once (`closeReplaced`'s `by`). */
   const tellReplaced = Effect.fn("KinChatService.tellReplaced")(function* (
@@ -4521,14 +4562,15 @@ const make = Effect.gen(function* () {
         input,
       );
     }),
-    attachDeferralItems: Effect.fn("KinChatService.attachDeferralItems")(function* (read) {
+    attachDeferralItems: Effect.fn("KinChatService.attachDeferralItems")(function* (read, github) {
+      const attached = { read, github };
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          deferralItems = read;
+          deferralItems = attached;
         }),
         () =>
           Effect.sync(() => {
-            if (deferralItems === read) deferralItems = undefined;
+            if (deferralItems === attached) deferralItems = undefined;
           }),
       );
     }),

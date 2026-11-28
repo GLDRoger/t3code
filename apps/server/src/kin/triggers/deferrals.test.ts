@@ -434,8 +434,16 @@ it.effect.each([
     assert.lengthOf(more, 0);
     if (state === "started") {
       assert.deepInclude(JSON.parse(started!.json).provenance, { _tag: "human", personId: person });
-      assert.deepInclude(yield* cardOf("def-1"), { phase: "started", actions: [] });
-    } else assert.isUndefined(started);
+      assert.deepInclude(yield* cardOf("def-1"), {
+        phase: "started",
+        actions: [],
+        closed: "started",
+      });
+    } else {
+      assert.isUndefined(started);
+      if (expected === "ok" && action === "cancel")
+        assert.deepInclude(yield* cardOf("def-1"), { closed: "cancelled" });
+    }
     // A tap Kin finished itself wakes no one.
     const sql = yield* SqlClient.SqlClient;
     const woke = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
@@ -542,6 +550,300 @@ it.effect(
   },
 );
 
+it.effect.each([
+  [
+    true,
+    "start",
+    "Tap Start now to start it, Monday to move it, or Cancel. I won't start it on my own: Kin asks before every start for now.",
+  ],
+  [
+    false,
+    "start",
+    "Tap Monday to move it, or Cancel. I can't start it now: Kin asks before every start for now; there is no active agent.",
+  ],
+  [true, "ask", "Tap Start now to start it, Monday to move it, or Cancel."],
+  [false, "ask", "Tap Monday to move it, or Cancel."],
+] as const)(
+  "a decision card keeps its legacy text and sends a clock-free note: live=%s mode=%s",
+  ([live, mode, note]) => {
+    const scheduled = makeDeferral("def-1", { on_due: mode });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(scheduled);
+      if (!live) {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE org_id = ${orgId}`;
+      }
+      yield* tick(mode === "start" ? headsUpAt : dueAt);
+      assert.deepInclude(yield* cardOf("def-1"), { text: `Due at 9:00 am. ${note}`, note });
+    }).pipe(Effect.provide(layerFor([scheduled])));
+  },
+);
+
+it.effect("a Monday tap records the GitHub state of the newly armed run", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  const github = new Map<string, Omit<GithubLinkState, "link">>();
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const state = { state: "open", assignees: [], linkedPrs: [] } as const;
+    github.set("acme/api#12", state);
+    assert.equal(outcome(yield* tap("monday")), "ok");
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    assert.deepInclude(JSON.parse(row!.snapshot), { github: [{ link: issue, ...state }] });
+    yield* tick(nextMonday);
+    assert.notInclude((yield* cardOf("def-1")).text, "couldn't verify GitHub when it was deferred");
+  }).pipe(
+    Effect.provideService(KinDeferralGithubReader, fakeGithub(github)),
+    Effect.provide(layerFor([linked])),
+  );
+});
+
+// Naming who asked gives no one a tap: a work card is the owner's and co-owners' alone, even for
+// the teammate it names (`chatOwnAsker`).
+it.effect.each([
+  ["start", "zoya", "undo"],
+  ["start", "sam", "undo"],
+  ["chase", "zoya", "undo"],
+  ["chase", "sam", "undo"],
+  ["ask", "zoya", "start_now"],
+  ["ask", "zoya", "monday"],
+  ["ask", "zoya", "cancel"],
+  ["ask", "sam", "cancel"],
+] as const)("Zoya's %s card in Rhea's chat refuses %s's %s", ([mode, tapper, action]) => {
+  const zoyas = makeDeferral("def-1", { on_due: mode, said_by: "zoya" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES ('zoya', ${orgId}, 'zoya', 'zoya', 'member', 0)`;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(zoyas);
+    if (mode === "ask") yield* tick(dueAt);
+    // As the asked card's table does: teammates beside the card, once it is drawn.
+    yield* sql`DELETE FROM kin_people WHERE person_id = 'zoya'`;
+    yield* joinChat("zoya", "member");
+    yield* joinChat("sam", "member");
+    const card = yield* cardOf("def-1");
+    assert.deepInclude(card, { askedBy: { personId: KinPersonId.make("zoya"), name: "zoya" } });
+    assert.include(card.actions ?? [], action);
+    const before = yield* runOf("def-1");
+    const refused = yield* tap(action, tapper);
+    assert.equal(outcome(refused), "not_allowed");
+    assert.notInclude(JSON.stringify(refused), KIN_ASKER_ONLY_REFUSAL);
+    assert.deepStrictEqual(yield* runOf("def-1"), before);
+  }).pipe(Effect.provide(layerFor([zoyas])));
+});
+
+it.effect("a Monday tap waits on GitHub only briefly, then moves it without GitHub's state", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const reading = yield* Deferred.make<void>();
+    const never = {
+      readRepo: () => Deferred.succeed(reading, undefined).pipe(Effect.andThen(Effect.never)),
+    };
+    const tapping = yield* tap("monday").pipe(
+      Effect.provideService(KinDeferralGithubReader, never),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(reading);
+    yield* TestClock.adjust("3 seconds");
+    assert.equal(outcome(yield* Fiber.join(tapping)), "ok");
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    assert.deepInclude(JSON.parse(row!.snapshot), { github: null });
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+  }).pipe(Effect.provide(layerFor([linked])));
+});
+
+// Only an owner-level tap on the open card as drawn may wait on GitHub.
+it.effect.each(["owner", "member", "stale", "closed"] as const)(
+  "a Monday tap reads GitHub only from an owner-level person on the open card: %s",
+  (who) => {
+    const linked = makeDeferral("def-1", { links: [issue] });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+      yield* tick(headsUpAt);
+      if (who === "member") yield* joinChat("zoya", "member");
+      if (who === "closed") assert.equal(outcome(yield* tap("cancel")), "ok");
+      let reads = 0;
+      const counting = {
+        readRepo: () =>
+          Effect.sync(() => {
+            reads++;
+            return new Map([[12, { state: "open", assignees: [], linkedPrs: [] }] as const]);
+          }),
+      };
+      const repo = yield* Repository.KinChatRepository;
+      const current = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).revision;
+      const result = yield* (yield* Chat.KinChatService)
+        .act(
+          {
+            _tag: "person",
+            orgId,
+            personId: KinPersonId.make(who === "member" ? "zoya" : `owner-${orgId}`),
+          },
+          {
+            widgetId,
+            revision: who === "stale" ? current - 1 : current,
+            actionId: "monday",
+            value: "def-1",
+            clientActionId: `monday-${who}`,
+          },
+        )
+        .pipe(Effect.provideService(KinDeferralGithubReader, counting), Effect.result);
+      assert.equal(outcome(result) === "ok", who === "owner");
+      assert.equal(reads, who === "owner" ? 1 : 0);
+    }).pipe(Effect.provide(layerFor([linked])));
+  },
+);
+
+it.effect("two Monday taps at once: one moves it, with the GitHub state that tap read", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("meera", "co_owner");
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const go = yield* Deferred.make<void>();
+    const gated = (state: "open" | "closed", reading: Deferred.Deferred<void>) => ({
+      readRepo: () =>
+        Deferred.succeed(reading, undefined).pipe(
+          Effect.andThen(Deferred.await(go)),
+          Effect.as(new Map([[12, { state, assignees: [], linkedPrs: [] }] as const])),
+        ),
+    });
+    const readingA = yield* Deferred.make<void>();
+    const readingB = yield* Deferred.make<void>();
+    const rhea = yield* tap("monday").pipe(
+      Effect.provideService(KinDeferralGithubReader, gated("open", readingA)),
+      Effect.forkChild,
+    );
+    const meera = yield* tap("monday", "meera").pipe(
+      Effect.provideService(KinDeferralGithubReader, gated("closed", readingB)),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(readingA);
+    yield* Deferred.await(readingB);
+    yield* Deferred.succeed(go, undefined);
+    const outcomes = [outcome(yield* Fiber.join(rhea)), outcome(yield* Fiber.join(meera))];
+    assert.sameMembers(outcomes, ["ok", "widget_changed"]);
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    const winner = outcomes[0] === "ok" ? "open" : "closed";
+    assert.deepInclude(JSON.parse(row!.snapshot), {
+      github: [{ link: issue, state: winner, assignees: [], linkedPrs: [] }],
+    });
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+  }).pipe(Effect.provide(layerFor([linked])));
+});
+
+// Memory closes the card with how it ended, and names nothing it can't tell from the item.
+it.effect.each([
+  ["done", { status: "done" }, "done"],
+  ["cancelled", { status: "cancelled" }, "cancelled"],
+  ["invalidated alone", { invalid_at: "2026-11-12T00:00:00Z" }, undefined],
+  ["superseded alone", { superseded_by: KinMemoryItemId.make("def-2") }, undefined],
+  ["superseded status", { status: "superseded" }, undefined],
+  ["no longer armable", { due: null }, undefined],
+  ["gone from memory", undefined, undefined],
+] as const)("a memory change closes the card: %s", ([, head, closed]) =>
+  Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal((yield* cardOf("def-1")).phase, "asked");
+    yield* service.syncOrg(orgId, head === undefined ? [] : [makeDeferral("def-1", head)]);
+    const repo = yield* Repository.KinChatRepository;
+    const widget = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+    assert.isNotNull(widget.closedAt);
+    if (closed === undefined) assert.notProperty(widget.state, "closed");
+    else assert.deepInclude(widget.state, { closed });
+    assert.notInclude(JSON.stringify(widget.state), '"closed":null');
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+// `askText` as the base wrote it, byte for byte: older apps still read `text`.
+const baseAskText = (input: Parameters<typeof Deferrals.askCopy>[0]) => {
+  const taps = input.startable
+    ? "Tap Start now to start it, Monday to move it, or Cancel."
+    : "Tap Monday to move it, or Cancel.";
+  const reason =
+    input.why.length === 0
+      ? ""
+      : input.startable
+        ? ` I won't start it on my own: ${input.why.join("; ")}.`
+        : ` I can't start it now: ${input.why.join("; ")}.`;
+  return `Due at ${Deferrals.ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${Deferrals.lateNote(input.dueAt, input.now, input.clock)}`;
+};
+it.effect(
+  "a decision card's text is the base's for every variant, and its note only drops the times",
+  () =>
+    Effect.sync(() => {
+      const clock = { zone: "Asia/Kolkata", locale: "en-IN" };
+      for (const startable of [true, false])
+        for (const why of [
+          [],
+          ["Kin asks before every start for now"],
+          ["acme/api#12 is closed", "it's more than 30 minutes late"],
+        ])
+          for (const lateBy of [
+            0,
+            10 * 60_000,
+            10 * 60_000 + 1,
+            3 * 60 * 60_000,
+            2 * 24 * 60 * 60_000,
+          ]) {
+            const input = { dueAt, now: dueAt + lateBy, clock, startable, why };
+            const copy = Deferrals.askCopy(input);
+            const label = JSON.stringify({ startable, why, lateBy });
+            assert.strictEqual(copy.text, baseAskText(input), label);
+            const late = Deferrals.lateNote(dueAt, input.now, clock);
+            const due = `Due at ${Deferrals.ownerTime(dueAt, input.now, clock)}. `;
+            assert.strictEqual(`${due}${copy.note}${late}`, copy.text, label);
+            assert.notInclude(copy.note, Deferrals.ownerTime(dueAt, input.now, clock), label);
+            if (late === "") assert.notProperty(copy, "lateSince", label);
+            else
+              assert.strictEqual(
+                copy.lateSince,
+                DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+                label,
+              );
+          }
+    }),
+);
+
+it.effect("a card in Rhea's chat names Meera when Meera asked", () => {
+  const meera = makeDeferral("def-2", { said_by: "meera" });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("meera", "co_owner");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET display_name = 'Meera' WHERE person_id = 'meera'`;
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* service.syncItem(meera);
+    const check = Effect.fn("test.deferralAsker")(function* () {
+      assert.isUndefined((yield* cardOf("def-1")).askedBy);
+      assert.deepInclude(yield* cardOf("def-2"), {
+        askedBy: { personId: KinPersonId.make("meera"), name: "Meera" },
+      });
+    });
+    yield* check();
+    yield* tick(headsUpAt);
+    yield* check();
+  }).pipe(Effect.provide(layerFor([deferral, meera])));
+});
+
 const DECIDE = ["start_now", "monday", "cancel"];
 const refusalOf = (result: Effect.Success<ReturnType<typeof tap>>) =>
   result._tag === "Failure" && result.failure._tag === "KinChatError"
@@ -583,16 +885,24 @@ it.effect(
   },
 );
 
-it.effect("a tap on an item cancelled in memory is refused and closes its card", () => {
+it.effect.each([
+  [{ status: "cancelled" }, "cancelled"],
+  [{ status: "done" }, "done"],
+  [{ invalid_at: "2026-11-12T00:00:00Z" }, undefined],
+  [{ superseded_by: KinMemoryItemId.make("def-2") }, undefined],
+] as const)("a tap on an item closed in memory is refused: %j", ([head, closed]) => {
   const items = [deferral];
   return Effect.gen(function* () {
     yield* setup();
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
     yield* tick(headsUpAt);
-    items[0] = makeDeferral("def-1", { status: "cancelled" });
+    items[0] = makeDeferral("def-1", head);
     assert.equal(outcome(yield* tap("monday")), "widget_changed");
     const repo = yield* Repository.KinChatRepository;
-    assert.isNotNull(Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).closedAt);
+    const widget = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+    assert.isNotNull(widget.closedAt);
+    if (closed === undefined) assert.notProperty(widget.state, "closed");
+    else assert.deepInclude(widget.state, { closed });
     assert.deepStrictEqual(yield* runOf("def-1"), { state: "asked", dueAt });
     assert.lengthOf(yield* starts(), 0);
   }).pipe(Effect.provide(layerFor(items)));
@@ -915,6 +1225,7 @@ it.effect("an Undo after [Monday] holds; a tap on a card drawn before a change i
       .pipe(Effect.result);
     assert.equal(outcome(stale), "widget_changed");
     assert.equal(outcome(yield* tap("undo")), "ok");
+    assert.deepInclude(yield* cardOf("def-1"), { closed: "undone" });
     assert.equal((yield* runOf("def-1"))?.state, "undone");
     assert.equal(yield* service.syncItem(deferral), "unchanged");
     yield* tick(nextMonday);
@@ -984,6 +1295,10 @@ it.effect(
       const asked = (yield* cardOf("def-1")).text;
       assert.include(asked, "it's more than 30 minutes late");
       assert.include(asked, "This was due at 9:00 am.");
+      assert.deepInclude(yield* cardOf("def-1"), {
+        lateSince: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+        note: asked.replace(/^Due at .*?\. /, "").replace(/ This was due at .*\.$/, ""),
+      });
 
       assert.equal((yield* runOf("def-2"))?.state, "grace");
       const grace = yield* cardOf("def-2");
@@ -2163,6 +2478,8 @@ it.effect.each([
   "cancel while reconcile holds the lock",
   "sync lost after commit",
   "undo cancel",
+  "owner restore with GitHub",
+  "owner restore while GitHub never answers",
   "legacy schedule",
 ] as const)("committed memory arms or disarms immediately: %s", (scenario) =>
   Effect.gen(function* () {
@@ -2191,7 +2508,15 @@ it.effect.each([
     const seeded = scenario !== "set two" && scenario !== "legacy schedule";
     yield* git(source, ["init", "-b", "main"]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules.\n");
-    if (seeded) yield* fs.writeFileString(`${source}/${path}`, content());
+    const hung = scenario === "owner restore while GitHub never answers";
+    const restore = scenario === "owner restore with GitHub" || hung;
+    if (seeded)
+      yield* fs.writeFileString(
+        `${source}/${path}`,
+        content(
+          restore ? { on_due: "start", links: [issue], invalid_at: "2026-11-08T00:00:00Z" } : {},
+        ),
+      );
     yield* git(source, ["add", "."]);
     yield* git(source, [
       "-c",
@@ -2232,11 +2557,19 @@ it.effect.each([
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
     );
+    const reading = yield* Deferred.make<void>();
+    const github = hung
+      ? { readRepo: () => Deferred.succeed(reading, undefined).pipe(Effect.andThen(Effect.never)) }
+      : fakeGithub(new Map([["acme/api#12", { state: "open", assignees: [], linkedPrs: [] }]]));
     const runtime = Layer.merge(writerLayer, Watchdogs.layer).pipe(
       Layer.provideMerge(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
       Layer.provideMerge(
         layerFor([], {
-          memory: memoryLayer.pipe(Layer.provide(config), Layer.provide(nodeGit)),
+          memory: memoryLayer.pipe(
+            Layer.provide(config),
+            Layer.provide(nodeGit),
+            Layer.provide(Layer.succeed(KinDeferralGithubReader, github)),
+          ),
         }),
       ),
     );
@@ -2257,6 +2590,42 @@ it.effect.each([
             WHERE org_id = ${orgId} AND trigger_id = ${id}`;
         return row;
       });
+
+      if (hung) {
+        // A person waits on this restore: GitHub gets a few seconds, then it arms without its state.
+        const restoring = yield* writer
+          .restore(orgId, { itemId: KinMemoryItemId.make("def-written") })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(reading);
+        yield* TestClock.adjust("3 seconds");
+        assert.deepInclude(yield* Fiber.join(restoring), { restored: true });
+        const [row] = yield* sql<{ state: string; snapshot: string }>`SELECT state,
+            snapshot_json AS snapshot
+          FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-written'`;
+        assert.equal(row?.state, "armed");
+        assert.deepInclude(JSON.parse(row!.snapshot), { github: null });
+        return;
+      }
+      if (restore) {
+        assert.isUndefined(yield* runOf("def-written"));
+        assert.deepInclude(
+          yield* writer.restore(orgId, { itemId: KinMemoryItemId.make("def-written") }),
+          {
+            restored: true,
+          },
+        );
+        const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+          FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-written'`;
+        assert.deepInclude(JSON.parse(row!.snapshot), {
+          github: [{ link: issue, state: "open", assignees: [], linkedPrs: [] }],
+        });
+        yield* tick(dueAt).pipe(Effect.provideService(KinDeferralGithubReader, github));
+        assert.notInclude(
+          (yield* cardOf("def-written")).text,
+          "couldn't verify GitHub when it was deferred",
+        );
+        return;
+      }
 
       if (seeded) {
         yield* watchdog.run("trigger_reconcile", orgId);

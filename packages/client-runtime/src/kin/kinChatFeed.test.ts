@@ -36,6 +36,8 @@ import {
   kinEarlierPage,
   kinMessageLabel,
   kinMessageLinks,
+  kinNoteMarkdown,
+  kinNoteParts,
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
@@ -361,7 +363,7 @@ describe("rows", () => {
     expect(label(new Map([["m-ravi", "Ravi"]]))).toEqual(["Ravi"]);
   });
 
-  it("shows a card tap as the button's label, never its JSON, card or a choice it answered", () => {
+  it("shows a card tap as the button's label and its card's title, never its JSON, card or a choice it answered", () => {
     const tap = (messageId: string, body: string) =>
       ({
         ...all.find((m) => m.author._tag === "human")!,
@@ -393,8 +395,8 @@ describe("rows", () => {
       new Set(),
     );
     expect(rows.map((row) => row.type === "message" && row.message.body)).toEqual([
-      "Ship it",
-      "Done",
+      "Ship it · Ship?",
+      'Done · Say "hi" to Sam',
       "Start now",
       "Tapped a button",
     ]);
@@ -700,6 +702,97 @@ describe("rows", () => {
     expect(
       systemRows([asked, notice(6, "kin-no-reply:w1"), notice(7, "kin-no-reply:w2")]),
     ).toMatchObject([{ retry: null }, { retry: "Is the deploy green?" }]);
+    // A failed tap's retry is the card's own tap, so no typed message is offered again.
+    const tap = (seq: number, body: object) =>
+      ({
+        ...asked,
+        messageId: `tap-${seq}`,
+        seq,
+        kind: "widget_action",
+        body: JSON.stringify(body),
+      }) as KinMessage;
+    expect(
+      systemRows([
+        asked,
+        tap(6, { text: 'Tapped "Done" on the reminder "Send the Tidewater Freight quote"' }),
+        notice(7, "kin-retrying:w1"),
+      ]),
+    ).toMatchObject([{ retry: null }]);
+    expect(
+      systemRows([
+        asked,
+        tap(6, { actionId: "choose", text: 'Chose "Yes" on "Ship?"' }),
+        notice(7, "kin-failed:w1"),
+      ]),
+    ).toMatchObject([{ retry: null }]);
+    // A typed message after the tap is the one the failed turn was about.
+    expect(
+      systemRows([
+        tap(4, { text: 'Tapped "Done" on the reminder "Send the quote"' }),
+        asked,
+        notice(7, "kin-failed:w1"),
+      ]),
+    ).toMatchObject([{ retry: "Is the deploy green?" }]);
+    // The host's retry that only updates a card ("Done.") ends "trying again" too.
+    const card = (changeSeq: number) =>
+      agentMessage(3, { body: "", widgetId: KinWidgetId.make("deferral:d1"), changeSeq });
+    const trying = { ...notice(6, "kin-retrying:w1"), changeSeq: 10 };
+    expect(systemRows([card(20), asked, trying])).toMatchObject([{ retry: null }]);
+    expect(systemRows([card(4), asked, trying])).toMatchObject([{ retry: "Is the deploy green?" }]);
+    // A typed message with files is still resent; the host brings its files back.
+    const withFiles = {
+      ...asked,
+      attachments: [{ id: "a1", name: "quote.pdf", mimeType: "application/pdf", sizeBytes: 10 }],
+    } as unknown as KinMessage;
+    expect(systemRows([withFiles, notice(6, "kin-failed:w1")])).toMatchObject([
+      { retry: "Is the deploy green?" },
+    ]);
+  });
+
+  it("finds the web addresses in one of Kin's own notes, to open as links", () => {
+    expect(
+      kinNoteParts(
+        "Connect GitHub at https://github.com/settings/apps. Then try again (https://t3.codes).",
+      ),
+    ).toEqual([
+      { text: "Connect GitHub at ", href: null },
+      { text: "https://github.com/settings/apps", href: "https://github.com/settings/apps" },
+      { text: ". Then try again (", href: null },
+      { text: "https://t3.codes", href: "https://t3.codes/" },
+      { text: ").", href: null },
+    ]);
+    expect(kinNoteParts("Tech lead couldn't start. Trying again in a moment.")).toEqual([
+      { text: "Tech lead couldn't start. Trying again in a moment.", href: null },
+    ]);
+    expect(kinNoteMarkdown("Open https://t3.codes/a_b (2 * 3).")).toBe(
+      "Open [https://t3\\.codes/a\\_b](https://t3.codes/a_b) \\(2 \\* 3\\)\\.",
+    );
+    expect(kinNoteMarkdown("Tech lead couldn't start.")).toBeNull();
+    // Only web addresses open; a plain-http or other scheme stays words.
+    expect(kinNoteParts("See tel:+15550100 or http://intranet.example")).toEqual([
+      { text: "See tel:+15550100 or http://intranet.example", href: null },
+    ]);
+  });
+
+  it("names the card a tap bubble answered", () => {
+    const tap = (text: string) =>
+      ({
+        ...ownMessage(5),
+        kind: "widget_action",
+        body: JSON.stringify({ text }),
+      }) as KinMessage;
+    const body = (text: string) =>
+      messageRows([tap(text)], viewer, new Set()).map(
+        (row) => row.type === "message" && row.message.body,
+      );
+    expect(body('Tapped "Snooze" on the reminder "Send the Tidewater Freight quote"')).toEqual([
+      "Snooze · Send the Tidewater Freight quote",
+    ]);
+    expect(body('Tapped "Start now" on "Draft the Tidewater Freight brief"')).toEqual([
+      "Start now · Draft the Tidewater Freight brief",
+    ]);
+    // A tap whose words name no card by its title keeps the label alone.
+    expect(body('Tapped "Approve" on Rhea\'s posts')).toEqual(["Approve"]);
   });
 
   it("starts each local day and each quiet gap with a divider, restarting author lines", () => {

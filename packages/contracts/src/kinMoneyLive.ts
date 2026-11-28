@@ -113,11 +113,24 @@ export function kinMoneySettled(part: KinMoneyPart, value: unknown): unknown {
   return { ...rest, goals: goals.map(({ expected: _expected, ...goal }) => goal) };
 }
 
-/** What changed from `before` to `after`, as `kinMoneySettled` compares them; null when nothing. */
+/** What changed after rebuilding some parts; a replacement when a merge would retain a field. */
 export function kinMoneyDiff(
   before: KinMoneyLive,
   after: KinMoneyLive,
-): Omit<KinMoneyChange, "_tag" | "hash"> | null {
+): Omit<KinMoneyChange, "_tag" | "hash"> | { readonly replacement: KinMoneyLive } | null {
+  const { summary } = after;
+  const held = before.summary as Record<string, unknown> | undefined;
+  if (
+    summary !== undefined &&
+    held !== undefined &&
+    Object.keys(held).some(
+      (field) => held[field] !== undefined && summary[field as keyof KinMoneySummary] === undefined,
+    )
+  ) {
+    // Installed clients merge summary patches; only a snapshot removes an omitted field.
+    return { replacement: { ...before, ...after } };
+  }
+
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   const out: Record<string, unknown> = {};
   for (const part of KIN_MONEY_PARTS) {
@@ -131,9 +144,7 @@ export function kinMoneyDiff(
   }
   const lists = listsChange(before.lists, after.lists);
   if (lists !== null) Object.assign(out, lists);
-  const { summary } = after;
   if (summary !== undefined) {
-    const held = before.summary as Record<string, unknown> | undefined;
     const moved = Object.entries(summary).filter(
       ([field, value]) => field !== "asOf" && !same(held?.[field], value),
     );

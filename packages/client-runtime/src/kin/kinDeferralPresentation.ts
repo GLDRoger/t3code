@@ -62,6 +62,8 @@ export interface KinDeferralCardView {
   /** The small line above the title. */
   readonly eyebrow: string;
   readonly title: string;
+  /** A settled deferral's one muted line, "Cancelled · <title>", drawn instead of its title. */
+  readonly summary?: string;
   readonly lines: ReadonlyArray<string>;
   /** What the countdown runs to; null when nothing is pending. */
   readonly countdown: { readonly to: number; readonly kind: KinCountdownKind } | null;
@@ -311,27 +313,36 @@ function cardBody(
     }
     case "asked":
       // The host's text names what changed: why it won't start on its own, or that it's late.
+      // Its note is that text without the company-clock time, which this line writes locally.
       return {
         phase: "asked",
         lines:
-          text === ""
+          card.note !== undefined
             ? [
-                `Due at ${formatKinDeferralTime(dueMs, timeZone)}. Start it, move it to Monday, or cancel it?`,
+                `${card.lateSince === undefined ? "Due at" : "This was due at"} ${formatKinDeferralTime(
+                  Date.parse(card.lateSince ?? card.dueAt),
+                  timeZone,
+                )}. ${clamp(card.note, 280)}`,
               ]
-            : [text],
+            : text === ""
+              ? [
+                  `Due at ${formatKinDeferralTime(dueMs, timeZone)}. Start it, move it to Monday, or cancel it?`,
+                ]
+              : [text],
         countdown: null,
         actions,
       };
     case "started":
-      // The work was handed over; its turn may still wait, so the line says who was asked.
-      return {
-        phase: "started",
-        lines: [text === "" ? kinAskedToStart(card.agent) : text],
-        countdown: null,
-        actions: [],
-      };
+      return { phase: "started", lines: [], countdown: null, actions: [] };
   }
 }
+
+const CLOSED_WORD: Record<NonNullable<KinDeferralCard["closed"]>, string> = {
+  cancelled: "Cancelled",
+  undone: "Undone",
+  started: "Started",
+  done: "Done",
+};
 
 export function kinDeferralCardView(
   widget: KinWidget,
@@ -347,7 +358,19 @@ export function kinDeferralCardView(
   const shown: CardBody =
     widget.closedAt === null
       ? cardBody(card, timeZone, ownerLevel)
-      : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
+      : { phase: "closed", lines: [], countdown: null, actions: [] };
+  // A started card that closed later without a reason was still started, as an older host's is.
+  const closed = card.closed ?? (card.phase === "started" ? "started" : undefined);
+  // Start now's turn may still wait, so a started card says who was asked, not that it ran.
+  const how =
+    closed === "started"
+      ? clamp(card.text, 280) || kinAskedToStart(card.agent)
+      : closed === undefined
+        ? "Closed"
+        : CLOSED_WORD[closed];
+  const settled = shown.phase === "closed" || shown.phase === "started";
+  const summary =
+    closed === "started" ? `${CLOSED_WORD.started} · ${title} · ${how}` : `${how} · ${title}`;
   const asked = kinAskedByLine(card.askedBy);
   const body = asked === null ? shown : { ...shown, lines: [...shown.lines, asked] };
   // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
@@ -361,7 +384,12 @@ export function kinDeferralCardView(
     title,
     agent: card.agent ?? null,
     ...body,
-    accessibilityLabel: kinSentences([`${kind}: ${title}`, ...body.lines]),
+    ...(settled ? { summary } : {}),
+    accessibilityLabel: kinSentences([
+      `${kind}: ${title}`,
+      ...(settled ? [how] : []),
+      ...body.lines,
+    ]),
   };
 }
 

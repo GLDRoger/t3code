@@ -32,6 +32,20 @@ export function kinTapText(body: string): string {
   return action === "" ? KIN_TAP_FALLBACK_TEXT : action.charAt(0).toUpperCase() + action.slice(1);
 }
 
+// The card's title closes the host's words: `on "Ship?"`, `on the reminder "Send the quote"`.
+const TAP_CARD_TITLE = /^(?:Chose|Tapped) ".+?" on (?:the [a-z ]+ )?"(.+)"$/;
+
+/**
+ * A tap as its bubble reads in the chat, naming the card it was on ("Done · Send the quote"):
+ * the card may be far above it. A tap whose words name no title keeps the label alone.
+ */
+export function kinTapLine(body: string): string {
+  const label = kinTapText(body);
+  const text = Option.getOrNull(decodeTap(body))?.text?.trim() ?? "";
+  const title = TAP_CARD_TITLE.exec(text)?.[1];
+  return title === undefined ? label : `${label} · ${title}`;
+}
+
 /**
  * A tap the card itself answers: a choice card says what was chosen or done, and a statement
  * card what it recorded or took back, so the tap needs no bubble of its own.

@@ -30,6 +30,7 @@ import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinImport from "./work/KinImport.ts";
+import * as Bills from "./work/bills.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
@@ -255,12 +256,13 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
-        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         Layer.merge(KinShell.layer),
         Layer.merge(FollowUps.itemsLayer),
         Layer.merge(KinNumbers.layer),
         Layer.merge(OwnerNotices.layer),
         Layer.provideMerge(KinChat.layerWithWork),
+        (core) => Bills.previewLayer.pipe(Layer.provideMerge(core)),
+        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(

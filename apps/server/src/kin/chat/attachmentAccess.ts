@@ -25,6 +25,19 @@ import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 type AttachmentResource = Extract<AssetResource, { readonly _tag: "attachment" }>;
 
+const possiblePhotoPreview = /^kin-chat-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-jpg$/;
+
+const billPhotoSource = Effect.fn("Kin.billPhotoSource")(function* (
+  sql: SqlClient.SqlClient,
+  orgIds: ReadonlyArray<KinOrgId>,
+  attachmentId: string,
+) {
+  const [photo] = yield* sql<{ id: string }>`
+    SELECT attachment_id AS id FROM kin_bill_reads
+    WHERE org_id IN ${sql.in(orgIds)} AND preview_id = ${attachmentId} LIMIT 1`;
+  return photo?.id;
+});
+
 /**
  * Who may be handed a URL for a stored attachment. A file on a Kin message goes only to people
  * in that message's chat, whatever else their session may do; a session that holds nothing but
@@ -48,21 +61,32 @@ export const authorizeAttachmentRead = Effect.fn("Kin.authorizeAttachmentRead")(
   const readable = yield* Context.get(kin.value, KinIdentity)
     .resolve(session)
     .pipe(
-      Effect.flatMap((people) =>
-        Context.get(kin.value, KinChatService)
-          .attachmentReadable(people, attachmentId)
-          .pipe(
-            // A file on a task's comment is read by whoever sees the task.
-            Effect.filterOrElse(
-              (onMessage) => onMessage || Option.isNone(sql),
-              () =>
-                Option.isNone(sql)
-                  ? Effect.succeed(false)
-                  : commentFileReadable(people, attachmentId).pipe(
-                      Effect.provideService(SqlClient.SqlClient, sql.value),
-                    ),
-            ),
-          ),
+      Effect.flatMap(
+        Effect.fnUntraced(function* (people) {
+          const source =
+            Option.isSome(sql) && people.length > 0 && possiblePhotoPreview.test(attachmentId)
+              ? yield* billPhotoSource(
+                  sql.value,
+                  people.map(({ orgId }) => orgId),
+                  attachmentId,
+                )
+              : undefined;
+          const fileId = source ?? attachmentId;
+          return yield* Context.get(kin.value, KinChatService)
+            .attachmentReadable(people, fileId)
+            .pipe(
+              // A file on a task's comment is read by whoever sees the task.
+              Effect.filterOrElse(
+                (onMessage) => onMessage || Option.isNone(sql),
+                () =>
+                  Option.isNone(sql)
+                    ? Effect.succeed(false)
+                    : commentFileReadable(people, fileId).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql.value),
+                      ),
+              ),
+            );
+        }),
       ),
       // A failed lookup is refused like a stranger: reading is denied by default.
       Effect.orElseSucceed(() => false),

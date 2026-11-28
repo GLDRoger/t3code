@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinChatId,
   KinEventId,
+  KinMemoryItemId,
   KinMessageId,
   KinPersonId,
   KinWakeupId,
@@ -37,6 +38,7 @@ import { environment } from "./TaskCard.testkit.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 // After the chat service: the two import each other, and this order is the one that loads.
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
+import { deferralWidgetId, makeDeferralCards } from "../triggers/deferrals.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
 const layer = Layer.mergeAll(Groups.layer, Service.layer, KinEventQueue.layer).pipe(
@@ -1448,5 +1450,49 @@ it.effect(
         FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatId}
           AND message_id LIKE 'set-room:moved:%' ORDER BY seq`;
       assert.lengthOf(lines, 2);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a join moves the owner's own start-it-later card out of a group it was never shared in",
+  () =>
+    Effect.gen(function* () {
+      const { groups, owner, orgId, tech, sam, sql } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Ops",
+        agentIds: [tech],
+        personIds: [],
+      });
+      const cards = yield* makeDeferralCards;
+      const itemId = KinMemoryItemId.make("def-ops");
+      yield* cards.write({
+        orgId,
+        itemId,
+        chatId,
+        now: 0,
+        saidBy: "owner",
+        state: {
+          itemId,
+          title: "Invented: start the Tidewater Freight invoice run",
+          dueAt: "1970-01-03T10:00:00.000Z",
+          onDue: "start",
+          text: "Set for Saturday.",
+          actions: ["undo"],
+        },
+      });
+      const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+      const cardRow = sql<{ chatId: string; state: string }>`SELECT chat_id AS "chatId",
+          state_json AS state FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+      // Only the owner reads this group yet: the card is the owner's own, so it names no asker.
+      assert.notProperty(JSON.parse((yield* cardRow)[0]!.state), "askedBy");
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: sam.personId },
+      });
+      const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+        FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+      // The join moves it to the owner's chat with the lead, as before; it never stays for Sam.
+      assert.strictEqual((yield* cardRow)[0]!.chatId, lead!.ownerChatId);
     }).pipe(Effect.provide(layer)),
 );
