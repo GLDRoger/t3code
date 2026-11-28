@@ -237,6 +237,7 @@ export const KinCard = memo(function KinCard(props: {
     props.heldFor,
     ownerLevel,
     modelName,
+    props.viewerPersonId,
   );
   switch (view.kind) {
     case "task":

@@ -4,6 +4,7 @@ import {
   KinChatError,
   KinDeferralCard,
   kinAgentPausedRefusal,
+  KinPersonId,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -268,6 +269,28 @@ describe("kinDeferralCardView", () => {
     expect(card.summary).toBe("Cancelled · Rate limiting");
     expect(card.lines).toEqual(["Asked by Meera."]);
     expect(card.accessibilityLabel).toBe("Reminder: Rate limiting. Cancelled. Asked by Meera.");
+  });
+
+  it.each([
+    ["open", {}, {}],
+    ["due", { phase: "asked", actions: ["start_now", "monday", "cancel"] }, {}],
+    ["settled", { closed: "cancelled" }, { closedAt: DUE }],
+  ])("says who asked only to someone who didn't (%s)", (_form, state, overrides) => {
+    const asked = { onDue: "remind", askedBy: { personId: "rhea", name: "Rhea Kapoor" }, ...state };
+    const seenBy = (viewer: string | null) =>
+      kinDeferralCardView(
+        deferral(asked, overrides),
+        "UTC",
+        undefined,
+        viewer === null ? null : KinPersonId.make(viewer),
+      )!;
+    for (const card of [seenBy("meera"), seenBy(null)]) {
+      expect(card.lines).toContain("Asked by Rhea Kapoor.");
+      expect(card.accessibilityLabel).toContain("Asked by Rhea Kapoor.");
+    }
+    const own = seenBy("rhea");
+    expect(own.lines).not.toContain("Asked by Rhea Kapoor.");
+    expect(own.accessibilityLabel).not.toContain("Asked by");
   });
 
   const TAPS = "Tap Start now to start it, Monday to move it, or Cancel.";
