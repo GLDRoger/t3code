@@ -694,6 +694,9 @@ const replyText = (
 export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) =>
   replyText(responses, true);
 
+export const writtenText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) =>
+  responses.flatMap((blocks) => blocks.filter(isText).map((block) => block.text)).join("\n\n");
+
 type ReplySample = {
   readonly testCase: McpToolUseCase;
   readonly responses: ReadonlyArray<ReadonlyArray<unknown>>;

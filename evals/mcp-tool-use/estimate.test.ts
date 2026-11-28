@@ -10,6 +10,7 @@ it("finds a regex that doesn't compile and a needed call to a tool the agent lac
       {
         expect: {
           calls: [{ tool: "kin_relays" }, { tool: "record_create|kin_relay" }],
+          wroteTextMustNot: ["["],
           textMust: ["(?s).{400}", "(?i:fine)"],
         },
       },
@@ -17,6 +18,7 @@ it("finds a regex that doesn't compile and a needed call to a tool the agent lac
     ),
   ).toEqual([
     "regex does not compile: (?s).{400}",
+    "regex does not compile: [",
     "names a tool the agent doesn't have: kin_relays",
   ]);
 });
