@@ -78,6 +78,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     props.heldFor ?? null,
     ownerLevel,
     modelName,
+    props.viewerPersonId,
   );
   switch (view.kind) {
     case "task":

@@ -7,6 +7,7 @@ import {
   KinChatError,
   KinDeferralCard,
   type KinDeferralCardAction,
+  type KinPersonId,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
   type KinWidget,
@@ -258,9 +259,15 @@ const clamp = (text: string, max: number) => {
 const decodeDeferral = Schema.decodeUnknownOption(KinDeferralCard);
 const isKinChatError = Schema.is(KinChatError);
 
-/** Who asked for a shared chat's own reminder or routine, under its title; null on any other. */
-export function kinAskedByLine(askedBy: KinCardAsker | undefined): string | null {
-  if (askedBy === undefined) return null;
+/**
+ * Who asked for a shared chat's own reminder or routine, under its title; null on any other, and
+ * to the asker. An unknown viewer is shown the line.
+ */
+export function kinAskedByLine(
+  askedBy: KinCardAsker | undefined,
+  viewer: KinPersonId | null = null,
+): string | null {
+  if (askedBy === undefined || askedBy.personId === viewer) return null;
   return askedBy.left === true
     ? "Asked by someone who has left."
     : `Asked by ${clamp(askedBy.name, 80) || "someone"}.`;
@@ -350,6 +357,7 @@ export function kinDeferralCardView(
   timeZone?: string,
   /** False for a teammate: they are offered Undo only. Unknown offers what the host says. */
   ownerLevel?: boolean,
+  viewer: KinPersonId | null = null,
 ): KinDeferralCardView | null {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
@@ -371,7 +379,7 @@ export function kinDeferralCardView(
   const settled = shown.phase === "closed" || shown.phase === "started";
   const summary =
     closed === "started" ? `${CLOSED_WORD.started} · ${title} · ${how}` : `${how} · ${title}`;
-  const asked = kinAskedByLine(card.askedBy);
+  const asked = kinAskedByLine(card.askedBy, viewer);
   const body = asked === null ? shown : { ...shown, lines: [...shown.lines, asked] };
   // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
   const kind = card.onDue === "remind" ? "Reminder" : "Scheduled";
