@@ -94,6 +94,7 @@ describe("kinDeferralCardView", () => {
 
     const closed = view(deferral({}, { closedAt: "2026-11-13T09:00:00.000Z" }));
     expect(closed.phase).toBe("closed");
+    expect(closed.summary).toBe("Closed · Rate limiting");
     expect(closed.actions).toEqual([]);
     expect(closed.countdown).toBeNull();
     expect(view(deferral({ phase: "heads_up" }, { closedAt: DUE })).actions).toEqual([]);
@@ -166,13 +167,6 @@ describe("kinDeferralCardView", () => {
       ["Due at Fri, Nov 13, 9:00 AM. Start it, move it to Monday, or cancel it?"],
       null,
     ],
-    ["started", { phase: "started", text: "" }, ["Asked your agent to start it."], null],
-    [
-      "started says who was asked, as the host wrote it",
-      { phase: "started", text: "Asked Lead to start it.", agent: "Lead" },
-      ["Asked Lead to start it."],
-      null,
-    ],
   ])("%s", (_name, state, lines, countdown) => {
     const card = view(deferral(state));
     expect(card.lines).toEqual(lines);
@@ -205,7 +199,7 @@ describe("kinDeferralCardView", () => {
       agent: "Finance",
     });
     expect(kinDeferralIsBookkeeping(started)).toBe(false);
-    expect(view(started).lines).toEqual(["Asked Finance to start it."]);
+    expect(view(started).summary).toBe("Started · Rate limiting · Asked Finance to start it.");
     expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(false);
 
     // Monday: the confirm card again, at the new time, with Undo.
@@ -224,7 +218,81 @@ describe("kinDeferralCardView", () => {
     const undone = deferral({ actions: ["undo"] }, { closedAt: DUE });
     for (const closed of [cancelled, undone]) {
       expect(kinDeferralIsBookkeeping(closed)).toBe(false);
-      expect(view(closed).lines).toEqual(["Closed."]);
+      expect(view(closed).summary).toBe("Closed · Rate limiting");
+    }
+  });
+
+  it.each([
+    ["cancelled", "Cancelled · Rate limiting", "Scheduled: Rate limiting. Cancelled."],
+    ["undone", "Undone · Rate limiting", "Scheduled: Rate limiting. Undone."],
+    ["done", "Done · Rate limiting", "Scheduled: Rate limiting. Done."],
+    [undefined, "Closed · Rate limiting", "Scheduled: Rate limiting. Closed."],
+  ])("draws a card closed as %s as one line", (closed, summary, label) => {
+    const card = view(deferral({ phase: "asked", actions: [], closed }, { closedAt: DUE }));
+    expect(card.phase).toBe("closed");
+    expect(card.summary).toBe(summary);
+    expect(card.lines).toEqual([]);
+    expect(card.countdown).toBeNull();
+    expect(card.actions).toEqual([]);
+    expect(card.accessibilityLabel).toBe(label);
+  });
+
+  it("keeps Start now's line on a started card, open or closed", () => {
+    const started = { phase: "started", text: "Asked Lead to start it.", agent: "Lead" } as const;
+    const open = view(deferral({ ...started, closed: "started", actions: [] }));
+    expect(open.phase).toBe("started");
+    expect(open.summary).toBe("Started · Rate limiting · Asked Lead to start it.");
+    expect(open.lines).toEqual([]);
+    expect(open.accessibilityLabel).toBe("Scheduled: Rate limiting. Asked Lead to start it.");
+    // An older host, and a later close that names no reason, still say it was started.
+    expect(view(deferral({ phase: "started", text: "" })).summary).toBe(
+      "Started · Rate limiting · Asked your agent to start it.",
+    );
+    expect(view(deferral(started, { closedAt: DUE })).summary).toBe(
+      "Started · Rate limiting · Asked Lead to start it.",
+    );
+    expect(view(deferral({ ...started, closed: "done" }, { closedAt: DUE })).summary).toBe(
+      "Done · Rate limiting",
+    );
+  });
+
+  it("keeps who asked under a closed card's line", () => {
+    const card = view(
+      deferral(
+        { onDue: "remind", closed: "cancelled", askedBy: { personId: "meera", name: "Meera" } },
+        { closedAt: DUE },
+      ),
+    );
+    expect(card.summary).toBe("Cancelled · Rate limiting");
+    expect(card.lines).toEqual(["Asked by Meera."]);
+    expect(card.accessibilityLabel).toBe("Reminder: Rate limiting. Cancelled. Asked by Meera.");
+  });
+
+  const TAPS = "Tap Start now to start it, Monday to move it, or Cancel.";
+  it.each([
+    ["UTC", "Fri, Nov 13, 9:00 AM"],
+    ["Asia/Kolkata", "Fri, Nov 13, 2:30 PM"],
+  ])("writes a decision card's due time once, in the device's form (%s)", (zone, when) => {
+    const asked = (state: Record<string, unknown>) =>
+      kinDeferralCardView(deferral({ phase: "asked", actions: DECIDE, ...state }), zone)?.lines;
+    const reason = " I won't start it on my own: Kin is at L1, below L2.";
+    expect(asked({ text: `Due at 9:00 am. ${TAPS}${reason}`, note: `${TAPS}${reason}` })).toEqual([
+      `Due at ${when}. ${TAPS}${reason}`,
+    ]);
+    expect(
+      asked({
+        text: `Due at 9:00 am. ${TAPS} This was due at 9:00 am.`,
+        note: TAPS,
+        lateSince: DUE,
+      }),
+    ).toEqual([`This was due at ${when}. ${TAPS}`]);
+    // An older host's text, in the company's clock, stays as it was.
+    expect(asked({ text: `Due at 9:00 am. ${TAPS}` })).toEqual([`Due at 9:00 am. ${TAPS}`]);
+  });
+
+  it("draws no one-line summary on an open card", () => {
+    for (const state of [{}, { phase: "heads_up" }, { phase: "asked", note: TAPS }]) {
+      expect(view(deferral({ ...state, actions: DECIDE })).summary).toBeUndefined();
     }
   });
 
