@@ -494,15 +494,17 @@ function RulePage(props: {
           if (ok === true) navigation.goBack();
         }),
     });
-  const changeLimit = () =>
+  // A refused number comes back in the prompt with why, so it can be fixed rather than retyped.
+  const changeLimit = (refused?: { readonly text: string; readonly problem: string }) =>
     Dialog.prompt({
       title: COPY.limitTitle,
-      message: COPY.limitHint,
-      initialValue: String(rule.monthlyCap),
+      message: refused?.problem ?? COPY.limitHint,
+      initialValue: refused?.text ?? String(rule.monthlyCap),
       keyboard: "number",
       cancelText: COPY.limitCancel,
       confirmText: COPY.limitSave,
-      onConfirm: (text) =>
+      onConfirm: (text) => {
+        let problem: string | null = null;
         void settle("limit", COPY.limitFailed, async () => {
           const outcome = await kinMailRuleSetLimitSend({
             rule,
@@ -511,8 +513,12 @@ function RulePage(props: {
             send: (input) => setLimitCommand({ environmentId, input }),
           });
           if (outcome.ok) setSaved(outcome.rule);
+          else problem = outcome.problem;
           return outcome;
-        }),
+        }).then(() => {
+          if (problem !== null) changeLimit({ text, problem });
+        });
+      },
     });
   const runPreview = async () => {
     setPreview({ _tag: "busy" });
@@ -564,7 +570,7 @@ function RulePage(props: {
               description={fact.label}
               detail={busy === "limit" ? COPY.limitSaving : COPY.limitChange}
               disabled={busy !== null}
-              onPress={changeLimit}
+              onPress={() => changeLimit()}
             />
           ) : (
             <View key={fact.label} accessible className="bg-grouped-card">

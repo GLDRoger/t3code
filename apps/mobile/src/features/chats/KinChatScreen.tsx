@@ -1579,6 +1579,7 @@ function KinChatFeed(props: {
         return (
           <KinSystemLine
             row={item}
+            onLinkPress={onLinkPress}
             onRetry={retry === null || pending.length > 0 ? null : () => sendSample(retry)}
             onOpen={(open) => {
               const target = { environmentId: props.environmentId, orgId: props.orgId };
