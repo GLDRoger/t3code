@@ -2,6 +2,8 @@ import {
   KIN_REMINDER_CARD_ACTIONS,
   KinChatError,
   KinReminderCard,
+  KinWidgetId,
+  kinDeferralWidgetId,
   type KinReminderCardAction,
   type KinWidget,
   kinReminderWidgetId,
@@ -12,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { DeferralSnapshot, deferralTriggerId } from "../triggers/deferrals.ts";
+import { settleStandingReminder } from "../triggers/standingReminder.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinReminderCard);
@@ -109,6 +112,14 @@ export const applyReminderTap = Effect.fn("KinReminderCard.apply")(function* (
         WHERE org_id = ${orgId} AND item_id = ${card.itemId} AND state = ${run.state}`;
       yield* sql`UPDATE kin_triggers SET next_run_at = NULL, updated_at = max(updated_at, ${now})
         WHERE org_id = ${orgId} AND trigger_id = ${triggerId}`;
+      yield* settleStandingReminder(
+        {
+          orgId,
+          widgetId: KinWidgetId.make(kinDeferralWidgetId(orgId, card.itemId)),
+          at: iso(now),
+        },
+        "done",
+      );
     }
     const { snoozedUntil: _until, ...rest } = card;
     return { ...rest, status: "done" } satisfies KinReminderCard;

@@ -2591,6 +2591,63 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("settles only the failure notices whose request ran again", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, posted, chatId, sql } = yield* setup({
+      ask: "Draft the Tidewater Freight quote.",
+      leadName: "Chief of staff",
+    });
+    const { orgId } = owner;
+    const lane = {
+      chatId,
+      mode: "reply" as const,
+      voice: "text" as const,
+      owed: true,
+      leadName: "Chief of staff",
+    };
+    yield* bridge.failed({ orgId, wakeupId, lane, outcome: "retrying", cause: "unknown" });
+    const original =
+      "Chief of staff couldn't start: something went wrong that Kin doesn't recognise.";
+    const snapshot = (yield* posted).map((row) => row.body);
+    assert.deepStrictEqual(snapshot, [`${original} Trying again in a moment.`]);
+    const unrelated = KinWakeupId.make("unrelated");
+    yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status,
+      event_ids) VALUES (${orgId}, ${unrelated}, ${agentId}, 'test', 1, 'completed', '[]')`;
+    yield* bridge.end({ orgId, agentId, wakeupId: unrelated });
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      snapshot,
+    );
+    const later = KinWakeupId.make("long-wait");
+    const recovered = KinWakeupId.make("recovered");
+    yield* sql`UPDATE kin_wakeups SET status = 'failed' WHERE wakeup_id = ${wakeupId}`;
+    yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status,
+      event_ids) SELECT org_id, ${later}, agent_id, model, started_at + 2, 'failed', event_ids
+      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+    yield* bridge.failed({
+      orgId,
+      wakeupId: later,
+      lane,
+      outcome: "retrying_later",
+      cause: "unknown",
+    });
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [...snapshot, `${original} Trying once more in about 15 minutes.`],
+    );
+    yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status,
+      event_ids) SELECT org_id, ${recovered}, agent_id, model, started_at + 3, 'completed', event_ids
+      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+    yield* sql`UPDATE kin_events SET state = 'done', attempts = 2, wakeup_id = ${recovered}
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+    yield* bridge.end({ orgId, agentId, wakeupId: recovered });
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [`${original} Tried again and it worked.`, `${original} Tried again and it worked.`],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each([
   { code: "api_error_529", diagnostic: "API Error: 529 Overloaded" },
   { code: "api_error_503", diagnostic: "503 Service Unavailable: the provider is offline." },

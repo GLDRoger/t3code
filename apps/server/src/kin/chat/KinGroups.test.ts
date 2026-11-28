@@ -8,6 +8,7 @@ import {
   KinPersonId,
   KinWakeupId,
   KinWidgetId,
+  kinReminderWidgetId,
   ThreadId,
   type KinMemberId,
   type KinMessage,
@@ -27,6 +28,7 @@ import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as Reach from "../lead/Reach.ts";
+import { setInChat } from "../lead/tracked.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
@@ -1344,7 +1346,7 @@ it.effect(
   "a join re-anchors a room's own reminder and routine as bare standing facts, once per join",
   () =>
     Effect.gen(function* () {
-      const { groups, repo, owner, orgId, tech, priya, sam, sql } = yield* seed;
+      const { groups, chats, repo, owner, orgId, tech, priya, sam, sql } = yield* seed;
       const { chatId } = yield* groups.create([owner], {
         orgId,
         title: "Plans",
@@ -1415,6 +1417,12 @@ it.effect(
         dueAt: at,
         status: "due",
       });
+      for (const reader of [owner, priya]) {
+        const page = yield* chats.history([reader], { chatId, beforeSeq: 100, limit: 50 });
+        assert.deepInclude(page.widgets.find((widget) => widget.widgetId === "set-room")?.state, {
+          askedBy,
+        });
+      }
       const join = (personId: KinPersonId) =>
         groups.addMember([owner], { chatId, principal: { _tag: "person", personId } });
       const anchored = sql<{
@@ -1450,6 +1458,139 @@ it.effect(
         FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatId}
           AND message_id LIKE 'set-room:moved:%' ORDER BY seq`;
       assert.lengthOf(lines, 2);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["done", "undone"] as const)(
+  "a join keeps Rhea's original reminder and gives Zoya a bare line that follows it (%s)",
+  (closed) =>
+    Effect.gen(function* () {
+      const { groups, chats, owner, orgId, tech, sql, repo } = yield* seed;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor'
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at)
+        VALUES (${orgId}, ${zoya.personId}, 'zoya', 'Zoya Sheikh', ${at})`;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Dock planning",
+        agentIds: [tech],
+        personIds: [],
+      });
+      const cards = yield* makeDeferralCards;
+      const itemId = KinMemoryItemId.make("def-dock");
+      const title = "Confirm the Tidewater Freight dock crane booking";
+      const dueAt = "1970-01-03T10:00:00.000Z";
+      const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+      yield* cards.write({
+        orgId,
+        itemId,
+        chatId,
+        now: 0,
+        saidBy: owner.personId,
+        sharedReminder: true,
+        state: {
+          itemId,
+          title,
+          dueAt,
+          onDue: "remind",
+          text: "Set for Saturday.",
+          actions: ["undo"],
+          askedBy: { personId: owner.personId, name: "Rhea Kapoor" },
+        },
+      });
+      const forViewer = (viewer: typeof owner) =>
+        chats.history([viewer], { chatId, beforeSeq: 100, limit: 50 });
+      const ownBefore = yield* forViewer(owner);
+      assert.deepInclude(ownBefore.widgets[0]?.state, {
+        title,
+        askedBy: { personId: owner.personId, name: "Rhea Kapoor" },
+      });
+      yield* groups.addMember([owner], { chatId, principal: zoya });
+      const own = yield* forViewer(owner);
+      const mate = yield* forViewer(zoya);
+      {
+        assert.lengthOf(
+          own.messages.filter((line) => line.widgetId === widgetId),
+          1,
+        );
+        assert.deepInclude(own.widgets.find((widget) => widget.widgetId === widgetId)?.state, {
+          title,
+        });
+      }
+      assert.deepStrictEqual(
+        mate.messages.map((line) => [line.body, line.widgetId]),
+        [["A reminder Rhea Kapoor asked for is set.", null]],
+      );
+      assert.deepStrictEqual(mate.widgets, []);
+      yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+        snapshot_json, updated_at)
+        VALUES (${orgId}, ${itemId}, ${closed === "done" ? "reminded" : "armed"},
+          ${Date.parse(dueAt)}, 'remind', '{}', 0)`;
+      if (closed === "undone") {
+        yield* sql`INSERT INTO kin_triggers (trigger_id, org_id, subject_json, schedule_json,
+          time_zone, enabled, next_run_at, created_at, updated_at)
+          VALUES ('deferral:def-dock:due', ${orgId}, '{}', '{}', 'UTC', 1, ${Date.parse(dueAt)}, 0, 0)`;
+        const listed = yield* setInChat(orgId, chatId);
+        assert.deepInclude(listed[0], { itemId, title: "" });
+        yield* chats.act(owner, {
+          widgetId,
+          revision: own.widgets[0]!.revision,
+          actionId: "undo",
+          value: itemId,
+          clientActionId: "undo-dock",
+        });
+      } else {
+        const reminderId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, Date.parse(dueAt)));
+        const privateChat = yield* chats.createDirect(owner, { orgId, agentId: tech });
+        const posted = yield* chats.notice({
+          orgId,
+          chatId: privateChat.chatId,
+          audience: "owner",
+          messageId: KinMessageId.make(reminderId),
+          body: `Reminder: ${title}.`,
+        });
+        yield* repo.insertWidget({
+          orgId,
+          chatId: privateChat.chatId,
+          messageId: posted.message.messageId,
+          widgetId: reminderId,
+          widgetClass: "native",
+          type: "reminder",
+          state: { itemId, title, dueAt, status: "due" },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: at,
+          audience: "owner",
+        });
+        yield* chats.act(owner, {
+          widgetId: reminderId,
+          revision: 1,
+          actionId: "done",
+          value: itemId,
+          clientActionId: "done-dock",
+        });
+        const fired = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: reminderId }));
+        assert.deepInclude(fired.state, { title, status: "done" });
+      }
+      const finalMate = yield* forViewer(zoya);
+      const finalOwner = yield* forViewer(owner);
+      const line =
+        closed === "done"
+          ? "A reminder Rhea Kapoor asked for is done."
+          : "A reminder Rhea Kapoor asked for was undone.";
+      assert.deepStrictEqual(
+        finalMate.messages.map((message) => message.body),
+        [line],
+      );
+      assert.notInclude(JSON.stringify(finalMate), title);
+      assert.deepInclude(finalOwner.widgets.find((widget) => widget.widgetId === widgetId)?.state, {
+        title,
+        ...(closed === "undone" ? { closed } : {}),
+      });
     }).pipe(Effect.provide(layer)),
 );
 
