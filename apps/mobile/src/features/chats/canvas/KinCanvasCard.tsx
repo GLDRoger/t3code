@@ -38,7 +38,10 @@ export interface KinCanvasCardProps {
   readonly onPress: (key: string) => void;
 }
 
-/** One card on the map, at its place in world units; the board's transform scales it. */
+/**
+ * One card on the map, at its place in world units; the board's transform scales it.
+ * Its text ignores Dynamic Type: the card's size is fixed, and the map's zoom enlarges it.
+ */
 export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardProps) {
   const { card, detail } = props;
   return (
@@ -73,6 +76,7 @@ export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardPro
         <View className="flex-1 gap-1">
           <KindMark card={card} size={12 * props.inv} />
           <Text
+            allowFontScaling={false}
             numberOfLines={titleLines(props.inv)}
             className="font-t3-medium"
             style={{ fontSize: 14 * props.inv, lineHeight: 18 * props.inv }}
@@ -83,18 +87,33 @@ export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardPro
       ) : (
         <View className="flex-1">
           <CardHead card={card} />
-          <Text textRole="footnote" numberOfLines={2} className="mt-1.5 font-t3-medium">
+          <Text
+            allowFontScaling={false}
+            textRole="footnote"
+            numberOfLines={2}
+            className="mt-1.5 font-t3-medium"
+          >
             {card.title}
           </Text>
           {detail === "near" && props.readsText ? (
             <DocText target={props.target} docKey={card.key as KinRecordKey} />
           ) : (
             <>
-              <Text textRole="caption" numberOfLines={1} className="mt-1 text-foreground-muted">
+              <Text
+                allowFontScaling={false}
+                textRole="caption"
+                numberOfLines={1}
+                className="mt-1 text-foreground-muted"
+              >
                 {card.line}
               </Text>
               {card.summary !== null ? (
-                <Text textRole="caption" numberOfLines={2} className="mt-1 text-foreground-muted">
+                <Text
+                  allowFontScaling={false}
+                  textRole="caption"
+                  numberOfLines={2}
+                  className="mt-1 text-foreground-muted"
+                >
                   {card.summary}
                 </Text>
               ) : null}
@@ -152,6 +171,7 @@ function CardHead(props: { readonly card: KinCanvasCardView }) {
         <KinWorkStateSymbol state={state} />
       )}
       <Text
+        allowFontScaling={false}
         textRole="caption"
         className="text-foreground-muted"
         style={{ fontVariant: ["tabular-nums"] }}
@@ -159,6 +179,7 @@ function CardHead(props: { readonly card: KinCanvasCardView }) {
         {card.key}
       </Text>
       <Text
+        allowFontScaling={false}
         textRole="caption"
         numberOfLines={1}
         className={cn(
@@ -177,7 +198,12 @@ function WorkingLine() {
   return (
     <View className="mt-auto flex-row items-center gap-1.5">
       <View className="size-1.5 rounded-full bg-primary" />
-      <Text textRole="caption" numberOfLines={1} className="font-t3-medium text-primary-text">
+      <Text
+        allowFontScaling={false}
+        textRole="caption"
+        numberOfLines={1}
+        className="font-t3-medium text-primary-text"
+      >
         {KIN_CANVAS.agentWorking}
       </Text>
     </View>
@@ -194,7 +220,12 @@ function DocText(props: { readonly target: KinWorkTarget; readonly docKey: KinRe
         ? ""
         : KIN_CANVAS.readFailed;
   return (
-    <Text textRole="caption" numberOfLines={5} className="mt-1 text-foreground">
+    <Text
+      allowFontScaling={false}
+      textRole="caption"
+      numberOfLines={5}
+      className="mt-1 text-foreground"
+    >
       {text}
     </Text>
   );
