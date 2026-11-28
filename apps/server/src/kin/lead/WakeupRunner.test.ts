@@ -83,6 +83,8 @@ import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { cappedOutput, KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { emptyWorld, FakeGitHub, runGh } from "../github/fakeGitHub.ts";
 import { KinSessionContext } from "./turn/sessionContext.ts";
 import { claude } from "./turn/providers/claude.ts";
 import { KinServer, type Services as KinServerServices } from "../KinServer.ts";
@@ -3214,6 +3216,84 @@ describe("WakeupRunner", () => {
         assert.lengthOf(prompts, 3);
         assert.strictEqual(commits, 3);
       }).pipe(Effect.provide(harness({ writer, prompts })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("an asked review starts its turn only while its asker can still see the repo", () =>
+    Effect.gen(function* () {
+      const prompts: Array<KinLeadPromptInput> = [];
+      const github = new FakeGitHub(emptyWorld("rhea-gh", 0));
+      github.addRepo({ full_name: "tidewater/ledger", collaborators: ["zoya-gh"] });
+      const login = Layer.mock(KinGitHubLogin)({
+        connected: () => Effect.succeed(true),
+        account: () =>
+          Effect.succeed({
+            login: "rhea-gh",
+            orgs: ["tidewater"],
+            scopes: ["repo"],
+            problem: null,
+          }),
+        ghDirectory: "/nonexistent",
+        gh: (args, stdin) =>
+          Effect.sync(() => {
+            const answer = runGh(github, args, stdin ?? "");
+            return { code: answer.code, ...cappedOutput(answer.out + (answer.err ?? "")) };
+          }),
+      });
+      const asked = (number: number) =>
+        decodeEvent({
+          _tag: "github",
+          orgId,
+          agentId,
+          eventId: `asked-${number}`,
+          receivedAt: "2026-11-08T00:00:00.000Z",
+          dedupeKey: `asked:tidewater/ledger#${number}`,
+          provenance: { _tag: "system" },
+          deliveryId: `asked:tidewater/ledger#${number}`,
+          eventName: "review_request",
+          repo: "tidewater/ledger",
+          summary: `review asked on tidewater/ledger#${number}`,
+          trigger: {
+            key: `review:tidewater/ledger#${number}`,
+            kind: "review_request",
+            item: "pull",
+            number,
+            url: `https://github.com/tidewater/ledger/pull/${number}`,
+            title: "Round a total",
+            author: "zoya-gh",
+            association: "COLLABORATOR",
+            inside: true,
+            text: "Invented",
+          },
+          askedBy: "zoya",
+          chatId: "dm-zoya",
+        });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login,
+            created_at, access)
+          VALUES ('zoya', 'org', 'zoya', 'Zoya', 'zoya-gh', '2026-11-08T00:00:00.000Z', 'member')`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('dm-zoya', 'org', 'direct', 'zoya:lead', 0, '2026-11-08T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+            role, joined_at)
+          VALUES ('zoya-member', 'org', 'dm-zoya', 'person', 'zoya', 'member', '2026-11-08T00:00:00.000Z')`;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* queue.enqueue(asked(1));
+        yield* Fiber.join(yield* run());
+        assert.lengthOf(prompts, 1);
+        // Taken off the repo after asking: the queued excerpt never reaches a prompt.
+        github.world.repos.find((repo) => repo.full_name === "tidewater/ledger")!.collaborators =
+          [];
+        yield* queue.enqueue(asked(2));
+        yield* Fiber.join(yield* run());
+        assert.lengthOf(prompts, 1);
+        const [refused] = yield* sql<{ refused: number }>`SELECT
+            json_extract(json, '$._reviewAccessRefusedIn') IS wakeup_id AS refused
+          FROM kin_events WHERE event_id = 'asked-2'`;
+        assert.strictEqual(refused?.refused, 1);
+      }).pipe(Effect.provide(harness({ prompts }).pipe(Layer.provide(login))));
     }).pipe(provideDeterministicTestRuntime),
   );
 
