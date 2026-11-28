@@ -49,7 +49,7 @@ export const KinBillState = Schema.Literals([
 ]);
 export type KinBillState = typeof KinBillState.Type;
 
-/** What the reading agent read off the bill, as printed: a blank it left blank stays absent. */
+/** What the reading agent read off the bill, with the company's currency if none was printed. */
 export const KinBillRead = Schema.Struct({
   /** Who was paid. */
   vendor: Schema.optional(Label),
@@ -57,6 +57,8 @@ export const KinBillRead = Schema.Struct({
   /** The printed figures as plain numbers (`1200.50`), never converted, in `currency`. */
   amount: Schema.optional(Label),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
+  /** Set by Kin only when the bill did not print its currency. */
+  currencyAssumed: Schema.optional(Schema.Literal(true)),
   tax: Schema.optional(Label),
   category: Schema.optional(Label),
   /** The bill's own printed number. */
