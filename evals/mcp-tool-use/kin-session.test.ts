@@ -56,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "4ee12660015e9df413120e35e27480b79431e6173c5010a5dceac55e286a8a22";
-const sessionRequestPin = "27bd49f8f5483a01a27639f1da4d4eade43f9b38196ff27554e4addc3cec5feb";
+const legacyRequestPin = "ed65a3b116cbbb149db4816365302920865bcdaa8d859b32bb913f0355aacea4";
+const sessionRequestPin = "e8bd083cc64646aa2f586ca1c46ea7fdba5ce15070fdad7d677b5bae18037fc8";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
