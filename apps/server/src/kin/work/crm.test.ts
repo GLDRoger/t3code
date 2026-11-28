@@ -387,7 +387,7 @@ it.effect.each(
             });
           }),
         )
-        .pipe(Effect.catchTags({ Probe: Effect.succeed }));
+        .pipe(Effect.catchTags({ Probe: (probe) => Effect.succeed(probe) }));
     const name = field === "gstin" ? "taxNumber" : field === "placeOfSupply" ? "taxPlace" : field;
     const legacy = list === "deals" ? { fields: { [field]: null } } : { [field]: null };
     const nested = { fields: { [name]: null } };
