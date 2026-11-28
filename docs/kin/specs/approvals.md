@@ -523,6 +523,68 @@ Later, marked by phase:
 1. **T3's device key is not hardware-backed or biometric-gated.** DESIGN 9.2 says the grant is signed by "a DPoP-style key in the Secure Enclave or Keystore". The existing mobile DPoP key (`apps/mobile/src/features/cloud/dpop.ts`) is a software key in `expo-secure-store`, used only for the managed relay. Kin needs a new, separate approval key and a new native module (APPR-6).
 2. **T3 sessions have no person or role.** `SessionClaims` carry scopes and a label `sub`. "The signer has the owner role" has to come from Kin's membership (chat spec), with keys bound to a person.
 
-## Open questions
+## Approving from a computer
 
-1. Desktop approvals: a Touch ID-gated Secure Enclave key on macOS through a native addon, or phone-only for good?
+A computer can approve only with proof no weaker than the phone's (sections 4 and 5):
+
+1. A non-exportable hardware key made by Kin's own signed app, with evidence the server verifies.
+2. A fresh biometric for every signature: Touch ID on a Mac. No password, cached match or software key fallback.
+3. A native confirmation written from the exact grant bytes that will be signed. The served page cannot choose or cover those words and still get an approval.
+4. The same `KinGrant` and all ten checks in `GrantVerifier.ts`, signed by an owner-level person's own key and finger. An app signature is not a person's signature.
+
+No browser tab can approve, on any origin. A suitably attested WebAuthn security key can establish hardware backing; a synced passkey doesn't establish a non-exportable device key, and the user-verification bit alone doesn't prove a fresh biometric. Even a key that meets both requirements doesn't show the grant. The page's script, or an extension that changes it, decides what the owner sees. Secure Payment Confirmation lets Chrome and other supporting Chromium browsers draw payment details; it doesn't confirm Kin grants. The web card and chat list still say “Approve on your phone”, as do desktop builds without a usable approver key.
+
+**First: the signed Kin desktop app on Touch ID Macs, through a separate signer.** The Electron binary can't hold the key. Kin runs that binary as Node for its backend, the `t3` CLI shim, agent shims and `gh` shims (`ELECTRON_RUN_AS_NODE=1`: `DesktopBackendConfiguration.ts`, `DesktopCliShim.ts`, `ghSign.ts`). It is also signed with `disable-library-validation`, `allow-jit` and `allow-unsigned-executable-memory` (`scripts/build-desktop-artifact.ts`). So any local process, including every agent shell, can run arbitrary code under that binary's own signature and keychain access groups. If that binary held the key, such code could sign any bytes behind a Touch ID prompt with its own wording, and attest a key it made in software.
+
+The key therefore lives in a separate signed helper executable, the Kin signer, inside the app bundle. It is native code, not Electron or Node, and has its own signing identifier and App ID. It is signed with the hardened runtime and without `disable-library-validation`, `allow-jit`, `allow-unsigned-executable-memory`, `allow-dyld-environment-variables`, `get-task-allow` or Apple Events. Only the signer is entitled to the approval keychain access group and to App Attest. The Electron app holds neither, and the server's allowlist names only the signer's App ID.
+
+The signer makes a P-256 Secure Enclave key in the data protection keychain with exactly `[.privateKeyUsage, .biometryCurrentSet]`: no `.or`, `.devicePasscode`, `.userPresence`, `.watch` or `.companion`. Every signature gets a new `LAContext` with `touchIDAuthenticationAllowableReuseDuration` set to 0. The signer accepts one input, the unsigned payload that `challenge` returned, whichever process carries it, and nothing else. It parses that payload with the phone's parser rules and runs `fixtures/grant-vectors.json`. It adds `jti`, `iat` and `exp`, then writes the approval text from its fixed per-kind templates. It shows that text in its own window and also as the Touch ID prompt's `localizedReason`, as the phone does with Touch ID. Only then does it sign those bytes, and it returns the compact grant. The renderer sends only an action id. It supplies no text, key or bytes, and nothing it draws can be signed. The app's own windows, the preview, automations, agent tools and other processes can at most ask the signer to show a real grant's true text.
+
+**Telling the real prompt from a copy.** Page script can draw a look-alike of the signer's window, and a same-user app with Accessibility can click Approve in the real one. That includes the remote-control and computer-use tools this owner runs. So a click is never evidence that the owner is there. The approval is the finger on Touch ID, given to the system prompt that names the grant in full; step 1 proves that no app window can cover that prompt. Clicking a copy signs nothing. Approve in the signer's window stays disabled until that window is key and visible (`occlusionState`), and loss of either disarms it. What the owner checks is the Touch ID prompt's text. A remote or screen-shared session can bring the prompt up but must not be able to answer it without a finger on this Mac's sensor (step 1). With the lid closed, only an attached Touch ID keyboard can answer it.
+
+**Registration.** Add `platform: "macos"` only once a release build of the signer proves it can attest. Apple's [`isSupported`](https://developer.apple.com/documentation/devicecheck/dcappattestservice/issupported) page (revised 2026-10-08) says the value is `false` for an app running on a Mac, Mac Catalyst and iOS apps on Apple silicon included. Its [server validation guide](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server) (same date) nonetheless documents macOS checks, and the App Attest entitlement page lists no macOS. So it is unknown whether a Developer ID app can attest at all, and the first proof decides it. If it can, the signer binds the server's one-time session challenge to the public key it just made, as on iOS. The server verifies the attestation with a separate macOS verifier and allowlist (`KIN_MACOS_APP_ID`, the signer's `<teamId>.<signing identifier>`, never `KIN_IOS_APP_ID`). It checks Apple's steps plus the macOS ones:
+
+- the RP ID hashes the signer's signing identifier;
+- the credential certificate's `aclBlob` (OID `1.2.840.113635.100.8.6`) equals Apple's constant for SIP and full security mode;
+- the `aaguid` is production only;
+- `apple_validation_category_01` is 6 (Developer ID) and nothing else, so development-signed, ad hoc and unmatched builds are refused against every company;
+- `apple_bundle_version_01` is at least the configured minimum.
+
+The iOS verifier refuses an attestation that carries the macOS `aclBlob` extension. That `aclBlob` describes the App Attest key's own policy, not the approval key's. As on iOS, `attested: true` means the genuine signer asked for this public key. It doesn't prove that the approval key is in the Secure Enclave or that its biometric policy is the one above; that rests on the signer being the only code that can use its identity. The seal also covers `platform`; the server reseals existing rows once. Registration remains owner-level and through the existing RPCs (section 4), and the grant checks don't change.
+
+**A Mac without attestation doesn't approve.** This review refused enrolling a Mac by having the phone confirm it. A phone comparing thumbprints proves only that the key it approves is the one on the Mac's screen. Any same-user process, an agent shell included, can make a software key and draw that screen. So the comparison can't tell a software key from a Secure Enclave key, and approving one gives software, not a finger, approval power. Only the owner can accept that, as a deliberate weakening, and this spec doesn't plan for it. Never mark such a key `attested`, and never reuse the retired phone registration grant.
+
+**Who.** As on the phone today, the owner and co-owners (`KinOrgRoles.isOwnerLevel`) can each register and approve with their own keys. A co-owner's Mac signs as the co-owner, never as the owner: the grant names the signer's `humanId`. The server can't tell an interactive session from a scripted one: any owner-level session passes `registerKey`, including one paired by the server's OS user. So the person is proven by the Touch ID match and the attested signer, not by the session. `challenge` takes an optional `kid` that must be an active, attested key of the caller's own person. That way a Mac gets a payload for its own key, not the phone's, while the grant checks stay the same. No agent, MCP tool, coding-agent key (`kin/tasksKey`), API key or scheduled task can register or submit. Today's phone boundaries are covered by `approvals/rpcHandlers.test.ts` (disabled gate and only a successful decision answers a card), `rpcAccess.test.ts` (role admission and no RPC for the coding-agent key), and `approvals/ApproverKeys.test.ts` (registration and attestation).
+
+| Threat                                                                         | Stopped by                                                                                                                                                                 |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tampered renderer JS, or code run under the Electron binary, signs other bytes | The key is usable only by the signer, which signs only the payload it parsed and shows that text in the Touch ID prompt. No renderer-provided key, text or approval click. |
+| A look-alike window, overlay, synthesized or remote click                      | A click doesn't approve. Only a Touch ID match on the system prompt, which names the grant, does.                                                                          |
+| A software key enrolled as a Mac                                               | Only the signer's macOS attestation (Developer ID category, SIP and full security `aclBlob`) registers a Mac key; no phone-confirmed fallback.                             |
+| A developer or ad hoc build                                                    | Validation category other than 6, a development `aaguid`, or another App ID: refused.                                                                                      |
+| A thief has an unlocked Mac                                                    | The key still needs a fresh Touch ID match. Remove the key or revoke its session as in section 4.                                                                          |
+| A finger is added or removed on the Mac                                        | The key is invalidated by `.biometryCurrentSet`. No silent replacement: enroll a new key and remove the old one.                                                           |
+
+A compromised OS, or a person tricked into touching the sensor for a prompt that names the grant, remains a separate threat. The native window doesn't stop it.
+
+**Steps after independent review, in this order:**
+
+1. **Proof from a release-signed signer, before any schema or server work:** build and Developer ID-sign the signer with its own entitlements, then show the following on a Touch ID Mac.
+   - `isSupported` is `true` and an attestation verifies offline: RP ID, `aclBlob`, category 6, bundle version.
+   - The key survives a relaunch and the Electron binary, run as Node, can't open it.
+   - Two signatures need two fresh matches, and password and Watch are refused.
+   - Adding a finger invalidates the key.
+   - The prompt shows the full template text, and no app window can cover it.
+   - A remote session can't answer the prompt.
+
+   If `isSupported` is `false`, stop: Macs stay phone-only.
+
+2. **Server:** admit and seal verified `macos` keys under the existing approval RPCs, with the macOS verifier and `challenge`'s `kid`, and leave the grant checks and execution claims as they are. Test with the release attestation from step 1. Also test refusals for:
+   - absent or bad proof, the wrong App ID, category, version or `aclBlob`, and an iOS-labelled Mac attestation;
+   - a changed key, replay and the wrong session;
+   - a revoked key, and non-owner or non-interactive callers (the agent key, MCP, API and schedules).
+3. **Desktop:** renderer-to-signer wiring that carries only the action id and the server's payload. Test invalid bytes, a changed target, cancel, loss of focus, double clicks, disallowed IPC senders and concurrent requests.
+4. **Desktop card and Settings → Approvals:** "This Mac" setup, status and removal, beside the phones. Test supported, unsupported and removed keys, cancellation and errors. Confirm that an owner can approve a level raise or memory purge once, and that the browser and non-owner views can't.
+5. **Later:** Windows Hello with a TPM key and server-verifiable attestation, only once it meets the same four checks (including per-signature biometrics, not a PIN). Linux stays phone-only; there is no supported platform biometric key path.
+
+The spec and each implementation step need independent review before landing. No desktop approval is enabled by this section.
