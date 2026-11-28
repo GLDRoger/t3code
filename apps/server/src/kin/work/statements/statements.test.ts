@@ -2646,17 +2646,16 @@ describe("bank statement safety", () => {
           });
         const marked = yield* statementOf(4, "marked.csv", 370_000);
         assert.deepStrictEqual(
-          [marked.card.matched, marked.card.unmatched.map((one) => [one.suggestion, one.why])],
+          marked.card.matched.map(({ target }) => [target.key, target.label, target.note]),
           [
-            [],
             [
-              [
-                "later",
-                "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
-              ],
+              domain.key,
+              `${domain.key}, ${refund.key} · Meera Rao`,
+              "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
             ],
           ],
         );
+        assert.deepStrictEqual(marked.card.unmatched, []);
       }).pipe(Effect.provide(layer)),
   );
 
