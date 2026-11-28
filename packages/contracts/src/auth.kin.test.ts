@@ -44,3 +44,10 @@ it("requires the person scope for kin.work.looked even in the kin-work aggregate
     false,
   );
 });
+
+const billSenderRpcs = ["list", "approve", "decline", "remove", "add"] as const;
+it.each(billSenderRpcs)("guards billing sender %s for owners and co-owners", (method) => {
+  const tag = `kin.billSenders.${method}`;
+  expect(clientRpcRequiredScopes(tag, undefined)).toEqual([AuthKinChatScope]);
+  expect(kinRpcAccess(tag as Parameters<typeof kinRpcAccess>[0])).toBe("owner_level");
+});

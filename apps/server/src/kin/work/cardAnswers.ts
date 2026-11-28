@@ -55,10 +55,11 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
           Effect.logWarning(message, { widgetId: input.widget.widgetId, cause }),
         ),
       );
-  // Kin's own route, suggestion, leaver, quiet-run and fact cards: no decision to remember.
+  // Kin's own route, suggestion, sender, leaver, quiet-run and fact cards: no decision to remember.
   if (
     input.plan?.kind === "let_talk" ||
     input.plan?.kind === "recommend" ||
+    input.plan?.kind === "bill_sender" ||
     input.plan?.kind === "leaver" ||
     input.plan?.kind === "undo_repaid" ||
     (input.plan !== undefined && (isQuiet(input.plan) || isFactCard(input.plan)))

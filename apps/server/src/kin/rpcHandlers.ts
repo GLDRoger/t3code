@@ -34,6 +34,7 @@ import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
 import { BankAlertReader } from "./work/statements/BankAlertReader.ts";
+import { makeKinBillSenderHandlers } from "./work/billMail/rpcHandlers.ts";
 import { makeKinBankSenderHandlers } from "./work/statements/bankSenderRpcHandlers.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinHostHandlers } from "./host/rpcHandlers.ts";
@@ -151,6 +152,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
     ...(yield* makeKinBankSenderHandlers(session)),
+    ...(yield* makeKinBillSenderHandlers(session)),
     ...(yield* makeKinHostHandlers(session)),
     ...(yield* makeKinWatchHandlers(session)),
   });

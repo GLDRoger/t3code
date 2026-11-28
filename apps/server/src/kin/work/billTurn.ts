@@ -22,8 +22,10 @@ export const billTurn = Effect.fn("KinBills.billTurn")(function* (
     mimeType: string;
     sizeBytes: number;
     parentSha256: string | null;
+    mailFrom: string | null;
   }>`SELECT sha256, attachment_id AS "attachmentId", name, file_type AS "fileType",
-      mime_type AS "mimeType", size_bytes AS "sizeBytes", parent_sha256 AS "parentSha256"
+      mime_type AS "mimeType", size_bytes AS "sizeBytes", parent_sha256 AS "parentSha256",
+      mail_from AS "mailFrom"
     FROM kin_bill_reads
     WHERE org_id = ${orgId} AND sha256 IN ${sql.in([...event.bills])} AND state = 'reading'
       AND event_id = ${event.eventId}
@@ -59,6 +61,7 @@ export const billTurn = Effect.fn("KinBills.billTurn")(function* (
         name: attachment.name,
       })),
       categories,
+      rows.some((row) => row.mailFrom !== null),
     ),
   };
 });
@@ -67,10 +70,14 @@ export const billTurn = Effect.fn("KinBills.billTurn")(function* (
 export const billTurnText = (
   files: ReadonlyArray<{ readonly id: string; readonly image: boolean; readonly name: string }>,
   categories: ReadonlyArray<string>,
+  fromMail = false,
 ) => {
   let image = 0;
   const named = files.map(({ id, image: isImage, name }) =>
     isImage ? `${id} is image ${++image}` : `${id} is "${name}"`,
   );
-  return `Bills someone added to read in the background: ${named.join(", ")}. For separate bills in one file, use bill_cut: one box per bill, [x, y, width, height] on the 0–1000 grid of the upright page, with 0,0 at the top left. Include the whole bill and none of a neighbour's print. Cut one PDF page at a time. Kin brings each piece back as its own bill to read. For one bill, even over several pages, use bill_read once with only what is printed. Leave blanks blank, and omit currency if none is printed. Expenses' categories: ${categories.join(", ")}. Record nothing else, then end with kin_skip.`;
+  const mail = fromMail
+    ? " Some of these bills came by mail; a .txt one is the mail's text as Kin saved it. If a file isn't a bill, or the bill is only behind a link, answer bill_read with readable false and say which in a few words."
+    : "";
+  return `Bills someone added to read in the background: ${named.join(", ")}. For separate bills in one file, use bill_cut: one box per bill, [x, y, width, height] on the 0–1000 grid of the upright page, with 0,0 at the top left. Include the whole bill and none of a neighbour's print. Cut one PDF page at a time. Kin brings each piece back as its own bill to read. For one bill, even over several pages, use bill_read once with only what is printed. Leave blanks blank, and omit currency if none is printed. Expenses' categories: ${categories.join(", ")}.${mail} Record nothing else, then end with kin_skip.`;
 };
