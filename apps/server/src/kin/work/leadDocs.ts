@@ -65,6 +65,7 @@ import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 import { docCardId, draftCardOf } from "./draftCards.ts";
 import { isLongDraft } from "./draftOpening.ts";
 import { search } from "./search.ts";
+import { bankTextShown } from "./recordReads.ts";
 import {
   DRAFT_OWN_CHAT_ONLY,
   KIN_OWNER_LEVEL,
@@ -1059,6 +1060,10 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
     // A deal reads as a Work entry; any seat may name one, as record_get reads it.
     deals: input.kinds === undefined || input.kinds.length === 0 || input.kinds.includes("work"),
   });
+  yield* bankTextShown(
+    lead,
+    hits.map((hit) => hit.key),
+  );
   const docs = hits.flatMap((hit) => (hit.kind === "docs" ? [hit.recordId] : []));
   if (docs.length > 0) {
     const sql = yield* SqlClient.SqlClient;

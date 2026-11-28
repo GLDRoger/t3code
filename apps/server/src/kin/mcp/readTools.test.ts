@@ -46,6 +46,7 @@ import * as SalesMcp from "../sales/mcp.ts";
 import * as Team from "../team/KinTeam.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as Docs from "../work/docs.ts";
+import { defineList, PRESETS, presetDefinition } from "../work/registers.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
@@ -444,5 +445,102 @@ it.effect("docs_search showing a mailed file marks the turn outside-read", () =>
       stampKey((yield* outsideStamp({ orgId, wakeupId })) ?? ""),
       "mail-attachment",
     );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("dates_query showing a bank transaction marks the turn outside-read", () =>
+  Effect.gen(function* () {
+    const { orgId, owner, list, wake } = yield* bankRecords();
+    const records = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinRecords);
+    const dated = (originKey: string, title: string, dateAt: string) =>
+      records.create(
+        orgId,
+        { actor: owner, via: "owner" },
+        {
+          list,
+          owner,
+          originKey,
+          title,
+          amount: { minor: 1000, currency: "USD" },
+          dateAt: Date.parse(dateAt),
+          dateAllDay: true,
+        },
+      );
+    yield* dated("manual:harbor", "Entered by Meera", "2026-10-05T12:00:00.000Z");
+    yield* dated("bank:arjun", "Arjun Tidewater refund", "2026-10-20T12:00:00.000Z");
+    const wakeupId = yield* wake("What is dated this month?");
+    const typed = yield* call("dates_query", { from: "2026-10-01", to: "2026-10-10" });
+    assert.isTrue(typed.ok, typed.text);
+    assert.include(typed.text, "Entered by Meera");
+    assert.isUndefined(yield* outsideStamp({ orgId, wakeupId }));
+
+    const result = yield* call("dates_query", { from: "2026-10-01", to: "2026-10-31" });
+    assert.isTrue(result.ok, result.text);
+    assert.include(result.text, "Arjun Tidewater refund");
+    assert.strictEqual(
+      stampKey((yield* outsideStamp({ orgId, wakeupId })) ?? ""),
+      "bank-transaction",
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("an expense a statement's Confirm made marks the turn outside-read where it shows", () =>
+  Effect.gen(function* () {
+    const { orgId, owner, wake } = yield* startOwner();
+    const records = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinRecords);
+    yield* defineList(
+      orgId,
+      {
+        _tag: "new",
+        id: "expenses",
+        ...PRESETS.expenses,
+        definition: presetDefinition("expenses", "USD"),
+      },
+      Date.parse(at),
+    );
+    const expense = (originKey: string, title: string, notes: string) =>
+      records.create(
+        orgId,
+        { actor: owner, via: "owner" },
+        {
+          list: "expenses",
+          owner,
+          originKey,
+          title,
+          notes,
+          state: "done",
+          amount: { minor: 1000, currency: "USD" },
+          dateAt: Date.parse("2026-10-05T12:00:00.000Z"),
+          dateAllDay: true,
+        },
+      );
+    const typed = (yield* expense("manual:stationery", "Harbor stationery", "Typed by Rhea")).row;
+    const confirmed = (yield* expense(
+      "statement:harbor-oct:g0:3:expense",
+      "Tidewater Freight haulage",
+      "From Harbor Bank 4821: Tidewater Freight haulage",
+    )).row;
+    const checks = [
+      ["record_get", { key: confirmed.key }],
+      ["records_query", { list: "expenses", keys: [confirmed.key] }],
+      ["dates_query", { from: "2026-10-01", to: "2026-10-31", open: false }],
+      ["docs_search", { text: "Tidewater haulage", kinds: ["expenses"], closed: true }],
+    ] as const;
+    for (const [tool, args] of checks) {
+      const wakeupId = yield* wake(`Read the expenses with ${tool}.`);
+      const own = yield* call("record_get", {
+        key: typed.key,
+      });
+      assert.isTrue(own.ok, own.text);
+      assert.isUndefined(yield* outsideStamp({ orgId, wakeupId }), tool);
+      const result = yield* call(tool, args);
+      assert.isTrue(result.ok, result.text);
+      assert.include(result.text, "Tidewater Freight haulage", tool);
+      assert.strictEqual(
+        stampKey((yield* outsideStamp({ orgId, wakeupId })) ?? ""),
+        "bank-transaction",
+        tool,
+      );
+    }
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
