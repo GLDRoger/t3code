@@ -156,6 +156,7 @@ import {
   type SentMailHeader,
   receivedAfter,
 } from "./MailProvider.ts";
+import { normalizeAddress } from "./MailSignals.ts";
 import { agendaStartOrder, agendaTime, answeredWith } from "./MailTools.ts";
 import type { Memory } from "../memory/Memory.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
@@ -295,6 +296,23 @@ const secretOf = (secret: Redacted.Redacted<string> | undefined) => {
   const value = secret === undefined ? "" : Redacted.value(secret).trim();
   return value === "" ? undefined : value;
 };
+export interface BillSearchMessage {
+  readonly connectionId: string;
+  readonly messageId: string;
+  readonly threadId: string;
+  readonly receivedAt: number;
+}
+
+type BillSearchPage =
+  | { readonly _tag: "throttled" }
+  | {
+      readonly messages: ReadonlyArray<BillSearchMessage>;
+      readonly nextPage: string | null;
+      readonly through: number;
+    };
+
+const BILL_SEARCH_PAGE = 75;
+
 const accountName = (row: ConnectionRow) => row.accountLabel ?? row.label;
 const readAccount = (row: ConnectionRow) => ({
   account: accountName(row),
@@ -913,6 +931,27 @@ export class KinConnections extends Context.Service<
       connectionId: string,
       threadId: string,
     ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
+    /** Company mailboxes Kin may search for bills. Server use only, never an agent tool. */
+    readonly billMailboxes: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly connectionId: string; readonly service: string }>,
+      KinChatError
+    >;
+    /** Server use only, never an agent tool. */
+    readonly billSearch: (
+      orgId: KinOrgId,
+      connectionId: string,
+      address: string,
+      sinceMs: number,
+      pageToken?: string,
+    ) => Effect.Effect<BillSearchPage, KinChatError>;
+    /** Fresh bill metadata with the owner's Read a thread setting. */
+    readonly billHeaders: (
+      orgId: KinOrgId,
+      connectionId: string,
+      messageId: string,
+    ) => Effect.Effect<MailArrival | null, KinChatError>;
     /** One bill's message. Server use only, never an agent tool. */
     readonly billMessage: (
       orgId: KinOrgId,
@@ -2993,22 +3032,111 @@ const make = Effect.gen(function* () {
     return messages.filter((message) => receivedAfter(message.receivedAt, floor));
   }, settle);
 
-  const billMailbox = Effect.fn("KinConnections.billMailbox")(function* (
+  const billProvider = Effect.fn("KinConnections.billProvider")(function* (
     orgId: KinOrgId,
-    connectionId: string,
+    row: ConnectionRow,
+    searching = false,
   ) {
-    const row = yield* live(orgId, connectionId);
     const provider = mailProviderOf(row);
     if (
       provider === undefined ||
       row.personId != null ||
       row.pausedAt !== null ||
-      row.state !== "active" ||
-      !(yield* readableTools(orgId, connectionId)).has(MAIL_TOOL.read)
+      row.state !== "active"
     )
-      return yield* notFound;
+      return undefined;
+    const read = yield* readableTools(orgId, row.connectionId);
+    // A catch-up searches the mailbox, so it needs the owner's Search setting, as an agent would.
+    return read.has(MAIL_TOOL.read) && (!searching || read.has(MAIL_TOOL.search))
+      ? provider
+      : undefined;
+  });
+
+  const billMailbox = Effect.fn("KinConnections.billMailbox")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    searching = false,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = yield* billProvider(orgId, row, searching);
+    if (provider === undefined) return yield* notFound;
     return { row, provider };
   });
+
+  const billMailboxes = Effect.fn("KinConnections.billMailboxes")(function* (orgId: KinOrgId) {
+    const rows = yield* liveConnections(orgId).pipe(provideSql);
+    const mailboxes = [];
+    for (const row of rows) {
+      const provider = yield* billProvider(orgId, row, true);
+      if (provider !== undefined)
+        mailboxes.push({ connectionId: row.connectionId, service: provider.mailService });
+    }
+    return mailboxes;
+  }, settle);
+
+  const billSearch = Effect.fn("KinConnections.billSearch")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    address: string,
+    sinceMs: number,
+    pageToken?: string,
+  ) {
+    const { row, provider } = yield* billMailbox(orgId, connectionId, true);
+    const floor = yield* ownUntil(orgId, row.accountLabel).pipe(provideSql);
+    const previous = sinceMs - DAY_MS;
+    const gmail = provider.preset === "google";
+    const query = gmail
+      ? `from:${address} after:${Math.floor(previous / 1_000)}`
+      : `from:${address} received>=${DateTime.formatIsoDate(DateTime.makeUnsafe(previous))}`;
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) =>
+          provider.search(http, token, mailboxOf(row), query, BILL_SEARCH_PAGE, pageToken),
+        ),
+      ),
+    ).pipe(
+      Effect.map(({ threads, nextPage }): BillSearchPage => {
+        const messages: BillSearchMessage[] = [];
+        let through = Infinity;
+        for (const thread of threads) {
+          let newestInThread = -Infinity;
+          for (const message of thread) {
+            const { providerMessageId: messageId, threadId, receivedAt } = message;
+            if (receivedAt == null) continue;
+            newestInThread = Math.max(newestInThread, receivedAt);
+            if (!gmail) through = Math.min(through, receivedAt);
+            if (
+              messageId &&
+              normalizeAddress(message.fromAddress) === address &&
+              receivedAt >= sinceMs &&
+              receivedAfter(receivedAt, floor)
+            )
+              messages.push({ connectionId, messageId, threadId, receivedAt });
+          }
+          // Gmail pages threads by their latest match and expands each with older messages.
+          if (gmail && newestInThread > -Infinity) through = Math.min(through, newestInThread);
+        }
+        return { messages, nextPage, through };
+      }),
+      Effect.catchIf(
+        (error) => isGatewayError(error) && (answeredWith(error, 429) || answeredWith(error, 503)),
+        () => Effect.succeed({ _tag: "throttled" } as const),
+      ),
+    );
+  }, settle);
+
+  const billHeaders = Effect.fn("KinConnections.billHeaders")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    messageId: string,
+  ) {
+    const { row, provider } = yield* billMailbox(orgId, connectionId);
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.arrival(http, token, messageId, () => false)),
+      ),
+    );
+  }, settle);
 
   const billMessage = Effect.fn("KinConnections.billMessage")(function* (
     orgId: KinOrgId,
@@ -5745,6 +5873,9 @@ const make = Effect.gen(function* () {
     arrivals,
     changesSeen,
     readThread,
+    billMailboxes,
+    billSearch,
+    billHeaders,
     billMessage,
     billAttachment,
     tools,

@@ -19,7 +19,7 @@ import { normalizeAddress } from "../../connections/MailSignals.ts";
 import { onlyOwnerLevel } from "../mailSenderAccess.ts";
 import { queueHeld } from "./billSenderArrivals.ts";
 
-const OWNER_ONLY = "Only an owner or co-owner can manage billing senders.";
+export const BILL_SENDERS_OWNER_ONLY = "Only an owner or co-owner can manage billing senders.";
 const changed = () =>
   new KinChatError({
     reason: "conflict",
@@ -50,7 +50,7 @@ export const list = Effect.fn("KinBillSenders.list")(function* (
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
-        yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
+        yield* onlyOwnerLevel(orgId, personId, BILL_SENDERS_OWNER_ONLY);
         const rows = yield* sql<
           Omit<KinBillSendersResult["rows"][number], "askedInChat"> & {
             readonly askedInChat: 0 | 1;
@@ -95,7 +95,7 @@ export const decide = Effect.fn("KinBillSenders.decide")(function* (
   const now = yield* Clock.currentTimeMillis;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
+      yield* onlyOwnerLevel(orgId, personId, BILL_SENDERS_OWNER_ONLY);
       const address = normalizeAddress(value);
       if (address === undefined) return yield* changed();
       const from = state === "removed" ? "approved" : "candidate";
@@ -107,6 +107,7 @@ export const decide = Effect.fn("KinBillSenders.decide")(function* (
         ${tapped === undefined ? sql`` : sql`AND widget_id = ${tapped}`}
       RETURNING widget_id AS "widgetId"`;
       if (row === undefined) return yield* changed();
+      if (state === "approved") yield* queueHeld(orgId, address, now);
       if (tapped === undefined && state !== "removed")
         yield* closeCard(orgId, row.widgetId, state, address);
       yield* (yield* KinRefreshObserver).touch(orgId, "billSenders");
@@ -123,7 +124,7 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
   const now = yield* Clock.currentTimeMillis;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
+      yield* onlyOwnerLevel(orgId, personId, BILL_SENDERS_OWNER_ONLY);
       const address = normalizeAddress(value);
       if (address === undefined)
         return yield* new KinChatError({
@@ -141,7 +142,7 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
       RETURNING widget_id AS "widgetId"`;
       if (row === undefined) return;
       yield* closeCard(orgId, row.widgetId, "approved", address);
-      if (before?.state === "declined") yield* queueHeld(orgId, address, now);
+      yield* queueHeld(orgId, address, now);
       yield* (yield* KinRefreshObserver).touch(orgId, "billSenders");
       if (before?.state === "declined")
         return { message: `Kin will read held bills from ${address}.` };
