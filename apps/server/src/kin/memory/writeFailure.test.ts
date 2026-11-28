@@ -166,3 +166,33 @@ it.effect.each([
     assert.deepStrictEqual(seen, told === undefined ? [] : [told]);
   }),
 );
+
+// Each of these names what Kin does next or what the owner can do; the claims are the code's.
+it.each([
+  [
+    "remote",
+    "Kin couldn't send the memory changes to the online copy. What is already saved on this server goes up with the next memory change; if this stays, ask whoever looks after Kin to check the memory repository's access.",
+  ],
+  [
+    "review",
+    "GitHub didn't accept Kin's memory changes. They are kept on this server; ask whoever looks after Kin to check the memory repository's rules on GitHub.",
+  ],
+  [
+    "online-conflict",
+    "Kin couldn't combine the memory changes made on GitHub with the ones saved here, so both are kept apart. Ask whoever looks after Kin to settle the two in the memory repository.",
+  ],
+  [
+    "scanner",
+    "Kin didn't save a memory update because the check for passwords and keys couldn't finish, and it saves nothing unchecked. If this stays, ask whoever looks after Kin to check it.",
+  ],
+  [
+    "purged-history",
+    "Kin dropped a pending memory update because memory history was rewritten. If it mattered, tell the agent again.",
+  ],
+  [
+    "dream-remote",
+    "Kin couldn't send the nightly memory update to the online copy. Nothing Kin already remembered was lost, and tonight it reads the same days again; if this stays, ask whoever looks after Kin to check the memory repository's access.",
+  ],
+] as const)("tells the owner what comes next after %s", (kind, words) => {
+  assert.strictEqual(MEMORY_WRITE_FAILURE_WORDS[kind], words);
+});
