@@ -5,6 +5,8 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
   EnvironmentId,
   KIN_WORK_WS_METHODS,
   type KinAgentChange,
@@ -32,9 +34,11 @@ import {
   kinRpcAccess,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -44,10 +48,15 @@ import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { liveThreadsLayer } from "../../mcp/McpToolAccess.testkit.ts";
+import { KinServer, type Services as KinServices } from "../KinServer.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
@@ -85,11 +94,13 @@ import {
 import * as KinShell from "../shell/KinShell.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
+import { handlers as workHandlers } from "./mcp/handlers.ts";
 import * as Docs from "./docs.ts";
 import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { makeKinWorkHandlers } from "./rpcHandlers.ts";
 import { comment } from "./workComments.ts";
 import * as WorkComments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
@@ -101,6 +112,7 @@ import { turnChanges } from "../lead/turnChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 import { markQuotesSent } from "../connections/Sending.ts";
 import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { indexStoredSteps } from "./searchIndex.ts";
 import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
@@ -128,6 +140,7 @@ const scopeOf = (agent: string): McpInvocationScope => ({
 
 const identity = Layer.mock(KinIdentity)({
   owner,
+  resolve: ({ sessionId }) => Effect.succeed([sessionId === "mate-session" ? mate : owner]),
   isAgentThread: () => true,
   isLeadThread: () => true,
   resolveAgent: (scope) =>
@@ -5862,6 +5875,411 @@ const addBooking = (
   const input = { ...bookings, title, clientRequestId: title, fields };
   return OwnerWork.create([arjun], input);
 };
+
+const gatedWorkSearch = (indexed: boolean, text: string) =>
+  it.effect(`matches only readable Work text (${indexed ? "FTS" : "scan"}): ${text}`, () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+      const client = yield* ownerTask("Juniper Cold Chain", {
+        list: "clients",
+        notes: "Copper almanac",
+        fields: { gstin: "27AABCU9603R1ZX" },
+      });
+      const project = yield* ownerTask("Tidewater Freight", {
+        list: "projects",
+        partyId: client.recordId,
+        notes: "Quillfern fuel clause at 18,500 per run",
+        fields: { members: [`person:${mateId}`], billing: "retainer" },
+      });
+      const otherProject = yield* ownerTask("Juniper depot", {
+        list: "projects",
+        notes: "Quillfern fuel clause at 18,500 per run",
+        fields: { members: [`person:${mateId}`] },
+      });
+      const task = yield* ownerTask("Depot review", {
+        projectId: project.recordId,
+        notes: "Pallet ledger",
+        steps: [{ title: "Inspect the forklift", done: false }],
+        fields: { fromHash: "Inventedprovenance" },
+      });
+      const { row: doc } = yield* Docs.create(
+        orgId,
+        ownerWrites,
+        {},
+        {
+          title: "Depot runbook",
+          body: "Inspect the cobalt latch",
+          owner: ownerWrites.actor,
+          projectId: project.recordId,
+          summary: "Created",
+          originKey: "depot-runbook",
+        },
+      );
+      const records = yield* KinRecords.KinRecords;
+      const { row: deal } = yield* records.create(
+        orgId,
+        { ...ownerWrites, deal: true },
+        {
+          list: "deals",
+          title: "Freight renewal",
+          originKey: "freight-renewal",
+          owner: ownerWrites.actor,
+          partyId: client.recordId,
+          notes: "Transfer meeting",
+          fields: { stage: "inventedstageid", concerns: ["loading dock: narrow gate"] },
+        },
+      );
+      if (text === "Quillfern") yield* turn("mate", "shared");
+      if (indexed) {
+        // This is the public row written by the old index. Leave it in place across lead changes.
+        yield* sql`UPDATE kin_search SET body = ${project.notes + " retainer"} WHERE rowid IN (
+          SELECT id FROM kin_search_rows WHERE org_id = ${orgId}
+            AND record_id = ${project.recordId} AND part = 'public')`;
+        yield* indexStoredSteps(orgId);
+      } else {
+        yield* sql`DROP TABLE kin_search`;
+      }
+      const admin = (person: typeof owner, text: string) =>
+        OwnerDocs.search([person], { orgId, text, closed: true });
+      const asMember = (text: string, closed = false) =>
+        OwnerDocs.search([mate], { orgId, text, closed });
+      const keys = (result: { hits: ReadonlyArray<{ key: string }> }) =>
+        result.hits.map((hit) => hit.key);
+
+      for (const closed of [false, true]) {
+        const found = yield* asMember(text, closed);
+        assert.deepStrictEqual(found.hits, [], text);
+      }
+      assert.deepInclude((yield* asMember("Tidewater")).hits[0], {
+        key: project.key,
+        snippet: project.title,
+      });
+      assert.deepStrictEqual(keys(yield* asMember("Pallet")), [task.key]);
+      assert.deepStrictEqual(keys(yield* asMember("forklift")), [task.key]);
+      assert.deepStrictEqual(keys(yield* asMember("almanac")), [client.key]);
+      assert.deepStrictEqual(keys(yield* asMember("cobalt latch")), [doc.key]);
+      assert.deepStrictEqual(keys(yield* asMember("narrow gate")), [deal.key]);
+
+      if (text === "Quillfern") {
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = ${otherProject.recordId}`;
+        assert.deepStrictEqual(keys(yield* asMember(text, true)), []);
+        for (const person of [owner, meera]) {
+          const hits = (yield* admin(person, text)).hits;
+          assert.include(hits.find((hit) => hit.key === project.key)?.snippet, "Quillfern");
+        }
+        const agentSearch = (text: string) => LeadDocs.searchTool(scopeOf(lead), { text });
+        assert.deepStrictEqual(keys(yield* agentSearch("Quillfern absentword")), []);
+        yield* sql`UPDATE kin_records SET owner_id = ${mateId} WHERE record_id = ${project.recordId}`;
+        for (const term of ["Quillfern", "18,500", "18500", '"fuel clause"', '"18,500 per run"']) {
+          assert.deepStrictEqual(keys(yield* asMember(term)), [project.key]);
+          assert.deepStrictEqual(keys(yield* agentSearch(term)), [project.key]);
+        }
+        assert.deepStrictEqual(keys(yield* asMember('"Quillfern clause"')), []);
+        yield* sql`UPDATE kin_records SET owner_id = ${ownerId} WHERE record_id = ${project.recordId}`;
+        assert.deepStrictEqual(keys(yield* asMember(text)), []);
+        assert.deepStrictEqual(keys(yield* agentSearch(text)), []);
+        assert.deepStrictEqual(keys(yield* asMember("retainer", true)), []);
+        yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+        yield* sql`UPDATE kin_records SET owner_id = ${mateId} WHERE record_id = ${project.recordId}`;
+        assert.deepStrictEqual(keys(yield* asMember("Juniper Cold Chain")), [client.key]);
+        assert.deepStrictEqual(keys(yield* asMember("almanac")), []);
+      }
+    }).pipe(Effect.provide(bookingLayer)),
+  );
+
+for (const indexed of [true, false]) {
+  for (const text of [
+    "Quillfern",
+    "18,500",
+    "18500",
+    '"fuel clause"',
+    "retainer",
+    "Inventedprovenance",
+    "27AABCU9603R1ZX",
+    "inventedstageid",
+  ])
+    gatedWorkSearch(indexed, text);
+}
+
+it.effect("a teammate's list and record_query words match only what the page shows them", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const sql = yield* SqlClient.SqlClient;
+    const client = yield* ownerTask("Juniper Cold Chain", {
+      list: "clients",
+      notes: "Copper almanac",
+    });
+    const project = yield* ownerTask("Tidewater Freight", {
+      list: "projects",
+      partyId: client.recordId,
+      notes: "Quillfern fuel clause at 18,500 per run",
+      fields: { members: [`person:${mateId}`] },
+    });
+    const task = yield* ownerTask("Depot review", {
+      projectId: project.recordId,
+      notes: "Pallet ledger",
+      owner: { _tag: "person", personId: mateId },
+    });
+    yield* turn("mate", "shared");
+    const scope = scopeOf(lead);
+    const screen = (list: string, text: string) =>
+      OwnerWork.list([mate], { orgId, list, text }).pipe(Effect.map(keysOf));
+    const tool = (list: string, text: string) =>
+      LeadWork.query(scope, { list, text }).pipe(Effect.map(keysOf));
+    for (const find of [screen, tool]) {
+      assert.deepStrictEqual(yield* find("projects", "Tidewater"), [project.key]);
+      assert.deepStrictEqual(yield* find("projects", "Quillfern"), []);
+      assert.deepStrictEqual(yield* find("work", "Pallet"), [task.key]);
+    }
+    yield* sql`UPDATE kin_records SET owner_id = ${mateId} WHERE record_id = ${project.recordId}`;
+    for (const find of [screen, tool]) {
+      assert.deepStrictEqual(yield* find("projects", "Quillfern"), [project.key]);
+      assert.deepStrictEqual(yield* find("clients", "Juniper"), [client.key]);
+      assert.deepStrictEqual(yield* find("clients", "almanac"), []);
+    }
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
+it.effect("a member who leads one project learns nothing of another's notes from Search", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    const client = yield* ownerTask("Juniper Cold Chain", { list: "clients" });
+    const members = { members: [`person:${mateId}`] };
+    const annex = yield* ownerTask("Tidewater Annex", {
+      list: "projects",
+      notes: "Tidewater Tidewater Tidewater beta",
+      fields: members,
+    });
+    const led = yield* ownerTask("Juniper depot", {
+      list: "projects",
+      notes: "Quillfern alpha",
+      owner: { _tag: "person", personId: mateId },
+      fields: members,
+    });
+    const freight = yield* ownerTask("Tidewater Freight", {
+      list: "projects",
+      partyId: client.recordId,
+      notes: "Quillfern beta at 18,500 per run",
+      fields: members,
+    });
+    const task = yield* ownerTask("Depot review", {
+      projectId: freight.recordId,
+      notes: "Pallet ledger",
+      owner: { _tag: "person", personId: mateId },
+      steps: [{ title: "Inspect the forklift", done: false }],
+    });
+    const { row: deal } = yield* (yield* KinRecords.KinRecords).create(
+      orgId,
+      { ...ownerWrites, deal: true },
+      {
+        list: "deals",
+        title: "Freight renewal",
+        originKey: "freight-renewal",
+        owner: ownerWrites.actor,
+        partyId: client.recordId,
+        notes: "Transfer meeting",
+        fields: { concerns: ["loading dock: narrow gate"] },
+      },
+    );
+    const booking = yield* book("Harbour slot", {
+      fields: { note: "Front desk", privateNote: "Invented confidential berth" },
+    });
+    yield* turn("mate", "shared");
+    const keys = (result: { hits: ReadonlyArray<{ key: string }> }) =>
+      result.hits.map((hit) => hit.key);
+    const asMember = (text: string, closed = false) =>
+      OwnerDocs.search([mate], { orgId, text, closed });
+    const agent = (text: string) => LeadDocs.searchTool(scopeOf(lead), { text });
+
+    for (const closed of [false, true]) {
+      assert.deepStrictEqual(keys(yield* asMember("Quillfern", closed)), [led.key]);
+      assert.deepStrictEqual(keys(yield* asMember("Quill", closed)), [led.key]);
+      for (const term of ["beta", "bet", "18500", "18,500", "18 500", '"beta at"'])
+        assert.deepStrictEqual(keys(yield* asMember(term, closed)), [], term);
+    }
+    // Newest first, as a title match ranks whatever the notes say.
+    const titled = yield* asMember("Tidewater");
+    assert.deepStrictEqual(keys(titled), [freight.key, annex.key]);
+    assert.deepStrictEqual(
+      titled.hits.map((hit) => hit.snippet),
+      [freight.title, annex.title],
+    );
+    // The any-word pass answers a notes word as it answers a word that is nowhere.
+    const widened = yield* agent("Tidewater beta");
+    assert.deepStrictEqual(widened, yield* agent("Tidewater zzqx"));
+    assert.deepStrictEqual(
+      widened.hits.map((hit) => hit.key),
+      [freight.key, annex.key],
+    );
+    assert.deepStrictEqual(keys(yield* agent("Quillfern")), [led.key]);
+    // What the member reads still matches.
+    assert.deepStrictEqual(keys(yield* asMember("ledger")), [task.key]);
+    assert.deepStrictEqual(keys(yield* asMember("forklift")), [task.key]);
+    assert.deepStrictEqual(keys(yield* asMember("Front desk")), [booking.key]);
+    assert.deepStrictEqual(keys(yield* asMember("confidential berth")), []);
+    assert.deepStrictEqual(keys(yield* asMember("narrow gate")), [deal.key]);
+    yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    assert.deepStrictEqual(keys(yield* asMember("narrow gate")), []);
+    assert.deepStrictEqual(keys(yield* asMember("Freight renewal")), []);
+    // The owner still finds every word, with its snippet.
+    for (const [term, key] of [
+      ["beta", freight.key],
+      ["narrow gate", deal.key],
+    ] as const)
+      assert.include(keys(yield* OwnerDocs.search([owner], { orgId, text: term })), key, term);
+    // Taken off the project, then gone from the company: nothing of it is found.
+    yield* sql`UPDATE kin_records SET fields_json = '{}', owner_id = ${ownerId}
+      WHERE record_id = ${led.recordId}`;
+    assert.deepStrictEqual(keys(yield* asMember("Juniper depot", true)), []);
+    assert.deepStrictEqual(keys(yield* asMember("Quillfern", true)), []);
+    yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    // A leaver's session resolves to no one (`KinIdentity`); a turn they woke finds no notes.
+    assert.isTrue(
+      Exit.isFailure(yield* Effect.exit(OwnerDocs.search([], { orgId, text: "Tidewater" }))),
+    );
+    for (const term of ["beta", "Quillfern"]) assert.deepStrictEqual(keys(yield* agent(term)), []);
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
+it.effect("a member writes no list field they cannot read, by any route", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const secret = "Invented confidential berth";
+    const row = yield* book("Harbour slot", {
+      fields: { note: "Front desk", privateNote: secret },
+    });
+    const scope = scopeOf(lead);
+    const read = OwnerWork.get([owner], { orgId, key: row.key });
+    const refusals = [
+      yield* Effect.flip(
+        OwnerWork.create([mate], {
+          ...bookings,
+          title: "Invented berth two",
+          clientRequestId: "berth-two",
+          fields: { privateNote: "Mine" },
+        }),
+      ),
+      yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [
+            { list: "bookings", title: "Invented berth three", fields: { privateNote: "x" } },
+          ],
+        }),
+      ),
+      yield* Effect.flip(
+        LeadWork.updateMany(scope, {
+          sourceEventId: "ask-event",
+          keys: [row.key],
+          fields: { privateNote: "Different berth" },
+        }),
+      ),
+    ];
+    for (const refusal of refusals) {
+      assert.include(refusal, { reason: "not_allowed" }, JSON.stringify(refusal));
+      assert.notInclude(JSON.stringify(refusal), secret);
+    }
+    assert.deepStrictEqual((yield* read).fields, { note: "Front desk", privateNote: secret });
+    const sql = yield* SqlClient.SqlClient;
+    const [made] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'bookings'`;
+    assert.strictEqual(made?.count, 1);
+    // A field they read is still theirs to change.
+    yield* OwnerWork.update([mate], {
+      orgId,
+      key: row.key,
+      rev: row.rev,
+      fields: { note: "Back desk" },
+    });
+    assert.deepStrictEqual((yield* read).fields, { note: "Back desk", privateNote: secret });
+  }).pipe(Effect.provide(bookingLayer)),
+);
+
+it.effect("refuses a shared list's unreadable field on the screen and in a teammate turn", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const secret = "Invented confidential berth";
+    const row = yield* book("Tidewater Freight", { fields: { privateNote: secret } });
+    const input = { orgId, key: row.key };
+    const read = OwnerWork.get([owner], input);
+    assert.notInclude(JSON.stringify(yield* OwnerWork.get([arjun], input)), secret);
+    const services = yield* Effect.context<
+      KinIdentity | SqlClient.SqlClient | KinRecords.KinRecords
+    >();
+    const rpcFor = (id: string) =>
+      makeKinWorkHandlers({
+        sessionId: AuthSessionId.make(id),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      }).pipe(
+        Effect.provideService(KinServer, {
+          services: Option.some(services as unknown as Context.Context<KinServices>),
+          subscribeForViewer: Option.none(),
+          taskCardUpdater: Layer.empty,
+        }),
+      );
+    const rpc = yield* rpcFor("mate-session");
+    const ownerRpc = yield* rpcFor("owner-session");
+    const toolkit = yield* KinWorkToolkit.pipe(
+      Effect.provide(McpToolAccess.HandlersLayer.layer(workHandlers)),
+    );
+    const scope = scopeOf(lead);
+    const caller = {
+      ...scope,
+      thread: { ...scope.thread!, providerInstanceId: ProviderInstanceId.make("codex") },
+    };
+    const tools = Layer.mergeAll(
+      liveThreadsLayer,
+      Layer.mock(KinDocRenderer)({}),
+      Layer.mock(LeadMemory)({}),
+    );
+    const update = (fields: { privateNote: string | null }) =>
+      toolkit
+        .handle("record_update", { key: row.key, sourceEventId: "ask-event", fields })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provideService(McpInvocationContext, caller),
+          Effect.provide(tools),
+        );
+    for (const fields of [{ privateNote: "Different berth" }, { privateNote: null }]) {
+      const refusal = yield* Effect.flip(
+        rpc["kin.work.update"]({ ...input, rev: row.rev, fields }),
+      );
+      assert.include(refusal, {
+        reason: "not_allowed",
+        message: "Only the owner or a co-owner changes that.",
+      });
+      assert.notInclude(JSON.stringify(refusal), secret);
+      assert.deepStrictEqual((yield* read).fields, { privateNote: secret });
+      const toolRefusal = (yield* update(fields)).at(-1)!;
+      assert.include(toolRefusal, { isFailure: true, failureOrigin: "handler" });
+      assert.include(toolRefusal.encodedResult, {
+        reason: "not_allowed",
+        message: refusal.message,
+      });
+      assert.notInclude(JSON.stringify(toolRefusal.encodedResult), secret);
+      assert.deepStrictEqual((yield* read).fields, { privateNote: secret });
+    }
+    yield* ownerRpc["kin.work.update"]({
+      ...input,
+      rev: row.rev,
+      fields: { privateNote: "Owner edit" },
+    });
+    assert.deepStrictEqual((yield* read).fields, { privateNote: "Owner edit" });
+  }).pipe(Effect.provide(bookingLayer)),
+);
 
 it.effect(
   "opens a company list only from the server's current time and keeps the old entries private",
