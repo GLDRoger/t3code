@@ -17,6 +17,7 @@ import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import { quote } from "../lead/quote.ts";
 import { turnFiles } from "./leadFields.ts";
 import { admitted, countryWorded, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
@@ -52,6 +53,7 @@ import { keySentSql } from "../chat/keySent.ts";
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const statementShown = (lead: Lead) => markOutside(lead, "bank-statement");
 /** Words the bank or a counterparty wrote: quoted, so no narration reads as an instruction. */
 const bankSaid = (text: string) => quote("bank statement text (untrusted)", text, true);
 /** The name the file was sent with: anyone's words, quoted as narrations are. */
@@ -438,6 +440,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     return yield* invalid(
       "Pass account only when the owner wrote those digits in this chat; otherwise leave it out. Nothing was kept from this call.",
     );
+  yield* statementShown(lead);
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const statementId = statementIdFor(lead.orgId, file.id);
@@ -694,6 +697,7 @@ const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput
         });
     }
   }
+  if (page.length > 0) yield* statementShown(lead);
   return {
     statement: input.statement,
     total: picked.length,

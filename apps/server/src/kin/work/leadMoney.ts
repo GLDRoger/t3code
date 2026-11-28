@@ -77,6 +77,7 @@ import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { bankShowsPayment, rateMoney } from "./statements/invoiceCredits.ts";
 import { parseFields } from "./lists.ts";
+import { bankTextShown } from "./recordReads.ts";
 import {
   dates,
   datesOnce,
@@ -1082,6 +1083,10 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
     now,
   );
   const entries = datesOnce(page.rows);
+  yield* bankTextShown(
+    lead,
+    entries.map((entry) => entry[0]!.record.key),
+  );
   const day = (row: KinDateRow) =>
     row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone);
   return {
