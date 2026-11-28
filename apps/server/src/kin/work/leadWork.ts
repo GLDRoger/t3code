@@ -155,6 +155,7 @@ import {
   isBuiltIn,
   isFieldNumber,
   isInvoiceDraft,
+  listDef,
   type ListDef,
   listEntryFor,
   listOrPreset,
@@ -817,6 +818,8 @@ const isPartyKind = Schema.is(NewPartyKind);
 const clientTaxNumberAlias = Symbol("clientTaxNumberAlias");
 const TaxNumberAlias = { [clientTaxNumberAlias]: Schema.optionalKey(Schema.Literal(true)) };
 const NOTHING_WRITTEN = "Nothing was written.";
+const clientsOnly = (name: string) =>
+  `${name} goes on clients alone: change the client in its own call. ${NOTHING_WRITTEN}`;
 const fieldOwners = (key: string) => [
   ...Object.keys(recordFields).filter(
     (list) => isFieldList(list) && (recordFields[list] as ReadonlyArray<string>).includes(key),
@@ -864,13 +867,11 @@ const liftRecordFields = Effect.fnUntraced(function* (
   lists: ReadonlyArray<FieldList>,
   rowKeys: object,
 ) {
-  const clientsOnly = (name: string) =>
-    parameterIssue(
-      `${name} goes on clients alone: change the client in its own call. ${NOTHING_WRITTEN}`,
-    );
   if (lists.length === 0) {
     if (taxNumber !== undefined || taxPlace !== undefined)
-      return yield* Effect.fail(clientsOnly(taxNumber === undefined ? "taxPlace" : "taxNumber"));
+      return yield* Effect.fail(
+        parameterIssue(clientsOnly(taxNumber === undefined ? "taxPlace" : "taxNumber")),
+      );
     return fields === undefined ? out : { ...out, fields };
   }
   let usedTaxNumberAlias = taxNumber !== undefined;
@@ -891,7 +892,8 @@ const liftRecordFields = Effect.fnUntraced(function* (
     ["taxPlace", taxPlace],
   ] as const) {
     if (value === undefined) continue;
-    if (!lists.every((list) => list === "clients")) return yield* Effect.fail(clientsOnly(name));
+    if (!lists.every((list) => list === "clients"))
+      return yield* Effect.fail(parameterIssue(clientsOnly(name)));
     const key = canonicalField(name);
     if (out[key] !== undefined && !Equal.equals(out[key], value))
       return yield* Effect.fail(parameterIssue(givenTwice(name)));
@@ -4357,7 +4359,7 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     return yield* invalid("Give key for one entry, or keys for several, not both.");
   if (change.expectedRev !== undefined)
     return yield* invalid("expectedRev goes with one key; leave it out with keys.");
-  if (change.fields !== undefined) yield* sameFields(lead, keys);
+  if (change.fields !== undefined) yield* sameFields(lead, keys, change.fields);
   const done = yield* allOrNone(
     [...new Set(keys)],
     (one) => one,
@@ -4376,7 +4378,11 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
  * fields reads as one list's, so keys under one change share a list when any is built-in. Keys
  * the caller can't see are left to `updateCore`, which answers them as not found.
  */
-const sameFields = Effect.fnUntraced(function* (lead: Lead, keys: ReadonlyArray<string>) {
+const sameFields = Effect.fnUntraced(function* (
+  lead: Lead,
+  keys: ReadonlyArray<string>,
+  fields: FieldInputs,
+) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
   const lists: Array<string> = [];
@@ -4389,10 +4395,12 @@ const sameFields = Effect.fnUntraced(function* (lead: Lead, keys: ReadonlyArray<
   }
   const builtIn = lists.find(isFieldList);
   const other = lists.find((list) => list !== builtIn);
-  if (builtIn !== undefined && other !== undefined)
-    return yield* invalid(
-      `keys mixes ${builtIn} with ${other}, whose fields differ: change them in separate calls. ${NOTHING_WRITTEN}`,
-    );
+  if (builtIn === undefined || other === undefined) return;
+  const tax = ["taxNumber", "taxPlace"].find((key) => Object.hasOwn(fields, key));
+  if (tax !== undefined && lists.includes("clients")) return yield* invalid(clientsOnly(tax));
+  return yield* invalid(
+    `keys mixes ${builtIn} with ${other}, whose fields differ: change them in separate calls. ${NOTHING_WRITTEN}`,
+  );
 });
 const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: Change) {
   yield* admitted(lead, "record_update", { ...asked, key });
@@ -4792,10 +4800,10 @@ const runListFields = Effect.fnUntraced(function* (lead: Lead, input: typeof Lis
       })),
     });
   }
-  const def = yield* listFor(lead, input.list);
-  // In a turn others read, a defined list's fields are told only for a list the team has.
-  if ((yield* viewOf(lead)) !== undefined && !(yield* teamLists(lead.orgId)).has(def.id))
+  if ((yield* viewOf(lead)) !== undefined && !(yield* teamLists(lead.orgId)).has(input.list))
     return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  const def = yield* listDef(lead.orgId, input.list);
+  if (def === undefined || def.builtIn !== null) return yield* unknownList(input.list);
   return answered({
     list: def.id,
     fields: def.fields

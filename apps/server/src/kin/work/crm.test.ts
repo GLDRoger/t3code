@@ -511,6 +511,19 @@ it.effect(
         "keys mixes clients with expenses, whose fields differ: change them in separate calls. Nothing was written.",
       );
       assert.deepStrictEqual(yield* stored(), [client, expense]);
+      const tax = yield* decodeUpdate({
+        sourceEventId: "again-event",
+        keys: made.records.map((row) => row.key),
+        fields: { taxNumber: "29ABCDE1234F1Z5" },
+      }).pipe(
+        Effect.flatMap((input) => LeadWork.updateMany(scope, input)),
+        Effect.flip,
+      );
+      assert.strictEqual(
+        tax.message,
+        "taxNumber goes on clients alone: change the client in its own call. Nothing was written.",
+      );
+      assert.deepStrictEqual(yield* stored(), [client, expense]);
     }).pipe(Effect.provide(layer)),
 );
 
@@ -603,6 +616,11 @@ it.effect(
         ["stage", "source", "lostReason", "concerns"],
       );
       assert.notInclude(JSON.stringify(clients), "Net 45");
+      const invoices = yield* Effect.result(LeadWork.listFields(scope, { list: "invoices" }));
+      const [createdList] = yield* sql`SELECT register_id FROM kin_registers
+        WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+      assert.isUndefined(createdList);
+      assert.strictEqual(invoices._tag, "Failure");
 
       // The same turn, now one a teammate reads.
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -643,6 +661,8 @@ it.effect(
       const refused = yield* Effect.flip(LeadWork.listFields(scope, { list: "expenses" }));
       assert.strictEqual(refused.message, "I can't do that in a chat other people can read.");
       assert.notInclude(refused.message, "vendor");
+      const absent = yield* Effect.flip(LeadWork.listFields(scope, { list: "dispatch_notes" }));
+      assert.strictEqual(absent.message, refused.message);
     }).pipe(Effect.provide(layer)),
 );
 
