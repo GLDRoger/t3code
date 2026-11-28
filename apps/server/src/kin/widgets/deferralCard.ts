@@ -29,6 +29,7 @@ import {
   deferralFingerprint,
   deferralLead,
   deferralOpen,
+  deferralSnapshot,
   deferralTriggerId,
   makeDeferralCards,
   makeDeferralRedraw,
@@ -40,7 +41,9 @@ import {
 export type DeferralCommitted = Option.Option<{
   readonly head: MemoryItemHead;
   readonly body: string;
+  readonly githubAtMove?: ReadonlyArray<GithubLinkState> | null;
 }>;
+import type { GithubLinkState } from "../triggers/deferralGithub.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinDeferralCard);
@@ -168,6 +171,7 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
           ...(item.head.chat === undefined ? {} : { chat: item.head.chat }),
           ...(item.head.source_event === undefined ? {} : { source_event: item.head.source_event }),
           links: item.head.links,
+          said_by: item.head.said_by,
         },
         ...(snapshot.restarts === undefined ? {} : { restarts: snapshot.restarts }),
       }).pipe(
@@ -184,7 +188,11 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
     case "monday": {
       const monday = Date.parse(nextMondayDue(now, yield* ownerZone(orgId)));
       const { graceEndsAt: _grace, ...rest } = snapshot;
-      const moved = yield* encodeSnapshot({ ...rest, movedFrom: snapshot.movedFrom ?? dueAt });
+      const moved = yield* encodeSnapshot({
+        ...rest,
+        ...deferralSnapshot(item.head, item.githubAtMove ?? null),
+        movedFrom: snapshot.movedFrom ?? dueAt,
+      });
       yield* sql`UPDATE kin_deferral_runs SET state = 'armed', due_at = ${monday},
           snapshot_json = ${moved}, updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${itemId} AND state = ${run.state}`;
@@ -201,7 +209,7 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
             next_run_at = ${at}, updated_at = max(updated_at, ${now})
           WHERE org_id = ${orgId} AND trigger_id = ${triggerId}`;
       }
-      const { phase: _phase, graceEndsAt: _ends, ...confirm } = card;
+      const { phase: _phase, graceEndsAt: _ends, note: _note, lateSince: _late, ...confirm } = card;
       const cards = yield* makeDeferralCards;
       yield* cards.write({
         orgId,
@@ -234,7 +242,7 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
         ...widget,
         // Closing writes no words.
         audience: "chat",
-        state: { ...card, actions: [] },
+        state: { ...card, actions: [], closed: "cancelled" },
         expectedRevision: widget.revision,
         closedAt: at,
         updatedAt: at,

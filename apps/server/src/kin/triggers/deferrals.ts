@@ -34,7 +34,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { cardAudience } from "../lead/LeadDelivery.ts";
-import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
+import { type DeferralSource, askerOf, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import { GithubLinkState, githubRef } from "./deferralGithub.ts";
@@ -210,8 +210,10 @@ export function ownerTime(at: number, now: number, clock: TextClock): string {
     : ownerDateTime(at, clock);
 }
 
+const isLate = (dueAt: number, now: number) => now - dueAt > LATE_NOTE_MS;
+
 export const lateNote = (dueAt: number, now: number, clock: TextClock) =>
-  now - dueAt > LATE_NOTE_MS ? ` This was due at ${ownerTime(dueAt, now, clock)}.` : "";
+  isLate(dueAt, now) ? ` This was due at ${ownerTime(dueAt, now, clock)}.` : "";
 
 /** Next Monday 09:00 owner time, strictly after today, as a front-matter date-time. */
 export function nextMondayDue(now: number, timeZone: string): string {
@@ -309,17 +311,38 @@ export const makeDeferralCards = Effect.gen(function* () {
     readonly orgId: KinOrgId;
     readonly itemId: KinMemoryItemId;
     readonly state: KinDeferralCard;
+    readonly saidBy?: string | undefined;
+    readonly sharedReminder?: boolean;
     readonly chatId: KinChatId | null;
     readonly now: number;
   }) {
-    const { orgId, state } = input;
+    const { orgId } = input;
     const widgetId = KinWidgetId.make(deferralWidgetId(orgId, input.itemId));
     const existing = yield* repo.getWidget({ orgId, widgetId });
+    const chatId = Option.isSome(existing) ? existing.value.chatId : input.chatId;
+    if (chatId === null) return false;
+    let { state } = input;
+    const audience = input.sharedReminder === true ? cardAudience(state) : "owner";
+    if (input.saidBy !== undefined) {
+      const asker = yield* askerOf(sql, orgId, input.saidBy);
+      if (asker !== undefined) {
+        const [chat] = yield* sql<{ personId: string | null }>`SELECT
+            coalesce(a.owner_person_id, substr(c.direct_key, 1, instr(c.direct_key, ':') - 1)) AS "personId"
+          FROM kin_chats c
+          LEFT JOIN kin_leads l ON l.org_id = c.org_id AND l.owner_chat_id = c.chat_id
+          LEFT JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+          WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} ORDER BY l.agent_id`;
+        // Only a direct chat has its own person. A group's card names no one here: `askedBy` makes
+        // a card the room's own when the group is shared (`ChatSharing.settleCards`).
+        const own = chat?.personId ?? null;
+        if (own !== null && own !== asker.personId) state = { ...state, askedBy: asker };
+      }
+    }
     const at = iso(input.now);
     if (Option.isSome(existing)) {
       const widget = yield* repo.updateWidget({
         ...existing.value,
-        audience: cardAudience(state),
+        audience,
         expectedRevision: existing.value.revision,
         state,
         closedAt: null,
@@ -328,11 +351,10 @@ export const makeDeferralCards = Effect.gen(function* () {
       yield* publish({ type: "widget.updated", orgId, widget });
       return true;
     }
-    if (input.chatId === null) return false;
     const message = yield* repo.insertMessage({
       orgId,
-      chatId: input.chatId,
-      audience: cardAudience(state),
+      chatId,
+      audience,
       messageId: KinMessageId.make(widgetId),
       author: { _tag: "system" },
       kind: "system",
@@ -350,7 +372,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     });
     const widget = {
       orgId,
-      chatId: input.chatId,
+      chatId,
       messageId: message.messageId,
       widgetId,
       widgetClass: "native" as const,
@@ -363,13 +385,39 @@ export const makeDeferralCards = Effect.gen(function* () {
       closedAt: null,
       updatedAt: at,
     };
-    yield* repo.insertWidget({ ...widget, audience: cardAudience(state) });
+    yield* repo.insertWidget({ ...widget, audience });
     // The insert links the message to the card; clients only attach a card through that link.
     yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
     return true;
   });
-  return { write, publish };
+  const close = Effect.fn("Deferrals.closeCard")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly itemId: KinMemoryItemId;
+    readonly now: number;
+    readonly closed: KinDeferralCard["closed"];
+  }) {
+    const { orgId, itemId } = input;
+    const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+    const existing = yield* repo.getWidget({ orgId, widgetId });
+    if (Option.isNone(existing) || existing.value.closedAt !== null) return;
+    const at = iso(input.now);
+    const previous = existing.value.state;
+    const state =
+      typeof previous === "object" && previous !== null
+        ? { ...previous, closed: input.closed }
+        : previous;
+    const widget = yield* repo.updateWidget({
+      ...existing.value,
+      audience: "chat",
+      state,
+      expectedRevision: existing.value.revision,
+      closedAt: at,
+      updatedAt: at,
+    });
+    yield* publish({ type: "widget.updated", orgId, widget });
+  });
+  return { write, close, publish };
 });
 
 export const hex = (value: string) =>
@@ -425,7 +473,9 @@ export const makeDeferralStarter = Effect.gen(function* () {
     /** The run state the caller read in this transaction. */
     readonly from: string;
     /** The item: its maker gets the work (`promiserLead`), capped by where it was asked from. */
-    readonly item: (DeferralSource & { readonly links?: ReadonlyArray<string> }) | undefined;
+    readonly item:
+      | (DeferralSource & { readonly links?: ReadonlyArray<string>; readonly said_by?: string })
+      | undefined;
     /** A start after a dropped one (`DeferralSnapshot.restarts`). */
     readonly restarts?: number;
   }) {
@@ -487,12 +537,15 @@ export const makeDeferralStarter = Effect.gen(function* () {
           }),
         }),
       );
+    const { note: _note, lateSince: _lateSince, ...state } = input.card;
     yield* cards.write({
       orgId,
       itemId,
+      saidBy: input.item?.said_by,
       // Its turn may still wait on the day's budget, so the card says who was asked, not that it ran.
       state: {
-        ...input.card,
+        ...state,
+        closed: "started",
         text: `Asked ${lead.name} to start it.`,
         phase: "started",
         actions: [],
@@ -506,13 +559,13 @@ export const makeDeferralStarter = Effect.gen(function* () {
 });
 
 /** The asked card's words under its title: what a tap does, and why Kin won't or can't start it. */
-export function askText(input: {
+export function askCopy(input: {
   readonly dueAt: number;
   readonly now: number;
   readonly clock: TextClock;
   readonly startable: boolean;
   readonly why: ReadonlyArray<string>;
-}): string {
+}) {
   const taps = input.startable
     ? "Tap Start now to start it, Monday to move it, or Cancel."
     : "Tap Monday to move it, or Cancel.";
@@ -522,8 +575,17 @@ export function askText(input: {
       : input.startable
         ? ` I won't start it on my own: ${input.why.join("; ")}.`
         : ` I can't start it now: ${input.why.join("; ")}.`;
-  return `Due at ${ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${lateNote(input.dueAt, input.now, input.clock)}`;
+  const note = taps + reason;
+  return {
+    text: `Due at ${ownerTime(input.dueAt, input.now, input.clock)}. ${note}${lateNote(input.dueAt, input.now, input.clock)}`,
+    note,
+    ...(isLate(input.dueAt, input.now) ? { lateSince: iso(input.dueAt) } : {}),
+  };
 }
+
+/** An explicit terminal status in memory supplies the close reason. */
+export const memoryCloseReason = (head: MemoryItemHead | undefined) =>
+  head?.status === "done" || head?.status === "cancelled" ? head.status : undefined;
 
 /** Whether an agent is paused: a person's [Start now] never queues work for it then. */
 export const agentPaused = Effect.fn("Deferrals.agentPaused")(function* (
@@ -543,7 +605,6 @@ export const agentPaused = Effect.fn("Deferrals.agentPaused")(function* (
  */
 export const makeDeferralRedraw = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const repo = yield* Repository.KinChatRepository;
   const cards = yield* makeDeferralCards;
   const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
   return Effect.fn("Deferrals.redraw")(function* (input: {
@@ -561,21 +622,8 @@ export const makeDeferralRedraw = Effect.gen(function* () {
     readonly now: number;
   }) {
     const { orgId, itemId, run, item, now } = input;
-    const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
-    if (item === undefined || !deferralOpen(item.head)) {
-      const existing = yield* repo.getWidget({ orgId, widgetId });
-      if (Option.isNone(existing) || existing.value.closedAt !== null) return;
-      const at = iso(now);
-      const widget = yield* repo.updateWidget({
-        ...existing.value,
-        // Closing writes no words.
-        audience: "chat",
-        expectedRevision: existing.value.revision,
-        closedAt: at,
-        updatedAt: at,
-      });
-      return yield* cards.publish({ type: "widget.updated", orgId, widget });
-    }
+    if (item === undefined || !deferralOpen(item.head))
+      return yield* cards.close({ orgId, itemId, now, closed: memoryCloseReason(item?.head) });
     const lead = yield* deferralLead(sql, orgId, item.head);
     const snapshot: DeferralSnapshot = {
       ...run.snapshot,
@@ -597,12 +645,13 @@ export const makeDeferralRedraw = Effect.gen(function* () {
     yield* cards.write({
       orgId,
       itemId,
+      saidBy: item.head.said_by,
       state: {
         itemId,
         title: item.head.title,
         dueAt: iso(run.dueAt),
         onDue: run.onDue,
-        text: askText({
+        ...askCopy({
           dueAt: run.dueAt,
           now,
           clock: input.clock,
