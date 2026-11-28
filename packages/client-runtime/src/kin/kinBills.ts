@@ -113,7 +113,7 @@ export const KIN_BILLS = {
       vendor: "Enter who was paid.",
       date: "Enter the date.",
       amount: "Enter the amount.",
-      tax: "The tax isn't an amount.",
+      tax: "The tax isn't a valid amount.",
     },
   },
   readUnreadAgain: (count: number) =>

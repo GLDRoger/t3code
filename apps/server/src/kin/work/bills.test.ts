@@ -13,6 +13,7 @@ import {
   type KinAttachment,
   KinAgentId,
   KinBillBatchCard,
+  type KinBillRpcs,
   type KinBillRead,
   KinBillsAddResult,
   KinBillsListResult,
@@ -24,11 +25,13 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinBillsAddAnywayInput,
   KinWidgetId,
   KinWakeupId,
   ThreadId,
 } from "@t3tools/contracts";
 import { readImageDimensions, readJpegOrientation } from "@t3tools/shared/imageDimensions";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -40,6 +43,11 @@ import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Headers from "effect/http/Headers";
+import * as Rpc from "effect/rpc/Rpc";
+import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcMessage from "effect/rpc/RpcMessage";
+import * as RpcServer from "effect/rpc/RpcServer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
@@ -74,6 +82,7 @@ import { cutBillPage } from "./billCutter.ts";
 import { setProfile } from "./companyProfile.ts";
 import { billTurn } from "./billTurn.ts";
 import { billPhotoPreviewId, billPhotoPreviewPath } from "./billPhotoForModel.ts";
+import { homeCurrency, newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { outlook } from "./moneyAnswers.ts";
 import { moneySummary } from "./moneyViews.ts";
@@ -167,7 +176,7 @@ const upload = (name: string, input: string | Uint8Array, mimeType = "image/png"
     return attachment;
   });
 
-const seed = Effect.gen(function* () {
+const seedCompany = Effect.fn("BillsTest.seed")(function* (currency: "INR" | "EUR") {
   const sql = yield* SqlClient.SqlClient;
   yield* TestClock.setTime(NOW);
   yield* sql`INSERT OR IGNORE INTO kin_orgs VALUES (${orgId}, 'Ambermill', ${at})`;
@@ -209,11 +218,17 @@ const seed = Effect.gen(function* () {
       _tag: "new",
       id: "expenses",
       ...PRESETS.expenses,
-      definition: presetDefinition("expenses", "INR"),
+      definition: presetDefinition("expenses", currency),
     },
     NOW,
   );
+  if (currency === "EUR")
+    yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+        updated_by_kind, updated_by_id)
+      VALUES (${orgId}, json_set(json_remove(${yield* newCompanyProfileJson}, '$.countryPending'),
+        '$.homeCurrency', 'EUR', '$.country', 'DE'), 1, ${NOW}, 'person', ${rhea})`;
 });
+const seed = seedCompany("INR");
 
 const decodeCard = Schema.decodeUnknownSync(KinBillBatchCard);
 const decodeBillList = Schema.decodeEffect(KinBillsListResult);
@@ -282,6 +297,69 @@ const read = (
     );
   });
 
+const enteredBill = {
+  vendor: "Harbor Cafe",
+  date: "2026-11-20",
+  amount: "12.00",
+  currency: "EUR",
+  tax: "1.25",
+  category: "meals",
+  number: "HC-12",
+};
+
+const billPair = Effect.fn("BillsTest.billPair")(function* (cleanFirst = false) {
+  yield* seedCompany("EUR");
+  const added = yield* Bills.add(
+    as(rhea),
+    {
+      orgId,
+      attachments: [yield* upload("first.png", "harbor"), yield* upload("second.png", "ink")],
+      clientRequestId: "add",
+    },
+    TEST_UPLOAD_OWNER,
+  );
+  const { wakeupId } = yield* claimTurn(1);
+  yield* read({ bill: "B1", ...enteredBill, readable: cleanFirst });
+  yield* read({ bill: "B2", readable: false, vendor: "Harbor Cafe" });
+  yield* endTurn(wakeupId);
+  const [first, second] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+  return { batchId: added.batchId, first: first!, second: second! };
+});
+
+const keepEntered = (sha256: string, entered: KinBillRead = enteredBill) =>
+  Bills.keepEntered(as(meera), { orgId, sha256, clientRequestId: "fix", entered });
+
+const keepCounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const [counts] = yield* sql<{ expenses: number; paid: number; receipts: number }>`
+    SELECT (SELECT count(*) FROM kin_records WHERE org_id = ${orgId}
+      AND register_id = 'expenses') AS expenses,
+      (SELECT count(*) FROM kin_records WHERE org_id = ${orgId}
+        AND register_id = 'expenses' AND confirmed = 1 AND state = 'done') AS paid,
+      (SELECT count(*) FROM kin_bill_requests WHERE org_id = ${orgId}
+        AND person_id = ${meera} AND request_id = 'fix') AS receipts`;
+  return counts!;
+});
+
+const beforeBillTransaction = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  entered: Deferred.Deferred<void>,
+  resume: Deferred.Deferred<void>,
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const withTransaction: typeof sql.withTransaction = (inner) =>
+      Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(resume)),
+        Effect.andThen(sql.withTransaction(inner)),
+      );
+    const gated = new Proxy(sql, {
+      get: (target, key, receiver) =>
+        key === "withTransaction" ? withTransaction : Reflect.get(target, key, receiver),
+    });
+    return yield* effect.pipe(Effect.provideService(SqlClient.SqlClient, gated));
+  });
+
 const threeBoxes: ReadonlyArray<BillBox> = [
   [25, 50, 280, 900],
   [350, 50, 300, 900],
@@ -312,7 +390,7 @@ const firstCut = Effect.gen(function* () {
   return { added, wakeupId, cut };
 });
 
-const mailedIn = (currency: string | undefined, tax: string | undefined) =>
+const mailedIn = (currency: string | undefined, tax: string | undefined, readable = true) =>
   Effect.gen(function* () {
     const store = yield* AttachmentStore.KinAttachmentStore;
     const sql = yield* SqlClient.SqlClient;
@@ -341,6 +419,7 @@ const mailedIn = (currency: string | undefined, tax: string | undefined) =>
     const { wakeupId } = yield* claimTurn(1);
     yield* read({
       bill: "B1",
+      readable,
       vendor: "Inkspot Cloud",
       date: "2026-11-03",
       amount: "1180",
@@ -705,18 +784,27 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a mailed bill in another currency with no tax is To pay in its own currency", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const batchId = yield* mailedIn("EUR", undefined);
-      const expense = yield* expenseOf(batchId);
-      assert.include(expense, { state: "open" });
-      assert.notProperty(expense, "tax");
-      yield* confirm(as(rhea), { orgId, key: expense.key, rev: expense.rev });
-      const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
-      assert.deepStrictEqual(summary.toPay?.total, [{ minor: 118_000, currency: "EUR" }]);
-      assert.deepStrictEqual(summary.spent.thisMonth.total, []);
-    }).pipe(Effect.provide(layer)),
+  it.effect.each(["read", "entered"] as const)(
+    "a mailed bill in another currency with no tax is To pay in its own currency (%s)",
+    (mode) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const batchId = yield* mailedIn("EUR", undefined, mode === "read");
+        if (mode === "entered") {
+          const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId })).bills;
+          yield* keepEntered(bill!.sha256, { ...enteredBill, amount: "1180", tax: undefined });
+        } else {
+          const expense = yield* expenseOf(batchId);
+          yield* confirm(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+        }
+        const expense = yield* expenseOf(batchId);
+        assert.include(expense, { state: "open" });
+        assert.notProperty(expense, "tax");
+        assert.notProperty(expense, "date");
+        const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+        assert.deepStrictEqual(summary.toPay?.total, [{ minor: 118_000, currency: "EUR" }]);
+        assert.deepStrictEqual(summary.spent.thisMonth.total, []);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("a single bill preserves the original row, expense and card bytes", () =>
@@ -2023,6 +2111,18 @@ describe("bills in bulk", () => {
           }),
           anyway,
         );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_bill_requests SET input_hash = ${duplicate!.sha256}
+          WHERE org_id = ${orgId} AND person_id = ${rhea} AND kind = 'addAnyway'
+            AND request_id = 'anyway'`;
+        assert.deepStrictEqual(
+          yield* Bills.addAnyway(as(rhea), {
+            orgId,
+            sha256: duplicate!.sha256,
+            clientRequestId: "anyway",
+          }),
+          anyway,
+        );
         assert.include(
           yield* Bills.addAnyway(as(rhea), {
             orgId,
@@ -2138,7 +2238,7 @@ describe("bills in bulk", () => {
           number: "HC-12",
         };
         const keep = (who: ReturnType<typeof as>, sha256: string, values: KinBillRead = entered) =>
-          Bills.addAnyway(who, { orgId, sha256, clientRequestId: "fix", entered: values });
+          Bills.keepEntered(who, { orgId, sha256, clientRequestId: "fix", entered: values });
         // Only the owner or a co-owner keeps a bill; a figure left out is refused, nothing made.
         assert.include(yield* keep(as(zoya), cafe!.sha256).pipe(Effect.flip), {
           reason: "not_allowed",
@@ -2150,6 +2250,7 @@ describe("bills in bulk", () => {
         // A currency left out is the company's, marked as assumed by Kin alone.
         const { currency: _currency, ...noCurrency } = entered;
         const kept = yield* keep(as(meera), cafe!.sha256, noCurrency);
+        if (!("expense" in kept)) assert.fail("Expected the corrected bill to be kept.");
         assert.deepStrictEqual(yield* keep(as(meera), cafe!.sha256, noCurrency), kept);
         const after = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
         assert.deepStrictEqual(
@@ -2193,12 +2294,246 @@ describe("bills in bulk", () => {
           currency: "USD",
           currencyAssumed: true,
         });
+        if (!("expense" in typed)) assert.fail("Expected the typed currency to be kept.");
         const usd = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[1]!;
         assert.deepStrictEqual(
           [usd.expense?.key, usd.expense?.amount, usd.read.currency, usd.read.currencyAssumed],
           [typed.expense, { minor: 125_000, currency: "USD" }, "USD", undefined],
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("corrected figures matching a kept expense still need Add anyway", () =>
+    Effect.gen(function* () {
+      const { first, second, batchId } = yield* billPair(true);
+      assert.strictEqual(yield* homeCurrency(orgId), "EUR");
+      yield* Bills.keepRead(as(rhea), { orgId, batchId, clientRequestId: "keep-clean" });
+      const entered = { ...enteredBill, tax: "2.50", number: "HC-13" };
+      const matched = yield* keepEntered(second.sha256, entered);
+      assert.deepStrictEqual(yield* keepCounts, { expenses: 1, paid: 1, receipts: 1 });
+      assert.deepStrictEqual(matched, { duplicateOf: first.expense!.key });
+      assert.deepStrictEqual(yield* keepEntered(second.sha256, entered), matched);
+      const rows = (yield* Bills.list(as(meera), { orgId, batchId })).bills;
+      assert.deepInclude(rows[1]!, {
+        state: "duplicate",
+        read: entered,
+        duplicateOf: { key: first.expense!.key, title: first.expense!.title },
+      });
+      assert.include(
+        yield* Bills.keepEntered(as(meera), {
+          orgId,
+          sha256: second.sha256,
+          clientRequestId: "fix-again",
+          entered,
+        }).pipe(Effect.flip),
+        {
+          reason: "invalid_state",
+          message: "Only a bill not read cleanly is kept with figures typed in.",
+        },
+      );
+      assert.include(
+        yield* Bills.addAnyway(as(meera), {
+          orgId,
+          sha256: second.sha256,
+          clientRequestId: "fix",
+        }).pipe(Effect.flip),
+        { reason: "not_allowed", message: "This request was already made with something else." },
+      );
+      const override = yield* Bills.addAnyway(as(rhea), {
+        orgId,
+        sha256: second.sha256,
+        clientRequestId: "accept-duplicate",
+      });
+      const after = (yield* Bills.list(as(meera), { orgId, batchId })).bills[1]!;
+      assert.deepInclude(after.expense!, {
+        key: override.expense,
+        amount: { minor: 1200, currency: "EUR" },
+        tax: { minor: 250, currency: "EUR" },
+      });
+      assert.strictEqual(after.read.number, "HC-13");
+      const suggestion = yield* (yield* KinRecords.KinRecords).get(orgId, override.expense);
+      assert.include(suggestion, {
+        confirmed: 0,
+        notesBy: rhea,
+        notes: "Entered by Meera from a bill Kin couldn't read cleanly.",
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["exact retry", "different row", "changed figures"] as const)(
+    "serializes a bill keep with the same request id: %s",
+    (kind) =>
+      Effect.gen(function* () {
+        const { first, second } = yield* billPair();
+        const entered = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const again = keepEntered(
+          kind === "different row" ? second.sha256 : first.sha256,
+          kind === "changed figures" ? { ...enteredBill, amount: "24" } : enteredBill,
+        );
+        const retry = yield* beforeBillTransaction(again.pipe(Effect.result), entered, resume).pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(entered);
+        const saved = yield* keepEntered(first.sha256);
+        yield* Deferred.succeed(resume, undefined);
+        const result = yield* Fiber.join(retry);
+        if (kind === "exact retry") {
+          assert.strictEqual(result._tag, "Success");
+          if (result._tag === "Success") assert.deepStrictEqual(result.success, saved);
+          assert.deepStrictEqual(
+            yield* keepEntered(first.sha256, { ...enteredBill, amount: "012.0", tax: "01.25" }),
+            saved,
+          );
+        } else {
+          assert.strictEqual(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.include(result.failure, {
+              reason: "not_allowed",
+              message: "This request was already made with something else.",
+            });
+        }
+        assert.deepStrictEqual(yield* keepCounts, { expenses: 1, paid: 1, receipts: 1 });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    [{ date: "2026-11-22" }, "The date is after today."],
+    [{ date: "2016-11-20" }, "The date is more than ten years back: check it."],
+    [{ tax: "9007199254740992" }, "The tax isn't a valid amount."],
+    [{ tax: "-1" }, "The tax isn't a valid amount."],
+    [{ tax: "12.01" }, "The tax isn't a valid amount."],
+    [{ tax: "unclear" }, "The tax isn't a valid amount."],
+    [{ category: "retired" }, "Pick a category from Expenses."],
+    [{ amount: "-12" }, "Enter the amount."],
+    [{ amount: "0" }, "Enter the amount."],
+  ] as const)("refuses entered bill figures without writing: %j", ([change, message]) =>
+    Effect.gen(function* () {
+      const { first, batchId } = yield* billPair();
+      // November 21 at the company, still November 20 in UTC.
+      yield* TestClock.setTime(Date.parse("2026-11-20T19:00:00.000Z"));
+      const before = yield* billRows;
+      const beforeCard = yield* card(batchId);
+      const result = yield* keepEntered(first.sha256, {
+        ...enteredBill,
+        date: "2026-11-21",
+        ...change,
+      }).pipe(Effect.result);
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") assert.include(result.failure, { message });
+      assert.deepStrictEqual(yield* billRows, before);
+      assert.deepStrictEqual(yield* card(batchId), beforeCard);
+      assert.deepStrictEqual(yield* keepCounts, { expenses: 0, paid: 0, receipts: 0 });
+      if ("date" in change && change.date === "2026-11-22") {
+        yield* keepEntered(first.sha256, { ...enteredBill, date: "2026-11-21", tax: "0" });
+        const expense = yield* expenseOf(batchId);
+        assert.deepStrictEqual(expense.tax, { minor: 0, currency: "EUR" });
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a reader that reaches settlement after the turn ends writes nothing", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { batchId } = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: [yield* upload("cafe.png", "harbor")], clientRequestId: "add" },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId } = yield* claimTurn(1);
+      const repo = yield* KinChatRepository.KinChatRepository;
+      const widget = { orgId, widgetId: KinWidgetId.make(`bills:${batchId}`) };
+      const beforeCard = yield* repo.getWidget(widget);
+      const before = yield* billRows;
+      const entered = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const answer = yield* beforeBillTransaction(
+        read({
+          bill: "B1",
+          vendor: "Harbor Cafe",
+          date: "2026-11-20",
+          amount: "12",
+          currency: "INR",
+        }).pipe(Effect.result),
+        entered,
+        resume,
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const queue = yield* KinEventQueue.KinEventQueue;
+      yield* queue.finish({ orgId, wakeupId, status: "completed" });
+      yield* Deferred.succeed(resume, undefined);
+      const result = yield* Fiber.join(answer);
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") assert.include(result.failure, { reason: "not_allowed" });
+      assert.deepStrictEqual(yield* billRows, before);
+      assert.deepStrictEqual(yield* repo.getWidget(widget), beforeCard);
+      const sql = yield* SqlClient.SqlClient;
+      const expenses = yield* sql`SELECT record_id FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+      assert.deepStrictEqual(expenses, []);
+      yield* Bills.turnEnded(orgId, wakeupId);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Fix and keep on an old host cannot turn into Add anyway", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { first, second, batchId } = yield* billPair(true);
+        yield* Bills.keepRead(as(rhea), { orgId, batchId, clientRequestId: "keep-clean" });
+        // The old host has only Add anyway and decodes away fields that weren't on its wire.
+        const { orgId: org, sha256, clientRequestId } = KinBillsAddAnywayInput.fields;
+        const oldInput = Schema.Struct({ orgId: org, sha256, clientRequestId });
+        const old = RpcGroup.make(Rpc.make("kin.bills.addAnyway", { payload: Schema.Unknown }));
+        const response = yield* Deferred.make<RpcMessage.FromServer<RpcGroup.Rpcs<typeof old>>>();
+        const server = yield* RpcServer.makeNoSerialization(old, {
+          onFromServer: (message) => Deferred.succeed(response, message).pipe(Effect.asVoid),
+        }).pipe(
+          Effect.provide(
+            old.toLayer({
+              "kin.bills.addAnyway": (payload) =>
+                Effect.gen(function* () {
+                  const input = yield* Schema.decodeUnknownEffect(oldInput)(payload);
+                  yield* Bills.addAnyway(as(meera), input);
+                }).pipe(Effect.orDie),
+            }),
+          ),
+        );
+        // A read again can already have turned a stale form's row into a duplicate.
+        yield* Bills.readAgain(as(rhea), { orgId, sha256: second.sha256 });
+        const { wakeupId } = yield* claimTurn(2);
+        yield* read({ bill: "B1", ...enteredBill });
+        yield* endTurn(wakeupId);
+        assert.strictEqual(
+          (yield* Bills.list(as(rhea), { orgId, batchId })).bills[1]!.duplicateOf?.key,
+          first.expense!.key,
+        );
+        type KeepEnteredRpc = Extract<
+          (typeof KinBillRpcs)[number],
+          { _tag: "kin.bills.keepEntered" }
+        >;
+        const request: RpcMessage.Request<KeepEnteredRpc> = {
+          _tag: "Request",
+          id: RpcMessage.RequestId("fix"),
+          tag: "kin.bills.keepEntered",
+          headers: Headers.empty,
+          payload: {
+            orgId,
+            sha256: second.sha256,
+            clientRequestId: "fix",
+            entered: { ...enteredBill, amount: "99" },
+          },
+        };
+        yield* server.write(0, request as unknown as RpcMessage.Request<RpcGroup.Rpcs<typeof old>>);
+        const rejected = yield* Deferred.await(response);
+        assert.deepStrictEqual(yield* keepCounts, { expenses: 1, paid: 1, receipts: 0 });
+        if (rejected._tag !== "Exit" || rejected.exit._tag !== "Failure")
+          assert.fail("Expected the old host to refuse an unknown method.");
+        assert.strictEqual(
+          Cause.squash(rejected.exit.cause),
+          "Unknown request tag: kin.bills.keepEntered",
+        );
+      }).pipe(Effect.provide(layer)),
+    ),
   );
 
   it.effect(

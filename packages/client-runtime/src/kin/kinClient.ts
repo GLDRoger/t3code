@@ -2169,6 +2169,11 @@ export function makeKinClient<R, ER>(
       tag: "kin.bills.addAnyway",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
+    billsKeepEntered: createKinRpcCommand(runtime, {
+      label: "kin:bills:keep-entered",
+      tag: "kin.bills.keepEntered",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
     billsDismiss: createKinRpcCommand(runtime, {
       label: "kin:bills:dismiss",
       tag: "kin.bills.dismiss",

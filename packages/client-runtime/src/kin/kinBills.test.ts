@@ -923,7 +923,7 @@ describe("a bill not read cleanly, fixed and kept", () => {
     });
     expect(kinBillFixInput({ ...draft, date: "2026-11-06", tax: "some" })).toEqual({
       ok: false,
-      problem: "The tax isn't an amount.",
+      problem: "The tax isn't a valid amount.",
     });
     expect(
       kinBillFixInput({ ...draft, date: "2026-11-06", amount: "1,250.5", number: " ", tax: "" }),
