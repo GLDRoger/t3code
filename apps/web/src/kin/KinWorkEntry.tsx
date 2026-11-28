@@ -15,6 +15,7 @@ import {
   KIN_YES_NO,
   KIN_LISTS,
   kinEntryPrivateLine,
+  kinEntryShareCopy,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -25,7 +26,6 @@ import {
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
 import {
-  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   type KinWorkItemView,
@@ -1160,7 +1160,7 @@ export function KinListEntry(
               itemKey={item.key}
               shared={view.shared}
               disabled={busy}
-              copy={KIN_ENTRY_SHARE}
+              copy={kinEntryShareCopy(item, def, shell)}
             />
           ) : null}
         </div>
