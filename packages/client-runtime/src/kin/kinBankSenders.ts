@@ -141,6 +141,19 @@ export function kinBankSenderAddressSegments(
   }));
 }
 
+/**
+ * A sentence with an address in it, in pieces a client lays out one beside the other: each word with
+ * its space, and the address cut as `kinBankSenderAddressSegments` cuts it. Null with no address.
+ */
+export function kinAddressSentencePieces(text: string): ReadonlyArray<string> | null {
+  if (!text.includes("@")) return null;
+  return (text.match(/\S+\s*/g) ?? []).flatMap((word) => {
+    if (!word.includes("@")) return [word];
+    const segments = kinBankSenderAddressSegments(word).map((segment) => segment.text);
+    return segments.length === 0 ? [word] : segments;
+  });
+}
+
 /** Unique bank names already entered by the company, Company details first, deduplicated by case. */
 export function kinBankSenderKnownBanks(input: {
   readonly companyBankName?: string | null | undefined;

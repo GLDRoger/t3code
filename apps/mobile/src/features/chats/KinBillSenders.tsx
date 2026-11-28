@@ -43,6 +43,7 @@ import { NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, retryKinAccess } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import { useKinBillSenders } from "./state/useKinMoney";
+import { useKinSectionOn } from "./state/useKinShell";
 import type { KinWorkTarget } from "./state/useKinWork";
 
 export type KinBillSenderAddParams = {
@@ -90,6 +91,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
   const [problem, setProblem] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const [now] = useState(() => kinNow().getTime());
+  const moneyOn = useKinSectionOn(environmentId, "money");
 
   if (!permissions.visible || state._tag === "refused") return null;
 
@@ -155,6 +157,13 @@ export function KinBillSendersSection(props: KinWorkTarget) {
         <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
       )}
       {said === null ? null : <Notice message={said} onDismiss={() => setSaid(null)} />}
+      {moneyOn ? null : (
+        <View className="px-4 py-3">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_BILL_SENDERS.moneyOff}
+          </Text>
+        </View>
+      )}
       {groups.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="footnote" className="text-foreground-muted">
@@ -177,6 +186,7 @@ export function KinBillSendersSection(props: KinWorkTarget) {
                 busy={busy !== null}
                 onAct={(action) => ask(action, row.address)}
                 target={props}
+                moneyOn={moneyOn}
               />
             ))}
           </Fragment>
@@ -200,6 +210,7 @@ function BillSenderMobileRow(props: {
   readonly busy: boolean;
   readonly onAct: (action: KinBillSenderAction) => void;
   readonly target: KinWorkTarget;
+  readonly moneyOn: boolean;
 }) {
   const { row } = props;
   const lines = [row.seenLine, row.askedLine, row.decidedLine].filter((line) => line !== null);
@@ -228,7 +239,7 @@ function BillSenderMobileRow(props: {
         </View>
       )}
       {row.state === "approved" && props.can("readSince") ? (
-        <ReadSince target={props.target} address={row.address} />
+        <ReadSince target={props.target} address={row.address} moneyOn={props.moneyOn} />
       ) : null}
     </View>
   );
@@ -239,7 +250,11 @@ function BillSenderMobileRow(props: {
  * 20 seconds. Only this control waits; the host's sentence stays under the row, and pressing again
  * continues where it stopped. Nothing presses it by itself.
  */
-function ReadSince(props: { readonly target: KinWorkTarget; readonly address: string }) {
+function ReadSince(props: {
+  readonly target: KinWorkTarget;
+  readonly address: string;
+  readonly moneyOn: boolean;
+}) {
   const { environmentId, orgId } = props.target;
   const command = useAtomCommand(kinClient.billSendersReadSince, { reportFailure: false });
   const [opened] = useState(() => kinNow());
@@ -272,6 +287,8 @@ function ReadSince(props: { readonly target: KinWorkTarget; readonly address: st
             size="compact"
             label={KIN_BILL_SENDERS.readSince.open}
             accessibilityLabel={`${KIN_BILL_SENDERS.readSince.open} ${props.address}`}
+            {...(props.moneyOn ? {} : { accessibilityHint: KIN_BILL_SENDERS.moneyOff })}
+            disabled={!props.moneyOn}
             onPress={() => setOpen(true)}
           />
         </View>
@@ -297,7 +314,7 @@ function ReadSince(props: { readonly target: KinWorkTarget; readonly address: st
               }
               accessibilityLabel={`${reading ? KIN_BILL_SENDERS.readSince.working : KIN_BILL_SENDERS.readSince.submit} ${props.address}`}
               loading={reading}
-              disabled={reading}
+              disabled={reading || !props.moneyOn}
               onPress={() => void read()}
             />
           </View>

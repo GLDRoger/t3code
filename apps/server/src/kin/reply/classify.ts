@@ -216,6 +216,7 @@ export const PHASE_LABELS = {
   writing: "Writing a reply",
   tool: "Working",
   attachments: "Looking at what you sent",
+  bills: "Reading bills",
 } as const;
 // Null leaves the line as it was: the call is bookkeeping, not work the owner waits on.
 const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
