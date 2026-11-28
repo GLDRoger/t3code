@@ -40,7 +40,7 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 ### Claude's shell sandbox
 
-Claude's Bash needs `bubblewrap` and `socat` on Linux. Without a working sandbox, Claude's private or helper session fails to start rather than offering an unsandboxed shell.
+Claude's Bash needs `bubblewrap` and `socat` on Linux. Use Claude Code 2.1.321 or later for the sandbox policy in this build. Without a working sandbox, Claude's private or helper session fails to start rather than offering an unsandboxed shell.
 
 On Ubuntu 24.04 and later, if `sysctl kernel.apparmor_restrict_unprivileged_userns` reports `1`, an unprofiled bubblewrap cannot set up the sandbox. Check `command -v bwrap` in a kin shell. For the distribution's `/usr/bin/bwrap`, install the [Claude Code AppArmor profile](https://code.claude.com/docs/en/sandboxing#add-an-apparmor-profile-for-bubblewrap) as the owner if no profile grants it `userns`; do not overwrite a distribution or local profile that already does. Keep the sysctl enabled.
 

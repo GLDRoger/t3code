@@ -106,7 +106,8 @@ fi
 
 # Claude's shell sandbox needs these system binaries.
 if ! command -v bwrap >/dev/null || ! command -v socat >/dev/null; then
-  command -v apt-get >/dev/null || refuse "Install bubblewrap and socat with your package manager."
+  [ "$DRY_RUN" -eq 1 ] || command -v apt-get >/dev/null ||
+    refuse "Install bubblewrap and socat with your package manager."
   run apt-get update
   run apt-get install -y bubblewrap socat
 fi
