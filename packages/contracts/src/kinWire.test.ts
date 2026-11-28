@@ -2,8 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Arbitrary from "effect/Arbitrary";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
+import { KinMoneySummary } from "./kinFinance.ts";
+import { KinMoneyEvent, type KinMoneyLive, kinMoneyApply, kinMoneyDiff } from "./kinMoneyLive.ts";
 import { kinOpenApply, kinOpenDiff, type KinOpenRead, type KinOpenRow } from "./kinOpen.ts";
 import type { KinPulseFact } from "./kinPulse.ts";
 import {
@@ -59,6 +62,90 @@ const record = (key: string, extra: Partial<KinRecord> = {}) =>
     closedAt: null,
     ...extra,
   }) as KinRecord;
+
+const moneySummary: KinMoneySummary = {
+  asOf: "2026-11-28T12:00:00Z",
+  timeZone: "UTC",
+  thisMonth: "2026-11",
+  lastMonth: "2026-10",
+  financialYear: "FY2026",
+  owed: { total: [], overdue: [], invoices: 0, overdueInvoices: 0, byClient: [] },
+  received: { thisMonth: [], lastMonth: [] },
+  receivedThisFinancialYear: [],
+  spent: {
+    thisMonth: { total: [], byCategory: [] },
+    lastMonth: { total: [], byCategory: [] },
+  },
+  spentThisFinancialYear: [],
+  upcoming: [],
+  upcomingTotal: 0,
+  series: [],
+};
+
+type OptionalSummaryField = {
+  [K in keyof KinMoneySummary]-?: undefined extends KinMoneySummary[K] ? K : never;
+}[keyof KinMoneySummary];
+
+const optionalSummaryValues = {
+  financialYearStartMonth: 1,
+  toPay: {
+    total: [{ minor: 1200, currency: "USD" }],
+    dueSoon: [],
+    bills: 1,
+    dueSoonBills: 0,
+    lateBills: 0,
+  },
+  tdsDeducted: { thisMonth: [{ minor: 100, currency: "USD" }], lastMonth: [] },
+  tdsDeductedThisFinancialYear: [{ minor: 100, currency: "USD" }],
+  suggested: [{ record: record("E-1"), listName: "Expenses" }],
+  suggestedLists: [{ list: "expenses", listName: "Expenses", count: 1 }],
+  about: {},
+} satisfies { [K in OptionalSummaryField]-?: NonNullable<KinMoneySummary[K]> };
+
+const optionalSummaryFields = Object.entries(KinMoneySummary.fields)
+  .filter(([, field]) => SchemaAST.isOptional(field.ast))
+  .map(([field]) => field as OptionalSummaryField);
+
+function whatInstalledAppsDo(held: KinMoneyLive, event: KinMoneyEvent): KinMoneyLive {
+  if (event._tag === "snapshot") return event.live;
+  if (event._tag === "current") return held;
+  const { _tag, hash: _hash, summary, listsOpen: _listsOpen, ...whole } = event;
+  return {
+    ...held,
+    ...whole,
+    ...(summary === undefined || held.summary === undefined
+      ? {}
+      : { summary: { ...held.summary, ...summary } }),
+  };
+}
+
+const decodeMoneyEvent = Schema.decodeUnknownSync(KinMoneyEvent);
+
+describe("Money live wire", () => {
+  it.each(optionalSummaryFields)(
+    "clears %s on installed apps when the field goes away",
+    (field) => {
+      const budgets = { month: "2026-11", budgets: [] };
+      const before = {
+        summary: { ...moneySummary, [field]: optionalSummaryValues[field] },
+        budgets,
+      };
+      const after = { summary: moneySummary };
+      const diff = kinMoneyDiff(before, after);
+      expect(diff).not.toBeNull();
+      if (diff === null) return;
+      const event = decodeMoneyEvent(
+        "replacement" in diff
+          ? { _tag: "snapshot", live: diff.replacement, hash: "" }
+          : { ...diff, _tag: "changed", hash: "" },
+      );
+      const installed = whatInstalledAppsDo(before, event);
+      const current = event._tag === "changed" ? kinMoneyApply(before, event) : installed;
+      expect(installed.summary).not.toHaveProperty(field);
+      expect(current).toEqual({ ...after, budgets });
+    },
+  );
+});
 
 describe("acceptCompactRows", () => {
   it("restores every row as it was, the odd `can` and every set field included", () => {
