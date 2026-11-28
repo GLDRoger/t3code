@@ -1204,6 +1204,7 @@ it.effect.each([true, false])(
           "statement_read",
           "statement_rows",
           "money_query",
+          "money_in_check",
           "money_summary",
           "payment_record",
           "budget_set",

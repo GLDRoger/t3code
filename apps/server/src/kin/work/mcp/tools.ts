@@ -22,6 +22,9 @@ import * as Memory from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Money from "../leadMoney.ts";
+import * as MoneyIn from "../statements/moneyInCheck.ts";
+import { KinChatHub } from "../../chat/KinChatHub.ts";
+import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { PageMarks } from "../pageMarks.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
@@ -274,6 +277,13 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     description: `The owner's money questions, answered by Kin from its records. view cash: each account's closing balance from the latest statement the owner confirmed, its day and whether it is stale, any newer read not yet confirmed beside it, and per currency what was recorded since (account not known) with a labelled estimate where Kin can make one; with no confirmed statement the balance is unknown. view outlook: what is due in (issued invoices; overdue ones listed, not counted) and out (open amounts we owe and entries set to repeat) over 30, 60 and 90 days or days, and runway in months from the last three complete months, with its inputs. view budgets: each monthly budget's limit, spent, and over or near. Every view adds bank: the day Kin sees the bank to, each account's on cash. Every figure is exact per currency: quote them, never add, convert or estimate. Where Kin says a figure is unknown, say so. Read-only, for owner-only answers.`,
     parameters: Money.MoneyQueryInput,
     success: Money.MoneyQueryResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("money_in_check", {
+    ...shared,
+    dependencies: [...shared.dependencies, KinChatRepository, KinChatHub],
+    description: `Check money received as Kin has it (payments on invoices and receipts) against what the bank shows (Bank transactions from confirmed statements and approved bank alert mails), from from to through, optionally for one account (its last four digits) or one client (C-3). Kin compares them itself and posts one card in this chat: what matches, what the bank shows that Kin doesn't have, what Kin has that the bank doesn't show, and what differs, each with its tap. It returns the counts and what the check covered: say those, not amounts. It reads no mail and records nothing. Only for the owner or a co-owner.`,
+    parameters: MoneyIn.MoneyInCheckInput,
+    success: MoneyIn.MoneyInCheckResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("budget_set", {
     ...shared,

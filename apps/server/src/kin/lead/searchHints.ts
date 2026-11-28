@@ -58,6 +58,7 @@ export const KIN_SEARCH_HINTS: Readonly<Record<string, string>> = {
   message_replace: "correct sent text edit fix",
   message_withdraw: "take back unsend retract",
   money_query: "cash balance runway outlook budgets",
+  money_in_check: "reconcile verify match bank statements credits received payments",
   money_summary: "owed overdue received spent totals",
   number_record: "log value metric figure today",
   numbers_read: "metrics values latest kpi",

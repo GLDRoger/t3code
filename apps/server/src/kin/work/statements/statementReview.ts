@@ -38,7 +38,7 @@ import { fieldText, parseFields } from "../lists.ts";
 import { companyMoney, homeCurrency } from "../companyProfile.ts";
 import { regionOf } from "../region.ts";
 import { dayIn } from "../money.ts";
-import { keptEntry, ownerZone } from "../recordRows.ts";
+import { countedPayment, keptEntry, ownerZone } from "../recordRows.ts";
 import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
 import { listDef } from "../registers.ts";
 import { fundingOf } from "../reimbursement.ts";
@@ -285,15 +285,43 @@ export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(fu
   });
 });
 
+const encodeBankIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 /**
  * Money recorded on an invoice since `sinceDay` with no bank row yet: a bank credit may be that
- * money arriving. A payment a card recorded from a Bank transactions credit already has its row.
+ * money arriving. The read-only check also needs receipts and tied parts, including ones dated
+ * outside the range of the credits it checks.
  */
 export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(function* (
   orgId: KinOrgId,
   sinceDay: string,
+  check?: { readonly through: string; readonly bankIds: ReadonlyArray<string> },
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const tied = sql`(e.payment_id = p.payment_id OR (e.payment_id IS NULL AND e.action = 'payment'
+    AND e.target_record_id = p.record_id AND json_extract(e.prior_json, '$.matched') = p.payment_id))`;
+  const recorded = sql`p.origin_key NOT LIKE ${`${BANK_CREDIT_ORIGIN}%`}
+    AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+      WHERE e.org_id = p.org_id AND ${tied})`;
+  const direct = (origin: SqlStatement.Fragment) => sql`CASE
+    WHEN ${origin} LIKE ${`${BANK_CREDIT_ORIGIN}%`} THEN
+      substr(substr(${origin}, ${BANK_CREDIT_ORIGIN.length + 1}), 1,
+        instr(substr(${origin}, ${BANK_CREDIT_ORIGIN.length + 1}), ':') - 1) END`;
+  const bankId =
+    check === undefined
+      ? sql`NULL`
+      : sql`COALESCE(
+    ${direct(sql`p.origin_key`)},
+    ${direct(sql`CASE WHEN r.register_id = 'receipts' AND r.origin_key LIKE 'bank-credit:%:left'
+      THEN r.origin_key END`)},
+    (SELECT e.bank_record_id FROM kin_bank_statement_entries e
+      JOIN kin_bank_statements s ON s.org_id = e.org_id AND s.statement_id = e.statement_id
+      WHERE e.org_id = p.org_id AND e.target_record_id = p.record_id AND e.action = 'payment'
+        AND s.applied_at IS NOT NULL AND s.undone_at IS NULL
+        AND ${tied}
+      ORDER BY s.applied_at, e.statement_id, e.seq LIMIT 1))`;
+  const bankIds =
+    check === undefined ? null : yield* encodeBankIds(check.bankIds).pipe(Effect.orDie);
   const rows = yield* sql<{
     paymentId: string;
     recordId: string;
@@ -306,23 +334,29 @@ export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(func
     paidOn: string;
     note: string;
     client: string | null;
+    clientId: string | null;
     fieldsJson: string;
+    bankId: string | null;
   }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
       p.amount_minor AS "amountMinor", p.received_minor AS "receivedMinor",
-      p.received_currency AS "receivedCurrency", p.paid_on AS "paidOn", p.note, c.title AS client, r.fields_json AS "fieldsJson"
+      p.received_currency AS "receivedCurrency", p.paid_on AS "paidOn", p.note, c.title AS client,
+      r.party_id AS "clientId", r.fields_json AS "fieldsJson", ${bankId} AS "bankId"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
-    WHERE p.org_id = ${orgId} AND r.register_id = 'invoices' AND p.voided_at IS NULL
-      AND ${keptEntry(sql)} AND p.withheld = 0 AND p.paid_on >= ${sinceDay}
-      AND p.origin_key NOT LIKE ${`${BANK_CREDIT_ORIGIN}%`}
-      AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
-        WHERE e.org_id = p.org_id AND (e.payment_id = p.payment_id
-          OR (e.target_record_id = p.record_id AND json_extract(e.prior_json, '$.matched') = p.payment_id)))
+    WHERE p.org_id = ${orgId} AND p.withheld = 0 AND ${
+      check === undefined
+        ? sql`r.register_id = 'invoices' AND p.voided_at IS NULL AND ${keptEntry(sql)}
+          AND p.paid_on >= ${sinceDay} AND ${recorded}`
+        : sql`r.register_id IN ('invoices', 'receipts') AND ${countedPayment(sql)} AND (
+          p.paid_on BETWEEN ${sinceDay} AND ${check.through} OR
+          ${bankId} IN (SELECT value FROM json_each(${bankIds})))`
+    }
     ORDER BY p.paid_on, p.payment_id`;
   return rows.map(({ fieldsJson, ...row }) => ({
     ...row,
     client: clientName({ ...row, fieldsJson }),
+    number: fieldText(parseFields(fieldsJson), "number"),
   }));
 });
 
@@ -588,7 +622,7 @@ const ownerOf = Effect.fn("KinStatements.ownerOf")(function* (orgId: KinOrgId, a
 });
 
 /** Posts a card of Kin's own, for the owner alone, waiting on them; the same id twice is one card. */
-const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
+export const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly agentId: string;
@@ -596,13 +630,14 @@ const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
   readonly type: string;
   readonly text: string;
   readonly state: unknown;
+  readonly needsAnswer?: false;
 }) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
   const widgetId = KinWidgetId.make(input.widgetId);
   if (Option.isSome(yield* repo.getWidget({ orgId: input.orgId, widgetId }))) return widgetId;
-  const owner = yield* ownerOf(input.orgId, input.agentId);
+  const awaiting = input.needsAnswer === false ? [] : [yield* ownerOf(input.orgId, input.agentId)];
   const at = iso(yield* Clock.currentTimeMillis);
   const chatId = KinChatId.make(input.chatId);
   const message = yield* repo.insertMessage({
@@ -634,7 +669,7 @@ const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
     state: input.state,
     source: null,
     feed: null,
-    awaiting: [owner],
+    awaiting,
     pinnedAt: null,
     closedAt: null,
     updatedAt: at,

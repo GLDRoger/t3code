@@ -317,3 +317,51 @@ export const KIN_STATEMENT_RPC_SCOPES = {
   [KIN_STATEMENT_WS_METHODS.rows]: AuthKinChatScope,
   [KIN_STATEMENT_WS_METHODS.passwords]: AuthKinChatScope,
 } as const;
+
+export const KIN_MONEY_IN_CHECK_CARD = "money_in_check";
+
+const MoneyInGroup = Schema.Literals(["matched", "bankOnly", "kinOnly", "notSeenYet", "differs"]);
+const MoneyInLine = Schema.Struct({
+  id: Schema.String,
+  group: MoneyInGroup,
+  bank: Schema.optional(Schema.String),
+  invoice: Schema.optional(Schema.String),
+  day: KinDay,
+  account: Schema.optional(Schema.String),
+  amount: Schema.optional(Schema.String),
+  payments: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      key: Schema.String,
+      day: KinDay,
+      amount: Schema.String,
+    }),
+  ),
+  difference: Schema.optional(Schema.Literals(["day", "amount", "payer", "sum"])),
+  text: Schema.String,
+  // Person-facing only. Never copy the bank's words to the fallback text or a tool result.
+  printed: Schema.optional(Schema.String),
+});
+
+export const KinMoneyInCheckCard = Schema.Struct({
+  from: KinDay,
+  through: KinDay,
+  account: Schema.optional(Schema.String),
+  client: Schema.optional(Schema.String),
+  checkedOn: KinDay,
+  title: Schema.String,
+  changes: Schema.optional(Schema.String),
+  superseded: Schema.optional(Schema.Literal(true)),
+  counts: Schema.Struct({
+    matched: NonNegativeInt,
+    bankOnly: NonNegativeInt,
+    kinOnly: NonNegativeInt,
+    notSeenYet: NonNegativeInt,
+    differs: NonNegativeInt,
+  }),
+  explained: NonNegativeInt,
+  covered: Schema.Array(Schema.String),
+  lines: Schema.Array(MoneyInLine),
+  text: Schema.String,
+});
+export type KinMoneyInCheckCard = typeof KinMoneyInCheckCard.Type;

@@ -18,7 +18,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
 import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed, repoReadRefusal } from "../lead/OutsideContent.ts";
-import { toolAdmitted } from "../lead/SharedTools.ts";
+import { MONEY_IN_CHECK_REFUSAL, toolAdmitted } from "../lead/SharedTools.ts";
 import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { COMMENT_REFUSAL, boundIssue } from "../github/boundIssue.ts";
@@ -553,7 +553,9 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallRefusal(
         Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
       ),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), (_args, tool) =>
+        tool === "money_in_check" ? MONEY_IN_CHECK_REFUSAL : SHARED_REFUSAL,
+      ),
       // Before the outside gate, whose refusal would offer the owner what was read.
       McpToolPolicy.toolCallRefusal(
         Effect.succeed(

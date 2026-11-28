@@ -125,6 +125,9 @@ const t3ToolsRefused = Object.fromEntries(
   LEAD_T3_TOOLS.map((name) => [name, "refused" as const]),
 ) as Record<(typeof LEAD_T3_TOOLS)[number], "refused">;
 
+export const MONEY_IN_CHECK_REFUSAL =
+  "Only the owner or a co-owner can check money received against the bank.";
+
 export const SHARED_TOOLS = {
   kin_chat_post: inTurnChat,
   kin_widget_upsert: inTurnChat,
@@ -235,6 +238,7 @@ export const SHARED_TOOLS = {
   deal_stages: "view",
   money_summary: "view",
   money_query: "refused",
+  money_in_check: "refused",
   budget_set: "refused",
   number_record: "refused",
   numbers_read: "refused",

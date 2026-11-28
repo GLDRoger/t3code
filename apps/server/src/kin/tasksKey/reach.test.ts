@@ -166,6 +166,7 @@ it.effect("each of the six groups is tried through a key, directly and the indir
       "archive",
       "void",
       "record_expense",
+      "money_in_check",
       "read_chat",
     ])
       assert.notInclude(

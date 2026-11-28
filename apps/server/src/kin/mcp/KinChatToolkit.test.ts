@@ -279,12 +279,14 @@ it.effect(
       const result = yield* call("kin_chat_read", { chatId: chat.chatId });
       assert.isFalse(result.isError);
       assert.include(JSON.stringify(result), "authorRole");
-      const refused = yield* call("kin_widget_upsert", {
-        chatId: chat.chatId,
-        type: "approval",
-        state: {},
-      }).pipe(Effect.result);
-      assert.strictEqual(refused._tag, "Failure");
+      for (const type of ["approval", "money_in_check"]) {
+        const refused = yield* call("kin_widget_upsert", {
+          chatId: chat.chatId,
+          type,
+          state: {},
+        }).pipe(Effect.result);
+        assert.strictEqual(refused._tag, "Failure", type);
+      }
       const create = yield* call("kin_widget_upsert", {
         chatId: chat.chatId,
         type: "task",

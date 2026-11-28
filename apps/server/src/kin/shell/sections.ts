@@ -83,6 +83,7 @@ export const SECTIONS = {
     deal_stages: "deals",
     money_summary: "money",
     money_query: "money",
+    money_in_check: "money",
     budget_set: "money",
     number_record: null,
     numbers_read: null,

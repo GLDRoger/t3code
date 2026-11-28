@@ -138,6 +138,7 @@ export const OUTSIDE_TOOLS = {
   deal_stages: "allowed",
   money_summary: "allowed",
   money_query: "allowed",
+  money_in_check: "allowed",
   budget_set: "allowed",
   // Appends a sourced value for an existing number the lead keeps, without changing the definition.
   number_record: "allowed",

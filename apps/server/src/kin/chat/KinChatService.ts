@@ -84,6 +84,7 @@ import {
   type KinWidget,
   KinCardAsker,
   KIN_ASKER_ONLY_REFUSAL,
+  KIN_MONEY_IN_CHECK_CARD,
 } from "@t3tools/contracts";
 import {
   KIN_VISUAL_CARD_TYPE,
@@ -4429,6 +4430,7 @@ const make = Effect.gen(function* () {
         input.type === "chart" ||
         // Only kin_visual posts one, and its page is stored once.
         input.type === KIN_VISUAL_CARD_TYPE ||
+        input.type === KIN_MONEY_IN_CHECK_CARD ||
         (input.type === "task" && input.widgetId === undefined)
       )
         return yield* notAllowed;

@@ -1,3 +1,6 @@
+import * as KinChatHub from "../chat/KinChatHub.ts";
+import * as KinChatRepository from "../chat/KinChatRepository.ts";
+import { moneyInCheck } from "./statements/moneyInCheck.ts";
 import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
@@ -80,6 +83,8 @@ const decodeCreate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.Crea
 const decodeUpdate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.UpdateInput));
 type Services =
   | KinIdentity
+  | KinChatHub.KinChatHub
+  | KinChatRepository.KinChatRepository
   | KinLevelGate
   | KinRecords.KinRecords
   | SqlClient.SqlClient
@@ -123,7 +128,12 @@ const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
   askTo: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
+const layer = Layer.mergeAll(
+  KinRecords.layer,
+  identity,
+  gate,
+  KinChatHub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
+).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -2370,6 +2380,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       ],
       money_summary: [LeadMoney.money(scope, {}), true],
       money_query: [LeadMoney.moneyQuery(scope, { view: "outlook" }), true],
+      money_in_check: [moneyInCheck(scope, { from: "1970-01-01", through: "1970-01-01" }), false],
       budget_set: [
         LeadMoney.budget(scope, { sourceEventId: "ask-event", category: "travel", limit: "50k" }),
         true,

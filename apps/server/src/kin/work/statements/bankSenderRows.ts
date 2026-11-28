@@ -178,7 +178,11 @@ const decodeHeldEnds = Schema.decodeUnknownOption(
 export const liveHeldMail = Effect.fn("KinBankSenders.liveHeldMail")(function* (
   orgId: KinOrgId,
   now: number,
-  withEndings?: { readonly address?: string | undefined },
+  withEndings?: {
+    readonly address?: string | undefined;
+    readonly from?: number;
+    readonly through?: number;
+  },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -198,7 +202,8 @@ export const liveHeldMail = Effect.fn("KinBankSenders.liveHeldMail")(function* (
     FROM kin_bank_alerts a
     JOIN kin_connections c ON c.org_id = a.org_id AND c.connection_id = a.connection_id
     WHERE a.org_id = ${orgId} AND a.outcome = 'held' AND a.sender_address IS NOT NULL
-      AND a.sent_at BETWEEN ${now - HELD_ALERT_WINDOW} AND ${now}
+      AND a.sent_at BETWEEN ${Math.max(now - HELD_ALERT_WINDOW, withEndings?.from ?? -Infinity)}
+        AND ${Math.min(now, withEndings?.through ?? Infinity)}
       AND ${companyAlertMailbox(sql)}
       ${withEndings?.address === undefined ? sql`` : sql`AND a.sender_address = ${withEndings.address}`}
     GROUP BY a.sender_address, c.account_label ORDER BY a.sender_address, c.account_label`;

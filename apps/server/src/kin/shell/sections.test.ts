@@ -55,6 +55,7 @@ it("classifies client and project, money, and invoice and quote surfaces", () =>
     ["touch_log", "clients"],
     ["money_summary", "money"],
     ["money_query", "money"],
+    ["money_in_check", "money"],
     ["kin_receipt", "money"],
     ["payment_record", "invoices"],
     ["record_get", null],

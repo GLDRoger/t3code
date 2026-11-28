@@ -130,7 +130,7 @@ const decodeRow = Schema.decodeUnknownOption(RowJson);
  * per `sameAccounts`. A statement whose totals don't check out still counts: its lines were
  * confirmed. Cards never receive what clients pay, so they cover nothing here.
  */
-const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: KinOrgId) {
+export const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     bank: string | null;

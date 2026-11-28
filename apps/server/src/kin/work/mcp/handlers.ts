@@ -8,6 +8,7 @@ import { numbersHandlers } from "../../numbers/mcp.ts";
 import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
+import { moneyInCheck } from "../statements/moneyInCheck.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
 import { liftMarks } from "../pageMarks.ts";
@@ -123,6 +124,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   money_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.moneyQuery")(function* (input) {
       return yield* Money.moneyQuery(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  money_in_check: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.moneyInCheck")(function* (input) {
+      return yield* moneyInCheck(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   budget_set: McpToolAccess.actsAsCaller(

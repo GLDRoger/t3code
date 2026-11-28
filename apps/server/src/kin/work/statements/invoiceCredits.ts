@@ -49,12 +49,12 @@ const LOOKED_AT = 200;
  * A Bank transactions entry Kin's own code or a person wrote, and no agent changed since: only
  * such an entry is the bank's word that money arrived (over `r`).
  */
-const noAgentHand = (sql: SqlClient.SqlClient) => sql`r.created_by_kind <> 'agent'
+export const noAgentHand = (sql: SqlClient.SqlClient) => sql`r.created_by_kind <> 'agent'
   AND NOT EXISTS (SELECT 1 FROM kin_record_changes c WHERE c.org_id = r.org_id
     AND c.record_id = r.record_id AND c.actor_kind = 'agent' AND c.kind <> 'linked')`;
 
 // Duplicates can point to statement entries; only the alert that created an entry can taint it.
-const notRemovedAlert = (sql: SqlClient.SqlClient) => sql`NOT EXISTS (
+export const notRemovedAlert = (sql: SqlClient.SqlClient) => sql`NOT EXISTS (
     SELECT 1 FROM kin_bank_alerts a JOIN kin_bank_senders s
       ON s.org_id = a.org_id AND s.address = a.sender_address AND s.state = 'removed'
     WHERE a.org_id = r.org_id AND a.record_id = r.record_id AND a.outcome = 'recorded')`;
@@ -70,7 +70,7 @@ export const agentWrote = Effect.fn("KinStatements.agentWrote")(function* (
   return row !== undefined && row.clean !== 1;
 });
 
-const bankSource = (sql: SqlClient.SqlClient) => sql`(
+export const bankSource = (sql: SqlClient.SqlClient) => sql`(
     r.origin_key LIKE ${originKeyOf("%")}
     OR EXISTS (SELECT 1 FROM kin_bank_alerts a JOIN kin_bank_senders s
       ON s.org_id = a.org_id AND s.address = a.sender_address AND s.state = 'approved'
@@ -454,7 +454,7 @@ export const resolveInvoiceChoice = Effect.fn("KinStatements.resolveInvoiceChoic
       handled_note = excluded.handled_note, handled_until = NULL`;
 });
 
-const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
+export const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
   orgId: KinOrgId,
   entries: ReadonlyArray<OpenCredit>,
 ) {
