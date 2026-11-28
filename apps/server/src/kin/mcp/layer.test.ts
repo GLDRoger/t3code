@@ -676,6 +676,30 @@ it.effect.each([true, false])(
         const dealsRefusal = "Deals is turned off for this company.";
         const leadMcp = yield* open("/kin/mcp", issued.config.authorizationHeader);
         assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
+        // The lead's own endpoint refuses what the server would open, run or reach for it.
+        for (const [name, args, refusal] of [
+          [
+            "html_preview",
+            { html: "<p>sample</p>", title: "Sample", height: 200 },
+            "The HTML tools are unavailable in this session.",
+          ],
+          [
+            "t3_project_create",
+            { workspaceRoot: "/fixture", title: "Sample", scripts: [] },
+            "Kin agents cannot set project scripts.",
+          ],
+          [
+            "t3_project_update",
+            { projectId: "fixture", workspaceRoot: "/fixture" },
+            "A Kin agent cannot set local paths for a project.",
+          ],
+          [
+            "t3_thread_read",
+            { threadId: "a-thread-outside-the-lead" },
+            "No task with that thread id was found.",
+          ],
+        ] as const)
+          assert.include(yield* leadCall(name, args), refusal, name);
         const shell = Context.get(kin.services.value, KinShell.KinShell);
         const toggle = (rev: number, on: boolean) =>
           shell.set(person.orgId, person.personId, rev, [{ id: "deals", on }]);

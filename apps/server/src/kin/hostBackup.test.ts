@@ -397,6 +397,20 @@ it.effect("a failed shell probe tells the owner once until a working startup", (
     assert.lengthOf(first, 1);
     assert.strictEqual(first[0]?.open, 1);
     assert.include(first[0]?.body, "the agent can still chat and use Kin's tools");
+    // The owner closing it is no recovery: a later start that fails again stays quiet.
+    const [told] = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+      FROM kin_waiting WHERE org_id = ${orgId} AND message_id LIKE 'kin-shell-sandbox:%'`;
+    if (told === undefined) return assert.fail("Missing owner notice");
+    yield* chat.resolveNotice({
+      orgId,
+      waitingId: KinWaitingId.make(told.waitingId),
+      resolution: "answered",
+    });
+    yield* reportSandboxStartup(services, false);
+    assert.deepStrictEqual(
+      (yield* notices).map(({ open }) => open),
+      [0],
+    );
     yield* reportSandboxStartup(services, true);
     yield* reportSandboxStartup(services, false);
     assert.deepStrictEqual(
