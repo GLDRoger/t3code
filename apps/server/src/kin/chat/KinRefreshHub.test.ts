@@ -232,6 +232,15 @@ describe("KinRefreshHub", () => {
         yield* sql.withTransaction((yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "stop"));
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
+        // A bill's smaller copy is ready (`work/bills.ts`, outside any transaction): Money's
+        // topic moves for the owner, and she hears nothing at all.
+        const heard = [...(yield* Queue.takeAll(ownerSees))].at(-1) ?? start;
+        yield* (yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "moneyStatements");
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          moneyStatements: (heard.moneyStatements ?? 0) + 1,
+        });
+        assert.strictEqual(yield* Queue.size(priyaSees), 0);
         yield* KinShell.KinShell.use((shell) =>
           shell.set(me.orgId, me.personId, 0, [{ id: "deals", on: false }]),
         ).pipe(Effect.provide(KinShell.layer));

@@ -31,6 +31,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 import * as DateTime from "effect/DateTime";
@@ -69,7 +70,7 @@ import type { BillBox } from "./billCutterProtocol.ts";
 import * as LeadBills from "./leadBills.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billTurn } from "./billTurn.ts";
-import { billPhotoPreviewId } from "./billPhotoForModel.ts";
+import { billPhotoPreviewId, billPhotoPreviewPath } from "./billPhotoForModel.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
@@ -2252,5 +2253,334 @@ describe("bill_cut", () => {
         );
         assert.include((yield* card(added.batchId)).counts, { already: 1 });
       }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("bill picture copies made after the answer", () => {
+  /** The preview worker on a file system that stops at `step` until `go` opens (never, without). */
+  const previewsHeldAt = (
+    fs: FileSystem.FileSystem,
+    step: "open" | "writeFile" | "rename",
+    entered: Deferred.Deferred<void>,
+    go?: Deferred.Deferred<void>,
+  ) => {
+    const hold = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(go === undefined ? Effect.never : Deferred.await(go)),
+    );
+    return Bills.previewLayer.pipe(
+      Layer.provide(
+        Layer.succeed(FileSystem.FileSystem, {
+          ...fs,
+          open: (...args: Parameters<typeof fs.open>) =>
+            step === "open" ? hold.pipe(Effect.andThen(fs.open(...args))) : fs.open(...args),
+          // Half the copy is on disk when the worker stops.
+          writeFile: (...args: Parameters<typeof fs.writeFile>) =>
+            step === "writeFile"
+              ? fs
+                  .writeFile(args[0], args[1].subarray(0, args[1].byteLength >> 1))
+                  .pipe(Effect.andThen(hold), Effect.andThen(fs.writeFile(...args)))
+              : fs.writeFile(...args),
+          rename: (...args: Parameters<typeof fs.rename>) =>
+            step === "rename" ? hold.pipe(Effect.andThen(fs.rename(...args))) : fs.rename(...args),
+        }),
+      ),
+    );
+  };
+  const previewIds = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ attachment: string; preview: string | null }>`SELECT
+        attachment_id AS attachment, preview_id AS preview FROM kin_bill_reads
+      WHERE org_id = ${orgId} ORDER BY added_at, position`;
+  });
+  const countingCuts = () => {
+    const count = { cuts: 0 };
+    const tracer = Tracer.make({
+      span: (options) => {
+        if (options.name === "KinBills.cutBillPage") count.cuts++;
+        return new Tracer.NativeSpan(options);
+      },
+    });
+    return { count, tracer };
+  };
+
+  it.effect(
+    "a stop while a copy is half written leaves no file and no id, and frees the permit",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const entered = yield* Deferred.make<void>();
+        const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+        const attachment = yield* upload("half.jpg", photo, "image/jpeg");
+        const held = yield* Effect.gen(function* () {
+          const { batchId } = yield* addPage(attachment, "half-written");
+          yield* Deferred.await(entered);
+          const [row] = yield* previewIds;
+          const path = billPhotoPreviewPath(attachmentsDir, row!.attachment)!;
+          assert.isAbove(NodeFS.statSync(`${path}.part`).size, 0);
+          return { path, batchId };
+        }).pipe(Effect.provide(previewsHeldAt(fs, "writeFile", entered)));
+        const { path: copy, batchId } = held;
+        assert.deepStrictEqual(
+          [NodeFS.existsSync(`${copy}.part`), NodeFS.existsSync(copy), yield* previewIds],
+          [false, false, [{ attachment: (yield* previewIds)[0]!.attachment, preview: null }]],
+        );
+        assert.isUndefined((yield* Bills.list(as(rhea), { orgId, batchId })).bills[0]!.preview);
+        // The permit came back with the stop: the reader's turn makes the copy itself.
+        yield* claimTurn(1);
+        const [row] = yield* previewIds;
+        assert.strictEqual(row!.preview, billPhotoPreviewId(row!.attachment));
+        assert.isTrue(NodeFS.existsSync(copy));
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect.each(["while its copy is drawn", "before its copy starts"] as const)(
+    "a bill whose file is deleted %s gets no copy and no copy id",
+    (when) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const entered = yield* Deferred.make<void>();
+        const go = yield* Deferred.make<void>();
+        const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+        const attachment = yield* upload("deleted.jpg", photo, "image/jpeg");
+        const { batchId } = yield* Effect.gen(function* () {
+          const added = yield* addPage(attachment, "deleted");
+          yield* Deferred.await(entered);
+          // Rhea clears her chat with Finance: the card's file goes, as KinChatService does it.
+          const [row] = yield* previewIds;
+          yield* sql`DELETE FROM kin_message_attachments
+            WHERE org_id = ${orgId} AND attachment_id = ${row!.attachment}`;
+          yield* (yield* AttachmentStore.KinAttachmentStore).remove([row!.attachment]);
+          yield* Deferred.succeed(go, undefined);
+          yield* (yield* Bills.KinBillPreviews).drain;
+          return added;
+        }).pipe(
+          Effect.provide(
+            previewsHeldAt(fs, when === "before its copy starts" ? "open" : "rename", entered, go),
+          ),
+        );
+        const [row] = yield* previewIds;
+        const copy = billPhotoPreviewPath(attachmentsDir, row!.attachment)!;
+        assert.deepStrictEqual(
+          [row!.preview, NodeFS.existsSync(copy), NodeFS.existsSync(`${copy}.part`)],
+          [null, false, false],
+        );
+        assert.isUndefined((yield* Bills.list(as(rhea), { orgId, batchId })).bills[0]!.preview);
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("two adds at once each get their own copies, made once", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+      const files = yield* Effect.forEach([0, 1, 2, 3], (n) =>
+        upload(`two-${n}.jpg`, Buffer.concat([photo, Buffer.from([n])]), "image/jpeg"),
+      );
+      const { count, tracer } = countingCuts();
+      yield* Effect.all(
+        [
+          Bills.add(
+            as(rhea),
+            { orgId, attachments: files.slice(0, 2), clientRequestId: "a" },
+            TEST_UPLOAD_OWNER,
+          ),
+          Bills.add(
+            as(rhea),
+            { orgId, attachments: files.slice(2), clientRequestId: "b" },
+            TEST_UPLOAD_OWNER,
+          ),
+        ],
+        { concurrency: 2 },
+      ).pipe(Effect.withTracer(tracer));
+      yield* (yield* Bills.KinBillPreviews).drain;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const ids = yield* previewIds;
+      assert.deepStrictEqual(
+        ids.map(({ attachment, preview }) => [
+          preview === billPhotoPreviewId(attachment),
+          NodeFS.existsSync(billPhotoPreviewPath(attachmentsDir, attachment)!),
+        ]),
+        [
+          [true, true],
+          [true, true],
+          [true, true],
+          [true, true],
+        ],
+      );
+      assert.strictEqual(count.cuts, 4);
+      // The reader's turns find the copies made: nothing is cut twice.
+      const { wakeupId } = yield* claimTurn(1).pipe(Effect.withTracer(tracer));
+      yield* endTurn(wakeupId);
+      yield* claimTurn(2).pipe(Effect.withTracer(tracer));
+      assert.strictEqual(count.cuts, 4);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["before", "while", "after"] as const)(
+    "a turn that starts %s its copy is made is shown the same picture bytes",
+    (when) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+        const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+        const { outcome } = yield* cutBillPage({ kind: "photo", bytes: photo, boxes: [] });
+        assert.strictEqual(outcome._tag, "cut");
+        const expected = Buffer.from((outcome as { preview: Uint8Array }).preview);
+        const entered = yield* Deferred.make<void>();
+        const go = yield* Deferred.make<void>();
+        const started = yield* Deferred.make<void>();
+        const { count, tracer } = countingCuts();
+        const turn = Effect.gen(function* () {
+          const { events } = yield* claimTurn(1);
+          const bills = events.filter((one) => one._tag === "bills.read");
+          const shown = (yield* billTurn(orgId, bills[0]!))!;
+          return yield* (yield* KinTurnContent).prepare({
+            ...shown,
+            billPhotos: billPhotoMode(bills),
+          });
+        });
+        const model = yield* Effect.gen(function* () {
+          yield* addPage(yield* upload("when.jpg", photo, "image/jpeg"), "when");
+          if (when === "after") {
+            yield* Deferred.succeed(go, undefined);
+            yield* (yield* Bills.KinBillPreviews).drain;
+            return yield* turn;
+          }
+          yield* Deferred.await(entered);
+          if (when === "before") return yield* turn;
+          // The copy is drawn and about to land when the turn starts reading its photo.
+          const reading = yield* turn.pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              open: (...args: Parameters<typeof fs.open>) =>
+                Deferred.succeed(started, undefined).pipe(Effect.andThen(fs.open(...args))),
+            }),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(started);
+          yield* Deferred.succeed(go, undefined);
+          return yield* Fiber.join(reading);
+        }).pipe(
+          Effect.provide(
+            when === "before"
+              ? previewsHeldAt(fs, "open", entered)
+              : previewsHeldAt(fs, "rename", entered, go),
+          ),
+          Effect.withTracer(tracer),
+        );
+        assert.lengthOf(model.attachments, 1);
+        const sent = resolveAttachmentPathById({
+          attachmentsDir,
+          attachmentId: model.attachments[0]!.id,
+        })!;
+        assert.isTrue(Buffer.from(NodeFS.readFileSync(sent)).equals(expected));
+        assert.strictEqual(count.cuts, 1);
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect.each(["first", "middle", "last", "all"] as const)(
+    "a damaged photo %s in a group is told unreadable, and the B-numbers follow the survivors",
+    (where) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const jpeg = yield* Effect.promise(() => createCanvas(400, 300).encode("jpeg", 90));
+        const damaged = (n: number) =>
+          where === "all" ||
+          (where === "first" && n === 1) ||
+          (where === "middle" && n === 2) ||
+          (where === "last" && n === 3);
+        const files = yield* Effect.forEach([1, 2, 3], (n) =>
+          damaged(n)
+            ? upload(
+                `IMG_000${n}.png`,
+                Buffer.from(`89504e470d0a1a0a0000000d49484452000001900000012c0${n}`, "hex"),
+              )
+            : upload(
+                `IMG_000${n}.jpg`,
+                Buffer.concat([jpeg, Buffer.alloc(5 * 1024 * 1024, n)]),
+                "image/jpeg",
+              ),
+        );
+        const added = yield* Bills.add(
+          as(rhea),
+          { orgId, attachments: files, clientRequestId: `damaged-${where}` },
+          TEST_UPLOAD_OWNER,
+        );
+        const survivors = [1, 2, 3].filter((n) => !damaged(n));
+        const { wakeupId, events } = yield* claimTurn(1);
+        const turns = events.filter((one) => one._tag === "bills.read");
+        if (survivors.length === 0) {
+          assert.lengthOf(turns, 0);
+        } else {
+          assert.lengthOf(turns, 1);
+          const turn = (yield* billTurn(orgId, turns[0]!))!;
+          const model = yield* (yield* KinTurnContent).prepare({
+            ...turn,
+            billPhotos: billPhotoMode(turns),
+          });
+          const listed = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+          assert.deepStrictEqual(
+            turn.ids,
+            survivors.map((_, index) => `B${index + 1}`),
+          );
+          // The prompt's pictures are the survivors' own copies, in order.
+          assert.deepStrictEqual(
+            model.attachments.map(({ id }) => id),
+            survivors.map((n) => billPhotoPreviewId(listed[n - 1]!.file.attachmentId)),
+          );
+          for (const [index, n] of survivors.entries())
+            yield* read({
+              bill: `B${index + 1}`,
+              vendor: "Inkspot Cloud",
+              amount: String(n),
+              currency: "INR",
+              date: "2026-11-19",
+            });
+        }
+        yield* endTurn(wakeupId);
+        const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        assert.deepStrictEqual(
+          bills.map(({ state, problem, read }) => [state, problem, read.amount]),
+          [1, 2, 3].map((n) =>
+            damaged(n)
+              ? ["unreadable", "Kin could not read this one", undefined]
+              : ["read", undefined, String(n)],
+          ),
+        );
+        assert.strictEqual((yield* card(added.batchId)).status, "done");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a bill brought back on a new file drops its old copy id", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const previews = yield* Bills.KinBillPreviews;
+      const photo = yield* Effect.promise(() => billPhoto(2400, 1800));
+      yield* addPage(yield* upload("first.jpg", photo, "image/jpeg"), "first");
+      yield* previews.drain;
+      const [first] = yield* previewIds;
+      assert.strictEqual(first!.preview, billPhotoPreviewId(first!.attachment));
+      // Its chat is cleared, so the same bytes added again bring the bill back on the new file.
+      yield* sql`DELETE FROM kin_message_attachments
+        WHERE org_id = ${orgId} AND attachment_id = ${first!.attachment}`;
+      yield* addPage(yield* upload("again.jpg", photo, "image/jpeg"), "again");
+      const [again] = yield* previewIds;
+      assert.notStrictEqual(again!.attachment, first!.attachment);
+      assert.isNull(again!.preview);
+      yield* previews.drain;
+      assert.deepStrictEqual(yield* previewIds, [
+        { attachment: again!.attachment, preview: billPhotoPreviewId(again!.attachment) },
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 FROM kin_bill_reads WHERE preview_id = ${first!.preview}`,
+        [],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 });

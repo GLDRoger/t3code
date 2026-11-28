@@ -2398,6 +2398,79 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K239 points each company's copy id at its own photo, even for the same bytes, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP INDEX idx_kin_bill_reads_preview`;
+        yield* sql`ALTER TABLE kin_bill_reads DROP COLUMN preview_id`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
+        const photo = "a".repeat(64);
+        const ambermill = "kin-chat-0b7a5e1c-1d2e-4f3a-8b4c-5d6e7f809101";
+        const tidewater = "kin-chat-1c8b6f2d-2e3f-4a4b-9c5d-6e7f80910212";
+        const rows: ReadonlyArray<readonly [string, string, string, string, string]> = [
+          ["org-ambermill", photo, ambermill, "bill.png", "image/png"],
+          // The same photo in another company, under its own upload.
+          ["org-tidewater", photo, tidewater, "bill.png", "image/png"],
+          // An imported copy that kept another company's file id: still its own row.
+          ["org-copied", photo, ambermill, "bill.png", "image/png"],
+          [
+            "org-ambermill",
+            "b".repeat(64),
+            "kin-chat-2d9c7a3e-3f4a-4b5c-8d6e-7f8091021323",
+            "bill.pdf",
+            "application/pdf",
+          ],
+          [
+            "org-ambermill",
+            "c".repeat(64),
+            "kin-chat-3e0d8b4f-4a5b-4c6d-9e7f-809102132434",
+            "IMG_0001.heic",
+            "image/heic",
+          ],
+        ];
+        for (const [org, hash, attachment, name, mime] of rows)
+          yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+              name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+              widget_id, added_by_person_id, added_at, state)
+            VALUES (${org}, ${hash}, ${attachment}, 'chat', 'message', ${name},
+              ${mime === "application/pdf" ? "file" : "image"}, ${mime}, 8, 'batch', 0, 'finance',
+              'chat', 'widget', 'rhea', 1, 'read')`;
+        const ids = sql<{ org: string; attachment: string; preview: string | null }>`
+          SELECT org_id AS org, attachment_id AS attachment, preview_id AS preview
+          FROM kin_bill_reads ORDER BY org_id, sha256`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillPreviewIds"]]);
+        assert.deepStrictEqual(yield* ids, [
+          { org: "org-ambermill", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
+          {
+            org: "org-ambermill",
+            attachment: "kin-chat-2d9c7a3e-3f4a-4b5c-8d6e-7f8091021323",
+            preview: null,
+          },
+          {
+            org: "org-ambermill",
+            attachment: "kin-chat-3e0d8b4f-4a5b-4c6d-9e7f-809102132434",
+            preview: null,
+          },
+          { org: "org-copied", attachment: ambermill, preview: billPhotoPreviewId(ambermill) },
+          { org: "org-tidewater", attachment: tidewater, preview: billPhotoPreviewId(tidewater) },
+        ]);
+        assert.notStrictEqual(billPhotoPreviewId(ambermill), billPhotoPreviewId(tidewater));
+        // Copies made since: one cleared by a new attachment, one indexed by the worker.
+        yield* sql`UPDATE kin_bill_reads SET preview_id = NULL WHERE org_id = 'org-tidewater'`;
+        const held = yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillPreviewIds"]]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM kin_bill_reads ORDER BY org_id, sha256`,
+          held,
+        );
+        assert.deepStrictEqual(yield* runKinMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("adds card taps to lead deliveries and preserves every legacy row byte for byte", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

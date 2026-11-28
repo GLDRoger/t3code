@@ -876,6 +876,32 @@ describe("KinChatService", () => {
         ],
         [false, false],
       );
+      // A copy id that exists only in another company tells Arjun nothing: the same refusal and
+      // the same statements, in the same order, as an id that exists nowhere, bar the id itself.
+      const traced = (id: string) =>
+        Effect.gen(function* () {
+          const seen: Array<string> = [];
+          const observe: Statement.Transformer = (statement) =>
+            Effect.sync(() => {
+              const [text, params] = statement.compile();
+              seen.push(JSON.stringify([text, params.map((one) => (one === id ? "<id>" : one))]));
+              return statement;
+            });
+          const refusal = yield* authorizeAttachmentRead(
+            session,
+            { _tag: "attachment", attachmentId: id },
+            elsewhere,
+          ).pipe(Effect.flip, Effect.provideService(Statement.CurrentTransformer, observe));
+          return { refusal: JSON.stringify(refusal).replaceAll(id, "<id>"), seen };
+        });
+      const nowhere = billPhotoPreviewId(strayFile)!;
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_bill_reads WHERE preview_id IN (${preview}, ${nowhere})`,
+        1,
+      );
+      const [existsElsewhere, existsNowhere] = [yield* traced(preview), yield* traced(nowhere)];
+      assert.isAbove(existsNowhere.seen.length, 0);
+      assert.deepStrictEqual(existsElsewhere, existsNowhere);
 
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
