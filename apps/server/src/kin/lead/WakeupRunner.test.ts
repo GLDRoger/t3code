@@ -15,6 +15,7 @@ import {
   KinEvent,
   KinAgentId,
   KinChatId,
+  KinMemberId,
   KinMessageId,
   KinPersonId,
   MemoryItemHead,
@@ -306,13 +307,37 @@ const sessions = Effect.fn("test.sessions")(function* () {
     });
 });
 
-const privateRequest = Effect.fn("test.privateRequest")(function* (id: string) {
+const quietRunTeammate = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+const joinQuietRunChat = Effect.fn("test.joinQuietRunChat")(function* () {
+  const repo = yield* KinChatRepository.KinChatRepository;
+  const createdAt = "2026-11-08T00:00:00.000Z";
+  yield* repo.insertPerson({
+    ...quietRunTeammate,
+    handle: "zoya",
+    displayName: "Zoya",
+    githubLogin: null,
+    createdAt,
+  });
+  yield* repo.addMember({
+    orgId,
+    chatId: KinChatId.make("direct"),
+    memberId: KinMemberId.make("zoya-member"),
+    principal: { _tag: "person", personId: quietRunTeammate.personId },
+    role: "member",
+    joinedAt: createdAt,
+    leftAt: null,
+    mutedUntil: null,
+  });
+});
+
+const privateRequest = Effect.fn("test.privateRequest")(function* (id: string, shared = false) {
   yield* seed;
   yield* seedDirectChats;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
     VALUES ('direct-agent', ${orgId}, 'direct', 'agent', ${agentId}, 'member', '2026-11-08T00:00:00.000Z')`;
+  if (shared) yield* joinQuietRunChat();
   const message = yield* ownerSays(id, "direct");
   yield* sql`UPDATE kin_chats SET last_seq = 1, direct_key = 'owner:lead'
     WHERE org_id = ${orgId} AND chat_id = 'direct'`;
@@ -3379,10 +3404,35 @@ describe("WakeupRunner", () => {
   );
 
   it.effect.each([
-    ["completed", "Finished", "Lead finished."],
-    ["interrupted", "Stopped", "Nothing it hadn't finished was sent. Ask again to start fresh."],
-    ["failed", "Ended", "Lead stopped working on it."],
-  ] as const)("asks twice about a quiet owed run before it is %s", ([status, title, text]) =>
+    [
+      "an owner-only run's quiet card is not readable by a member who joins later",
+      "completed",
+      "Finished",
+      "Lead finished.",
+      "owner_only",
+    ],
+    [
+      "shows the last note on both quiet cards of a shared run",
+      "completed",
+      "Finished",
+      "Lead finished.",
+      "shared",
+    ],
+    [
+      "asks twice about a quiet owed run before it is interrupted",
+      "interrupted",
+      "Stopped",
+      "Nothing it hadn't finished was sent. Ask again to start fresh.",
+      "owner_only",
+    ],
+    [
+      "asks twice about a quiet owed run before it fails",
+      "failed",
+      "Ended",
+      "Lead stopped working on it.",
+      "owner_only",
+    ],
+  ] as const)("%s", ([, status, title, text, audience]) =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
       const hold = yield* Deferred.make<void>();
@@ -3407,13 +3457,15 @@ describe("WakeupRunner", () => {
         failed: () => Effect.void,
       });
       yield* Effect.gen(function* () {
-        yield* privateRequest("quiet-ask");
+        yield* privateRequest("quiet-ask", audience === "shared");
         const sql = yield* SqlClient.SqlClient;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const fiber = yield* run();
         yield* Deferred.await(entered);
-        const [wake] = yield* sql<{ id: string; threadId: ThreadId }>`
-          SELECT wakeup_id AS id, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`;
+        const [wake] = yield* sql<{ id: string; threadId: ThreadId; audience: string }>`
+          SELECT wakeup_id AS id, thread_id AS "threadId", audience FROM kin_wakeups
+          WHERE org_id = ${orgId}`;
+        assert.strictEqual(wake?.audience, audience);
         yield* toolCall(work, wake!.threadId);
         if (status === "completed") {
           const projection = yield* threads.getThreadProjection(wake!.threadId);
@@ -3477,7 +3529,7 @@ describe("WakeupRunner", () => {
           type: "choice",
           outcome: null,
           text: null,
-          detail: status === "completed" ? "Last note: “Checking the quote.”" : null,
+          detail: audience === "shared" ? "Last note: “Checking the quote.”" : null,
         };
         const second = { ...first, id: `kin-quiet-run:${wake!.id}:2` };
         yield* TestClock.adjust("14 minutes");
@@ -3508,6 +3560,21 @@ describe("WakeupRunner", () => {
         } else yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(fiber);
         assert.deepStrictEqual(yield* cards, [noAnswer, { ...second, outcome: title, text }]);
+        if (status === "completed") {
+          if (audience === "owner_only") yield* joinQuietRunChat();
+          const chat = yield* ChatService.KinChatService;
+          const history = yield* chat.history(quietRunTeammate, {
+            chatId: KinChatId.make("direct"),
+            beforeSeq: 10,
+            limit: 10,
+          });
+          assert.lengthOf(history.widgets, audience === "owner_only" ? 0 : 2);
+          for (const widget of history.widgets)
+            assert.include(
+              (widget.state as { detail: string }).detail,
+              "Last note: “Checking the quote.”",
+            );
+        }
         assert.lengthOf(completions, 1);
         assert.strictEqual(completions[0]?.stopped, status === "interrupted");
       }).pipe(
