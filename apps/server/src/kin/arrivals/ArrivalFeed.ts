@@ -83,6 +83,7 @@ export class KinArrivalFeed extends Context.Service<
     readonly read: (
       orgId: KinOrgId,
       connectionId: string,
+      moneyOn?: boolean,
     ) => Effect.Effect<FeedRead, KinArrivalFeedError>;
   }
 >()("t3/kin/arrivals/ArrivalFeed/KinArrivalFeed") {}
@@ -103,6 +104,7 @@ const make = Effect.gen(function* () {
     readonly orgId: KinOrgId;
     readonly connectionId: string;
     readonly rows: ArrivalRows;
+    readonly moneyOn: boolean;
     readonly arrival: MailArrival;
     readonly parked: ArrivalStore.Parked | undefined;
     readonly now: number;
@@ -116,6 +118,7 @@ const make = Effect.gen(function* () {
       connectionId: input.connectionId,
       mail: arrival,
       knownBillers: input.rows.billers,
+      moneyOn: input.moneyOn,
       now,
     };
     // A company address already approved for bills is independent of ordinary arrival classes.
@@ -160,7 +163,7 @@ const make = Effect.gen(function* () {
   });
 
   const read = Effect.fn("KinArrivalFeed.read")(
-    function* (orgId: KinOrgId, connectionId: string) {
+    function* (orgId: KinOrgId, connectionId: string, tickMoneyOn?: boolean) {
       const found = yield* connections.changes(orgId, connectionId);
       if (found._tag === "off") return { off: true, more: false, recorded: [] } satisfies FeedRead;
       const now = yield* Clock.currentTimeMillis;
@@ -176,8 +179,10 @@ const make = Effect.gen(function* () {
       ];
       const startedOn =
         messageIds.length === 0 ? new Set<string>() : yield* activeRuleIds(orgId, connectionId);
+      const moneyOn =
+        tickMoneyOn ?? (messageIds.length > 0 && (yield* sectionOnFor(orgId, "money")));
       const approved = new Set(
-        messageIds.length === 0
+        !moneyOn || messageIds.length === 0
           ? []
           : (yield* sql<{ address: string }>`SELECT address FROM kin_bill_senders
               WHERE org_id = ${orgId} AND state = 'approved'`).map((row) => row.address),
@@ -240,6 +245,7 @@ const make = Effect.gen(function* () {
               orgId,
               connectionId,
               rows,
+              moneyOn,
               arrival: result.arrival,
               parked: retried,
               now,
@@ -251,10 +257,7 @@ const make = Effect.gen(function* () {
             const quietBankSender =
               look !== undefined &&
               typeof look.by === "string" &&
-              (hiddenBankSenders ??= yield* quietBankSenderAddresses(
-                orgId,
-                yield* sectionOnFor(orgId, "money"),
-              )).size > 0 &&
+              (hiddenBankSenders ??= yield* quietBankSenderAddresses(orgId, moneyOn)).size > 0 &&
               hiddenBankSenders.has(normalizeAddress(result.arrival.fromAddress) ?? "");
             const ordinary =
               !quietBankSender &&
@@ -382,8 +385,8 @@ const runtimeLayer = Layer.effectDiscard(
     const records = yield* Effect.serviceOption(KinRecords);
     const drain =
       Option.isSome(store) && Option.isSome(repo) && Option.isSome(hub) && Option.isSome(records)
-        ? (orgId: KinOrgId, now: number) =>
-            readBillMail(orgId, now).pipe(
+        ? (orgId: KinOrgId, now: number, moneyOn: boolean) =>
+            readBillMail(orgId, now, moneyOn).pipe(
               Effect.provideService(KinConnections, connections),
               Effect.provideService(KinEventQueue, queue),
               Effect.provideService(KinAttachmentStore, store.value),
@@ -393,6 +396,7 @@ const runtimeLayer = Layer.effectDiscard(
             )
         : () => Effect.logDebug("Kin bill mail reader services are unavailable");
     const due = new Map<string, { readonly at: number; readonly failures: number }>();
+    let moneyWasOff = new Set<KinOrgId>();
     let pruned = Number.NEGATIVE_INFINITY;
     yield* ticks.register(
       "kin-arrivals",
@@ -415,14 +419,33 @@ const runtimeLayer = Layer.effectDiscard(
           WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL AND paused_at IS NULL
             AND state = 'active' AND person_id IS NULL
           ORDER BY org_id, created_at, connection_id`.pipe(NodeSqliteClient.readOnly);
-        const companies = new Set<string>();
+        const companies = new Map<KinOrgId, { moneyOn: boolean; billWorkDue: boolean } | null>();
         for (const { orgId, connectionId } of rows) {
+          const company = KinOrgId.make(orgId);
+          let scan = companies.get(company);
+          if (scan === undefined) {
+            scan = yield* sectionOnFor(company, "money").pipe(
+              // A waiting bill can resume before the next mailbox read is due.
+              Effect.map((moneyOn) => ({
+                moneyOn,
+                billWorkDue: moneyOn && moneyWasOff.has(company),
+              })),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin couldn't read a company's Money setting", {
+                  orgId,
+                  cause,
+                }).pipe(Effect.as(null)),
+              ),
+            );
+            companies.set(company, scan);
+          }
+          if (scan === null) continue;
           const key = `${orgId}\0${connectionId}`;
           const next = due.get(key);
           if (next !== undefined && now < next.at) continue;
-          const exit = yield* Effect.exit(feed.read(KinOrgId.make(orgId), connectionId));
+          const exit = yield* Effect.exit(feed.read(company, connectionId, scan.moneyOn));
           if (Exit.isSuccess(exit)) {
-            companies.add(orgId);
+            scan.billWorkDue = true;
             due.set(key, {
               at: now + (exit.value.more ? 0 : FEED_EVERY_MS),
               failures: 0,
@@ -441,15 +464,24 @@ const runtimeLayer = Layer.effectDiscard(
             cause: exit.cause,
           });
         }
-        for (const orgId of companies)
+        const moneyOff = new Set<KinOrgId>();
+        for (const [company, scan] of companies) {
+          if (scan === null) {
+            if (moneyWasOff.has(company)) moneyOff.add(company);
+            continue;
+          }
+          const { moneyOn, billWorkDue } = scan;
+          if (!moneyOn) moneyOff.add(company);
+          if (!billWorkDue) continue;
           yield* Effect.gen(function* () {
-            const company = KinOrgId.make(orgId);
-            yield* offer(company, now).pipe(
+            yield* offer(company, now, moneyOn).pipe(
               Effect.provideService(KinChatService, chat),
               Effect.catch(() => Effect.logWarning("Kin couldn't offer billing sender cards")),
             );
-            yield* drain(company, now);
+            yield* drain(company, now, moneyOn);
           }).pipe(Effect.catchCause(() => Effect.logWarning("Kin couldn't drain bill mail")));
+        }
+        moneyWasOff = moneyOff;
       }).pipe(Effect.catch((cause) => Effect.logWarning("Kin arrival scan failed", { cause }))),
     );
   }),
