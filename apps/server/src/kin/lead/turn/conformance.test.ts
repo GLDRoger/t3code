@@ -30,7 +30,7 @@ import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
 import type { Answer, Observed, ProviderFake } from "./conformance.testkit.ts";
 import { KIN_PROVIDERS } from "./providers.ts";
 import { acpFake, antigravityFake, makeAcpFake } from "./providers/acp.testkit.ts";
-import { claudeFake } from "./providers/claude.testkit.ts";
+import { claudeFake, FIXTURE_NODE_BIN } from "./providers/claude.testkit.ts";
 import { codexFake } from "./providers/codex.testkit.ts";
 import {
   BILLS_SEAT_INSTRUCTIONS,
@@ -110,7 +110,8 @@ const open = <Session extends Observed>(
     ),
   );
 
-const signed = (stateDir: string) => `${stateDir}/kin/gh-sign:${PINNED}:/usr/bin`;
+const signed = (stateDir: string) =>
+  `${stateDir}/kin/gh-sign:${PINNED}:${FIXTURE_NODE_BIN}:/usr/bin`;
 const asked = (answer: Effect.Effect<Answer>) => answer;
 const layer = (prefix: string) =>
   ServerConfig.layerTest(process.cwd(), { prefix }).pipe(Layer.provideMerge(NodeServices.layer));

@@ -10,6 +10,10 @@ import { claude } from "./claude.ts";
 
 const Runner = ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
 
+/** The Node the GitHub guard resolves, the same wherever the tests run; its folder joins PATH. */
+export const FIXTURE_NODE_BIN = "/kin-home/node/bin";
+export const FIXTURE_NODE = `${FIXTURE_NODE_BIN}/node`;
+
 export const captureClaudeOptions = (
   { thread, cwd, model, environment }: Parameters<ProviderFake["open"]>[0],
   toolLookup = true,
@@ -55,6 +59,7 @@ export const captureClaudeOptions = (
     }).pipe(
       Effect.provide(claude.install(base)),
       Effect.provideService(HostProcess.Environment, environment),
+      Effect.provideService(HostProcess.ExecutablePath, FIXTURE_NODE),
       Effect.orDie,
     );
     const [options] = opened;

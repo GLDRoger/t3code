@@ -31,7 +31,7 @@ import {
   OWNER_SEAT_NO_SUBAGENTS,
   OWNER_SEAT_OFF,
 } from "./claude.ts";
-import { captureClaudeOptions } from "./claude.testkit.ts";
+import { captureClaudeOptions, FIXTURE_NODE, FIXTURE_NODE_BIN } from "./claude.testkit.ts";
 import { BILLS_SEAT_INSTRUCTIONS, kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { KinShellStartup } from "../shellStartup.ts";
 import { KinSessionContext } from "../sessionContext.ts";
@@ -684,6 +684,7 @@ it.effect(
           Effect.provide(
             claude.install(base).pipe(
               Layer.provide(Layer.succeed(HostProcess.HomeDirectory, stateDir)),
+              Layer.provide(Layer.succeed(HostProcess.ExecutablePath, FIXTURE_NODE)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -747,7 +748,7 @@ it.effect(
       assert.deepStrictEqual(fullEnv, {
         TMPDIR: fullEnv?.TMPDIR,
         npm_config_cache: `${fullEnv?.TMPDIR}/npm-cache`,
-        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
         HOME: "/home/kin",
         KIN_AGENT_NAME: "Tech lead",
         ENABLE_TOOL_SEARCH: "true",
@@ -823,7 +824,10 @@ it.effect(
       assert.notProperty(full, "skills");
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
-      assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
+      assert.strictEqual(
+        full?.env?.PATH,
+        `${signing}:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
+      );
       assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
       assert.strictEqual(full?.env?.ENABLE_TOOL_SEARCH, "true");
       assert.include(
@@ -1255,6 +1259,7 @@ it.effect(
           Effect.provide(
             claude.install(base).pipe(
               Layer.provide(Layer.succeed(HostProcess.HomeDirectory, `${scratch}-host-home`)),
+              Layer.provide(Layer.succeed(HostProcess.ExecutablePath, FIXTURE_NODE)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -1287,7 +1292,7 @@ it.effect(
       const { stateDir } = yield* ServerConfig.ServerConfig;
       assert.strictEqual(
         child?.env?.PATH,
-        `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+        `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
       );
       assert.deepStrictEqual(child?.settingSources, []);
       assert.isTrue(child?.strictMcpConfig);
@@ -1297,7 +1302,7 @@ it.effect(
       assert.deepStrictEqual(child?.env, {
         TMPDIR: child?.env?.TMPDIR,
         npm_config_cache: `${child?.env?.TMPDIR}/npm-cache`,
-        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
         HOME: "/home/kin",
         KIN_AGENT_NAME: "Lead",
         ENABLE_TOOL_SEARCH: "true",
