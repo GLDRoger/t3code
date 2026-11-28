@@ -7,19 +7,21 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
+import { billingHint, isBillFile } from "./MailSignals.ts";
 import {
   ACTIVITY_MAIL,
   AGENDA_LIMIT,
   isPlainAddress,
   type MailAgendaEvent,
   type MailArrival,
+  type MailAuthResults,
   type MailCalendarEvent,
   type MailContext,
   type MailEvent,
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText, withoutGmailVerdicts } from "./MailText.ts";
+import { htmlToText } from "./MailText.ts";
 import {
   agendaPages,
   agendaTime,
@@ -155,14 +157,18 @@ const recipientLine = (message: unknown, name: string) => {
   const all = list(field(message, name)).flatMap((one) => nameOf(one) ?? []);
   return all.length === 0 ? null : all.join(", ");
 };
+const headersNamed = (message: unknown, name: string) =>
+  list(field(message, "internetMessageHeaders")).filter(
+    (one) => text(field(one, "name"))?.toLowerCase() === name.toLowerCase(),
+  );
 const internetHeader = (message: unknown, name: string) =>
-  list(field(message, "internetMessageHeaders"))
-    .filter((one) => text(field(one, "name"))?.toLowerCase() === name.toLowerCase())
-    .flatMap((one) => text(field(one, "value")) ?? []);
-// Microsoft 365 names no receiver in its results, so they can count against a sender but never
-// vouch for one, and a header claiming Gmail's name was written by someone else.
-const authResultsOf = (message: unknown) =>
-  withoutGmailVerdicts(internetHeader(message, "Authentication-Results"));
+  headersNamed(message, name).flatMap((one) => text(field(one, "value")) ?? []);
+const authResultsOf = (message: unknown): MailAuthResults => ({
+  receiver: "microsoft",
+  results: headersNamed(message, "Authentication-Results").map(
+    (one) => text(field(one, "value")) ?? "",
+  ),
+});
 
 const bodyText = (message: unknown) => {
   const content = text(field(message, "body", "content")) ?? "";
@@ -587,6 +593,7 @@ const inboxChanges = Effect.fn("KinMicrosoft.inboxChanges")(function* (
 const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
   context: MailContext,
   messageId: string,
+  partHints: (arrival: MailArrival) => boolean = () => true,
 ) {
   const url = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
   const found = yield* api(context, url, {
@@ -610,7 +617,7 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
   const from = field(message, "from");
   const fromAddress = addressOf(from);
-  return {
+  const arrival = {
     messageId,
     threadId,
     receivedAt,
@@ -626,6 +633,18 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     ...automationOf(message),
     hasFile: field(message, "hasAttachments") === true,
   } satisfies MailArrival;
+  if (!partHints(arrival)) return arrival;
+  const billing = billingHint(arrival);
+  if (!arrival.hasFile || billing === undefined || billing.billSubject) return arrival;
+  const attachments = yield* api(context, `${url}/attachments`, {
+    params: { $select: "name,contentType" },
+  });
+  const hasBillFile = list(field(attachments, "value")).some(
+    (part) =>
+      field(part, "@odata.type") === "#microsoft.graph.fileAttachment" &&
+      isBillFile(text(field(part, "name")), text(field(part, "contentType"))),
+  );
+  return hasBillFile ? { ...arrival, hasBillFile: true as const } : arrival;
 });
 
 const profile = (http: HttpClient.HttpClient, token: string) =>

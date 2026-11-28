@@ -3,7 +3,7 @@
  * text dropped, and bodies of sign-in and security mail withheld. All of it stays outside text.
  */
 
-import { isPlainAddress } from "./MailProvider.ts";
+import { isPlainAddress, type MailAuthResults } from "./MailProvider.ts";
 
 const ENTITIES: Record<string, string> = {
   amp: "&",
@@ -70,16 +70,10 @@ export const looksLikeSignInMail = (subject: string, body: string) =>
 
 export const WITHHELD = "[body withheld: this looks like a sign-in or security message]";
 
-export const senderVerdictForAddress = (
-  results: ReadonlyArray<string>,
-  fromAddress: string | null,
-) => {
-  if (results.length > 0) {
-    const from = fromAddress?.trim().toLowerCase();
-    const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
-    return senderVerdict(results, domain);
-  }
-  return "not checked";
+export const senderVerdictForAddress = (results: MailAuthResults, fromAddress: string | null) => {
+  const from = fromAddress?.trim().toLowerCase();
+  const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
+  return senderVerdict(results, domain);
 };
 
 type Verdict = {
@@ -119,36 +113,40 @@ const segments = (header: string) => {
 const PROPERTY = /^\s*([a-z0-9_.-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s"]+)/;
 
 const GMAIL = /^\s*mx\.google\.com\s*;/i;
+const METHOD_RESULT = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/;
 
-/** Drops results that claim to be Gmail's, for a mailbox that isn't Gmail. */
-export const withoutGmailVerdicts = (results: ReadonlyArray<string>) =>
-  results.filter((header) => !GMAIL.test(header));
+// Keep sender-controlled comments and quoted properties out of the method results.
+const parseVerdicts = (header: string) =>
+  segments(header).flatMap((segment): Array<Verdict> => {
+    const head = METHOD_RESULT.exec(segment);
+    if (head === null) return [];
+    const props = new Map<string, string>();
+    let rest = segment.slice(head[0].length);
+    for (let found = PROPERTY.exec(rest); found !== null; found = PROPERTY.exec(rest)) {
+      const value = found[2]!;
+      props.set(
+        found[1]!,
+        value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/g, "$1") : value,
+      );
+      rest = rest.slice(found[0].length);
+    }
+    return [{ method: head[1]!, result: head[2]!, props }];
+  });
 
-/**
- * Gmail puts its own `Authentication-Results` above any results carried with the message, naming
- * itself first. Only that header can vouch for a sender; a first header without it still counts
- * against one, since a failure can only make Kin stricter. Read as RFC 8601, never as loose text.
- */
-const receiverVerdicts = (results: ReadonlyArray<string>) => {
-  const header = (results[0] ?? "").toLowerCase();
+const receiverVerdicts = (auth: MailAuthResults) => {
+  if ("receiver" in auth) {
+    if (auth.results.length !== 1) return { vouches: false, verdicts: [] };
+    const header = auth.results[0]!.toLowerCase();
+    const verdicts = parseVerdicts(header);
+    // Microsoft stamps inbound mail. A second result makes the receiver's stamp ambiguous.
+    const vouches =
+      METHOD_RESULT.test(header) && verdicts.some(({ method }) => method === "compauth");
+    return { vouches, verdicts };
+  }
+  // Gmail puts its own named header above any results carried with the message.
+  const header = (auth[0] ?? "").toLowerCase();
   const receiver = GMAIL.exec(header);
-  const verdicts = segments(receiver === null ? header : header.slice(receiver[0].length)).flatMap(
-    (segment): Array<Verdict> => {
-      const head = /^\s*([a-z0-9_-]+)(?:\/\d+)?\s*=\s*([a-z0-9_-]+)/.exec(segment);
-      if (head === null) return [];
-      const props = new Map<string, string>();
-      let rest = segment.slice(head[0].length);
-      for (let found = PROPERTY.exec(rest); found !== null; found = PROPERTY.exec(rest)) {
-        const value = found[2]!;
-        props.set(
-          found[1]!,
-          value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/g, "$1") : value,
-        );
-        rest = rest.slice(found[0].length);
-      }
-      return [{ method: head[1]!, result: head[2]!, props }];
-    },
-  );
+  const verdicts = parseVerdicts(receiver === null ? header : header.slice(receiver[0].length));
   return { vouches: receiver !== null, verdicts };
 };
 
@@ -166,7 +164,7 @@ const dmarcPass = (verdicts: ReadonlyArray<Verdict>, domain: string) =>
   );
 
 /** The receiving server's DMARC pass for exactly this From domain. */
-export const dmarcPassedFor = (results: ReadonlyArray<string>, domain: string) => {
+export const dmarcPassedFor = (results: MailAuthResults, domain: string) => {
   const { vouches, verdicts } = receiverVerdicts(results);
   return vouches && dmarcPass(verdicts, domain);
 };
@@ -195,13 +193,24 @@ const verdictOf = (verdicts: ReadonlyArray<Verdict>, fromDomain: string | null) 
 };
 
 /**
- * Whether the receiving server vouched for a From domain (ASCII, lower case): DMARC passed for it,
- * or DKIM and SPF both passed for it or a domain it shares an owner with.
+ * DMARC passed for the From domain (ASCII, lower case), or for Gmail only, aligned DKIM and SPF
+ * both passed.
  */
-export const senderVerdict = (results: ReadonlyArray<string>, fromDomain: string | null) => {
+export const senderVerdict = (results: MailAuthResults, fromDomain: string | null) => {
+  const microsoft = "receiver" in results;
+  if (microsoft && results.results.length > 1) {
+    return results.results.some(
+      (header) => verdictOf(parseVerdicts(header.toLowerCase()), fromDomain) === "failed",
+    )
+      ? ("failed" as const)
+      : ("not checked" as const);
+  }
   const { vouches, verdicts } = receiverVerdicts(results);
   const verdict = verdictOf(verdicts, fromDomain);
-  return verdict === "passed" && !vouches ? ("not checked" as const) : verdict;
+  if (verdict !== "passed") return verdict;
+  return vouches && (!microsoft || (fromDomain !== null && dmarcPass(verdicts, fromDomain)))
+    ? ("passed" as const)
+    : ("not checked" as const);
 };
 
 type Part = {

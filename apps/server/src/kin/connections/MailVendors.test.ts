@@ -694,6 +694,10 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
     ],
   ];
 
+const microsoftPass =
+  "spf=pass smtp.mailfrom=client.example; dmarc=pass action=none header.from=client.example; compauth=pass reason=100";
+const extraPass = "dmarc=pass header.from=client.example; compauth=pass";
+
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
 
@@ -704,7 +708,7 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
         "mx.google.com; spf=pass (dmarc=pass+header.from=client.example@else.example); dmarc=fail header.from=client.example",
       ],
       "failed",
-      "not checked",
+      "failed",
     ],
     [
       "a pass in a quoted property",
@@ -739,10 +743,29 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
       "not checked",
     ],
     [
-      "a Microsoft-shaped DMARC pass",
+      "a Microsoft-shaped DMARC pass without compauth",
       [
         "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
       ],
+      "not checked",
+      "not checked",
+    ],
+    ["one Microsoft pass with compauth", [microsoftPass], "not checked", "passed"],
+    [
+      "two passes with the Microsoft pass last",
+      [extraPass, microsoftPass],
+      "not checked",
+      "not checked",
+    ],
+    [
+      "two passes with the Microsoft pass first",
+      [microsoftPass, extraPass],
+      "not checked",
+      "not checked",
+    ],
+    [
+      "a receiver name on otherwise Microsoft-shaped results",
+      [`mx.microsoft.com; ${microsoftPass}`],
       "not checked",
       "not checked",
     ],

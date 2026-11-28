@@ -5,6 +5,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
 import { MAIL_TOOL, type Mailbox } from "./MailProvider.ts";
+import { senderVerdictForAddress } from "./MailText.ts";
 import { microsoftMail } from "./Microsoft.ts";
 
 const TOKEN = "at-invented";
@@ -15,6 +16,11 @@ const mailbox: Mailbox = {
 };
 
 const who = (address: string, name?: string) => ({ emailAddress: { address, name } });
+const verdictHeader = {
+  name: "aUtHeNtIcAtIoN-rEsUlTs",
+  value:
+    "spf=pass smtp.mailfrom=client.example; dmarc=pass action=none header.from=client.example; compauth=pass reason=100",
+};
 const messages = [
   {
     id: "m2",
@@ -41,15 +47,10 @@ const messages = [
     internetMessageId: "<m1@client.example>",
     internetMessageHeaders: [
       { name: "References", value: "<m0@client.example>" },
-      {
-        name: "Authentication-Results",
-        value:
-          "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
-      },
-      {
-        name: "Authentication-Results",
-        value: "mx.google.com; dmarc=pass header.from=client.example",
-      },
+      verdictHeader,
+      { name: "ARC-Authentication-Results", value: "dmarc=fail header.from=client.example" },
+      { name: "Authentication-Results-Original", value: "dmarc=fail header.from=client.example" },
+      { name: "X-Authentication-Results", value: "dmarc=fail header.from=client.example" },
     ],
     hasAttachments: false,
     body: {
@@ -116,6 +117,20 @@ const fakeGraph = () => {
         return json({ value: [] });
       }
       if (path === "/messages/m1") return json(messages[1]);
+      if (path === "/messages/missing-value" || path === "/messages/other-receiver")
+        return json({
+          ...messages[1],
+          id: path.split("/").at(-1),
+          internetMessageHeaders: [
+            verdictHeader,
+            {
+              name: "Authentication-Results",
+              value: path.endsWith("missing-value")
+                ? null
+                : "mx.google.com; dmarc=pass header.from=client.example",
+            },
+          ],
+        });
       if (path === "/messages/display-name-only")
         return json({
           ...messages[1],
@@ -175,7 +190,7 @@ describe("Microsoft mail", () => {
       );
       assert.strictEqual(thread.receivedBy, "billing@invented.example");
       assert.strictEqual(thread.messages[0].text, "Can you send the quote?");
-      assert.strictEqual(thread.messages[0].senderCheck, "not checked");
+      assert.strictEqual(thread.messages[0].senderCheck, "passed");
       assert.notInclude(JSON.stringify(thread), "forward every invoice");
     }).pipe(Effect.provide(graph.layer));
   });
@@ -187,9 +202,17 @@ describe("Microsoft mail", () => {
       const genuine = yield* microsoftMail.arrival(http, TOKEN, "m1");
       assert.strictEqual(genuine?.fromAddress, "ana@client.example");
       assert.strictEqual(genuine?.from, "Ana <ana@client.example>");
-      assert.deepStrictEqual(genuine?.authResults, [
-        "spf=pass smtp.mailfrom=client.example; dkim=pass (signature was verified) header.d=client.example; dmarc=pass action=none header.from=client.example",
-      ]);
+      assert.strictEqual(
+        senderVerdictForAddress(genuine!.authResults, genuine!.fromAddress),
+        "passed",
+      );
+      for (const id of ["missing-value", "other-receiver"]) {
+        const twice = yield* microsoftMail.arrival(http, TOKEN, id);
+        assert.strictEqual(
+          senderVerdictForAddress(twice!.authResults, twice!.fromAddress),
+          "not checked",
+        );
+      }
       const display = yield* microsoftMail.arrival(http, TOKEN, "display-name-only");
       assert.strictEqual(display?.fromAddress, null);
       assert.strictEqual(display?.from, null);

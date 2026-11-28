@@ -1,3 +1,4 @@
+import type { MailAuthResults } from "../../connections/MailProvider.ts";
 import { normalizeAddress } from "../../connections/MailSignals.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
@@ -51,7 +52,7 @@ export interface AlertMail {
   readonly subject: string;
   /** The mail's `Date` header. */
   readonly date: string | null;
-  readonly authResults: ReadonlyArray<string>;
+  readonly authResults: MailAuthResults;
   readonly text: string;
 }
 

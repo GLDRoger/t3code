@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { htmlToText, looksLikeSignInMail, messageBody, senderVerdict } from "./MailText.ts";
+import {
+  dmarcPassedFor,
+  htmlToText,
+  looksLikeSignInMail,
+  messageBody,
+  senderVerdict,
+} from "./MailText.ts";
 
 const b64 = (text: string) => Buffer.from(text).toString("base64url");
 
@@ -93,5 +99,43 @@ describe("MailText", () => {
     ["no header", [], "not checked"],
   ])("reads the receiving server's verdict for %s", (_name, results, verdict) => {
     expect(senderVerdict(results, "harborbank.example")).toBe(verdict);
+  });
+
+  const domain = "harborbank.example";
+  const pass = `  spf=pass smtp.mailfrom=${domain}; dmarc=pass action=none header.from=${domain}; compauth=pass reason=100`;
+  const fail = `spf=fail smtp.mailfrom=${domain}; dmarc=fail action=none header.from=${domain}; compauth=fail reason=000`;
+  const otherPass = `dmarc=pass header.from=${domain}; compauth=pass reason=100`;
+
+  it.each([
+    ["one Microsoft header", [pass], "passed"],
+    ["a second pass first", [otherPass, pass], "not checked"],
+    ["a second pass last", [pass, otherPass], "not checked"],
+    ["a Gmail-named receiver", [`mx.google.com; ${pass}`], "not checked"],
+    ["a Microsoft-named receiver", [`mx.microsoft.com; ${pass}`], "not checked"],
+    ["missing compauth", [pass.split("; compauth=")[0]!], "not checked"],
+    [
+      "compauth in a comment",
+      [pass.replace("; compauth=pass reason=100", " (compauth=pass)")],
+      "not checked",
+    ],
+    [
+      "only aligned SPF and DKIM",
+      [`spf=pass smtp.mailfrom=${domain}; dkim=pass header.d=${domain}; compauth=pass`],
+      "not checked",
+    ],
+    [
+      "DMARC for a subdomain",
+      [pass.replace(`header.from=${domain}`, `header.from=mail.${domain}`)],
+      "not checked",
+    ],
+    ["one failure", [fail], "failed"],
+    ["a failure first", [fail, pass], "failed"],
+    ["a failure last", [pass, fail], "failed"],
+    ["no header", [], "not checked"],
+  ])("reads Microsoft sender evidence with %s", (_name, results, verdict) => {
+    const auth = { receiver: "microsoft" as const, results };
+    expect(senderVerdict(auth, domain)).toBe(verdict);
+    expect(dmarcPassedFor(auth, domain)).toBe(verdict === "passed");
+    expect(dmarcPassedFor(auth, `other.${domain}`)).toBe(false);
   });
 });
