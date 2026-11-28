@@ -1725,6 +1725,42 @@ describe("reminder and scheduled task cards", () => {
       zone,
     )!;
     expect(routine.lines.at(-1)).toBe("Asked by someone who has left.");
+    // The asker isn't told they asked; anyone else, or a viewer not yet known, is.
+    const rhea = { askedBy: { personId: "rhea", name: "Rhea Kapoor" } };
+    const forms = [
+      reminder({ status: "snoozed", snoozedUntil: "2026-11-13T03:40:00.000Z", ...rhea }),
+      reminder({ status: "due", ...rhea }),
+      reminder({ status: "done", ...rhea }),
+      reminder({ status: "due", ...rhea }, { closedAt: "2026-11-13T04:00:00.000Z" }),
+    ];
+    const seenBy = (card: KinWidget, viewer: string | null) =>
+      kinReminderCardView(
+        card,
+        zone,
+        undefined,
+        viewer === null ? null : KinPersonId.make(viewer),
+      )!;
+    for (const card of forms) {
+      for (const other of [seenBy(card, "meera"), seenBy(card, null)]) {
+        expect(other.lines.at(-1)).toBe("Asked by Rhea Kapoor.");
+        expect(other.accessibilityLabel).toContain("Asked by Rhea Kapoor.");
+      }
+      const own = seenBy(card, "rhea");
+      expect(own.lines).not.toContain("Asked by Rhea Kapoor.");
+      expect(own.accessibilityLabel).not.toContain("Asked by");
+    }
+    const drawn = kinCardView(
+      forms[1],
+      HOST,
+      known(),
+      null,
+      undefined,
+      undefined,
+      KinPersonId.make("rhea"),
+    );
+    expect(drawn.kind === "deferral" && drawn.deferral.lines).toEqual([
+      "Due Fri, Nov 13, 9:00 AM.",
+    ]);
     // Slots skipped while the run before was still going are counted on it.
     const busy = kinScheduledTaskCardView(
       scheduled({
