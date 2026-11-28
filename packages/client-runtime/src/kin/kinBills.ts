@@ -110,7 +110,8 @@ export const KIN_BILLS = {
     hint: "What Kin read is filled in. Fill in what's missing, and it's kept as an expense.",
     currency: "Currency",
     needed: "Needed",
-    receipt: "Receipt",
+    /** Each needed figure as the "Still needed" line names it. */
+    need: { vendor: "who was paid", date: "date", amount: "amount" },
     keep: "Keep",
     problem: {
       vendor: "Enter who was paid.",
@@ -200,6 +201,10 @@ export function kinBillFileRefusal(file: {
 
 export const kinBillIsPdf = (file: { readonly name: string; readonly mimeType: string }) =>
   file.mimeType.toLowerCase().startsWith("application/pdf") || extensionOf(file.name) === "pdf";
+
+/** Any file that is not a picture (a PDF, a mailed bill's text) shows as a file, never drawn. */
+export const kinBillAsFile = (file: { readonly name: string; readonly mimeType: string }) =>
+  kinBillIsPdf(file) || !file.mimeType.toLowerCase().startsWith("image/");
 
 // One bill on the review list
 
@@ -446,7 +451,7 @@ export function kinBillRowView(
     file: row.file,
     picture: row.preview ?? row.file,
     pdf: kinBillIsPdf(row.file),
-    asFile: kinBillIsPdf(row.file) || !row.file.mimeType.toLowerCase().startsWith("image/"),
+    asFile: kinBillAsFile(row.file),
     name:
       vendor !== null && amount !== null
         ? `${vendor}, ${amount}`
@@ -1080,6 +1085,21 @@ const NEEDED = ["vendor", "date", "amount"] as const;
 export const kinBillFixNeeds = (draft: KinBillFixDraft) =>
   NEEDED.filter((key) => draft[key].trim() === "");
 
+/** One line under the bill's picture naming what the reader left empty; null when nothing is. */
+export function kinBillFixStillNeeded(needs: ReadonlyArray<(typeof NEEDED)[number]>) {
+  const words = needs.map((key) => KIN_BILLS.fix.need[key]);
+  if (words.length === 0) return null;
+  const last = words.at(-1);
+  const list = words.length === 1 ? last : `${words.slice(0, -1).join(", ")} and ${last}`;
+  return `Still needed: ${list}.`;
+}
+
+/** The field the form opens on: the first one still needed, else none. */
+export const kinBillFixFirstNeed = (draft: KinBillFixDraft) => kinBillFixNeeds(draft)[0] ?? null;
+
+/** A field a refusal of the form is about, so it is shown beside that field. */
+export type KinBillFixField = (typeof NEEDED)[number] | "tax";
+
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** A figure as the host reads one off a bill: a plain number in its currency. */
@@ -1095,18 +1115,22 @@ export function kinBillFixInput(
   draft: KinBillFixDraft,
 ):
   | { readonly ok: true; readonly entered: KinBillRead }
-  | { readonly ok: false; readonly problem: string } {
+  | { readonly ok: false; readonly field: KinBillFixField; readonly problem: string } {
   const { problem } = KIN_BILLS.fix;
+  const refuse = (field: KinBillFixField) => ({
+    ok: false as const,
+    field,
+    problem: problem[field],
+  });
   const vendor = draft.vendor.replace(/\s+/gu, " ").trim().slice(0, 200);
-  if (vendor === "") return { ok: false, problem: problem.vendor };
-  if (!DAY.test(draft.date.trim())) return { ok: false, problem: problem.date };
+  if (vendor === "") return refuse("vendor");
+  if (!DAY.test(draft.date.trim())) return refuse("date");
   const amount = parseKinMoney(draft.amount, draft.currency);
-  if (!("money" in amount) || amount.money.minor <= 0)
-    return { ok: false, problem: problem.amount };
+  if (!("money" in amount) || amount.money.minor <= 0) return refuse("amount");
   const { currency } = amount.money;
   const tax = draft.tax.trim() === "" ? null : parseKinMoney(draft.tax, currency);
   if (tax !== null && (!("money" in tax) || tax.money.currency !== currency || tax.money.minor < 0))
-    return { ok: false, problem: problem.tax };
+    return refuse("tax");
   const number = blank(draft.number);
   return {
     ok: true,

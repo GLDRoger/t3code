@@ -22,10 +22,14 @@ import { KIN_BILL_TO, kinBillToOffered } from "@t3tools/client-runtime/kin/kinBi
 import {
   KIN_BILLS,
   kinBillCurrencies,
+  kinBillFixFirstNeed,
   kinBillFixInput,
   kinBillFixNeeds,
+  kinBillFixStillNeeded,
   kinBillName,
   type KinBillFixDraft,
+  type KinBillFixField,
+  type KinBillRowView,
 } from "@t3tools/client-runtime/kin/kinBills";
 import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
@@ -37,15 +41,15 @@ import { KIN_AMOUNT_SLIP } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkDayOf } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import {
-  KIN_DEFAULT_HOME_CURRENCY,
-  type KinBillRow,
-  type KinFileRef,
-  type KinRecordKey,
-} from "@t3tools/contracts";
-import { ChevronDownIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { KIN_DEFAULT_HOME_CURRENCY, type KinFileRef, type KinRecordKey } from "@t3tools/contracts";
+import { ChevronDownIcon, FileIcon } from "lucide-react";
+import { useId, useRef, useState } from "react";
 
+import {
+  ExpandedImageDialogHost,
+  openExpandedImagePreview,
+} from "../components/chat/ExpandedImageDialog";
+import { AttachmentImage } from "../components/media/AttachmentImage";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import {
   AlertDialog,
@@ -111,9 +115,12 @@ function FormDialog(props: {
   readonly saveLabel: string;
   readonly onSave: () => void;
   readonly onClose: () => void;
+  /** The field the form opens on, instead of its first control. */
+  readonly initialFocus?: () => HTMLElement | null;
   readonly children: React.ReactNode;
 }) {
   const [asking, setAsking] = useState(false);
+  const { initialFocus } = props;
   const close = () => {
     if (props.busy) return;
     if (props.typed) setAsking(true);
@@ -127,7 +134,10 @@ function FormDialog(props: {
           if (!open) close();
         }}
       >
-        <DialogPopup className="max-w-2xl">
+        <DialogPopup
+          className="max-w-2xl"
+          {...(initialFocus === undefined ? {} : { initialFocus: () => initialFocus() ?? true })}
+        >
           <form
             className="contents"
             onSubmit={(event) => {
@@ -182,9 +192,14 @@ function FormDialog(props: {
   );
 }
 
-function Problem(props: { readonly text: string | null }) {
+function Problem(props: { readonly text: string | null; readonly seen?: boolean }) {
   return props.text === null ? null : (
-    <Alert variant="error">
+    <Alert
+      variant="error"
+      {...(props.seen === true
+        ? { ref: (node: HTMLElement | null) => node?.scrollIntoView({ block: "nearest" }) }
+        : {})}
+    >
       <AlertDescription>{props.text}</AlertDescription>
     </Alert>
   );
@@ -613,12 +628,15 @@ function CurrencyPick(props: {
 }
 
 /**
- * Fix and keep: a bill not read cleanly, every figure read filled in and each one still needed
- * marked, kept as an expense with the person's figures on save.
+ * Fix and keep: a bill not read cleanly, its picture above every figure read filled in and each
+ * one still needed marked, kept as an expense with the person's figures on save.
  */
 export function KinBillFixDialog(
   props: KinWorkTarget & {
-    readonly row: KinBillRow;
+    readonly view: KinBillRowView;
+    /** The bill's smaller copy the form draws, and what opens on a tap. */
+    readonly src: string | null;
+    readonly original: string | null;
     readonly start: KinBillFixDraft;
     readonly categories: ReadonlyArray<{ readonly value: string; readonly label: string }>;
     readonly home: string;
@@ -626,9 +644,15 @@ export function KinBillFixDialog(
   },
 ) {
   const [draft, setDraft] = useState(props.start);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<{
+    readonly field: KinBillFixField;
+    readonly text: string;
+  } | null>(null);
   const fix = useKinBillFix(props);
-  const needs = new Set<string>(kinBillFixNeeds(draft));
+  const needList = kinBillFixNeeds(draft);
+  const needs = new Set<string>(needList);
+  const [opensOn] = useState(() => kinBillFixFirstNeed(props.start));
+  const inputs = useRef<Partial<Record<KinBillFixField, HTMLInputElement | null>>>({});
   const copy = KIN_BILLS.fix;
   const field = KIN_BILLS.field;
   const ids = {
@@ -652,11 +676,22 @@ export function KinBillFixDialog(
       ) : null}
     </Label>
   );
+  const input = (key: KinBillFixField) => ({
+    id: ids[key],
+    ref: (node: HTMLInputElement | null) => {
+      inputs.current[key] = node;
+    },
+    "aria-invalid": problem?.field === key ? true : undefined,
+  });
+  const beside = (key: KinBillFixField) =>
+    problem?.field === key ? <Problem text={problem.text} seen /> : null;
   const save = async () => {
     const checked = kinBillFixInput(draft);
-    if (!checked.ok) return setProblem(checked.problem);
-    if (await fix.save(props.row.sha256, checked.entered)) props.onClose();
+    if (!checked.ok) return setProblem({ field: checked.field, text: checked.problem });
+    if (await fix.save(props.view.row.sha256, checked.entered)) props.onClose();
   };
+  const previewKey = `kin-bill-fix:${props.view.key}`;
+  const stillNeeded = kinBillFixStillNeeded(needList);
   return (
     <FormDialog
       title={copy.title}
@@ -667,33 +702,40 @@ export function KinBillFixDialog(
       saveLabel={copy.keep}
       onSave={() => void save()}
       onClose={props.onClose}
+      {...(opensOn === null ? {} : { initialFocus: () => inputs.current[opensOn] ?? null })}
     >
+      <BillPicture {...props} previewKey={previewKey} />
+      {stillNeeded === null ? null : (
+        <p className="text-sm text-warning-foreground">{stillNeeded}</p>
+      )}
       <div className="flex flex-col gap-1.5">
         {label("vendor", field.vendor)}
         <Input
-          id={ids.vendor}
+          {...input("vendor")}
           maxLength={200}
           autoComplete="off"
           aria-required
           value={draft.vendor}
           onChange={(event) => set({ vendor: event.target.value })}
         />
+        {beside("vendor")}
       </div>
       <div className="flex flex-col gap-1.5">
         {label("date", field.date)}
         <Input
-          id={ids.date}
+          {...input("date")}
           type="date"
           aria-required
           value={draft.date}
           onChange={(event) => set({ date: event.target.value })}
         />
+        {beside("date")}
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           {label("amount", field.amount)}
           <Input
-            id={ids.amount}
+            {...input("amount")}
             autoComplete="off"
             aria-required
             placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
@@ -709,11 +751,12 @@ export function KinBillFixDialog(
           onPick={(currency) => set({ currency })}
         />
       </div>
+      {beside("amount")}
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           {label("tax", field.tax)}
           <Input
-            id={ids.tax}
+            {...input("tax")}
             autoComplete="off"
             value={draft.tax}
             onChange={(event) => set({ tax: event.target.value })}
@@ -730,6 +773,7 @@ export function KinBillFixDialog(
           />
         </div>
       </div>
+      {beside("tax")}
       {props.categories.length === 0 ? null : (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={ids.category}>{field.category}</Label>
@@ -756,11 +800,61 @@ export function KinBillFixDialog(
           </Select>
         </div>
       )}
-      <p className="text-sm text-muted-foreground">
-        {copy.receipt}: {kinBillName(props.row)}
-      </p>
-      <Problem text={problem ?? fix.problem} />
+      {/* A refusal about no one field sits last, right above Keep. */}
+      <Problem text={fix.problem} seen />
+      <ExpandedImageDialogHost threadKey={previewKey} />
     </FormDialog>
+  );
+}
+
+/**
+ * The bill itself above its form, so a missing figure is read off it while typing: a photo large
+ * enough to read that opens the full picture on a tap, or a file's row that opens it.
+ */
+function BillPicture(props: {
+  readonly view: KinBillRowView;
+  readonly src: string | null;
+  readonly original: string | null;
+  readonly previewKey: string;
+}) {
+  const { view, src } = props;
+  const name = kinBillName(view.row);
+  const opens = props.original ?? src;
+  if (view.asFile)
+    return (
+      <a
+        {...(opens === null ? {} : { href: opens, download: view.file.name })}
+        aria-label={`Open ${name}`}
+        aria-disabled={opens === null}
+        className="flex min-w-0 items-center gap-2 py-1 text-sm text-foreground underline-offset-4 hover:underline"
+      >
+        <FileIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate">{name}</span>
+      </a>
+    );
+  return src === null ? (
+    <span className="block h-72 w-full rounded-lg border border-border/80 bg-muted" />
+  ) : (
+    <button
+      type="button"
+      aria-label={`Open ${name}`}
+      onClick={() =>
+        openExpandedImagePreview(props.previewKey, {
+          images: [{ src: opens ?? src, name, mimeType: view.file.mimeType }],
+          index: 0,
+        })
+      }
+      className="block h-72 w-full shrink-0 cursor-zoom-in overflow-hidden rounded-lg border border-border/80 bg-muted outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset"
+    >
+      <AttachmentImage
+        name={view.file.name}
+        mimeType={view.picture.mimeType}
+        src={src}
+        alt={name}
+        decoding="async"
+        className="block size-full object-contain"
+      />
+    </button>
   );
 }
 

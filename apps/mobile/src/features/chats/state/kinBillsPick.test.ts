@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinBillFixParamsOf,
+  kinBillFixPictureOf,
   kinBillFixStartOf,
   kinExpenseParamsOfBill,
   kinExpenseStartOf,
@@ -55,9 +56,18 @@ describe("a bill fixed and kept on the phone", () => {
       category: "meals",
       number: "HC-12",
     };
-    const params = kinBillFixParamsOf(target, { sha256: "a".repeat(64), name: "cafe.jpg" }, start);
+    const file = { attachmentId: "kin-chat-9", name: "cafe.jpg", mimeType: "image/jpeg" };
+    const picture = { attachmentId: "kin-chat-9-small", name: "cafe.webp", mimeType: "image/webp" };
+    const params = kinBillFixParamsOf(
+      target,
+      { sha256: "a".repeat(64), name: "cafe.jpg", file, picture },
+      start,
+    );
     expect([params.bill, params.receiptName]).toEqual(["a".repeat(64), "cafe.jpg"]);
     expect(kinBillFixStartOf(params, "INR")).toEqual(start);
+    // The bill's own picture rides along, so the form shows it; a partial address shows none.
+    expect(kinBillFixPictureOf(params)).toEqual({ file, picture });
+    expect(kinBillFixPictureOf({ ...params, pictureId: "" })).toBeNull();
     expect(
       kinBillFixStartOf({ ...params, currency: "dollars", date: "6 Nov" }, "INR"),
     ).toMatchObject({ currency: "INR", date: "" });

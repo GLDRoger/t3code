@@ -1,5 +1,6 @@
 import type { KinBillFixDraft, kinBillExpenseStart } from "@t3tools/client-runtime/kin/kinBills";
 import type { KinExpenseDraft } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import type { KinFileRef } from "@t3tools/contracts";
 
 /**
  * "Enter by hand" on the phone: the new-expense form is a screen of its own, so what a bill
@@ -39,18 +40,51 @@ export type KinBillFixParams = {
   readonly orgId: string;
   readonly bill: string;
   readonly receiptName: string;
+  /** The bill's file and the smaller copy drawn of it, so the form shows the bill itself. */
+  readonly fileId?: string;
+  readonly fileName?: string;
+  readonly fileType?: string;
+  readonly pictureId?: string;
+  readonly pictureName?: string;
+  readonly pictureType?: string;
 } & Partial<KinBillFixDraft>;
+
+type KinBillFilePart = Pick<KinFileRef, "attachmentId" | "name" | "mimeType">;
 
 export const kinBillFixParamsOf = (
   target: { readonly environmentId: string; readonly orgId: string },
-  bill: { readonly sha256: string; readonly name: string },
+  bill: {
+    readonly sha256: string;
+    readonly name: string;
+    readonly file: KinBillFilePart;
+    readonly picture: KinBillFilePart;
+  },
   start: KinBillFixDraft,
 ): KinBillFixParams => ({
   ...target,
   bill: bill.sha256,
   receiptName: bill.name,
+  fileId: bill.file.attachmentId,
+  fileName: bill.file.name,
+  fileType: bill.file.mimeType,
+  pictureId: bill.picture.attachmentId,
+  pictureName: bill.picture.name,
+  pictureType: bill.picture.mimeType,
   ...start,
 });
+
+/** The bill's file and its drawn copy from the form's address; null when any part is missing. */
+export function kinBillFixPictureOf(
+  params: KinBillFixParams,
+): { readonly file: KinBillFilePart; readonly picture: KinBillFilePart } | null {
+  const part = (id?: string, name?: string, mimeType?: string) =>
+    typeof id === "string" && id !== "" && typeof name === "string" && typeof mimeType === "string"
+      ? { attachmentId: id, name, mimeType }
+      : null;
+  const file = part(params.fileId, params.fileName, params.fileType);
+  const picture = part(params.pictureId, params.pictureName, params.pictureType);
+  return file === null || picture === null ? null : { file, picture };
+}
 
 /** The editor's start from its address; anything malformed is left empty for the person. */
 export function kinBillFixStartOf(params: KinBillFixParams, home: string): KinBillFixDraft {

@@ -23,9 +23,11 @@ import {
   kinBillReader,
   kinBillExpenseStart,
   kinBillFileRefusal,
+  kinBillFixFirstNeed,
   kinBillFixInput,
   kinBillFixNeeds,
   kinBillFixStart,
+  kinBillFixStillNeeded,
   kinBillName,
   kinBillsUnreadAgain,
   kinBillReviewCounts,
@@ -1072,15 +1074,38 @@ describe("a bill not read cleanly, fixed and kept", () => {
     expect([blank.currency, kinBillFixNeeds(blank)]).toEqual(["INR", ["vendor", "date", "amount"]]);
   });
 
+  it("names what is still needed in one line, and opens on the first of it", () => {
+    const draft = kinBillFixStart(partly, "INR", []);
+    expect(
+      [[], ["date"], ["date", "amount"], ["vendor", "date", "amount"]].map((needs) =>
+        kinBillFixStillNeeded(needs as ReturnType<typeof kinBillFixNeeds>),
+      ),
+    ).toEqual([
+      null,
+      "Still needed: date.",
+      "Still needed: date and amount.",
+      "Still needed: who was paid, date and amount.",
+    ]);
+    expect(kinBillFixFirstNeed(draft)).toBe("date");
+    expect(kinBillFixFirstNeed({ ...draft, vendor: " ", amount: "" })).toBe("vendor");
+    expect(kinBillFixFirstNeed({ ...draft, date: "2026-11-06" })).toBeNull();
+  });
+
   it("keeps only once every needed figure is in, each as plain figures in its currency", () => {
     const draft = kinBillFixStart(partly, "INR", ["meals"]);
-    expect(kinBillFixInput(draft)).toEqual({ ok: false, problem: "Enter the date." });
+    expect(kinBillFixInput(draft)).toEqual({
+      ok: false,
+      field: "date",
+      problem: "Enter the date.",
+    });
     expect(kinBillFixInput({ ...draft, date: "2026-11-06", amount: "0" })).toEqual({
       ok: false,
+      field: "amount",
       problem: "Enter the amount.",
     });
     expect(kinBillFixInput({ ...draft, date: "2026-11-06", tax: "some" })).toEqual({
       ok: false,
+      field: "tax",
       problem: "The tax isn't a valid amount.",
     });
     expect(

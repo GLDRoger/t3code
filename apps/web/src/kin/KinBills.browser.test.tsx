@@ -133,7 +133,7 @@ function setup() {
     }),
     bill(2, {
       state: "duplicate",
-      read: { vendor: "Tidewater Freight", amount: "2350", currency: "INR" },
+      read: { vendor: "Tidewater Freight", amount: "2350", currency: "INR", currencyAssumed: true },
       duplicateOf: { key: KinRecordKey.make("EXP-2"), title: "Tidewater Freight, Nov 2026" },
     }),
     bill(3, { state: "unreadable", problem: "Couldn't read: amount, currency" }),
@@ -271,6 +271,8 @@ describe("bills added in bulk", () => {
     await expect.element(screen.getByText("Couldn't read: amount, currency")).toBeVisible();
     // In the currency printed on it, never converted.
     await expect.element(screen.getByText("$49.00")).toBeVisible();
+    // No currency printed on it: the row says which one Kin took.
+    await expect.element(screen.getByText("No currency printed: read as INR")).toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "Open bill-1.jpg" }));
     await userEvent.click(page.getByRole("button", { name: "Back, close image preview" }));
@@ -358,6 +360,12 @@ describe("bills added in bulk", () => {
       screen.getByRole("button", { name: "Fix and keep: Harbor Cafe, $1,200.00" }),
     );
     const dialog = page.getByRole("dialog", { name: "Fix and keep" });
+    // The form opens on the one figure the person still has to read off it.
+    await expect.element(dialog.getByLabelText(/^Date ?Needed$/)).toHaveFocus();
+    await expect.element(dialog.getByText("Still needed: date.")).toBeVisible();
+    // The bill itself is on the form, and opens whole without leaving it.
+    await userEvent.click(dialog.getByRole("button", { name: "Open bill-5.jpg" }));
+    await userEvent.click(page.getByRole("button", { name: "Back, close image preview" }));
     await expect.element(dialog.getByLabelText("Who was paid")).toHaveValue("Harbor Cafe");
     await expect.element(dialog.getByLabelText("Amount")).toHaveValue("1200");
     await expect.element(dialog.getByLabelText("Tax")).toHaveValue("60");
@@ -368,6 +376,13 @@ describe("bills added in bulk", () => {
     await expect.element(dialog.getByLabelText(/^Date ?Needed$/)).toHaveValue("");
     await userEvent.click(dialog.getByRole("button", { name: "Keep" }));
     await expect.element(dialog.getByText("Enter the date.")).toBeVisible();
+    // Beside the date it is about, not at the top of the form.
+    const dateField = dialog
+      .getByLabelText(/^Date ?Needed$/)
+      .element()
+      .closest("div");
+    expect(dateField?.textContent).toContain("Enter the date.");
+    expect(dateField?.textContent).not.toContain("Who was paid");
     expect(host.fix).not.toHaveBeenCalled();
     await userEvent.fill(dialog.getByLabelText(/^Date ?Needed$/), "2026-11-06");
     await userEvent.click(dialog.getByRole("button", { name: "Keep" }));

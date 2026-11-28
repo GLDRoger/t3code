@@ -10,7 +10,9 @@ import {
   kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFileRefusal,
+  kinBillAsFile,
   kinBillFixStart,
+  kinBillIsPdf,
   kinBillName,
   kinBillReviewCounts,
   kinBillRowViews,
@@ -28,6 +30,7 @@ import {
   KIN_DEFAULT_HOME_CURRENCY,
   KinOrgId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  type KinFileRef,
 } from "@t3tools/contracts";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { Image as ExpoImage } from "expo-image";
@@ -47,7 +50,9 @@ import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { useBarOverlap } from "../../components/ui/useBarInset";
 import { assetImageSource } from "../../lib/assetImageSource";
+import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
   convertPastedImagesToAttachments,
@@ -217,6 +222,12 @@ function Frame(props: {
   );
 }
 
+/** What isn't a list starts below the bar, which iOS draws over the screen's top. */
+function UnderBar(props: { readonly children: React.ReactNode }) {
+  const bar = useBarOverlap();
+  return <View style={{ paddingTop: bar }}>{props.children}</View>;
+}
+
 function Failed(props: { readonly cause: unknown; readonly onRetry: () => void }) {
   const failure = kinFailure(props.cause, `${KIN_BILLS.loadFailed}.`);
   return (
@@ -247,13 +258,21 @@ function Batches(props: KinWorkTarget) {
   return (
     <Frame title={KIN_BILLS.added} onBack={back} onRefresh={refresh}>
       {state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_BILLS.onlyOwner} />
+        <UnderBar>
+          <EmptyState variant="plain" {...KIN_BILLS.onlyOwner} />
+        </UnderBar>
       ) : state._tag === "loading" ? (
-        <KinWorkLoading label="Loading bills" />
+        <UnderBar>
+          <KinWorkLoading label="Loading bills" />
+        </UnderBar>
       ) : state._tag !== "ready" ? (
-        <Failed cause={state._tag === "failed" ? state.cause : null} onRetry={refresh} />
+        <UnderBar>
+          <Failed cause={state._tag === "failed" ? state.cause : null} onRetry={refresh} />
+        </UnderBar>
       ) : state.value.batches.length === 0 ? (
-        <EmptyState variant="plain" {...KIN_BILLS.none} />
+        <UnderBar>
+          <EmptyState variant="plain" {...KIN_BILLS.none} />
+        </UnderBar>
       ) : (
         <NativeScrollView
           className="flex-1"
@@ -320,7 +339,12 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
           "KinBillFix",
           kinBillFixParamsOf(
             base,
-            { sha256: view.row.sha256, name: kinBillName(view.row) },
+            {
+              sha256: view.row.sha256,
+              name: kinBillName(view.row),
+              file: view.file,
+              picture: view.picture,
+            },
             kinBillFixStart(view.row, home, expenses?.categories ?? []),
           ),
         );
@@ -331,15 +355,17 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
   if (state._tag !== "ready")
     return (
       <Frame title={title} onBack={back} onRefresh={refresh}>
-        {state._tag === "refused" ? (
-          <EmptyState variant="plain" {...KIN_BILLS.onlyOwner} />
-        ) : state._tag === "gone" ? (
-          <EmptyState variant="plain" {...KIN_BILLS.gone} />
-        ) : state._tag === "loading" ? (
-          <KinWorkLoading label="Loading bills" />
-        ) : (
-          <Failed cause={state.cause} onRetry={refresh} />
-        )}
+        <UnderBar>
+          {state._tag === "refused" ? (
+            <EmptyState variant="plain" {...KIN_BILLS.onlyOwner} />
+          ) : state._tag === "gone" ? (
+            <EmptyState variant="plain" {...KIN_BILLS.gone} />
+          ) : state._tag === "loading" ? (
+            <KinWorkLoading label="Loading bills" />
+          ) : (
+            <Failed cause={state.cause} onRetry={refresh} />
+          )}
+        </UnderBar>
       </Frame>
     );
   const counts = kinBillReviewCounts(batch?.states ?? null, rows);
@@ -442,14 +468,21 @@ const label = (view: KinBillRowView, action: KinBillAction) =>
       ? KIN_BILLS.open(view.expense?.key ?? "")
       : KIN_BILLS.action[action];
 
-/** A bill's file at a fixed size: a photo from the host's signed address, a PDF as its tile. */
-function BillThumb(props: {
-  readonly view: KinBillRowView;
+/**
+ * A bill's file: a photo from the host's signed address, drawn small on a row or large enough to
+ * read on its form, opening the original on a tap; a PDF as its tile, or its row on the form.
+ */
+export function KinBillPicture(props: {
+  readonly file: Pick<KinFileRef, "attachmentId" | "name" | "mimeType">;
+  readonly picture: Pick<KinFileRef, "attachmentId" | "name" | "mimeType">;
+  readonly name: string;
   readonly environmentId: EnvironmentId;
+  readonly large?: boolean;
   readonly onPreview: (source: FilePreviewSource) => void;
 }) {
-  const { file, picture, pdf, asFile } = props.view;
-  const name = kinBillName(props.view.row);
+  const { file, picture, name, large } = props;
+  const pdf = kinBillIsPdf(file);
+  const asFile = kinBillAsFile(file);
   const resource = {
     _tag: "attachment" as const,
     attachmentId: file.attachmentId,
@@ -462,30 +495,46 @@ function BillThumb(props: {
     fileName: picture.name,
     mimeType: picture.mimeType,
   };
-  // A file opens from the host when tapped; a photo draws its smaller copy and opens the original.
   const uri = useAssetUrl(props.environmentId, asFile ? null : shown);
+  const open = () =>
+    props.onPreview({
+      kind: pdf ? "pdf" : asFile ? "document" : "image",
+      name,
+      mimeType: resource.mimeType,
+      environmentId: props.environmentId,
+      resource,
+    });
+  if (large && asFile)
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${name}`}
+        onPress={open}
+        className="min-h-11 flex-row items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 active:opacity-70"
+      >
+        <SymbolView name="doc.text" size={20} tintColorClassName="accent-icon-muted" />
+        <Text textRole="body" className="flex-1 text-foreground">
+          {name}
+        </Text>
+      </Pressable>
+    );
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Open ${name}`}
-      onPress={() =>
-        props.onPreview({
-          kind: pdf ? "pdf" : asFile ? "document" : "image",
-          name,
-          mimeType: resource.mimeType,
-          environmentId: props.environmentId,
-          resource,
-        })
-      }
-      className="size-16 items-center justify-center overflow-hidden rounded-xl border border-border bg-subtle-strong active:opacity-70"
+      onPress={open}
+      className={cn(
+        "items-center justify-center overflow-hidden rounded-xl border border-border bg-subtle-strong active:opacity-70",
+        large ? "h-72 w-full" : "size-16",
+      )}
     >
       {asFile ? (
         <SymbolView name="doc.text" size={22} tintColorClassName="accent-icon-muted" />
       ) : uri === null ? null : (
         <ExpoImage
           source={assetImageSource(props.environmentId, shown, uri)}
-          style={{ width: 64, height: 64 }}
-          contentFit="cover"
+          style={large ? { width: "100%", height: "100%" } : { width: 64, height: 64 }}
+          contentFit={large ? "contain" : "cover"}
           contentPosition="top"
           recyclingKey={picture.attachmentId}
           accessibilityIgnoresInvertColors
@@ -511,7 +560,13 @@ const BillRow = memo(function BillRow(props: {
   const stacked = useWindowDimensions().fontScale >= LARGE_TEXT_SCALE;
   return (
     <View accessible={false} className="flex-row gap-3 border-b border-border px-4 py-3">
-      <BillThumb view={view} environmentId={props.environmentId} onPreview={props.onPreview} />
+      <KinBillPicture
+        file={view.file}
+        picture={view.picture}
+        name={kinBillName(view.row)}
+        environmentId={props.environmentId}
+        onPreview={props.onPreview}
+      />
       <View className="flex-1 gap-1.5">
         <Text
           textRole="body"

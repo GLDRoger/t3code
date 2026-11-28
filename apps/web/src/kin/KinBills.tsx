@@ -453,7 +453,7 @@ function KinBillBatchReview(
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const now = new Date(useNowMinuteMs());
   const [byHand, setByHand] = useState<KinBillRow | null>(null);
-  const [fixing, setFixing] = useState<KinBillRow | null>(null);
+  const [fixing, setFixing] = useState<string | null>(null);
   const skipped = actions.kept?.skipped;
   const views = kinBillRowViews(rows, {
     categoryLabel: (category) => kinCategoryLabel(category, expenses),
@@ -506,9 +506,11 @@ function KinBillBatchReview(
       case "byHand":
         return setByHand(view.row);
       case "fix":
-        return setFixing(view.row);
+        return setFixing(view.key);
     }
   };
+  const fixAt = fixing === null ? -1 : views.findIndex((view) => view.key === fixing);
+  const fixView = views[fixAt];
   return (
     <>
       <section className="flex flex-col gap-2">
@@ -580,11 +582,13 @@ function KinBillBatchReview(
           onClose={() => setByHand(null)}
         />
       )}
-      {fixing === null ? null : (
+      {fixView === undefined ? null : (
         <KinBillFixDialog
           {...props}
-          row={fixing}
-          start={kinBillFixStart(fixing, home, expenses?.categories ?? [])}
+          view={fixView}
+          src={pictures[fixAt] ?? null}
+          original={originals[fixAt] ?? null}
+          start={kinBillFixStart(fixView.row, home, expenses?.categories ?? [])}
           categories={kinExpenseChoices(expenses).categories}
           home={home}
           onClose={() => {

@@ -31,9 +31,12 @@ import { KIN_BILL_TO, kinBillToOffered } from "@t3tools/client-runtime/kin/kinBi
 import {
   KIN_BILLS,
   kinBillCurrencies,
+  kinBillFixFirstNeed,
   kinBillFixInput,
   kinBillFixNeeds,
+  kinBillFixStillNeeded,
   type KinBillFixDraft,
+  type KinBillFixField,
 } from "@t3tools/client-runtime/kin/kinBills";
 import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
@@ -52,21 +55,25 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentRef } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
+import type { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { useBarOverlap } from "../../components/ui/useBarInset";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinDayField } from "./components/KinDayField";
 import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinBillPicture } from "./KinBills";
 import { KinLinesFields } from "./KinMoneyAnswers";
 import {
   kinListsOf,
@@ -77,6 +84,7 @@ import {
   useKinWorkFiles,
 } from "./state/useKinMoney";
 import {
+  kinBillFixPictureOf,
   kinBillFixStartOf,
   kinExpenseStartOf,
   type KinBillFixParams,
@@ -768,7 +776,10 @@ function BillFixForm(
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const [opened] = useState(() => kinBillFixStartOf(props.params, home));
   const [draft, setDraft] = useState<KinBillFixDraft>(opened);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<{
+    readonly field: KinBillFixField;
+    readonly text: string;
+  } | null>(null);
   const fix = useKinBillFix(props);
   const lists = useKinLists(props, { enabled: true });
   const categories = kinExpenseChoices(
@@ -790,7 +801,9 @@ function BillFixForm(
       },
     ]);
   });
-  const needs = new Set<string>(kinBillFixNeeds(draft));
+  const needList = kinBillFixNeeds(draft);
+  const needs = new Set<string>(needList);
+  const [opensOn] = useState(() => kinBillFixFirstNeed(opened));
   const copy = KIN_BILLS.fix;
   const field = KIN_BILLS.field;
   const needed = (key: keyof KinBillFixDraft) => (needs.has(key) ? copy.needed : undefined);
@@ -803,19 +816,42 @@ function BillFixForm(
     day.setDate(day.getDate() - back);
     return { day: kinWorkDayOf(day), label: kinWorkDueLabel(kinWorkDayOf(day), now) };
   });
+  const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const tops = useRef<Partial<Record<KinBillFixField, number>>>({});
+  const bar = useBarOverlap();
   const save = async () => {
     const checked = kinBillFixInput(draft);
-    if (!checked.ok) return setProblem(checked.problem);
+    if (!checked.ok) {
+      setProblem({ field: checked.field, text: checked.problem });
+      // Drawn beside its field, which may sit above the screen at large text: brought into view.
+      return scroll.current?.scrollTo({
+        y: Math.max(0, (tops.current[checked.field] ?? 0) - bar - 8),
+        animated: true,
+      });
+    }
     if (!(await fix.save(props.bill, checked.entered))) return;
     saved.current = true;
     navigation.goBack();
   };
+  const at = (key: KinBillFixField) => ({
+    className: "gap-2",
+    onLayout: (event: { readonly nativeEvent: { readonly layout: { readonly y: number } } }) => {
+      tops.current[key] = event.nativeEvent.layout.y;
+    },
+  });
+  const beside = (key: KinBillFixField) =>
+    problem?.field === key ? <Notice message={problem.text} tone="danger" /> : null;
+  const picture = kinBillFixPictureOf(props.params);
+  const stillNeeded = kinBillFixStillNeeded(needList);
+  const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const category = categories.find((one) => one.value === draft.category);
-  const shown = problem ?? fix.problem;
+  // Only a refusal about no one field shows at the top, right under Keep in the bar.
+  const shown = fix.problem;
   return (
     <KinWorkFrame
       title={copy.title}
       form
+      scrollRef={scroll}
       showTop={shown}
       onClose={() => navigation.goBack()}
       confirm={{
@@ -829,35 +865,61 @@ function BillFixForm(
         {copy.hint}
       </Text>
       {shown === null ? null : <Notice message={shown} tone="danger" />}
-      <KinWorkTextField
-        label={field.vendor}
-        value={draft.vendor}
-        maxLength={200}
-        hint={needed("vendor")}
-        onChangeText={(vendor) => set({ vendor })}
-      />
-      <ListSection>
-        <KinDayField
-          label={field.date}
-          icon="clock"
-          day={draft.date === "" ? null : draft.date}
-          zone={null}
-          now={now}
-          none={null}
-          hint={needed("date") ?? null}
-          choices={days}
-          latest={days[0]!.day}
-          onPick={(date) => set({ date: date ?? "" })}
+      {picture === null ? null : (
+        <KinBillPicture
+          {...picture}
+          name={props.params.receiptName}
+          environmentId={props.environmentId}
+          large
+          onPreview={setPreview}
         />
-      </ListSection>
-      <KinWorkTextField
-        label={field.amount}
-        value={draft.amount}
-        placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
-        keyboard="numbers"
-        hint={needed("amount")}
-        onChangeText={(amount) => set({ amount })}
-      />
+      )}
+      {stillNeeded === null ? null : (
+        <Text textRole="footnote" className="px-2 text-warning-foreground">
+          {stillNeeded}
+        </Text>
+      )}
+      <View {...at("vendor")}>
+        <KinWorkTextField
+          label={field.vendor}
+          value={draft.vendor}
+          maxLength={200}
+          wraps
+          autoFocus={opensOn === "vendor"}
+          hint={needed("vendor")}
+          onChangeText={(vendor) => set({ vendor })}
+        />
+        {beside("vendor")}
+      </View>
+      <View {...at("date")}>
+        <ListSection>
+          <KinDayField
+            label={field.date}
+            icon="clock"
+            day={draft.date === "" ? null : draft.date}
+            zone={null}
+            now={now}
+            none={null}
+            hint={needed("date") ?? null}
+            choices={days}
+            latest={days[0]!.day}
+            onPick={(date) => set({ date: date ?? "" })}
+          />
+        </ListSection>
+        {beside("date")}
+      </View>
+      <View {...at("amount")}>
+        <KinWorkTextField
+          label={field.amount}
+          value={draft.amount}
+          placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+          keyboard="numbers"
+          autoFocus={opensOn === "amount"}
+          hint={needed("amount")}
+          onChangeText={(amount) => set({ amount })}
+        />
+        {beside("amount")}
+      </View>
       <ListSection>
         <PickRow
           label={copy.currency}
@@ -870,12 +932,15 @@ function BillFixForm(
           onPick={(currency) => set({ currency })}
         />
       </ListSection>
-      <KinWorkTextField
-        label={field.tax}
-        value={draft.tax}
-        keyboard="numbers"
-        onChangeText={(tax) => set({ tax })}
-      />
+      <View {...at("tax")}>
+        <KinWorkTextField
+          label={field.tax}
+          value={draft.tax}
+          keyboard="numbers"
+          onChangeText={(tax) => set({ tax })}
+        />
+        {beside("tax")}
+      </View>
       {categories.length === 0 ? null : (
         <ListSection>
           <PickRow
@@ -896,9 +961,7 @@ function BillFixForm(
         maxLength={200}
         onChangeText={(number) => set({ number })}
       />
-      <Text textRole="footnote" className="px-2 text-foreground-muted">
-        {`${copy.receipt}: ${props.params.receiptName}`}
-      </Text>
+      <FilePreviewModal source={preview} onRequestClose={() => setPreview(null)} />
     </KinWorkFrame>
   );
 }
