@@ -120,17 +120,60 @@ it("each area people type for selling resolves to the sales seat's character", (
 const pounds = { homeCurrency: "GBP", country: "GB", tax: { name: "VAT" } };
 const dollars = { homeCurrency: "USD", country: "US", tax: null };
 
+/** The line each default sheet shipped with a word cap, before the caps went. */
+const wordCapLines = [
+  {
+    domain: "chief-of-staff",
+    agent: "Chief of staff",
+    line: 'Disagree with the owner plainly, once, with the reason, then do what they decide. Short and warm: one to three lines, under 50 words, a dry aside now and then. Never "circle back", "just checking in" or "as an AI".',
+  },
+  {
+    domain: "engineering",
+    agent: "Tech lead",
+    line: "Two to four lines, under 60 words, the three ways in one line. Talk like an engineer: repro, edge case, flaky, footgun, spike, scope, template, behind a flag, LGTM, nit, p95. Numbers over adjectives: days, files, lines, failing tests. With someone who isn't an engineer, translate once into plain words.",
+  },
+  {
+    domain: "social",
+    agent: "Social",
+    line: "Nothing public goes out without the owner's tap, and no client's work is posted before the client agrees. Show, don't describe: send the caption, the mock-up, the grid. Casual and short: two or three lines, under 50 words, lowercase, a hot take. Money is Finance's: a clause, never the figures. Emoji are your punctuation, two to four a message (👀 💀 ✨ 😭 🔥 📌 🙅), never decoration. Two hashtags at most. You clash with Tech lead over dates and with Growth over tone.",
+  },
+  {
+    domain: "growth",
+    agent: "Growth",
+    line: 'Two to four lines, under 70 words. A plan, a note or a mail goes in its doc or on its card, not in the chat. Plain words; never "synergy", "leverage", "touch base" or "circle back". An emoji now and then (🎯), never a row.',
+  },
+  {
+    domain: "finance",
+    agent: "Finance",
+    line: "Figure first, then the date, then the verdict: two to four short lines, under 60 words. No exclamation marks, no emoji, ever. Your humour is dry, rare and the gallows kind.",
+  },
+] as const;
+
+it("no default sheet caps a reply's words, and each keeps its line habit", () => {
+  for (const money of [pounds, dollars])
+    for (const seat of KIN_CHARACTER_SEATS) {
+      const sheet = defaultCharacterFor(seat, money) ?? "";
+      assert.notMatch(sheet, /\bunder \d+ words\b/, seat);
+      assert.match(sheet, /\b(one|two) (to|or) (three|four)( short)? lines\b/i, seat);
+    }
+  assert.include(
+    defaultCharacterFor("finance", pounds),
+    "Figure first, then the date, then the verdict, in two to four short lines.",
+  );
+});
+
 it("the owner's part of an old character doc is his lines that no default Kin shipped", () => {
   const growthNow = kinPartFor("growth", "Growth", pounds) ?? "";
   const financeNow = kinPartFor("finance", "Finance", dollars) ?? "";
   const reworded = growthNow.replace(
-    "Two to four lines, under 70 words.",
-    "Three lines at most, and never on a Sunday.",
+    "Two to four lines. A plan",
+    "Three lines at most, and never on a Sunday. A plan",
   );
   const rows: ReadonlyArray<{
     readonly name: string;
     readonly doc: string;
     readonly domain?: string;
+    readonly agent?: string;
     readonly money?: CharacterMoney;
     readonly own: string;
   }> = [
@@ -181,14 +224,30 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
       doc: growthNow.replace("# Growth", "# Closer"),
       own: "",
     },
+    // Each sheet's line with a word cap: stored untouched it is Kin's, so today's default replaces
+    // it; edited, it is the owner's and stays.
+    ...wordCapLines.flatMap(({ domain, agent, line }) => [
+      {
+        name: `${agent}'s capped line, untouched`,
+        doc: `# ${agent}\n\n${line}\n`,
+        domain,
+        agent,
+        own: "",
+      },
+      {
+        name: `${agent}'s capped line, edited`,
+        doc: `# ${agent}\n\n${line} Invented: never on a Sunday.\n`,
+        domain,
+        agent,
+        own: `${line} Invented: never on a Sunday.`,
+      },
+    ]),
   ];
   for (const row of rows) {
     const domain = row.domain ?? "growth";
-    const name = row.doc.startsWith("# Closer")
-      ? "Closer"
-      : domain === "finance"
-        ? "Finance"
-        : "Growth";
+    const name =
+      row.agent ??
+      (row.doc.startsWith("# Closer") ? "Closer" : domain === "finance" ? "Finance" : "Growth");
     assert.strictEqual(
       ownersPart(row.doc, name, shippedLines(domain, row.money ?? pounds)),
       row.own,

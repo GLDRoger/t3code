@@ -3131,7 +3131,7 @@ export const ownMailboxLine = (addresses: ReadonlyArray<string>, ownLevel: boole
       } with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.`;
 
 export const REPLY_SHAPE =
-  "Your reply: one short paragraph in your character's voice and within its length; no bullets, bold or blank lines unless asked.";
+  "Your reply, in your character's voice: most replies are one short bubble that answers every part of what was asked. A blank line starts a new bubble, and the person is notified with the first, so add one only for something they have to weigh, four at most. No bullets or bold unless asked.";
 const fallbackLeadName = "Agent";
 const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
 /** The owner's display name until they set one (`KIN_OWNER_DISPLAY_NAME`'s default). */
