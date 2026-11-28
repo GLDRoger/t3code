@@ -1625,6 +1625,13 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
     sql`UPDATE kin_bill_reads SET state = 'unreadable', read_json = ${json}, problem = ${problem},
         read_at = ${now}
       WHERE org_id = ${orgId} AND sha256 = ${row.sha256}`.pipe(Effect.as("unreadable" as const));
+  // The agent's own words about the bill, said as its own and on one line.
+  const words = answer.cannotRead?.replace(/\s+/gu, " ").trim();
+  const theirs =
+    words === undefined || words === ""
+      ? undefined
+      : `${yield* agentName(orgId, row.agentId)}: ${words}`;
+  if (!answer.readable) return yield* unreadable((theirs ?? COULD_NOT_READ).slice(0, 300));
   if (currency === undefined) return yield* unreadable(UNCLEAR_CURRENCY);
   const missing: Array<string> = [];
   const amount = plainNumber(read.amount, currency);
@@ -1635,13 +1642,6 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   const parsed = amount === undefined ? undefined : parseKinMoney(amount, currency);
   if (parsed !== undefined && "error" in parsed) missing.push("amount");
   const money = parsed !== undefined && "money" in parsed ? parsed.money : undefined;
-  // The agent's own words about the bill, said as its own and on one line.
-  const words = answer.cannotRead?.replace(/\s+/gu, " ").trim();
-  const theirs =
-    words === undefined || words === ""
-      ? undefined
-      : `${yield* agentName(orgId, row.agentId)}: ${words}`;
-  if (!answer.readable) return yield* unreadable((theirs ?? COULD_NOT_READ).slice(0, 300));
   if (missing.length > 0)
     return yield* unreadable(
       `Couldn't read: ${[...new Set(missing)].join(", ")}${theirs === undefined ? "" : `. ${theirs}`}`.slice(

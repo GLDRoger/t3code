@@ -1629,6 +1629,58 @@ describe("bills in bulk", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect.each([
+    { country: "IN", home: "INR", mark: "$" },
+    { country: "US", home: "USD", mark: "¥" },
+  ] as const)(
+    "an unclear $mark in a $home company keeps the reader's own reason and reads again",
+    ({ country, home, mark }) =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: rhea },
+          { country, homeCurrency: home },
+          undefined,
+        );
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            clientRequestId: "unclear-mark",
+            attachments: [yield* upload("totals.jpg", "1"), yield* upload("mark.jpg", "2")],
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { wakeupId } = yield* claimTurn(1);
+        const printed = { vendor: "Harbor Cafe", date: "2026-11-03", currencyMark: mark };
+        yield* read({
+          bill: "B1",
+          ...printed,
+          amount: "40",
+          readable: false,
+          cannotRead: "Two different totals.",
+        });
+        yield* read({ bill: "B2", ...printed, amount: "41" });
+        yield* endTurn(wakeupId);
+        assert.deepStrictEqual(
+          (yield* card(added.batchId)).needs?.map(({ reason }) => reason),
+          ["two different totals.", "the currency isn't clear."],
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const [unclear] = yield* sql<{ sha256: string }>`SELECT sha256 FROM kin_bill_reads
+          WHERE problem = 'Couldn''t read: currency.'`;
+        assert.deepStrictEqual(
+          yield* Bills.readAgain(as(rhea), { orgId, sha256: unclear!.sha256 }),
+          { queued: 1 },
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_bill_reads WHERE sha256 = ${unclear!.sha256}`,
+          [{ state: "reading" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("uses the company's own currency to parse a bill's unmarked total and tax", () =>
     Effect.gen(function* () {
       yield* seed;
