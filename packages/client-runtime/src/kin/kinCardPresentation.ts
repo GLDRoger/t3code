@@ -17,6 +17,7 @@ import {
   type EnvironmentId,
   type KinMessage,
   type KinOrgId,
+  type KinPersonId,
   type KinRoutineSection,
   type KinWidget,
   kinWhenFormat,
@@ -314,6 +315,7 @@ export function kinReminderCardView(
   timeZone?: string,
   /** False for a teammate: only taps the host takes from them are offered. Unknown offers all. */
   ownerLevel?: boolean,
+  viewer: KinPersonId | null = null,
 ): KinDeferralCardView | null {
   const decoded = decodeReminder(widget.state);
   if (Option.isNone(decoded)) return null;
@@ -328,7 +330,7 @@ export function kinReminderCardView(
         : card.status === "snoozed" && card.snoozedUntil !== undefined
           ? [`Snoozed until ${formatKinDeferralTime(Date.parse(card.snoozedUntil), timeZone)}.`]
           : [`Due ${formatKinDeferralTime(Date.parse(card.dueAt), timeZone)}.`];
-  const asked = kinAskedByLine(card.askedBy);
+  const asked = kinAskedByLine(card.askedBy, viewer);
   if (asked !== null) lines.push(asked);
   return {
     widgetId: widget.widgetId,
@@ -534,6 +536,8 @@ export function kinCardView(
   /** Whether the viewer is owner-level; unknown offers every tap. */
   ownerLevel?: boolean,
   modelName: KinModelName = () => null,
+  /** The signed-in person, so a card they asked for doesn't tell them so. */
+  viewer: KinPersonId | null = null,
 ): KinCardView {
   const view = kinLiveCardView(
     widget,
@@ -541,6 +545,7 @@ export function kinCardView(
     isKnownEnvironment,
     ownerLevel,
     modelName,
+    viewer,
   );
   if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
     return view;
@@ -571,6 +576,7 @@ function kinLiveCardView(
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
   ownerLevel: boolean | undefined,
   modelName: KinModelName,
+  viewer: KinPersonId | null,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
   if (widget.widgetClass !== "native") return unknown(widget);
@@ -585,11 +591,11 @@ function kinLiveCardView(
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel, viewer);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
-      const deferral = kinReminderCardView(widget, undefined, ownerLevel);
+      const deferral = kinReminderCardView(widget, undefined, ownerLevel, viewer);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "scheduled_task": {
