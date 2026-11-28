@@ -37,7 +37,7 @@ const cases = new Map(
 for (const file of positionals) {
   const counts = new Map<
     string,
-    { n: number; was: number; now: number; cut: number; states: Array<State> }
+    { n: number; was: number; now: number; cut: number; unknown: number; states: Array<State> }
   >();
   for (const line of lines(file)) {
     const row = JSON.parse(line);
@@ -69,26 +69,28 @@ for (const file of positionals) {
       ...rubric,
     ];
     const failed = checks.filter((check) => !check.pass);
+    const unknown = typeof row.wroteText !== "string" && (expect.wroteTextMustNot?.length ?? 0) > 0;
     const cut = failed.length === 0 && row.stopReason === "failed_early";
     const state = cut ? "fail" : sampleState(checks);
     const pass = state !== "fail";
-    const count = counts.get(row.id) ?? { n: 0, was: 0, now: 0, cut: 0, states: [] };
+    const count = counts.get(row.id) ?? { n: 0, was: 0, now: 0, cut: 0, unknown: 0, states: [] };
     count.n++;
     count.states.push(state);
     if (row.pass) count.was++;
     if (pass) count.now++;
     if (cut) count.cut++;
+    if (unknown) count.unknown++;
     counts.set(row.id, count);
-    if (pass !== row.pass || cut)
+    if (pass !== row.pass || cut || unknown)
       console.log(
-        `${row.id}#${count.n} ${row.pass ? "pass" : "FAIL"} → ${cut ? "cut short" : state === "margin" ? "pass within margin" : pass ? "pass" : "FAIL"}${failed.length > 0 ? `: ${failed.map((check) => check.check.slice(0, 100)).join(" | ")}` : ""}`,
+        `${row.id}#${count.n} ${row.pass ? "pass" : "FAIL"} → ${unknown ? "cannot tell" : cut ? "cut short" : state === "margin" ? "pass within margin" : pass ? "pass" : "FAIL"}${failed.length > 0 ? `: ${failed.map((check) => check.check.slice(0, 100)).join(" | ")}` : ""}`,
       );
   }
   console.log(`\n${file}\n| case | was | now | case state |\n| --- | --- | --- | --- |`);
-  for (const [id, { n, was, now, cut, states }] of counts) {
+  for (const [id, { n, was, now, cut, unknown, states }] of counts) {
     const margin = states.filter((state) => state === "margin").length;
     console.log(
-      `| ${id} | ${was}/${n} | ${now}/${n}${margin > 0 ? `, ${margin} within margin` : ""}${cut > 0 ? ` (${cut} cut short)` : ""}${was === now ? "" : " *"} | ${caseState(states, cases.get(id)?.margin) ?? "-"} |`,
+      `| ${id} | ${was}/${n} | ${now}/${n}${margin > 0 ? `, ${margin} within margin` : ""}${cut > 0 ? ` (${cut} cut short)` : ""}${unknown > 0 ? ` (${unknown} cannot tell)` : ""}${was === now ? "" : " *"} | ${unknown === n ? "cannot tell" : (caseState(states, cases.get(id)?.margin) ?? "-")} |`,
     );
   }
 }
