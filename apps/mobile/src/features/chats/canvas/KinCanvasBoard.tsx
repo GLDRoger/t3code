@@ -224,6 +224,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                 >
                   <View className="justify-center px-6" style={{ height: box.head }}>
                     <Text
+                      allowFontScaling={false}
                       numberOfLines={1}
                       className="font-t3-semibold"
                       // Zoomed out the name grows to stay readable, never past the band it sits in.
@@ -236,6 +237,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                     </Text>
                     {group?.line != null && inv === 1 ? (
                       <Text
+                        allowFontScaling={false}
                         textRole="caption"
                         numberOfLines={1}
                         className={cn(

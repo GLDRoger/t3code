@@ -4,7 +4,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useRef, useState } from "react";
-import { View } from "react-native";
+import { useWindowDimensions, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
@@ -46,6 +46,9 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
   const [pending, setPending] = useState<KinDeferralActionId | null>(null);
   const [lastStatus, setLastStatus] = useState<KinCardStatus | null>(null);
   const status = visibleKinCardStatus(lastStatus, deferral.revision);
+  // Larger text wraps into more lines; the cap keeps the same words, not the same line count.
+  const { fontScale } = useWindowDimensions();
+  const titleLines = (lines: number) => Math.ceil(lines * Math.max(1, fontScale));
 
   const press = async (actionId: KinDeferralActionId) => {
     if (pending !== null) return;
@@ -82,7 +85,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
         <Text textRole="caption" className="font-t3-medium text-foreground-muted">
           {`${deferral.eyebrow} · ${deferral.lines.join(" ").replace(/\.$/, "")}`}
         </Text>
-        <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
+        <Text textRole="footnote" numberOfLines={titleLines(2)} className="text-foreground-muted">
           {deferral.title}
         </Text>
         {/* A refused tap is told even when the card closed before its answer came. */}
@@ -111,7 +114,11 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
         {deferral.eyebrow}
       </Text>
       <View accessible accessibilityLabel={deferral.accessibilityLabel} className="gap-1.5">
-        <Text textRole="body" numberOfLines={4} className="font-t3-medium text-foreground">
+        <Text
+          textRole="body"
+          numberOfLines={titleLines(4)}
+          className="font-t3-medium text-foreground"
+        >
           {deferral.title}
         </Text>
         {deferral.lines.map((line) => (
