@@ -19,6 +19,7 @@ type Expect = {
   readonly minCalls?: Readonly<Record<string, number>> | undefined;
   readonly endsTurnAfter?: string | undefined;
   readonly textMust?: ReadonlyArray<string> | undefined;
+  readonly wroteTextMustNot?: ReadonlyArray<string> | undefined;
   readonly textMustNot?: ReadonlyArray<string> | undefined;
   readonly finalTextMust?: ReadonlyArray<string> | undefined;
   readonly shellMust?: ReadonlyArray<string> | undefined;
@@ -38,6 +39,7 @@ export const caseProblems = (
   const patterns = [
     ...(expect.textMust ?? []),
     ...(expect.textMustNot ?? []),
+    ...(expect.wroteTextMustNot ?? []),
     ...(expect.finalTextMust ?? []),
     ...(expect.shellMust ?? []),
     ...(expect.shellMustNot ?? []),

@@ -46,6 +46,7 @@ import {
   withBackgroundWait,
   withDevices,
 } from "./run.ts";
+import type { AppServer, AppServerEvent } from "./appServer.ts";
 import { briefRoute, gradeDevice, shellInvocations } from "./device-grading.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 
@@ -1402,6 +1403,139 @@ it.effect("counts only posted Kin segments toward reply limits", () =>
     }
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
+
+it.effect.each([
+  { harness: "Claude", scenario: "text" },
+  { harness: "Claude", scenario: "silence" },
+  { harness: "Claude", scenario: "thinking" },
+  { harness: "Codex app-server", scenario: "text" },
+  { harness: "Codex app-server", scenario: "silence" },
+  { harness: "Codex app-server", scenario: "thinking" },
+] as const)("grades written text on a quiet $harness turn: $scenario", ({ harness, scenario }) =>
+  Effect.gen(function* () {
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const base = buildBase(template, {
+      model: config.model,
+      keepUserInstructions: false,
+      kinLead: true,
+      kinBills: true,
+    });
+    const testCase: McpToolUseCase = {
+      ...childCase,
+      setup: {
+        role: "top",
+        world: { kinAgent: true, kinLead: true },
+        priorTurns: [
+          {
+            role: "assistant",
+            toolCalls: [{ tool: "kin_skip", input: {}, result: "Nothing sent." }],
+          },
+        ],
+      },
+      prompt:
+        '> BEGIN QUOTE: event data\n> {"type":"bills.read"}\n> END QUOTE\n\n{{BILLS_TURN:mail:B1.txt}}',
+      expect: { textMustNot: ["\\S"] },
+    };
+    const earlier = "First, I checked the bill.";
+    const paragraph = "The bill is available only through a link. I left it unread.";
+    const use = (name: string) => ({
+      type: "tool_use" as const,
+      id: name,
+      name: `mcp__t3-code__${name}`,
+      input: {},
+    });
+    const replies = [
+      {
+        content: [
+          ...(scenario === "text" ? [{ type: "text" as const, text: earlier }] : []),
+          use("kin_journal"),
+        ],
+        stop_reason: "tool_use",
+      },
+      {
+        content: [
+          ...(scenario === "text"
+            ? [{ type: "text" as const, text: paragraph }]
+            : scenario === "thinking"
+              ? [{ type: "thinking" as const, thinking: paragraph, text: paragraph }]
+              : []),
+          use("kin_skip"),
+        ],
+        stop_reason: "tool_use",
+      },
+    ];
+    const client = HttpClient.make((request) => {
+      const reply = replies.shift();
+      assert.isDefined(reply, "unexpected model request");
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json({ ...reply, usage: { input_tokens: 1, output_tokens: 1 } }),
+        ),
+      );
+    });
+    const appServer: AppServer = {
+      knowsModel: async () => false,
+      close: () => true,
+      runTurn: async (turn) => {
+        const events: Array<AppServerEvent> = [];
+        const items = replies.flatMap((reply) => reply.content);
+        for (const block of items) {
+          const event: AppServerEvent | undefined =
+            block.type === "text"
+              ? { type: "text", text: String(block.text), phase: "commentary" }
+              : "name" in block
+                ? { type: "tool", tool: block.id, id: block.id, args: block.input }
+                : undefined;
+          if (event === undefined) continue;
+          events.push(event);
+          turn.onEvent?.(event);
+          if (event.type === "tool") await turn.onToolCall(event.tool, event.args);
+        }
+        return {
+          items: items.map((block) =>
+            block.type === "thinking" ? { type: "reasoning", text: block.text } : block,
+          ),
+          events,
+          stopReason: "end_turn",
+          usage: { input: 1, cached: 0, output: 1, reasoning: 0 },
+          ms: 0,
+        };
+      },
+    };
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const run = yield* runSample(
+      testCase,
+      harness === "Claude" ? config : { ...config, model: "gpt-6.1-sol", appServer },
+      base,
+      { usage: { ...usage }, shellUsage: { ...usage } },
+    ).pipe(Effect.provideService(HttpClient.HttpClient, client));
+    assert.include(run.calls.at(-1), { tool: "kin_skip", failed: false });
+    assert.equal(run.deliveredText, "");
+    assert.deepEqual(gradeSample(testCase.expect, run), [
+      { check: "textMustNot /\\S/", pass: true },
+    ]);
+    const expect = { wroteTextMustNot: ["\\S"] };
+    assert.deepEqual(gradeSample(expect, run), [
+      { check: "wroteTextMustNot /\\S/", pass: scenario !== "text" },
+    ]);
+    assert.propertyVal(run, "wroteText", scenario === "text" ? `${earlier}\n\n${paragraph}` : "");
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it("cannot grade written text from a stored run without a written-text record", () => {
+  const expect = { wroteTextMustNot: ["\\S"] };
+  const run = { calls: [], text: "", deliveredText: "", stopReason: "end_turn" };
+  assert.deepEqual(gradeSample(expect, run), [
+    { check: "wroteTextMustNot /\\S/ (cannot tell: wroteText was not recorded)", pass: false },
+  ]);
+});
 
 it("restores the branch PR that earlier turns opened, not another branch's", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
