@@ -1431,6 +1431,19 @@ function KinDeferralCard(props: {
     setLastStatus(kinCardStatusAfter(outcome, actionId, revision, deferral.agent));
   };
 
+  // A settled card has nothing left to press, so it shrinks to how it ended and what it was.
+  if (deferral.summary !== undefined)
+    return (
+      <CardFrame label={deferral.accessibilityLabel}>
+        {[deferral.summary, ...deferral.lines].map((line) => (
+          <p key={line} className="text-xs text-muted-foreground">
+            {line}
+          </p>
+        ))}
+        <CardNotice notice={status?.notice} />
+      </CardFrame>
+    );
+
   return (
     <CardFrame eyebrow={deferral.eyebrow} label={deferral.accessibilityLabel}>
       <p className="font-medium text-foreground">{deferral.title}</p>
