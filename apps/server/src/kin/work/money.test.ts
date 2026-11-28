@@ -2139,6 +2139,113 @@ describe("invoices", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect.each([
+    "agent wrote it",
+    "agent edited it",
+    "not from the bank",
+    "sender approval removed",
+    "another client",
+    "already used",
+    "another currency",
+    "too small",
+    "approved alert",
+    "confirmed statement",
+  ] as const)("payment claim checks bank evidence: %s", (evidence) =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Juniper Cold Chain");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "clients", title: "Juniper Cold Chain" }],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "November retainer",
+            client: "Juniper Cold Chain",
+            amount: "100,000",
+            date: "2026-10-01",
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const paid = yield* turn(4, "Juniper Cold Chain says it paid");
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const bankList = yield* ensureBankList(orgId, NOW);
+      const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+      const approved = evidence === "approved alert";
+      const statement = evidence === "confirmed statement";
+      const alert = approved || evidence === "sender approval removed";
+      const address = "alerts@bank.example";
+      const { row } = yield* records.create(orgId, evidence === "agent wrote it" ? agent : system, {
+        list: bankList.id,
+        originKey:
+          evidence === "not from the bank" || evidence === "agent wrote it"
+            ? "mail:fixture"
+            : alert
+              ? "alert:fixture"
+              : "bank:fixture",
+        title:
+          evidence === "another client"
+            ? "NEFT CR-TIDEWATER FREIGHT"
+            : "NEFT CR-JUNIPER COLD CHAIN",
+        owner: { _tag: "person", personId: ownerId },
+        state: evidence === "already used" ? "done" : "open",
+        amount: {
+          minor: evidence === "too small" ? 3_999_999 : 4_000_000,
+          currency: evidence === "another currency" ? "USD" : "INR",
+        },
+        dateAt: Date.parse("2026-11-05T06:00:00Z"),
+        fields: { direction: "credit" },
+      });
+      if (evidence === "agent edited it")
+        yield* sql`UPDATE kin_record_changes SET actor_kind = 'agent', kind = 'updated'
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+      if (alert) {
+        yield* sql`INSERT INTO kin_bank_senders (org_id, address, bank_key, bank_name, state, created_at)
+            VALUES (${orgId}, ${address}, 'invented', 'Invented Bank', ${approved ? "approved" : "removed"}, ${NOW})`;
+        yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, outcome,
+            record_id, seen_at, sender_address)
+            VALUES (${orgId}, 'alert', 'mailbox', 'thread', 'recorded', ${row.recordId}, ${NOW}, ${address})`;
+      }
+      const claim = (amount: string) =>
+        LeadMoney.payment(scope, {
+          sourceEventId: paid,
+          key: "INV-1",
+          amount,
+          paidOn: "2026-11-05",
+        }).pipe(
+          Effect.map((one) =>
+            "status" in one && one.status === "proposed" ? one : assert.fail("expected a card"),
+          ),
+        );
+      const warning =
+        "No bank statement or alert shows this money yet. This rests on what Kin was told.";
+      const sentence =
+        "The card tells the owner that no bank statement or alert shows this money yet.";
+      const exact = yield* claim("40,000");
+      if (approved || statement) {
+        assert.notInclude(exact.shown, warning);
+        assert.notInclude(exact.next, sentence);
+        const more = yield* claim("40,001");
+        assert.include(more.shown, warning);
+        assert.include(more.next, sentence);
+        yield* records.update(orgId, system, row.key, { state: "done" });
+        assert.deepStrictEqual(yield* claim("40,000"), exact);
+      } else {
+        assert.include(exact.shown, warning);
+        assert.include(exact.next, sentence);
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("take part payments exactly once each, refuse overpaying, and reopen on a void", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -2176,7 +2283,13 @@ describe("invoices", () => {
         [[false], [true]],
       );
       const paid = yield* turn(4, "Acme paid 40k");
-      const said = { sourceEventId: paid, key: "INV-1", amount: "40k", paidOn: "2026-11-05" };
+      const said = {
+        sourceEventId: paid,
+        key: "INV-1",
+        amount: "40k",
+        paidOn: "2026-11-05",
+        note: "Invented Acme said it paid.",
+      };
       // The agent's call records nothing: it puts the payment to the owner on one card, which
       // the same call again finds. Only the owner's Confirm records it.
       const proposed = yield* LeadMoney.payment(scope, said);
@@ -2201,12 +2314,24 @@ describe("invoices", () => {
         `Invoice: ${String((yield* LeadWork.get(scope, { key: "INV-1" })).fields?.number)}, Invented October retainer`,
         "Already received on it: ₹0.00 of ₹1,00,000.00",
         "Still owed after: ₹60,000.00",
+        "No bank statement or alert shows this money yet. This rests on what Kin was told.",
+        "Agent's note: Invented Acme said it paid.",
       ]);
+      assert.include(
+        proposed.next,
+        "The card tells the owner that no bank statement or alert shows this money yet.",
+      );
+      const detail = sqlPaid<{
+        detail: string;
+      }>`SELECT json_extract(state_json, '$.detail') AS detail
+        FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${`choice:card-kin-receipt:${proposed.proposal}`}`;
+      assert.strictEqual((yield* detail)[0]?.detail, proposed.shown.join("\n"));
       const first = yield* agentPaid(scope, orgId, ownerId, said);
       assert.deepStrictEqual(
         [first.received, first.balance, first.state],
         ["₹40,000.00", "₹60,000.00", "waiting"],
       );
+      assert.strictEqual((yield* detail)[0]?.detail, proposed.shown.join("\n"));
       // The owner's Confirm recorded it, and the read says so beside the bank.
       const read = yield* LeadWork.get(scope, { key: "INV-1" });
       assert.strictEqual(read.payments?.[0]?.source, "recorded by Owner (owner)");
@@ -2427,12 +2552,7 @@ describe("invoices", () => {
         "That payment was already taken back, so nothing changed.",
       );
       // The voided payment's own call again is no retry of a live payment: it is refused.
-      const voidedRetry = yield* LeadMoney.payment(scope, {
-        sourceEventId: paid,
-        key: "INV-1",
-        amount: "40k",
-        paidOn: "2026-11-05",
-      }).pipe(Effect.flip);
+      const voidedRetry = yield* LeadMoney.payment(scope, said).pipe(Effect.flip);
       assert.include(voidedRetry, { reason: "conflict" });
       assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
 

@@ -18,7 +18,13 @@ import { countedEntry, endOfDay, ownerZone, startOfDay } from "../recordRows.ts"
 import { recordedRate } from "../recordedRate.ts";
 import { regionOf } from "../region.ts";
 import type { ListDef } from "../registers.ts";
-import { BANK_CREDIT_ORIGIN, bankStates, directionOf, findBankList } from "./bankList.ts";
+import {
+  BANK_CREDIT_ORIGIN,
+  bankStates,
+  directionOf,
+  findBankList,
+  originKeyOf,
+} from "./bankList.ts";
 import {
   type InvoiceCandidate,
   type PayeeCandidate,
@@ -64,6 +70,13 @@ export const agentWrote = Effect.fn("KinStatements.agentWrote")(function* (
   return row !== undefined && row.clean !== 1;
 });
 
+const bankSource = (sql: SqlClient.SqlClient) => sql`(
+    r.origin_key LIKE ${originKeyOf("%")}
+    OR EXISTS (SELECT 1 FROM kin_bank_alerts a JOIN kin_bank_senders s
+      ON s.org_id = a.org_id AND s.address = a.sender_address AND s.state = 'approved'
+      WHERE a.org_id = r.org_id AND a.record_id = r.record_id AND a.outcome = 'recorded')
+  )`;
+
 /**
  * Unexplained entries one way in Bank transactions no agent wrote or changed, newest first, each
  * as the statement row the matcher reads. An explicit day range is paged to exhaustion.
@@ -76,17 +89,25 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
     | { readonly currency: string; readonly maxMinor: number }
     | { readonly recordId: string }
     | { readonly fromDay: string; readonly throughDay: string }
+    | {
+        readonly currency: string;
+        readonly minMinor: number;
+        readonly fromDay: string;
+        readonly matches: (credit: StatementRow) => boolean;
+      }
     | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
-  const range = only !== undefined && "fromDay" in only ? only : undefined;
-  const limit = range === undefined ? LOOKED_AT : Infinity;
+  const evidence = only !== undefined && "matches" in only ? only : undefined;
+  const limit =
+    evidence !== undefined ? 1 : only !== undefined && "fromDay" in only ? Infinity : LOOKED_AT;
   const currency = only !== undefined && "currency" in only ? only.currency : null;
   const maxMinor = only !== undefined && "maxMinor" in only ? only.maxMinor : null;
   const recordId = only !== undefined && "recordId" in only ? only.recordId : null;
-  const from = range === undefined ? null : startOfDay(range.fromDay, zone);
-  const through = range === undefined ? null : endOfDay(range.throughDay, zone);
+  const from = only !== undefined && "fromDay" in only ? startOfDay(only.fromDay, zone) : null;
+  const through =
+    only !== undefined && "throughDay" in only ? endOfDay(only.throughDay, zone) : null;
   const readPage = (cursor?: { dateAt: number; recordId: string }) => sql<{
     recordId: string;
     key: string;
@@ -105,7 +126,9 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
       AND (${currency} IS NULL OR COALESCE(r.currency, ${def.currency}) = ${currency})
       AND (${maxMinor} IS NULL OR r.amount_minor <= ${maxMinor})
       ${recordId === null ? sql`` : sql`AND r.record_id = ${recordId}`}
-      ${from === null || through === null ? sql`` : sql`AND r.date_at BETWEEN ${from} AND ${through}`}
+      ${from === null ? sql`` : sql`AND r.date_at >= ${from}`}
+      ${through === null ? sql`` : sql`AND r.date_at <= ${through}`}
+      ${evidence === undefined ? sql`` : sql`AND r.amount_minor >= ${evidence.minMinor} AND ${bankSource(sql)}`}
       AND ${countedEntry(sql)} AND ${noAgentHand(sql)} AND ${notRemovedAlert(sql)}
       ${cursor === undefined ? sql`` : sql`AND (r.date_at, r.record_id) < (${cursor.dateAt}, ${cursor.recordId})`}
     ORDER BY r.date_at DESC, r.record_id DESC
@@ -125,7 +148,7 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
         balanceMinor: null,
         foreign: null,
       };
-      return [{ ...row, date, row: read }];
+      return evidence !== undefined && !evidence.matches(read) ? [] : [{ ...row, date, row: read }];
     });
   const read = Effect.gen(function* () {
     let rows = yield* readPage();
@@ -261,6 +284,42 @@ const pairOf = (
   };
 };
 export type CreditPair = NonNullable<ReturnType<typeof pairOf>>;
+
+/** Bank evidence for a cash claim, not an allocation or a promise that this is the payment. */
+export const bankShowsPayment = Effect.fn("KinStatements.bankShowsPayment")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  cash: KinMoney,
+) {
+  const [invoice] = yield* invoiceCandidates(orgId, undefined, recordId);
+  if (
+    invoice === undefined ||
+    invoice.issued === null ||
+    invoice.clientId == null ||
+    invoice.currency !== cash.currency
+  )
+    return false;
+  const def = yield* findBankList(orgId);
+  if (def === undefined) return false;
+  const withholds = yield* withholding(orgId);
+  const credits = yield* openEntries(orgId, def, "credit", {
+    currency: cash.currency,
+    minMinor: cash.minor,
+    fromDay: invoice.issued,
+    matches: (row) => {
+      const offer =
+        invoiceOffer(row, invoice, cash.currency, withholds) ??
+        overOffer(row, invoice, cash.currency);
+      // Amount alone can earn an offer, but doesn't identify this client's money.
+      return (
+        offer?.candidate.why.some(
+          (clue) => clue === "client named" || clue === "invoice number in the narration",
+        ) ?? false
+      );
+    },
+  });
+  return credits.length > 0;
+});
 
 /**
  * One credit as the statement matcher ranks it: the open invoices it may pay, best first, and
