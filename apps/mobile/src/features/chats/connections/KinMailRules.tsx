@@ -514,7 +514,8 @@ function RulePage(props: {
           });
           if (outcome.ok) setSaved(outcome.rule);
           else problem = outcome.problem;
-          return outcome;
+          // A refusal is said once, in the prompt that comes back, not on the screen behind it.
+          return { ok: true } as const;
         }).then(() => {
           if (problem !== null) changeLimit({ text, problem });
         });

@@ -45,7 +45,6 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import { KIN_OFFLINE_NOT_SENT, kinFailure } from "./kinAnswers.ts";
 import {
   isKinChatError,
-  KIN_ENTRY_SHARE,
   kinWorkAllDay,
   kinWorkClosed,
   kinWorkDueLabel,
@@ -1955,18 +1954,25 @@ const kinEntryOnTeamList = (
     !kinSectionSwitchOn(shell, "money")
   );
 
-const KIN_TEAM_LIST_ENTRY_SEEN =
-  "Everyone on the team sees this. Amounts and private details stay hidden from anyone without Money.";
+const KIN_TEAM_LIST_ENTRY = {
+  owners:
+    "Everyone on the team sees this. Amounts and private details stay hidden from anyone without Money.",
+  teammate: "Everyone on the team sees this.",
+} as const;
 
-/** The entry sheet's share switch words: on a team list the team sees it either way. */
-export const kinEntryShareCopy = (
+/**
+ * Who sees an entry its team list shows the whole team, in place of the share switch, which
+ * changes nothing there (`personSees`); null keeps the switch, as on any other list.
+ */
+export const kinEntryWhoSees = (
   item: Pick<KinRecord, "sensitive" | "sensitiveInherited" | "createdAt">,
   def: KinListDefinition | null,
   shell: KinShell | null | undefined,
-): typeof KIN_ENTRY_SHARE =>
+  ownerLevel: boolean,
+): { readonly line: string } | null =>
   kinEntryOnTeamList(item, def, shell)
-    ? { ...KIN_ENTRY_SHARE, on: KIN_TEAM_LIST_ENTRY_SEEN, off: KIN_TEAM_LIST_ENTRY_SEEN }
-    : KIN_ENTRY_SHARE;
+    ? { line: ownerLevel ? KIN_TEAM_LIST_ENTRY.owners : KIN_TEAM_LIST_ENTRY.teammate }
+    : null;
 
 const LABEL_MAX = 60;
 export const KIN_LIST_LABEL_MAX = LABEL_MAX;

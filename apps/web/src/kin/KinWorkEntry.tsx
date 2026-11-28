@@ -15,7 +15,7 @@ import {
   KIN_YES_NO,
   KIN_LISTS,
   kinEntryPrivateLine,
-  kinEntryShareCopy,
+  kinEntryWhoSees,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -26,6 +26,7 @@ import {
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
 import {
+  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   type KinWorkItemView,
@@ -587,6 +588,7 @@ export function KinListEntry(
   const agent = useKinAskAgent(props);
   const mayUpdate = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const whoSees = kinEntryWhoSees(item, def, shell, ownerLevel);
   // A project's lead drafts its entries' words and figures (`can.edit`); state, files and the
   // rest are owner-level, which the host says by letting this reader set its client.
   const canChange = mayUpdate && view.can.party && !creditNoteLocked;
@@ -1153,14 +1155,16 @@ export function KinListEntry(
               {kinEntryPrivateLine(item.owner, props.directory.names)}
             </p>
           ) : null}
-          {view.can.share ? (
+          {whoSees !== null ? (
+            <p className="text-xs text-muted-foreground">{whoSees.line}</p>
+          ) : view.can.share ? (
             <KinWorkShareRow
               environmentId={environmentId}
               orgId={props.orgId}
               itemKey={item.key}
               shared={view.shared}
               disabled={busy}
-              copy={kinEntryShareCopy(item, def, shell)}
+              copy={KIN_ENTRY_SHARE}
             />
           ) : null}
         </div>
