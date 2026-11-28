@@ -2209,6 +2209,62 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a thumbs-down on the lead's own line Kin delivered later still wakes it", () =>
+    Effect.gen(function* () {
+      const { service, person, agent, chat } = yield* seed(false, {
+        owner: "Rhea",
+        agent: "Finance",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      const drained = yield* Deferred.make<void>();
+      const marker = KinMessageId.make("held-reaction-drained");
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted" && event.message.messageId === marker
+                      ? Deferred.succeed(drained, undefined)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+          Layer.provide(KinEventQueue.layer),
+        ),
+      );
+      yield* sql`UPDATE kin_leads SET thread_id = ${agent.threadId}
+        WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}`;
+      const { message: held } = yield* service.notice({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        messageId: KinMessageId.make("kin-held:hold-1"),
+        audience: "chat",
+        body: "The Tidewater Freight invoice is ready to send.",
+        from: agent.agentId,
+      });
+      assert.strictEqual(held.author._tag, "agent");
+      yield* service.react(person, { messageId: held.messageId, emoji: "👎", on: true });
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: person.orgId,
+        message: { ...held, messageId: marker, author: { _tag: "system" }, kind: "system" },
+      });
+      yield* Deferred.await(drained);
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$.messageId') AS "messageId"
+            FROM kin_events WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}
+              AND tag = 'chat.reaction'`,
+        [{ messageId: held.messageId }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "takes a withdrawn yes as a changed answer, once, and only on the message a reaction last woke the lead for",
     () =>

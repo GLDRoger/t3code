@@ -4693,11 +4693,15 @@ const make = Effect.gen(function* () {
       const chat = yield* requireRecord(repo.getChat(member));
       const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      // These older cards Kin draws can retain the wake-up source.
-      const routedCard =
-        widget?.type === "choice" &&
-        (message.clientMessageId?.startsWith("kin-ask-for:") === true ||
-          message.clientMessageId?.startsWith("kin-unconfirmed:") === true);
+      // A card Kin drew (no wake-up or floor run of the agent's own) answers no reaction; these
+      // two kinds keep the wake-up they were asked in. A line Kin delivers later is the agent's.
+      const serverCard =
+        widget !== null &&
+        (message.messageId.startsWith(SERVER_POST_ID_PREFIX) ||
+          (message.sourceWakeupId === undefined && message.floorRunId === null) ||
+          (widget.type === "choice" &&
+            (message.clientMessageId?.startsWith("kin-ask-for:") === true ||
+              message.clientMessageId?.startsWith("kin-unconfirmed:") === true)));
       // In the owner's direct chat, a yes/no on the lead's latest message (a yes only while
       // waiting) and a 👎 anywhere wake the lead once. A changed answer (a yes withdrawn, or yes
       // to no and back) on the message that last woke the lead wakes it again, past the cooldown,
@@ -4708,11 +4712,7 @@ const make = Effect.gen(function* () {
         chat.kind === "direct" &&
         (yield* ownerSide(identity, member)) &&
         message.author._tag === "agent" &&
-        !message.messageId.startsWith(SERVER_POST_ID_PREFIX) &&
-        !routedCard &&
-        (message.sourceWakeupId !== undefined ||
-          message.floorRunId !== null ||
-          (widget === null && message.clientMessageId !== undefined)) &&
+        !serverCard &&
         nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS;
       const personId = identity._tag === "person" ? identity.personId : null;
       const answer = Reactions.reactionAnswer(request.emoji);
