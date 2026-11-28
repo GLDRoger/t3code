@@ -602,9 +602,11 @@ const BillRow = memo(function BillRow(props: {
   const { file } = view;
   const actions = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
+  // A mailed bill's text is a .txt file: it opens like a PDF, never as a broken picture.
+  const asFile = view.pdf || !file.mimeType.toLowerCase().startsWith("image/");
   return (
     <li aria-label={view.accessibilityLabel} className="flex gap-3 py-3">
-      {view.pdf ? (
+      {asFile ? (
         <a
           {...(src === null ? {} : { href: src, download: file.name })}
           aria-label={`Open ${file.name}`}
