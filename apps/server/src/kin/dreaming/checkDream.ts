@@ -43,6 +43,7 @@ export const DreamJson = Schema.Struct({
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
 const EDIT_QUOTE = "an item from an edit quotes only what the person typed in it";
+const EDIT_BODY = "an item from an edit uses only its quote as the body";
 export const DREAM_LEFT_OUT_PREFIX = "Left out ";
 const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
@@ -79,9 +80,9 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   const people = new Set(
     input.material.flatMap((entry) => (entry.trust === "agent" ? [] : [entry.saidBy])),
   );
-  const listed = new Set(report?.changes.map((change) => change.path));
-  /** New items refused only for their edit quote, by id: candidates to leave out. */
-  const untyped = new Map<string, string>();
+  const listed = new Map(report?.changes.map((change) => [change.path, change.sources]));
+  /** New items refused only for their edit quote or body, by path: candidates to leave out. */
+  const untyped = new Map<string, { readonly id: string; readonly reason: string }>();
 
   for (const [path, text] of changes) {
     if (path === "rules.md") {
@@ -96,7 +97,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       failures.push(`${path} is outside item files and journal/`);
       continue;
     }
-    if (report !== undefined && !listed.has(path))
+    const cited = listed.get(path);
+    if (report !== undefined && cited === undefined)
       failures.push(`${path} is not listed in dream.json`);
     if (!isItemPath(path)) continue;
     const parsed = yield* parseFrontMatter(input.orgId, path, text).pipe(Effect.result);
@@ -172,8 +174,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         );
       continue;
     }
-    // An edit's draft is the agent's words: only what the person typed in it can be theirs to
-    // quote, and only a preference for drafts (rule 1c) may cite one without a quote.
+    // Rule 1c's draft preference cites multiple edits by the same person.
     if (author.kind === "edit") {
       const sameAuthor = author.trust === fm.trust && author.saidBy === fm.said_by;
       if (!sameAuthor)
@@ -183,12 +184,27 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       const quote = fm.quote;
       const typed =
         quote === undefined
-          ? fm.kind === "person"
+          ? fm.kind === "person" &&
+            cited?.includes(author.ref) === true &&
+            cited.some((ref) => {
+              const edit = material.get(ref);
+              return (
+                ref !== author.ref &&
+                edit?.kind === "edit" &&
+                edit.saidBy === author.saidBy &&
+                edit.trust === author.trust
+              );
+            })
           : (author.changed ?? []).some((part) => quoteRefusal(quote, part.now) === undefined);
       if (!typed) {
         failures.push(`${path} quote: ${EDIT_QUOTE}`);
-        untyped.set(path, fm.id);
+        untyped.set(path, { id: fm.id, reason: EDIT_QUOTE });
       } else if (sameAuthor && quote !== undefined) {
+        if (parsed.success.body.trim() !== quote.trim()) {
+          failures.push(`${path} body: ${EDIT_BODY}`);
+          untyped.set(path, { id: fm.id, reason: EDIT_BODY });
+          continue;
+        }
         const dated = withRecordedAt(text, author.at);
         if (dated === undefined) failures.push(`${path} can't be dated as it is formatted`);
         else changes.set(path, dated);
@@ -253,15 +269,15 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         if (!contradiction.resolution && !contradiction.question)
           failures.push(`contradiction ${index + 1} has no resolution or question`);
   }
-  // A new item whose only fault is its edit quote costs that item, not the night, when
+  // A new item whose only fault is its edit quote or body costs that item, not the night, when
   // nothing else in the night names it. Anything else still fails the night.
   const named = new Set([
     ...(report?.merges.flatMap((entry) => [entry.into, ...entry.from]) ?? []),
     ...(report?.supersessions.flatMap((entry) => [entry.id, entry.superseded_by ?? ""]) ?? []),
     ...(report?.contradictions.flatMap((entry) => entry.items) ?? []),
   ]);
-  const dropped = new Set<string>();
-  for (const [path, id] of untyped) {
+  const dropped = new Map<string, string>();
+  for (const [path, { id, reason }] of untyped) {
     const own = failures.filter((line) => line.startsWith(`${path} `));
     if (
       input.base.has(path) ||
@@ -273,7 +289,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       continue;
     failures.splice(failures.indexOf(own[0]!), 1);
     changes.delete(path);
-    dropped.add(path);
+    dropped.set(path, reason);
   }
   const committed = new Map(
     [...input.tree.keys()]
@@ -284,6 +300,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     report === undefined
       ? undefined
       : { ...report, changes: report.changes.filter((change) => !dropped.has(change.path)) };
-  const leftOut = [...dropped].map((path) => `${DREAM_LEFT_OUT_PREFIX}${path}: ${EDIT_QUOTE}`);
+  const leftOut = [...dropped].map(
+    ([path, reason]) => `${DREAM_LEFT_OUT_PREFIX}${path}: ${reason}`,
+  );
   return { failures, changes, committed, dream: reported, leftOut };
 });

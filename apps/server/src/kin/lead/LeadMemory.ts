@@ -491,19 +491,23 @@ export const authority = Layer.effect(
               return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
             const [said] =
               event._tag === "chat.message"
-                ? yield* sql<{ body: string; copied: number }>`SELECT body,
-                      origin_json IS NOT NULL AS copied FROM kin_messages
+                ? yield* sql<{ body: string; copied: number; keyed: number }>`SELECT body,
+                      origin_json IS NOT NULL AS copied,
+                      ${sql.literal(keySentSql("client_message_id"))} AS keyed FROM kin_messages
                     WHERE org_id = ${orgId} AND chat_id = ${event.chatId}
                       AND message_id = ${event.messageId} AND status = 'posted'`
                 : [];
             sources.set(event.eventId, {
               ...(said === undefined ? {} : { text: said.body }),
               saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
-              // A copy Kin passed on (`origin`) is their request, never the owner side's own word.
+              // A copy Kin passed on (`origin`) is their request, never the owner side's own word;
+              // what their coding agent sent through its key is outside text.
               trust: person
-                ? (person.role === "owner" || person.level === 1) && said?.copied !== 1
-                  ? "owner"
-                  : "member"
+                ? said?.keyed === 1
+                  ? "external"
+                  : (person.role === "owner" || person.level === 1) && said?.copied !== 1
+                    ? "owner"
+                    : "member"
                 : who._tag === "agent"
                   ? "agent"
                   : "external",

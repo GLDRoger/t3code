@@ -30,12 +30,17 @@ const clip = (text: string, limit: number) => {
 };
 
 /** Memory items the seat lists: open, valid decisions carrying one of these links. */
-const linked = (items: ReadonlyArray<MemoryItemHead>, links: ReadonlyArray<string>) => {
+const linked = (
+  items: ReadonlyArray<MemoryItemHead>,
+  links: ReadonlyArray<string>,
+  trust?: MemoryItemHead["trust"],
+) => {
   const wanted = new Set(links.map((link) => link.toLowerCase()));
   return items
     .filter(
       (item) =>
         item.kind === "decision" &&
+        (trust === undefined || item.trust === trust) &&
         item.status === "open" &&
         item.invalid_at === null &&
         item.links.some((link) => wanted.has(link.toLowerCase())),
@@ -224,7 +229,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
       seat.push(renderLine([live("- You hold ", counts, ".")], "- You: "));
     }
     const memory = input.memory ?? [];
-    const permissions = linked(memory, [`permission:${self}`, "permission:all"]);
+    const permissions = linked(memory, [`permission:${self}`, "permission:all"], "owner");
     if (permissions.length > 0)
       seat.push(
         renderLine([
