@@ -106,8 +106,30 @@ describe("MailText", () => {
   const fail = `spf=fail smtp.mailfrom=${domain}; dmarc=fail action=none header.from=${domain}; compauth=fail reason=000`;
   const otherPass = `dmarc=pass header.from=${domain}; compauth=pass reason=100`;
 
+  const dmarc = `dmarc=pass header.from=${domain}`;
+  const dmarcFail = `dmarc=fail header.from=${domain}`;
+
+  it.each([
+    ["DMARC fail then pass", `${dmarcFail}; ${dmarc}`],
+    ["DMARC pass then fail", `${dmarc}; ${dmarcFail}`],
+    [
+      "SPF fail alongside a fallback pass",
+      `spf=fail; spf=pass smtp.mailfrom=${domain}; dkim=pass header.d=${domain}`,
+    ],
+    [
+      "DKIM fail alongside a fallback pass",
+      `dkim=pass header.d=${domain}; spf=pass smtp.mailfrom=${domain}; dkim=fail`,
+    ],
+  ])("does not vouch for Gmail with %s in one header", (_name, results) => {
+    const auth = [`mx.google.com; ${results}`];
+    expect(senderVerdict(auth, domain)).toBe("failed");
+    expect(dmarcPassedFor(auth, domain)).toBe(false);
+  });
+
   it.each([
     ["one Microsoft header", [pass], "passed"],
+    ["DMARC fail then pass in one header", [`${dmarcFail}; ${pass}`], "failed"],
+    ["DMARC pass then fail in one header", [`${pass}; ${dmarcFail}`], "failed"],
     ["a second pass first", [otherPass, pass], "not checked"],
     ["a second pass last", [pass, otherPass], "not checked"],
     ["a Gmail-named receiver", [`mx.google.com; ${pass}`], "not checked"],

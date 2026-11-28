@@ -163,10 +163,13 @@ const dmarcPass = (verdicts: ReadonlyArray<Verdict>, domain: string) =>
       method === "dmarc" && result === "pass" && domainIn(props.get("header.from")) === domain,
   );
 
+const dmarcFailed = (verdicts: ReadonlyArray<Verdict>) =>
+  verdicts.some(({ method, result }) => method === "dmarc" && result === "fail");
+
 /** The receiving server's DMARC pass for exactly this From domain. */
 export const dmarcPassedFor = (results: MailAuthResults, domain: string) => {
   const { vouches, verdicts } = receiverVerdicts(results);
-  return vouches && dmarcPass(verdicts, domain);
+  return vouches && !dmarcFailed(verdicts) && dmarcPass(verdicts, domain);
 };
 
 const verdictOf = (verdicts: ReadonlyArray<Verdict>, fromDomain: string | null) => {
@@ -176,20 +179,21 @@ const verdictOf = (verdicts: ReadonlyArray<Verdict>, fromDomain: string | null) 
       (one) =>
         one.method === method && one.result === "pass" && aligned(domain(one.props), fromDomain),
     );
+  if (dmarcFailed(verdicts)) return "failed" as const;
   if (fromDomain !== null && dmarcPass(verdicts, fromDomain)) return "passed" as const;
-  if (verdicts.some(({ method, result }) => method === "dmarc" && result === "fail"))
+  if (
+    verdicts.some(
+      ({ method, result }) =>
+        (method === "dkim" || method === "spf") && (result === "fail" || result === "softfail"),
+    )
+  )
     return "failed" as const;
   if (
     passes("dkim", (props) => domainIn(props.get("header.d") ?? props.get("header.i"))) &&
     passes("spf", (props) => domainIn(props.get("smtp.mailfrom")))
   )
     return "passed" as const;
-  return verdicts.some(
-    ({ method, result }) =>
-      (method === "dkim" || method === "spf") && (result === "fail" || result === "softfail"),
-  )
-    ? ("failed" as const)
-    : ("not checked" as const);
+  return "not checked" as const;
 };
 
 /**
