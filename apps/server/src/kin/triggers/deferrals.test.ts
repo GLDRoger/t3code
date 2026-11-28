@@ -628,7 +628,7 @@ it.effect.each([
     yield* joinChat("sam", "member");
     const card = yield* cardOf("def-1");
     assert.deepInclude(card, { askedBy: { personId: KinPersonId.make("zoya"), name: "zoya" } });
-    assert.include(card.actions, action);
+    assert.include(card.actions ?? [], action);
     const before = yield* runOf("def-1");
     const refused = yield* tap(action, tapper);
     assert.equal(outcome(refused), "not_allowed");
@@ -745,6 +745,82 @@ it.effect("two Monday taps at once: one moves it, with the GitHub state that tap
     assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
   }).pipe(Effect.provide(layerFor([linked])));
 });
+
+// Memory closes the card with how it ended, and names nothing it can't tell from the item.
+it.effect.each([
+  ["done", { status: "done" }, "done"],
+  ["cancelled", { status: "cancelled" }, "cancelled"],
+  ["invalidated alone", { invalid_at: "2026-11-12T00:00:00Z" }, undefined],
+  ["superseded alone", { superseded_by: KinMemoryItemId.make("def-2") }, undefined],
+  ["superseded status", { status: "superseded" }, undefined],
+  ["no longer armable", { due: null }, undefined],
+  ["gone from memory", undefined, undefined],
+] as const)("a memory change closes the card: %s", ([, head, closed]) =>
+  Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal((yield* cardOf("def-1")).phase, "asked");
+    yield* service.syncOrg(orgId, head === undefined ? [] : [makeDeferral("def-1", head)]);
+    const repo = yield* Repository.KinChatRepository;
+    const widget = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+    assert.isNotNull(widget.closedAt);
+    if (closed === undefined) assert.notProperty(widget.state, "closed");
+    else assert.deepInclude(widget.state, { closed });
+    assert.notInclude(JSON.stringify(widget.state), '"closed":null');
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+// `askText` as the base wrote it, byte for byte: older apps still read `text`.
+const baseAskText = (input: Parameters<typeof Deferrals.askCopy>[0]) => {
+  const taps = input.startable
+    ? "Tap Start now to start it, Monday to move it, or Cancel."
+    : "Tap Monday to move it, or Cancel.";
+  const reason =
+    input.why.length === 0
+      ? ""
+      : input.startable
+        ? ` I won't start it on my own: ${input.why.join("; ")}.`
+        : ` I can't start it now: ${input.why.join("; ")}.`;
+  return `Due at ${Deferrals.ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${Deferrals.lateNote(input.dueAt, input.now, input.clock)}`;
+};
+it.effect(
+  "a decision card's text is the base's for every variant, and its note only drops the times",
+  () =>
+    Effect.sync(() => {
+      const clock = { zone: "Asia/Kolkata", locale: "en-IN" };
+      for (const startable of [true, false])
+        for (const why of [
+          [],
+          ["Kin asks before every start for now"],
+          ["acme/api#12 is closed", "it's more than 30 minutes late"],
+        ])
+          for (const lateBy of [
+            0,
+            10 * 60_000,
+            10 * 60_000 + 1,
+            3 * 60 * 60_000,
+            2 * 24 * 60 * 60_000,
+          ]) {
+            const input = { dueAt, now: dueAt + lateBy, clock, startable, why };
+            const copy = Deferrals.askCopy(input);
+            const label = JSON.stringify({ startable, why, lateBy });
+            assert.strictEqual(copy.text, baseAskText(input), label);
+            const late = Deferrals.lateNote(dueAt, input.now, clock);
+            const due = `Due at ${Deferrals.ownerTime(dueAt, input.now, clock)}. `;
+            assert.strictEqual(`${due}${copy.note}${late}`, copy.text, label);
+            assert.notInclude(copy.note, Deferrals.ownerTime(dueAt, input.now, clock), label);
+            if (late === "") assert.notProperty(copy, "lateSince", label);
+            else
+              assert.strictEqual(
+                copy.lateSince,
+                DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+                label,
+              );
+          }
+    }),
+);
 
 it.effect("a card in Rhea's chat names Meera when Meera asked", () => {
   const meera = makeDeferral("def-2", { said_by: "meera" });
