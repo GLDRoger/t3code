@@ -381,6 +381,38 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
+  it.effect("still clears a deleted ordinary thread's card on a Kin host", () =>
+    Effect.gen(function* () {
+      const ordinary = shell();
+      const occurredAt = DateTime.makeUnsafe(NOW);
+      const projection = ProjectionStore.emptyProjection({
+        id: EventId.make("event:ordinary-thread"),
+        type: "thread.created",
+        threadId: ordinary.id,
+        occurredAt,
+        payload: { ...ordinary, lastVisitedAt: null },
+      });
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        kinEnabled: true,
+        readThreadRecords: () =>
+          Effect.succeed({
+            ...projection,
+            thread: { ...projection.thread, deletedAt: occurredAt },
+          }),
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* relay.drain;
+      yield* Ref.set(currentShell, null);
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
   it.effect("does not publish a Kin wake-up thread or its subagent, including at startup", () =>
     Effect.gen(function* () {
       const kinId = ThreadId.make("kin-shared:wake");
