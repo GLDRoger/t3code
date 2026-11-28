@@ -1,12 +1,15 @@
 import * as NodeOS from "node:os";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import * as Confinement from "./claudeConfinement.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import {
   AGENT_POSTS_FILE,
   agentShellScripts,
@@ -214,6 +217,7 @@ it.effect("the host probe runs the owner seat's own shell sandbox policy", () =>
       {
         root: path.join(kin, "acme", "read"),
         home,
+        temp: path.join(stateDir, "kin-session-tmp", "session-own"),
         baseDir,
         stateDir,
         attachments: [path.join(stateDir, "attachments", "kin-chat-given.txt")],
@@ -221,6 +225,7 @@ it.effect("the host probe runs the owner seat's own shell sandbox policy", () =>
           ...guards,
           path.join(tools, "gh"),
           path.join(tools, "typst"),
+          path.join(home, ".local", "share", "mise", "installs", "node", "fixture", "bin", "node"),
           ...[APP_IDENTITY_FILE, APP_REPOS_FOLDER, APP_TOKENS_FOLDER].map((name) =>
             path.join(app, name),
           ),
@@ -238,10 +243,91 @@ it.effect("the host probe runs the owner seat's own shell sandbox policy", () =>
       },
       path,
     );
+    expect(settings.filesystem.denyRead).toContain(home);
+    expect(settings.filesystem.denyRead).toContain("/var/log/journal");
+    expect(settings.filesystem.denyRead).toContain("/run/log/journal");
+    expect(settings.filesystem.denyRead).toContain("/tmp");
     yield* Effect.promise(() =>
       expect(`${JSON.stringify(settings, null, 2)}\n`).toMatchFileSnapshot(
         "../../../../ops/kin/host/shell-wall-probe/policy.json",
       ),
     );
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a Linux sandbox opens only the session folders from its home fixture", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    if ((yield* HostProcess.Platform) !== "linux" || !(yield* fs.exists("/usr/bin/bwrap"))) return;
+    const path = yield* Path.Path;
+    const work = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const home = path.join(work, "home");
+    const stateDir = path.join(home, "state");
+    const root = path.join(stateDir, "checkout");
+    const temp = path.join(stateDir, "own-temp");
+    const other = path.join(stateDir, "other-temp");
+    const tool = path.join(home, "bin", "node");
+    for (const folder of [root, temp, other, path.dirname(tool)])
+      yield* fs.makeDirectory(folder, { recursive: true });
+    const node = yield* HostProcess.ExecutablePath;
+    yield* fs.copyFile(node, tool);
+    yield* fs.chmod(tool, 0o755);
+    for (const file of [
+      path.join(home, "private"),
+      path.join(root, "note"),
+      path.join(temp, "note"),
+      path.join(other, "note"),
+    ])
+      yield* fs.writeFileString(file, "fixture");
+    const policy = Confinement.shellSandbox(
+      {
+        root,
+        home,
+        temp,
+        baseDir: stateDir,
+        stateDir,
+        attachments: [],
+        readPaths: [tool],
+        logPaths: [],
+        environment: { HOME: home },
+      },
+      path,
+    );
+    const hostReadDenials = policy.filesystem.denyRead.filter((dir) => dir === home);
+    const allowed = policy.filesystem.allowRead.filter(
+      (dir) => dir === root || dir === temp || dir === tool,
+    );
+    const result = yield* (yield* ProcessRunner.ProcessRunner).run({
+      command: "/usr/bin/bwrap",
+      cwd: work,
+      args: [
+        "--unshare-user",
+        "--unshare-net",
+        "--unshare-pid",
+        "--die-with-parent",
+        "--ro-bind",
+        "/",
+        "/",
+        ...hostReadDenials.flatMap((dir) => ["--tmpfs", dir]),
+        ...allowed.flatMap((dir) => ["--ro-bind", dir, dir]),
+        "/bin/sh",
+        "-c",
+        'test ! -r "$1" && test ! -r "$2" && test -r "$3" && test -r "$4" && "$5" --version',
+        "fixture",
+        path.join(home, "private"),
+        path.join(other, "note"),
+        path.join(root, "note"),
+        path.join(temp, "note"),
+        tool,
+      ],
+      timeout: 5000,
+      maxOutputBytes: 1024,
+    });
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/^v\d+\./);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
 );

@@ -340,11 +340,15 @@ const shellDomains = [
 const shellSecretEnv =
   /^(?:ANTHROPIC_|AWS_|VERTEX_|GOOGLE_|CLOUD_ML_REGION$|DBUS_SESSION_BUS_ADDRESS$|.*(?:TOKEN|PASSWORD|SECRET|API_KEY)(?:_|$))/i;
 
+export const shellSharedTempRoots = ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"];
+
 interface ShellScope {
   readonly root: string;
   readonly stateDir: string;
   readonly baseDir: string;
   readonly home: string;
+  readonly serviceHome?: string;
+  readonly temp?: string;
   readonly attachments: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly logPaths: ReadonlyArray<string>;
@@ -364,8 +368,13 @@ export const shellSandbox = (scope: ShellScope, path: Path.Path) => {
     path.join(environment.XDG_CONFIG_HOME || underHome(".config"), "gh");
   const xdgConfig = environment.XDG_CONFIG_HOME;
   const denyRead = [
+    home,
+    ...(scope.serviceHome === undefined ? [] : [scope.serviceHome]),
     baseDir,
     stateDir,
+    "/var/log/journal",
+    "/run/log/journal",
+    ...shellSharedTempRoots,
     underHome(".t3"),
     underHome(".kin"),
     underHome(".config"),
@@ -401,9 +410,7 @@ export const shellSandbox = (scope: ShellScope, path: Path.Path) => {
     ...alternate("KIN_CHECKOUT"),
     ...alternate("KIN_UPDATE_BACKUPS"),
     ...alternate("KIN_BACKUP_DEST"),
-    ...(environment.KIN_CHECKOUT === undefined
-      ? []
-      : alternate("TMPDIR").filter((dir) => !["/tmp", "/private/tmp", "/var/tmp"].includes(dir))),
+    ...alternate("TMPDIR"),
     ...alternate("GOOGLE_APPLICATION_CREDENTIALS"),
     ...alternate("AWS_SHARED_CREDENTIALS_FILE"),
     ghConfig,
@@ -421,12 +428,13 @@ export const shellSandbox = (scope: ShellScope, path: Path.Path) => {
         ...attachments,
         ...readPaths,
         ...logPaths,
+        ...(scope.temp === undefined ? [] : [scope.temp]),
         path.join(ghConfig, "hosts.yml"),
         path.join(ghConfig, "config.yml"),
         underHome(".gitconfig"),
         ...(xdgConfig ? [path.join(xdgConfig, "git/config")] : [underHome(".config/git/config")]),
       ],
-      allowWrite: [root, ...logPaths],
+      allowWrite: [root, ...logPaths, ...(scope.temp === undefined ? [] : [scope.temp])],
     },
     network: {
       strictAllowlist: true,

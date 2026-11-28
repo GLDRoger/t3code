@@ -1,4 +1,7 @@
+import { KinShellStartup } from "../shellStartup.ts";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import { WorkspaceHostAccess } from "../../../../workspace/WorkspaceHostAccess.ts";
+import { KinSessionFolders, sessionFolderKey } from "../sessionFolders.ts";
 import type { HookCallback, HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -16,9 +19,15 @@ import {
   makeConfiner,
   sessionEnvironment,
   shellSandbox,
+  shellSharedTempRoots,
   withConfinementHook,
 } from "../../../claudeConfinement.ts";
-import { type KinSessionPlan, KinSessions } from "../session.ts";
+import {
+  claudeSandboxNote,
+  kinInstructions,
+  type KinSessionPlan,
+  KinSessions,
+} from "../session.ts";
 import * as SessionContext from "../sessionContext.ts";
 import type { KinProvider } from "./provider.ts";
 
@@ -111,6 +120,17 @@ const nativeTools = (plan: KinSessionPlan, search: boolean, bash: boolean) => {
   }
 };
 
+const appendSandboxNote = (prompt: NonNullable<Options["systemPrompt"]>, note: string) => {
+  if (typeof prompt === "string") return `${prompt}\n\n${note}`;
+  if (Array.isArray(prompt)) return [...prompt, note];
+  if (prompt.type === "preset")
+    return { ...prompt, append: [prompt.append, note].filter(Boolean).join("\n\n") };
+  return {
+    ...prompt,
+    prompt: Array.isArray(prompt.prompt) ? [...prompt.prompt, note] : `${prompt.prompt}\n\n${note}`,
+  };
+};
+
 const ownerContextHooks = (
   hooks: NonNullable<Options["hooks"]>,
   prepared: () => ReturnType<SessionContext.KinSessionContext["Service"]["forThread"]>,
@@ -162,6 +182,7 @@ const apply = (
     readonly hook: HookCallbackMatcher | undefined;
     readonly auth: AuthSettings;
     readonly scope: FileScope | undefined;
+    readonly temp: { readonly path: string; readonly npmCache: string } | undefined;
     readonly sandbox: ReturnType<typeof shellSandbox> | undefined;
     readonly environment: NodeJS.ProcessEnv;
     readonly context: SessionContext.KinSessionContext["Service"] | undefined;
@@ -182,6 +203,16 @@ const apply = (
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
   const tools = nativeTools(plan, loading.search === "true", shell !== undefined);
+  const prompt =
+    plan.seat === "owner"
+      ? kinInstructions("owner", DRIVER, undefined, shell !== undefined)
+      : plan.instructions;
+  const delegatedNote =
+    plan.seat === "delegated" && shell !== undefined ? claudeSandboxNote(false) : undefined;
+  const systemPrompt =
+    options.systemPrompt !== undefined && delegatedNote !== undefined
+      ? appendSandboxNote(options.systemPrompt, delegatedNote)
+      : undefined;
   const confined = plan.seat === "confined";
   const hooks =
     session.hook === undefined ? undefined : withConfinementHook(options.hooks, session.hook);
@@ -189,9 +220,11 @@ const apply = (
     ...(fenced ? noLocalSettings : options),
     ...(session.scope?.root === undefined ? {} : { cwd: session.scope.root }),
     settingSources: [],
-    ...(plan.instructions === undefined
-      ? {}
-      : { systemPrompt: { type: "custom" as const, prompt: plan.instructions, snapshot: false } }),
+    ...(prompt === undefined
+      ? systemPrompt === undefined
+        ? {}
+        : { systemPrompt }
+      : { systemPrompt: { type: "custom" as const, prompt, snapshot: false } }),
     ...(tools === undefined ? {} : { tools }),
     ...(confined
       ? {
@@ -265,6 +298,9 @@ const apply = (
               ...session.auth.env,
               ...(typeof settings === "object" ? settings.env : undefined),
               ENABLE_TOOL_SEARCH: loading.search,
+              ...(session.temp === undefined
+                ? {}
+                : { TMPDIR: session.temp.path, npm_config_cache: session.temp.npmCache }),
             },
           },
         }),
@@ -274,6 +310,9 @@ const apply = (
         ? {}
         : {
             PATH: shell.path,
+            ...(session.temp === undefined
+              ? {}
+              : { TMPDIR: session.temp.path, npm_config_cache: session.temp.npmCache }),
             ...(shell.agentName === undefined ? {} : { KIN_AGENT_NAME: shell.agentName }),
           }),
       ENABLE_TOOL_SEARCH: loading.search,
@@ -359,7 +398,9 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const config = yield* ServerConfig;
       const path = yield* Path.Path;
       const fs = yield* FileSystem.FileSystem;
+      const folders = yield* KinSessionFolders;
       const workspaceAccess = yield* WorkspaceHostAccess;
+      const startup = yield* KinShellStartup;
       const relative = (parent: string, child: string) => {
         const result = path.relative(parent, child);
         return !path.isAbsolute(result) && result.split(path.sep)[0] !== ".." ? result : undefined;
@@ -368,6 +409,26 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const stateDir = (yield* confiner.root(config.stateDir)) ?? config.stateDir;
       const baseDir = (yield* confiner.root(config.baseDir)) ?? config.baseDir;
       const attachmentsDir = (yield* confiner.root(config.attachmentsDir)) ?? config.attachmentsDir;
+      const tempParent = path.join(stateDir, "kin-session-tmp");
+      const homeDirectory = yield* HostProcess.HomeDirectory;
+      const serviceHome = (yield* confiner.root(homeDirectory)) ?? homeDirectory;
+      const nodePaths = Effect.fnUntraced(function* (node: string) {
+        const resolved = yield* confiner.root(node);
+        if (resolved === undefined) return [];
+        const bin = path.dirname(resolved);
+        const packages = path.join(path.dirname(bin), "lib", "node_modules");
+        return [
+          node,
+          resolved,
+          path.join(bin, "npm"),
+          path.join(bin, "npx"),
+          path.join(bin, "corepack"),
+          path.join(bin, "pnpm"),
+          path.join(packages, "npm"),
+          path.join(packages, "corepack"),
+          path.join(packages, "pnpm"),
+        ].filter(literal);
+      });
       const context = Option.getOrUndefined(
         yield* Effect.serviceOption(SessionContext.KinSessionContext),
       );
@@ -473,10 +534,14 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
                 {
                   root,
                   home,
+                  serviceHome,
                   baseDir,
                   stateDir,
                   attachments,
-                  readPaths: plan.shell?.readPaths ?? [],
+                  readPaths:
+                    plan.shell === undefined
+                      ? []
+                      : [...plan.shell.readPaths, ...(yield* nodePaths(plan.shell.node))],
                   logPaths: plan.shell?.logPaths ?? [],
                   environment: shellEnvironment,
                 },
@@ -489,10 +554,32 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
                   (relative(deny, allowedRoot) !== undefined &&
                     deny !== baseDir &&
                     deny !== stateDir &&
+                    deny !== home &&
+                    deny !== serviceHome &&
+                    !shellSharedTempRoots.includes(deny) &&
+                    deny !== shellEnvironment.TMPDIR &&
                     deny !== path.join(home, ".t3")),
               );
               if (unsafe) root = undefined;
-              else if (plan.shell !== undefined) sandbox = settings;
+              else if (plan.shell !== undefined) {
+                const checked = startup.executables;
+                const binary =
+                  checked === undefined
+                    ? undefined
+                    : ((yield* resolveCommandPath(
+                        input.options.pathToClaudeCodeExecutable ?? "claude",
+                        {
+                          env,
+                        },
+                      ).pipe(
+                        Effect.provideService(FileSystem.FileSystem, fs),
+                        Effect.provideService(Path.Path, path),
+                        Effect.orElseSucceed(() => null),
+                      )) ?? undefined);
+                const resolved = yield* confiner.root(binary);
+                if (checked === undefined || (resolved !== undefined && checked.has(resolved)))
+                  sandbox = settings;
+              }
             } else root = undefined;
             if (
               root !== undefined &&
@@ -510,35 +597,77 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
               attachmentsOnly: sandbox !== undefined,
             };
           }
-          return yield* runner.open({
-            ...input,
-            options: apply(input.options, plan, {
-              // The refresh already denies all tools; the normal policy hook could mark a wake-up.
-              hook: input.refresh
-                ? undefined
-                : decisionHook(
-                    plan,
-                    (tool, args) =>
-                      scope === undefined
-                        ? Promise.resolve(false)
-                        : confiner.permits(scope, tool, args),
-                    sandbox === undefined ? Effect.succeed(false) : plan.shell!.prepareLogs,
-                    sandbox === undefined ? FILE_REFUSAL : SHELL_FILE_REFUSAL,
+          const temp =
+            sandbox === undefined || input.refresh
+              ? undefined
+              : yield* fs.makeDirectory(tempParent, { recursive: true, mode: 0o700 }).pipe(
+                  Effect.andThen(
+                    fs.makeTempDirectory({ directory: tempParent, prefix: "session-" }),
                   ),
-              auth,
-              scope,
-              sandbox,
-              environment,
-              context,
-              logCompaction: (summaryLength) =>
-                runHook(
-                  Effect.logDebug("kin.claude.compact_summary", {
-                    threadId: plan.thread,
-                    summaryLength,
-                  }),
-                ),
-            }),
-          });
+                  Effect.orElseSucceed(() => undefined),
+                );
+          if (sandbox !== undefined && !input.refresh) {
+            if (temp === undefined) {
+              sandbox = undefined;
+              if (scope !== undefined) scope = { ...scope, attachmentsOnly: false };
+            } else {
+              sandbox.filesystem.allowRead.push(temp);
+              sandbox.filesystem.allowWrite.push(temp);
+            }
+          }
+          const cleanup =
+            temp === undefined
+              ? Effect.void
+              : fs.remove(temp, { recursive: true, force: true }).pipe(Effect.ignore);
+          const opened = yield* runner
+            .open({
+              ...input,
+              options: apply(input.options, plan, {
+                // The refresh already denies all tools; the normal policy hook could mark a wake-up.
+                hook: input.refresh
+                  ? undefined
+                  : decisionHook(
+                      plan,
+                      (tool, args) =>
+                        scope === undefined
+                          ? Promise.resolve(false)
+                          : confiner.permits(scope, tool, args),
+                      sandbox === undefined ? Effect.succeed(false) : plan.shell!.prepareLogs,
+                      sandbox === undefined ? FILE_REFUSAL : SHELL_FILE_REFUSAL,
+                    ),
+                auth,
+                scope,
+                temp:
+                  temp === undefined
+                    ? undefined
+                    : { path: temp, npmCache: path.join(temp, "npm-cache") },
+                sandbox,
+                environment,
+                context,
+                logCompaction: (summaryLength) =>
+                  runHook(
+                    Effect.logDebug("kin.claude.compact_summary", {
+                      threadId: plan.thread,
+                      summaryLength,
+                    }),
+                  ),
+              }),
+            })
+            .pipe(Effect.onExit((exit) => (exit._tag === "Failure" ? cleanup : Effect.void)));
+          if (scope?.root === undefined || input.refresh) return opened;
+          const key = sessionFolderKey(input);
+          const roots = temp === undefined ? [scope.root] : [scope.root, temp];
+          folders.set(key, roots);
+          return {
+            ...opened,
+            close: opened.close.pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (folders.get(key) === roots) folders.delete(key);
+                }).pipe(Effect.andThen(cleanup)),
+              ),
+            ),
+          };
         }),
       });
     }),

@@ -1,5 +1,6 @@
 import * as KinEnabled from "./kin/KinEnabled.ts";
 import * as KinWorkspaceAccess from "./kin/host/workspaceAccess.ts";
+import * as KinShellStartup from "./kin/lead/turn/shellStartupLive.ts";
 import * as KinPeopleHttp from "./kin/people/http.ts";
 import * as KinExportHttp from "./kin/work/exportHttp.ts";
 import * as KinVisualFonts from "./kin/visualFonts.ts";
@@ -1465,6 +1466,12 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(
         KinWorkspaceAccess.layer.pipe(
           Layer.provide(layerPersistence),
+          Layer.provide(KinEnabled.layer),
+        ),
+      ),
+      Layer.provideMerge(
+        KinShellStartup.layer.pipe(
+          Layer.provide(layerServerSettings),
           Layer.provide(KinEnabled.layer),
         ),
       ),

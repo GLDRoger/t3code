@@ -61,9 +61,12 @@ it.effect("a fenced worktree also fences its shared project after restarting", (
       );
     }).pipe(Effect.provide(policy(false)));
   }).pipe(
-    Effect.provide(TaskFolderStore.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
     Effect.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "kin-fenced-folders-" }).pipe(
+      TaskFolderStore.layer.pipe(
+        Layer.provideMerge(Sqlite.layerMemory),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-fenced-folders-" }),
+        ),
         Layer.provideMerge(NodeServices.layer),
       ),
     ),

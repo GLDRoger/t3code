@@ -33,6 +33,7 @@ import {
 } from "./claude.ts";
 import { captureClaudeOptions } from "./claude.testkit.ts";
 import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
+import { KinShellStartup } from "../shellStartup.ts";
 import { KinSessionContext } from "../sessionContext.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import {
@@ -221,9 +222,14 @@ it.effect("every seat's options match Kin byte for byte", () =>
           subscribeForViewer: Option.none(),
         }),
       );
+      if (seat === "owner with lookup" || seat === "delegated")
+        expect(JSON.stringify(options.systemPrompt)).toContain("Your shell runs in a sandbox");
       const bytes = JSON.stringify(options, (_key, value: unknown) => {
         if (typeof value === "string")
-          return value.replaceAll(stateDir, "<stateDir>").replaceAll(baseDir, "<baseDir>");
+          return value
+            .replaceAll(stateDir, "<stateDir>")
+            .replaceAll(baseDir, "<baseDir>")
+            .replace(/(kin-session-tmp[/\\])session-[^/\\]+/g, "$1<session>");
         if (typeof value === "function") return "[Function]";
         return value;
       });
@@ -269,6 +275,46 @@ it.effect("an enabled owner seat without KinSessionContext logs one error and st
     ),
   );
 });
+
+it.effect("an unavailable sandbox opens a Claude session with Bash withheld", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = `${config.stateDir}/kin/demo/memory-read`;
+    yield* fs.makeDirectory(cwd, { recursive: true });
+    const services = Context.make(KinAgentSessionPolicy, {
+      refusal: () => Effect.undefined,
+      webSearch: () => Effect.undefined,
+      delegated: () => Effect.succeed(false),
+      toolDirectories: ["/fixtures/gh"],
+      agentName: () => Effect.succeed("Lead"),
+    }) as Context.Context<KinServices>;
+    const { options } = yield* captureClaudeOptions({
+      thread: "kin:tech",
+      cwd,
+      model: "claude-sonnet-4-6",
+      environment: { PATH: "/usr/bin", HOME: "/home/kin" },
+    }).pipe(
+      Effect.provideService(KinServer, {
+        taskCardUpdater: Layer.empty,
+        services: Option.some(services),
+        subscribeForViewer: Option.none(),
+      }),
+    );
+    if (!Array.isArray(options.tools)) return assert.fail("Expected a list of native tools");
+    assert.notInclude(options.tools, "Bash");
+    assert.include(options.disallowedTools ?? [], "Bash");
+    assert.isUndefined(typeof options.settings === "object" && options.settings.sandbox);
+  }).pipe(
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "kin-claude-unavailable-" }).pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
+    ),
+    Effect.provideService(KinShellStartup, { available: false }),
+  ),
+);
 
 it.effect("SessionStart adds the standing context only on startup and compact", () =>
   withPreparedContext((options) =>
@@ -697,7 +743,10 @@ it.effect(
         ],
         strictMcpConfig: true,
       });
+      assert.match(fullEnv?.TMPDIR ?? "", /kin-session-tmp[/\\]session-/);
       assert.deepStrictEqual(fullEnv, {
+        TMPDIR: fullEnv?.TMPDIR,
+        npm_config_cache: `${fullEnv?.TMPDIR}/npm-cache`,
         PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
         HOME: "/home/kin",
         KIN_AGENT_NAME: "Tech lead",
@@ -721,7 +770,11 @@ it.effect(
         includeCoAuthoredBy: false,
         autoMemoryEnabled: false,
         autoDreamEnabled: false,
-        env: { ENABLE_TOOL_SEARCH: "true" },
+        env: {
+          ENABLE_TOOL_SEARCH: "true",
+          TMPDIR: fullEnv?.TMPDIR ?? "",
+          npm_config_cache: fullEnv?.npm_config_cache ?? "",
+        },
         idleCompaction: false,
         ...dietSettings,
       });
@@ -729,8 +782,11 @@ it.effect(
         ...lead,
         env: { ...lead.env, CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" },
       });
+      assert.notStrictEqual(preconfigured?.env?.TMPDIR, fullEnv?.TMPDIR);
       assert.deepStrictEqual(preconfigured?.env, {
         ...fullEnv,
+        TMPDIR: preconfigured?.env?.TMPDIR,
+        npm_config_cache: `${preconfigured?.env?.TMPDIR}/npm-cache`,
         CLAUDE_CODE_PROMPT_CACHE_TTL: "5m",
       });
       assert.sameMembers(Object.keys(fullHooks ?? {}), [
@@ -1198,7 +1254,7 @@ it.effect(
         }).pipe(
           Effect.provide(
             claude.install(base).pipe(
-              Layer.provide(Layer.succeed(HostProcess.HomeDirectory, scratch)),
+              Layer.provide(Layer.succeed(HostProcess.HomeDirectory, `${scratch}-host-home`)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -1221,8 +1277,9 @@ it.effect(
 
       const child = yield* open("child-owner");
       const grandchild = yield* open("grandchild-owner");
-      // T3's own prompt and tools, Kin's hook, and the pinned gh first, as the lead's turn has.
-      assert.strictEqual(child?.systemPrompt, task.systemPrompt);
+      const prompt = JSON.stringify(child?.systemPrompt) ?? "";
+      assert.include(prompt, "Your shell runs in a sandbox");
+      assert.notInclude(prompt, "use web_page to read other public pages");
       assert.strictEqual(child?.tools, task.tools);
       assert.includeMembers(child?.disallowedTools ?? [], ["PowerShell", "Agent", "EnterWorktree"]);
       assert.strictEqual(child?.skills, task.skills);
@@ -1235,7 +1292,11 @@ it.effect(
       assert.deepStrictEqual(child?.settingSources, []);
       assert.isTrue(child?.strictMcpConfig);
       const childHooks = child?.hooks;
+      assert.match(child?.env?.TMPDIR ?? "", /kin-session-tmp[/\\]session-/);
+      assert.notStrictEqual(child?.env?.TMPDIR, grandchild?.env?.TMPDIR);
       assert.deepStrictEqual(child?.env, {
+        TMPDIR: child?.env?.TMPDIR,
+        npm_config_cache: `${child?.env?.TMPDIR}/npm-cache`,
         PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
         HOME: "/home/kin",
         KIN_AGENT_NAME: "Lead",

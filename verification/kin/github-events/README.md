@@ -38,3 +38,5 @@
 **Re-confirmed 2026-11-28** against the Claude shell wall: all 11 rules hold over 325,978 states; 16/16 variants caught. The signing shim moves its per-command refusal marker to the sandbox's temporary directory. GitHub post keys and how the watch consumes them are unchanged.
 
 **Re-confirmed 2026-11-28** against `fix/kin-sec-github-wake-not-owner` on kin `73a62308020`: all 11 rules hold over 325,978 states; 16/16 broken variants are caught. The watch adds an authorship fact and server-read context for no-shell turns. An incomplete label history withholds only shell authority, not the wake. Wake keys, eligibility, caps, reactions and the confined triage claim and post protocol do not change. Shell authority and writer review posting are checked by server tests, outside this model.
+
+**Re-confirmed 2026-11-28** against the shell wall fix round on kin `68da5258875`. All 11 rules hold over 325,978 states and all 16 broken variants were caught. The new server Git and agent file policies leave the modeled wake and post conditions intact.

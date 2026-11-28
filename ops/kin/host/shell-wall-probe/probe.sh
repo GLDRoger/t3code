@@ -3,7 +3,7 @@
 # It runs policy.json (the owner seat's sandbox settings, pinned by
 # apps/server/src/kin/claudeConfinement.test.ts) through Anthropic's sandbox runtime against
 # stand-in files it makes in an empty scratch folder. It reads and removes nothing outside that
-# folder, needs no sudo, and its only network use is npm fetching the pinned runtime.
+# folder and needs no sudo. It fetches the pinned runtime and checks the network allowlist.
 # Usage, as the service user: sh probe.sh <empty scratch folder>
 set -eu
 
@@ -20,7 +20,7 @@ root=$(CDPATH='' cd -- "$1" && pwd -P)
 case $root in *[!A-Za-z0-9/._-]*) usage "use a scratch path of letters, digits and / . _ -" ;; esac
 
 missing=""
-for tool in node npm curl; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done
+for tool in node npm curl gh; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done
 if [ "$(uname -s)" = Linux ]; then
   # The standalone runtime finds nested git folders with ripgrep; Claude Code bundles its own.
   for tool in bwrap socat rg; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done
@@ -31,14 +31,18 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-mkdir -p "$root/tmp" "$root/npm-home" "$root/runtime"
+home=$root/home
+state=$home/.t3/userdata
+temp=$state/kin-session-tmp/session-own
+runtime=$temp/runtime
+mkdir -p "$root/npm-home" "$runtime"
 : >"$root/npmrc"
 : >"$root/npmrc-global"
-cat >"$root/runtime/package.json" <<'JSON'
+cat >"$runtime/package.json" <<'JSON'
 {"name":"kin-shell-wall-probe","private":true,"dependencies":{"@anthropic-ai/sandbox-runtime":"0.0.83"},"overrides":{"node-forge":"1.4.3"}}
 JSON
 # The same versions and integrity hashes as the repository's pnpm-lock.yaml.
-cat >"$root/runtime/package-lock.json" <<'JSON'
+cat >"$runtime/package-lock.json" <<'JSON'
 {
   "name": "kin-shell-wall-probe",
   "lockfileVersion": 3,
@@ -85,7 +89,7 @@ cat >"$root/runtime/package-lock.json" <<'JSON'
   }
 }
 JSON
-if ! (cd "$root/runtime" && HOME="$root/npm-home" TMPDIR="$root/tmp" \
+if ! (cd "$runtime" && HOME="$root/npm-home" TMPDIR="$temp" \
   npm_config_userconfig="$root/npmrc" npm_config_globalconfig="$root/npmrc-global" \
   npm_config_cache="$root/npm-cache" npm_config_update_notifier=false \
   npm ci --ignore-scripts --no-audit --no-fund >"$root/npm.log" 2>&1); then
@@ -99,8 +103,6 @@ put() {
   mkdir -p "$(dirname "$1")"
   printf '%s\n' "$2" >"$1"
 }
-home=$root/home
-state=$home/.t3/userdata
 checkout=$state/kin/acme/read
 put "$checkout/notes.md" "probe checkout file"
 put "$checkout/.git/HEAD" "ref: refs/heads/main"
@@ -111,7 +113,12 @@ put "$state/attachments/kin-chat-given.txt" "given"
 put "$state/kin/gh-app/agent-posts.log" ""
 put "$state/kin/gh-app/owner-uses.log" ""
 put "$home/.ssh/id_ed25519" "PROBE-STAND-IN"
-mkdir -p "$root/run"
+put "$home/ordinary-private-file" "PROBE-STAND-IN"
+put "$state/kin-session-tmp/session-other/note" "PROBE-STAND-IN"
+put "$state/kin-session-tmp/session-own/note" "own temporary file"
+mkdir -p "$root/tools" "$home/.local/share/mise/installs/node/fixture/bin"
+cp "$(command -v gh)" "$root/tools/gh"
+cp "$(node -p 'process.execPath')" "$home/.local/share/mise/installs/node/fixture/bin/node"
 
 cat >"$root/runner.mjs" <<'JS'
 import { spawn } from "node:child_process";
@@ -120,19 +127,21 @@ import * as net from "node:net";
 import * as path from "node:path";
 
 const [root, policyFile] = process.argv.slice(2);
-const { SandboxManager, SandboxRuntimeConfigSchema } = await import(
-  path.join(root, "runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/index.js")
-);
 const policy = JSON.parse(fs.readFileSync(policyFile, "utf8").replaceAll("__ROOT__", root));
 const home = path.join(root, "home");
 const state = path.join(home, ".t3", "userdata");
 const checkout = path.join(state, "kin", "acme", "read");
 const outside = path.join(home, "probe-write");
-const socket = path.join(root, "run", "probe.sock");
+const socket = path.join(checkout, "probe.sock");
+const temp = path.join(state, "kin-session-tmp", "session-own");
+const { SandboxManager, SandboxRuntimeConfigSchema } = await import(
+  path.join(temp, "runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/index.js")
+);
+const toolPath = path.join(home, ".local", "share", "mise", "installs", "node", "fixture", "bin");
 const env = {
   HOME: home,
-  PATH: process.env.PATH,
-  TMPDIR: path.join(root, "tmp"),
+  PATH: [toolPath, path.join(root, "tools"), ...process.env.PATH.split(path.delimiter)].join(path.delimiter),
+  TMPDIR: temp,
   ANTHROPIC_API_KEY: "PROBE-STAND-IN",
   GITHUB_TOKEN: "PROBE-STAND-IN",
 };
@@ -178,6 +187,14 @@ try {
   await refused("refuse the stand-in secrets file", `cat '${state}/secrets/server-signing-key.bin'`);
   await refused("refuse the stand-in database", `cat '${state}/statev2.sqlite'`);
   await refused("refuse the stand-in credential file", `cat '${home}/.ssh/id_ed25519'`);
+  await refused("refuse other files in the service user's home", `cat '${home}/ordinary-private-file'`);
+  await refused("refuse another session's temp file", `cat '${path.dirname(temp)}/session-other/note'`);
+  const ownTemp = await run('cat "$TMPDIR/note"');
+  line(ownTemp.status === 0 && ownTemp.out === "own temporary file", "read this session's temp file", ownTemp.out);
+  const node = await run(`'${path.join(toolPath, "node")}' --version`);
+  line(node.status === 0 && /^v\d+\./.test(node.out), "run Node from the allowed toolchain", node.out);
+  const gh = await run(`'${path.join(root, "tools", "gh")}' --version`);
+  line(gh.status === 0 && /^gh version \d+\./.test(gh.out), "run the allowed GitHub CLI", gh.out.split("\n")[0]);
   const write = await run(`printf x > '${outside}'`);
   line(write.status !== 0 && !fs.existsSync(outside), "refuse a write outside the checkout", `exit ${write.status}`);
   const allowed = await run("curl -sS -m 20 -o /dev/null -w '%{http_code}' https://github.com/");
@@ -202,4 +219,4 @@ process.exit(failed === 0 ? 0 : 1);
 JS
 
 cd "$root"
-HOME="$home" TMPDIR="$root/tmp" node "$root/runner.mjs" "$root" "$here/policy.json"
+HOME="$home" TMPDIR="$temp" node "$root/runner.mjs" "$root" "$here/policy.json"

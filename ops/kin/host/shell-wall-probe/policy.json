@@ -6,8 +6,15 @@
   "filesystem": {
     "disabled": false,
     "denyRead": [
+      "__ROOT__/home",
       "__ROOT__/home/.t3",
       "__ROOT__/home/.t3/userdata",
+      "/var/log/journal",
+      "/run/log/journal",
+      "/tmp",
+      "/var/tmp",
+      "/private/tmp",
+      "/private/var/tmp",
       "__ROOT__/home/.kin",
       "__ROOT__/home/.config",
       "__ROOT__/home/.local/share/keyrings",
@@ -48,11 +55,13 @@
       "__ROOT__/home/.t3/userdata/kin/gh-sign/kin-as-owner",
       "__ROOT__/tools/gh",
       "__ROOT__/tools/typst",
+      "__ROOT__/home/.local/share/mise/installs/node/fixture/bin/node",
       "__ROOT__/home/.t3/userdata/kin/gh-app/identity",
       "__ROOT__/home/.t3/userdata/kin/gh-app/repos",
       "__ROOT__/home/.t3/userdata/kin/gh-app/tokens",
       "__ROOT__/home/.t3/userdata/kin/gh-app/agent-posts.log",
       "__ROOT__/home/.t3/userdata/kin/gh-app/owner-uses.log",
+      "__ROOT__/home/.t3/userdata/kin-session-tmp/session-own",
       "__ROOT__/home/.config/gh/hosts.yml",
       "__ROOT__/home/.config/gh/config.yml",
       "__ROOT__/home/.gitconfig",
@@ -61,7 +70,8 @@
     "allowWrite": [
       "__ROOT__/home/.t3/userdata/kin/acme/read",
       "__ROOT__/home/.t3/userdata/kin/gh-app/agent-posts.log",
-      "__ROOT__/home/.t3/userdata/kin/gh-app/owner-uses.log"
+      "__ROOT__/home/.t3/userdata/kin/gh-app/owner-uses.log",
+      "__ROOT__/home/.t3/userdata/kin-session-tmp/session-own"
     ]
   },
   "network": {

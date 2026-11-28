@@ -1,3 +1,4 @@
+import { KinShellStartup } from "./shellStartup.ts";
 import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
 import { type KinCapability, kinCantDo, kinProviderFacts, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -49,6 +50,7 @@ export type KinSeatAbilities = "none" | "lookup" | "shellAndFiles";
 export interface KinShell {
   /** Kin's signing `gh` and git first, then the pinned `gh` and Typst, then the host's PATH. */
   readonly path: string;
+  readonly node: string;
   /** What it posts on GitHub is signed with this name. */
   readonly agentName: string | undefined;
   readonly readPaths: ReadonlyArray<string>;
@@ -105,17 +107,28 @@ const REVIEW_SEARCH_REFUSAL = "This review has no web search.";
 const OWNER_NOTE =
   "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why.";
 
+export const claudeSandboxNote = (webPage: boolean) =>
+  "Your shell runs in a sandbox with access to your working folder, turn attachments and approved tools, and reaches only GitHub and package registries. " +
+  (webPage
+    ? "Use your shell to read and edit working files, and use web_page to read other public pages."
+    : "Use your shell to read and edit working files.");
+
+const OWNER_SHELL_OFF =
+  "Your command line is off. Use your file tools for your working folder and to read the attachments for this turn.";
+
 /** What a seat has, said once for every provider from what that provider lacks. */
 const sessionNote = (
   seat: "owner" | "confined",
   lacks: ReadonlyArray<KinCapability>,
   search: boolean,
+  claudeShell: boolean | undefined,
 ) => {
   if (seat === "confined")
     return `${search ? CONFINED_SEARCH_NOTE : CONFINED_NOTE}\n${ALL_MODELS_NOTE}`;
   const shell = !lacks.includes("shell");
   const owner = [
-    shell ? OWNER_NOTE : "",
+    shell && claudeShell !== false ? OWNER_NOTE : "",
+    claudeShell === undefined ? "" : claudeShell ? claudeSandboxNote(true) : OWNER_SHELL_OFF,
     lacks.length === 0 ? "" : `Here you can't ${kinCantDo(lacks)}.`,
     lacks.includes("webFetch") ? "Use web_page to read a public page." : "",
   ].filter(Boolean);
@@ -130,7 +143,14 @@ export const kinInstructions = (
   seat: "owner" | "confined",
   driver: string,
   search = CONFINED_WEB_SEARCH.has(driver),
-) => `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [], search)}`;
+  shell = true,
+) =>
+  `${instructions}\n\n${sessionNote(
+    seat,
+    kinProviderFacts(driver)?.lacks ?? [],
+    search,
+    driver === "claudeAgent" ? shell : undefined,
+  )}`;
 
 /** What a lead's own thread is told, as `plan` decides it for that thread. */
 export const leadThreadInstructions = (threadId: ThreadId, driver: string) =>
@@ -181,7 +201,11 @@ export class KinSessions extends Context.Service<
         const relative = path.relative(parent, child);
         return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
       };
+      const startup = yield* KinShellStartup;
       const kin = yield* Effect.serviceOption(KinServer);
+      const services = Option.flatMap(kin, (server) => server.services);
+      if (Option.isSome(services) && startup.report !== undefined)
+        yield* startup.report(services.value);
       const policy = Option.flatMap(kin, (server) =>
         Option.flatMap(server.services, (services) =>
           Context.getOption(services, KinAgentSessionPolicy),
@@ -198,48 +222,59 @@ export class KinSessions extends Context.Service<
         }
         return true;
       }).pipe(Effect.orElseSucceed(() => false));
-      const guards = Option.isNone(policy)
-        ? []
-        : yield* Effect.gen(function* () {
-            yield* fs.makeDirectory(signDirectory, { recursive: true });
-            const pinned = policy.value.toolDirectories[0] ?? "";
-            const node = yield* resolveNodeExecutable("Kin's GitHub guard");
-            const staging = yield* fs.makeTempDirectoryScoped({ directory: signDirectory });
-            const names = [];
-            for (const script of agentShellScripts({
-              shims: signDirectory,
-              app: appDirectory,
-              realGh: path.join(pinned, "gh"),
-              node,
-            })) {
-              const file = path.join(signDirectory, script.name);
-              const temporary = path.join(staging, script.name);
-              yield* fs.writeFileString(temporary, script.text);
-              yield* fs.chmod(temporary, 0o755);
-              yield* fs.rename(temporary, file);
-              names.push(file);
-            }
-            return names;
-          }).pipe(
-            Effect.scoped,
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Kin couldn't install its agents' GitHub guards; no shell", {
-                cause,
-              }).pipe(Effect.as([])),
-            ),
-          );
+      const guards =
+        !startup.available || Option.isNone(policy)
+          ? undefined
+          : yield* Effect.gen(function* () {
+              yield* fs.makeDirectory(signDirectory, { recursive: true });
+              const pinned = policy.value.toolDirectories[0] ?? "";
+              const node = yield* resolveNodeExecutable("Kin's GitHub guard");
+              const staging = yield* fs.makeTempDirectoryScoped({ directory: signDirectory });
+              const names = [];
+              for (const script of agentShellScripts({
+                shims: signDirectory,
+                app: appDirectory,
+                realGh: path.join(pinned, "gh"),
+                node,
+              })) {
+                const file = path.join(signDirectory, script.name);
+                const temporary = path.join(staging, script.name);
+                yield* fs.writeFileString(temporary, script.text);
+                yield* fs.chmod(temporary, 0o755);
+                yield* fs.rename(temporary, file);
+                names.push(file);
+              }
+              return { names, node };
+            }).pipe(
+              Effect.scoped,
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin couldn't install its agents' GitHub guards; no shell", {
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
       const shellOf = Effect.fn("KinSessions.shell")(function* (
         sessions: KinAgentSessionPolicy["Service"],
         thread: ThreadId,
         hostPath: string | undefined,
         driver: string,
       ) {
-        if (driver !== "claudeAgent" || guards.length === 0) return undefined;
+        if (driver !== "claudeAgent" || guards === undefined) return undefined;
         return {
-          path: [signDirectory, ...sessions.toolDirectories, hostPath].filter(Boolean).join(":"),
+          path: [
+            ...new Set(
+              [
+                signDirectory,
+                ...sessions.toolDirectories,
+                path.dirname(guards.node),
+                ...(hostPath?.split(":") ?? []),
+              ].filter(Boolean),
+            ),
+          ].join(":"),
+          node: guards.node,
           agentName: yield* sessions.agentName(thread),
           readPaths: [
-            ...guards,
+            ...guards.names,
             ...sessions.toolDirectories.map((folder, index) =>
               path.join(folder, index === 0 ? "gh" : "typst"),
             ),

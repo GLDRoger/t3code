@@ -637,6 +637,18 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+export const probeClaudeCliVersion = (
+  settings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  cwd?: string,
+) =>
+  runClaudeCommand(settings, ["--version"], providerProbeEnvironment(environment), cwd).pipe(
+    Effect.timeoutOption(
+      resolveProviderProbeTimeoutMs("claude", CLAUDE_VERSION_CHECK_TIMEOUT_MS, environment),
+    ),
+    Effect.result,
+  );
+
 export const probeClaudeWorkspaceSnapshot = Effect.fn("probeClaudeWorkspaceSnapshot")(function* (
   claudeSettings: ClaudeSettings,
   machineSnapshot: ServerProvider,
@@ -703,17 +715,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const versionProbe = yield* runClaudeCommand(
-    claudeSettings,
-    ["--version"],
-    providerProbeEnvironment(resolvedEnvironment),
-    cwd,
-  ).pipe(
-    Effect.timeoutOption(
-      resolveProviderProbeTimeoutMs("claude", CLAUDE_VERSION_CHECK_TIMEOUT_MS, resolvedEnvironment),
-    ),
-    Effect.result,
-  );
+  const versionProbe = yield* probeClaudeCliVersion(claudeSettings, resolvedEnvironment, cwd);
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;

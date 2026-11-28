@@ -40,7 +40,7 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 ### Claude's shell sandbox
 
-Claude's Bash needs `bubblewrap` and `socat` on Linux. Use Claude Code 2.1.321 or later for the sandbox policy in this build. Without a working sandbox, Claude's private or helper session fails to start rather than offering an unsandboxed shell.
+Claude's Bash needs `bubblewrap` and `socat` on Linux. Use Claude Code 2.1.321 or later for the sandbox policy in this build.
 
 On Ubuntu 24.04 and later, if `sysctl kernel.apparmor_restrict_unprivileged_userns` reports `1`, an unprofiled bubblewrap cannot set up the sandbox. Check `command -v bwrap` in a kin shell. For the distribution's `/usr/bin/bwrap`, install the [Claude Code AppArmor profile](https://code.claude.com/docs/en/sandboxing#add-an-apparmor-profile-for-bubblewrap) as the owner if no profile grants it `userns`; do not overwrite a distribution or local profile that already does. Keep the sysctl enabled.
 
@@ -61,6 +61,12 @@ sudo -iu kin /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / /usr/bin/
 Use the system package on the service's PATH, not a custom binary without a matching profile. A working probe exits zero; no server restart or model call is needed to run it.
 
 Then check the wall itself, as `kin`, after each deploy: `sh ~/kin-current/ops/kin/host/shell-wall-probe/probe.sh "$(mktemp -d)"`. It runs the owner seat's sandbox policy (`policy.json` beside it, pinned to the server's code by a test) through Anthropic's sandbox runtime against stand-in files in that empty folder, prints a line per check and ends with `PROBE PASS` or `PROBE FAIL`. It needs `node`, `npm` and `curl`, and on Linux also `rg` (ripgrep), which only the probe uses; npm fetches the pinned runtime into the folder. It reads no real secret and touches nothing outside the folder.
+
+At startup Kin checks that the host can start the sandbox and that Claude Code meets the minimum version. If either check fails, Claude opens without Bash and the owner gets one notice for that outage. A later startup that passes clears the outage. A shell that was enabled still requires its sandbox on every launch.
+
+Claude uses its shell to work in the checkout and can read exact turn attachments with its Read tool. If the startup check withholds the shell, the file tools can work in the checkout. T3 Code skips per-turn Git checkpoints and rewind in Kin's fenced working folders. Server-side Git also treats any repository a fenced workspace could modify as unavailable for status, worktree operations and pull request tools.
+
+The shell can read its own temporary folder, the GitHub and Git login files, Kin's GitHub guard and its pinned tools, and the resolved Node executable with its installed package tools. The rest of the service user's home and the journal directories are hidden. The probe needs `gh` on PATH to check the GitHub CLI's startup without signing in.
 
 ### How the unit finds Node
 

@@ -47,6 +47,8 @@ import * as KinPersistence from "./persistence/KinPersistence.ts";
 import { KinWakeupError } from "./lead/WakeupRunner.ts";
 import { MemoryError, MemoryRecoveryHooks } from "./memory/Memory.ts";
 import * as OwnerNotices from "./lead/OwnerNotices.ts";
+import { reportSandboxStartup } from "./lead/turn/shellStartupLive.ts";
+import type { Services } from "./KinServer.ts";
 import { makeMigratedSqliteLayer } from "./persistence/migratedSqlite.testkit.ts";
 import { withFixtureClock } from "./fixtureClock.testkit.ts";
 
@@ -371,6 +373,37 @@ it.effect("a memory write the writer refuses every night tells the owner once pe
       assert.notInclude(body, "MemoryCheckoutInvalid");
     }
   }).pipe(Effect.provide(daytimeServices)),
+);
+
+it.effect("a failed shell probe tells the owner once until a working startup", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chat = yield* Chat.KinChatService;
+    const services = Context.make(SqlClient.SqlClient, sql).pipe(
+      Context.add(Repository.KinChatRepository, repo),
+      Context.add(Chat.KinChatService, chat),
+    ) as Context.Context<Services>;
+    const notices = sql<{ body: string; open: number }>`
+      SELECT m.body, w.resolved_at IS NULL AS open
+      FROM kin_messages m JOIN kin_waiting w
+        ON w.org_id = m.org_id AND w.message_id = m.message_id
+      WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-shell-sandbox:%'
+      ORDER BY m.seq`;
+    yield* reportSandboxStartup(services, false);
+    yield* reportSandboxStartup(services, false);
+    const first = yield* notices;
+    assert.lengthOf(first, 1);
+    assert.strictEqual(first[0]?.open, 1);
+    assert.include(first[0]?.body, "the agent can still chat and use Kin's tools");
+    yield* reportSandboxStartup(services, true);
+    yield* reportSandboxStartup(services, false);
+    assert.deepStrictEqual(
+      (yield* notices).map(({ open }) => open),
+      [0, 1],
+    );
+  }).pipe(Effect.provide(services.pipe(withFixtureClock(DAY_START + 13 * HOUR)))),
 );
 
 it.effect("background memory refusals open one silent notice in the owner's private chat", () =>
