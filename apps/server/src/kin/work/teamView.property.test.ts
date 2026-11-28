@@ -51,7 +51,14 @@ import { search } from "./search.ts";
 import { indexWhere, searchIndexed } from "./searchIndex.ts";
 import { listDef } from "./registers.ts";
 import {
+  docVersionSeen,
+  KIN_OWNER_LEVEL,
+  listMoneySeenBy,
+  listNumberSeenBy,
+  notesSeenBy,
+  ownMoneyDraft,
   personSees,
+  seenBy,
   teamCan,
   unreadableBy,
   viewerOfPeople,
@@ -300,6 +307,112 @@ const leaks = (payload: unknown, minor: number): boolean => {
     return Object.values(payload).some((one) => leaks(one, minor));
   return false;
 };
+
+layer(testLayer)("negated document visibility", (it) => {
+  it.effect("missing visibility inputs never grant a teammate access", () =>
+    Effect.gen(function* () {
+      yield* once;
+      const sql = yield* SqlClient.SqlClient;
+      const zoya = KinPersonId.make("zoya");
+      const viewer = viewerOfPeople([zoya]);
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', '2026-11-11', 'member')`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json) VALUES (${orgId}, 'renewals', 'Renewals', 'R', 0, ${at},
+          '{"team":true,"teamSince":0,"sensitive":false,"fields":[{"key":"number","sensitive":true}]}')`;
+      const draft = JSON.stringify({ draftFor: zoya });
+      const rows = [
+        ["T-1", "work", null, 0, "{}"],
+        ["J-1", "projects", null, 0, '{"members":["person:zoya"]}'],
+        ["R-1", "renewals", null, 0, '{"number":"RNL-42"}'],
+        ["D-1", "docs", "proposal", 1, "{}"],
+        ["D-2", "docs", "proposal", 1, draft],
+        ["D-3", "docs", "proposal", 1, draft],
+        ["D-4", "docs", "proposal", 1, draft],
+        ["D-5", "docs", "proposal", 1, draft],
+        ["D-6", "docs", "note", 0, "{}"],
+      ] as const;
+      for (const [key, register, category, sensitive, fields] of rows) {
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title,
+            owner_kind, owner_id, category, sensitive, notes, fields_json, created_by_kind,
+            origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${key}, ${register}, ${key}, 'Tidewater Freight', 'person', ${ownerId},
+            ${category}, ${sensitive}, 'Harbor Bank', ${fields}, 'system',
+            ${key === "D-6" ? "picture:tidewater" : key}, ${at}, ${at})`;
+      }
+      for (const [key, version, actor, actorId, audience] of [
+        ["D-2", 1, "person", null, null],
+        ["D-3", 1, "agent", "lead", null],
+        ["D-4", 1, "person", zoya, null],
+        ["D-5", 1, "agent", "lead", "shared"],
+        ["D-6", 1, "agent", "lead", null],
+        ["D-6", 2, "agent", "lead", "shared"],
+      ] as const) {
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, title, kind, summary,
+            operations_json, actor_kind, actor_id, via, origin_key, audience, created_at)
+          VALUES (${orgId}, ${key}, ${version}, 'Tidewater Freight', 'created', '', '[]',
+            ${actor}, ${actorId}, 'agent', ${`${key}:${version}`}, ${audience}, ${at})`;
+      }
+      yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, last_seq, created_at)
+        VALUES (${orgId}, 'tidewater', 'team_group', 1, '2026-11-11')`;
+      yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES (${orgId}, 'tidewater', 'tidewater-zoya', 'person', ${zoya}, 'member', '2026-11-11')`;
+      yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind,
+          author_role, kind, body, mentions_json, status, created_at)
+        VALUES (${orgId}, 'tidewater', 'tidewater-picture', 1, 'system', 'member', 'text', '',
+          '[]', 'posted', '2026-11-11')`;
+      yield* sql`INSERT INTO kin_message_attachments (org_id, chat_id, message_id, attachment_id)
+        VALUES (${orgId}, 'tidewater', 'tidewater-picture', 'tidewater-first'),
+          (${orgId}, 'tidewater', 'tidewater-picture', 'tidewater-second')`;
+      yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+        VALUES (${orgId}, 'D-6', 1, 'tidewater-first'), (${orgId}, 'D-6', 2, 'tidewater-second')`;
+
+      const actual = yield* sql`SELECT r.key, pv.version,
+          NOT (${seenBy(sql, viewer)}) AS hidden,
+          NOT (${listNumberSeenBy(sql, viewer)}) AS "numberHidden",
+          NOT (${personSees(sql, zoya)} AND ${listMoneySeenBy(sql, viewer)}) AS "figureHidden",
+          NOT ${ownMoneyDraft(sql, zoya)} AS "notOwnDraft",
+          NOT ${docVersionSeen(sql, zoya)} AS "versionHidden",
+          ${notesSeenBy(sql, viewer)} AS notes,
+          ${seenBy(sql, KIN_OWNER_LEVEL)} AS "ownerSees",
+          ${notesSeenBy(sql, KIN_OWNER_LEVEL)} AS "ownerNotes"
+        FROM kin_records r LEFT JOIN kin_doc_versions pv
+          ON pv.org_id = r.org_id AND pv.record_id = r.record_id
+        WHERE r.org_id = ${orgId}
+        ORDER BY r.key, pv.version`.values;
+      assert.deepStrictEqual(actual, [
+        ["D-1", null, 1, 0, 1, 1, 1, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-2", 1, 1, 0, 1, 1, 1, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-3", 1, 1, 0, 1, 1, 1, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-4", 1, 0, 0, 0, 0, 0, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-5", 1, 0, 0, 0, 0, 0, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-6", 1, 0, 0, 0, 1, 1, "Harbor Bank", 1, "Harbor Bank"],
+        ["D-6", 2, 0, 0, 0, 1, 0, "Harbor Bank", 1, "Harbor Bank"],
+        ["J-1", null, 0, 0, 0, 1, 0, "", 1, "Harbor Bank"],
+        ["R-1", null, 0, 1, 1, 1, 0, "Harbor Bank", 1, "Harbor Bank"],
+        ["T-1", null, 1, 0, 1, 1, 1, "Harbor Bank", 1, "Harbor Bank"],
+      ]);
+
+      const docs = yield* search(orgId, {
+        text: "Tidewater Freight",
+        kinds: ["docs"],
+        limit: 10,
+        viewer: "team",
+        scope: viewer,
+      });
+      assert.deepStrictEqual(docs.hits.map(({ key }) => key).sort(), ["D-4", "D-5", "D-6"]);
+      const notes = yield* search(orgId, {
+        text: "Harbor Bank",
+        kinds: ["projects"],
+        limit: 10,
+        viewer: "team",
+        scope: viewer,
+      });
+      assert.deepStrictEqual(notes.hits, []);
+    }),
+  );
+});
 
 layer(testLayer)("what a teammate sees and is told", (it) => {
   it.effect.prop(
