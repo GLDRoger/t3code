@@ -2,18 +2,18 @@
   "mcpToolListJsonBytes": 64826,
   "kinToolListJsonBytes": 3103,
   "kinInstructionsBytes": {
-    "owner": 45986,
-    "confined": 45934
+    "owner": 46313,
+    "confined": 46261
   },
-  "kinSharedInstructionsHash": "0e349cd8ed5e00fee3a899b7554d0d7596e2a5ab75a963b0ad114bb090af61e2",
+  "kinSharedInstructionsHash": "2ebd0c2b760967cbf22cbeda194f344b1982f33490723a43e80909d9e6836006",
   "kinLeadToolListJsonBytes": {
-    "engineering": 142882,
+    "engineering": 143827,
     "engineeringBesideFinanceAndSales": 128278,
-    "finance": 122060,
+    "finance": 123005,
     "shared": 75373,
-    "social": 124789,
+    "social": 125734,
     "socialBesideFinanceAndSales": 110185,
-    "support": 122060
+    "support": 123005
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
   "kinLeadAlwaysLoadedToolBytes": 32029,
