@@ -9,9 +9,11 @@ import {
   type KinProviderLimit,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -86,6 +88,8 @@ const open = <Session extends Observed>(
   Effect.gen(function* () {
     const { stateDir } = yield* ServerConfig.ServerConfig;
     const cwd = options.cwd?.(stateDir) ?? `${stateDir}/kin/demo-a/memory-read`;
+    if (cwd.startsWith(stateDir))
+      yield* (yield* FileSystem.FileSystem).makeDirectory(cwd, { recursive: true });
     return yield* fake.open({
       thread,
       cwd,
@@ -155,19 +159,19 @@ it.effect.each([
       const onPlan = () => {
         plans++;
       };
-      const owner = yield* open(fake, "kin:tech", { onPlan });
-      const instructions = kinInstructions("owner", expectedDriver);
-      assert.strictEqual(owner.wire.append, append ? instructions : undefined);
-      assert.strictEqual(owner.wire.prompt.split(instructions).length - 1, append ? 0 : 1);
-      assert.notInclude(owner.wire.prompt, "T3's guidance");
-      assert.notInclude(owner.wire.prompt, "<pull_request_linking>");
-      assert.include(owner.wire.prompt, "<user_request>\nhi\n</user_request>");
-      assert.strictEqual(plans, 1);
-      const delegated = yield* open(fake, "task-from-lead", { cwd: () => `${stateDir}/scratch` });
-      assert.include(delegated.wire.prompt, "T3's guidance");
-      if (append) assert.include(delegated.wire.append, "<pull_request_linking>");
-      if (driver === "antigravity" && !append)
-        assert.include(delegated.wire.prompt, "<pull_request_linking>");
+      const reason =
+        "Kin can't use this provider in a private chat or helper task because its built-in tools can't be fenced.";
+      for (const thread of ["kin:tech", "task-from-lead"]) {
+        const blocked = yield* Effect.exit(
+          open(fake, thread, {
+            onPlan,
+            ...(thread === "task-from-lead" ? { cwd: () => `${stateDir}/scratch/task` } : {}),
+          }),
+        );
+        assert(blocked._tag === "Failure");
+        assert.include(String(Cause.squash(blocked.cause)), reason);
+      }
+      assert.strictEqual(plans, 2);
       const shared = yield* open(fake, "kin-shared:tech");
       const confined = kinInstructions("confined", expectedDriver);
       assert.strictEqual(shared.wire.append, append ? confined : undefined);
@@ -182,78 +186,120 @@ const limited = (driver: string, limit: KinProviderLimit) =>
   kinProviderFacts(driver)?.limits.includes(limit) ?? false;
 
 describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (driver, fake) => {
-  it.effect(
-    "the owner's chat: Kin's instructions, Kin's tools mounted and deferred ones findable, none of the user's own config, the provider's built-ins, each shell step checked, and a shell that signs as the agent and carries no Kin secret",
-    () =>
-      Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const owner = yield* open(fake, "kin:tech");
-        assert.isTrue(owner.changed);
-        assert.strictEqual(owner.instructions, kinInstructions("owner", driver));
-        assert.include(owner.instructions, "GitHub repos needs no card");
-        for (const capability of kinProviderFacts(driver)?.lacks ?? [])
-          assert.include(owner.instructions, KIN_CAPABILITY_WORDS[capability]);
-        assert.isTrue(owner.kinToolsMounted);
-        assert.isTrue(owner.deferredFindable);
-        assert.strictEqual(owner.personalConfig, limited(driver, "ownConfigLoads"));
-        assert.isTrue(owner.builtins);
-        assert.strictEqual(owner.shell?.path, signed(stateDir));
-        assert.strictEqual(owner.shell?.agentName, AGENT);
-        // The GitHub App's key and Kin's other secrets never reach a shell.
-        assert.strictEqual(
-          owner.shell?.variables.filter((name) => kinSecretVariables.includes(name)).length === 0,
-          !limited(driver, "hostEnvironment"),
-        );
-        assert.strictEqual(yield* asked(owner.askShell), "allowed");
-        assert.strictEqual(yield* asked(owner.askRead), "allowed");
-      }).pipe(Effect.provide(layer(`kin-conformance-owner-${driver}-`))),
-  );
+  if (!limited(driver, "ownToolsStay")) {
+    it.effect(
+      "the owner's chat: Kin's instructions, Kin's tools mounted and deferred ones findable, none of the user's own config, the provider's built-ins, each shell step checked, and a shell that signs as the agent and carries no Kin secret",
+      () =>
+        Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const owner = yield* open(fake, "kin:tech");
+          assert.isTrue(owner.changed);
+          assert.strictEqual(owner.instructions, kinInstructions("owner", driver));
+          assert.include(owner.instructions, "GitHub repos needs no card");
+          for (const capability of kinProviderFacts(driver)?.lacks ?? [])
+            assert.include(owner.instructions, KIN_CAPABILITY_WORDS[capability]);
+          assert.isTrue(owner.kinToolsMounted);
+          assert.isTrue(owner.deferredFindable);
+          assert.strictEqual(owner.personalConfig, limited(driver, "ownConfigLoads"));
+          if (driver === "claudeAgent") {
+            assert.isTrue(owner.builtins);
+            assert.strictEqual(owner.shell?.path, signed(stateDir));
+            assert.strictEqual(owner.shell?.agentName, AGENT);
+            assert.deepStrictEqual(
+              owner.shell?.variables.filter((name) => kinSecretVariables.includes(name)),
+              [],
+            );
+            assert.strictEqual(yield* asked(owner.askShell), "allowed");
+            assert.strictEqual(yield* asked(owner.askRead), "allowed");
+          } else {
+            assert.isFalse(owner.builtins);
+            assert.isUndefined(owner.shell);
+            assert.notStrictEqual(yield* asked(owner.askShell), "allowed");
+            assert.notStrictEqual(yield* asked(owner.askRead), "allowed");
+          }
+        }).pipe(Effect.provide(layer(`kin-conformance-owner-${driver}-`))),
+    );
 
-  it.effect(
-    "the owner's chat once the turn read outside content, or someone joined: a shell step, and a read of its own memory, is refused with the line saying why",
-    () =>
-      Effect.gen(function* () {
-        for (const why of [SESSION_REFUSAL.outside, SESSION_REFUSAL.aborted]) {
-          const owner = yield* open(fake, "kin:tech", { refusal: () => why });
-          assert.deepStrictEqual(yield* asked(owner.askShell), { refused: why });
-          assert.deepStrictEqual(yield* asked(owner.askRead), { refused: why });
-        }
-      }).pipe(Effect.provide(layer(`kin-conformance-refused-${driver}-`))),
-  );
+    it.effect(
+      "the owner's chat once the turn read outside content, or someone joined: a shell step, and a read of its own memory, is refused with the line saying why",
+      () =>
+        Effect.gen(function* () {
+          for (const why of [SESSION_REFUSAL.outside, SESSION_REFUSAL.aborted]) {
+            const owner = yield* open(fake, "kin:tech", { refusal: () => why });
+            assert.deepStrictEqual(yield* asked(owner.askShell), { refused: why });
+            assert.deepStrictEqual(yield* asked(owner.askRead), { refused: why });
+          }
+        }).pipe(Effect.provide(layer(`kin-conformance-refused-${driver}-`))),
+    );
 
-  it.effect(
-    "the owner's chat on the turn his Approve of a teammate's draft queued: Kin's own check refuses a shell step, and a read of its memory, with the line saying why",
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const orgId = KinOrgId.make("org-approved");
-        const agentId = KinAgentId.make("tech");
-        const wakeupId = "wake-approved";
-        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
-        yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
+    it.effect(
+      "the owner's chat on the turn his Approve of a teammate's draft queued: Kin's own check refuses a shell step, and a read of its memory, with the line saying why",
+      () =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const orgId = KinOrgId.make("org-approved");
+          const agentId = KinAgentId.make("tech");
+          const wakeupId = "wake-approved";
+          yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+          yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
           audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
-        const policy = (thread: ThreadId) =>
-          fullSessionRefusal(thread).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        // The same agent's ordinary owner-only turn has its shell.
-        const plain = yield* open(fake, "kin:tech", { policy });
-        assert.strictEqual(yield* asked(plain.askShell), "allowed");
-        yield* approvedWakeup({ orgId, agentId, wakeupId });
-        const approved = yield* open(fake, "kin:tech", { policy });
-        assert.deepStrictEqual(yield* asked(approved.askShell), {
-          refused: SESSION_REFUSAL.approved,
-        });
-        assert.deepStrictEqual(yield* asked(approved.askRead), {
-          refused: SESSION_REFUSAL.approved,
-        });
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            layer(`kin-conformance-approved-${driver}-`),
-            KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          const policy = (thread: ThreadId) =>
+            fullSessionRefusal(thread).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          // The same agent's ordinary owner-only turn has its shell.
+          const plain = yield* open(fake, "kin:tech", { policy });
+          if (driver === "claudeAgent") assert.strictEqual(yield* asked(plain.askShell), "allowed");
+          yield* approvedWakeup({ orgId, agentId, wakeupId });
+          const approved = yield* open(fake, "kin:tech", { policy });
+          assert.deepStrictEqual(yield* asked(approved.askShell), {
+            refused: SESSION_REFUSAL.approved,
+          });
+          assert.deepStrictEqual(yield* asked(approved.askRead), {
+            refused: SESSION_REFUSAL.approved,
+          });
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              layer(`kin-conformance-approved-${driver}-`),
+              KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+            ),
           ),
         ),
-      ),
-  );
+    );
+
+    it.effect(
+      "a task a lead delegated: the provider's own instructions, a shell that signs as the agent with no Kin secret, and each shell step checked against the turn that asked",
+      () =>
+        Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const scratch = () => `${stateDir}/../scratch/task`;
+          const task = yield* open(fake, "task-from-lead", { cwd: scratch });
+          assert.isTrue(task.changed);
+          assert.isUndefined(task.instructions);
+          if (driver === "claudeAgent") {
+            assert.strictEqual(task.shell?.path, signed(stateDir));
+            assert.strictEqual(task.shell?.agentName, AGENT);
+            assert.deepStrictEqual(
+              task.shell?.variables.filter((name) => kinSecretVariables.includes(name)),
+              [],
+            );
+            assert.strictEqual(yield* asked(task.askShell), "allowed");
+          } else {
+            assert.isUndefined(task.shell);
+            assert.notStrictEqual(yield* asked(task.askShell), "allowed");
+          }
+          const refused = yield* open(fake, "task-from-lead", {
+            cwd: scratch,
+            refusal: () => SESSION_REFUSAL.outside,
+          });
+          assert.deepStrictEqual(yield* asked(refused.askShell), {
+            refused: SESSION_REFUSAL.outside,
+          });
+          assert.deepStrictEqual(yield* asked(refused.askRead), {
+            refused: SESSION_REFUSAL.outside,
+          });
+        }).pipe(Effect.provide(layer(`kin-conformance-delegated-${driver}-`))),
+    );
+  }
 
   it.effect(
     "a teammate's or group chat: Kin's tools only, no shell or files, web search only where the provider runs it, none of the user's own config, and any ask refused",
@@ -280,40 +326,13 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
   );
 
   it.effect(
-    "a task a lead delegated: the provider's own instructions, a shell that signs as the agent with no Kin secret, and each shell step checked against the turn that asked",
-    () =>
-      Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const scratch = () => `${stateDir}/scratch`;
-        const task = yield* open(fake, "task-from-lead", { cwd: scratch });
-        assert.isTrue(task.changed);
-        assert.isUndefined(task.instructions);
-        assert.strictEqual(task.shell?.path, signed(stateDir));
-        assert.strictEqual(task.shell?.agentName, AGENT);
-        assert.strictEqual(
-          task.shell?.variables.filter((name) => kinSecretVariables.includes(name)).length === 0,
-          !limited(driver, "hostEnvironment"),
-        );
-        assert.strictEqual(yield* asked(task.askShell), "allowed");
-        const refused = yield* open(fake, "task-from-lead", {
-          cwd: scratch,
-          refusal: () => SESSION_REFUSAL.outside,
-        });
-        assert.deepStrictEqual(yield* asked(refused.askShell), {
-          refused: SESSION_REFUSAL.outside,
-        });
-        assert.deepStrictEqual(yield* asked(refused.askRead), {
-          refused: SESSION_REFUSAL.outside,
-        });
-      }).pipe(Effect.provide(layer(`kin-conformance-delegated-${driver}-`))),
-  );
-
-  it.effect(
     "on every model the provider runs, one its catalog lacks included, no Kin tool a chat allows is out of reach: a tool waits only where the model can look it up",
     () =>
       Effect.gen(function* () {
         for (const model of fake.models)
-          for (const thread of ["kin:tech", "kin-shared:tech"]) {
+          for (const thread of limited(driver, "ownToolsStay")
+            ? ["kin-shared:tech"]
+            : ["kin:tech", "kin-shared:tech"]) {
             const session = yield* open(fake, thread, { model });
             assert.isTrue(session.kinToolsMounted, `${model} ${thread}`);
             assert.isTrue(
@@ -331,3 +350,15 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
     }).pipe(Effect.provide(layer(`kin-conformance-other-${driver}-`))),
   );
 });
+
+it.effect("a failed GitHub guard install leaves an owner session without Bash", () =>
+  Effect.gen(function* () {
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${stateDir}/kin`, { recursive: true });
+    yield* fs.writeFileString(`${stateDir}/kin/gh-sign`, "not a directory");
+    const owner = yield* open(claudeFake, "kin:tech");
+    assert.isUndefined(owner.shell);
+    assert.notStrictEqual(yield* owner.askShell, "allowed");
+  }).pipe(Effect.provide(layer("kin-guard-write-"))),
+);

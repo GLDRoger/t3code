@@ -71,8 +71,15 @@ export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
     effortOption: "reasoningEffort",
     behindSwitch: true,
     devOnly: false,
-    // Under full access Codex sends stdin to an open session unasked (`stdin_approval.rs`).
-    lacks: ["backgroundShell", "webFetch"],
+    lacks: [
+      "shell",
+      "backgroundShell",
+      "readFiles",
+      "editFiles",
+      "webFetch",
+      "viewImage",
+      "subAgents",
+    ],
     limits: [],
   },
   {

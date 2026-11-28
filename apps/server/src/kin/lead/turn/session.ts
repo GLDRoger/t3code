@@ -9,7 +9,15 @@ import * as Path from "effect/Path";
 
 import { ServerConfig } from "../../../config.ts";
 import { threadPrefix as dreamThreadPrefix } from "../../dreaming/DreamIsolation.ts";
-import { agentShellScripts, GH_APP_FOLDER } from "../../github/ghSign.ts";
+import {
+  AGENT_POSTS_FILE,
+  APP_IDENTITY_FILE,
+  APP_REPOS_FOLDER,
+  APP_TOKENS_FOLDER,
+  OWNER_USES_FILE,
+  agentShellScripts,
+  GH_APP_FOLDER,
+} from "../../github/ghSign.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../../KinEnabled.ts";
 import { KinServer } from "../../KinServer.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
@@ -43,6 +51,9 @@ export interface KinShell {
   readonly path: string;
   /** What it posts on GitHub is signed with this name. */
   readonly agentName: string | undefined;
+  readonly readPaths: ReadonlyArray<string>;
+  readonly logPaths: ReadonlyArray<string>;
+  readonly prepareLogs: Effect.Effect<boolean>;
 }
 
 export interface KinSessionPlan {
@@ -106,7 +117,7 @@ const sessionNote = (
   const owner = [
     shell ? OWNER_NOTE : "",
     lacks.length === 0 ? "" : `Here you can't ${kinCantDo(lacks)}.`,
-    shell && lacks.includes("webFetch") ? "Fetch a web page with curl." : "",
+    lacks.includes("webFetch") ? "Use web_page to read a public page." : "",
   ].filter(Boolean);
   return `${owner.join(" ")}\n${ALL_MODELS_NOTE}`;
 };
@@ -176,39 +187,68 @@ export class KinSessions extends Context.Service<
           Context.getOption(services, KinAgentSessionPolicy),
         ),
       );
-      // The agent's gh and git, in front of the pinned gh; a failed write leaves the plain ones.
-      if (Option.isSome(policy))
-        yield* Effect.gen(function* () {
-          yield* fs.makeDirectory(signDirectory, { recursive: true });
-          // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
-          const pinned = policy.value.toolDirectories[0] ?? "";
-          // Without a Node to run its policy, the agent's gh refuses every command.
-          const node = yield* resolveNodeExecutable("Kin's GitHub guard").pipe(
-            Effect.orElseSucceed(() => ""),
+      const appDirectory = path.join(kinDirectory, GH_APP_FOLDER);
+      const logPaths = [AGENT_POSTS_FILE, OWNER_USES_FILE].map((name) =>
+        path.join(appDirectory, name),
+      );
+      const prepareLogs = Effect.gen(function* () {
+        yield* fs.makeDirectory(appDirectory, { recursive: true });
+        for (const file of logPaths) {
+          yield* Effect.scoped(fs.open(file, { flag: "a", mode: 0o600 }));
+        }
+        return true;
+      }).pipe(Effect.orElseSucceed(() => false));
+      const guards = Option.isNone(policy)
+        ? []
+        : yield* Effect.gen(function* () {
+            yield* fs.makeDirectory(signDirectory, { recursive: true });
+            const pinned = policy.value.toolDirectories[0] ?? "";
+            const node = yield* resolveNodeExecutable("Kin's GitHub guard");
+            const staging = yield* fs.makeTempDirectoryScoped({ directory: signDirectory });
+            const names = [];
+            for (const script of agentShellScripts({
+              shims: signDirectory,
+              app: appDirectory,
+              realGh: path.join(pinned, "gh"),
+              node,
+            })) {
+              const file = path.join(signDirectory, script.name);
+              const temporary = path.join(staging, script.name);
+              yield* fs.writeFileString(temporary, script.text);
+              yield* fs.chmod(temporary, 0o755);
+              yield* fs.rename(temporary, file);
+              names.push(file);
+            }
+            return names;
+          }).pipe(
+            Effect.scoped,
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't install its agents' GitHub guards; no shell", {
+                cause,
+              }).pipe(Effect.as([])),
+            ),
           );
-          for (const script of agentShellScripts({
-            shims: signDirectory,
-            app: path.join(kinDirectory, GH_APP_FOLDER),
-            realGh: path.join(pinned, "gh"),
-            node,
-          })) {
-            const file = path.join(signDirectory, script.name);
-            yield* fs.writeFileString(file, script.text);
-            yield* fs.chmod(file, 0o755);
-          }
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't write its agents' gh and git", { cause }),
-          ),
-        );
       const shellOf = Effect.fn("KinSessions.shell")(function* (
         sessions: KinAgentSessionPolicy["Service"],
         thread: ThreadId,
         hostPath: string | undefined,
+        driver: string,
       ) {
+        if (driver !== "claudeAgent" || guards.length === 0) return undefined;
         return {
           path: [signDirectory, ...sessions.toolDirectories, hostPath].filter(Boolean).join(":"),
           agentName: yield* sessions.agentName(thread),
+          readPaths: [
+            ...guards,
+            ...sessions.toolDirectories.map((folder, index) =>
+              path.join(folder, index === 0 ? "gh" : "typst"),
+            ),
+            ...[APP_IDENTITY_FILE, APP_REPOS_FOLDER, APP_TOKENS_FOLDER].map((name) =>
+              path.join(appDirectory, name),
+            ),
+          ],
+          logPaths,
+          prepareLogs,
         } satisfies KinShell;
       });
       const plan = Effect.fn("KinSessions.plan")(function* (input: {
@@ -238,9 +278,9 @@ export class KinSessions extends Context.Service<
           return {
             ...base,
             seat: "delegated",
-            abilities: "shellAndFiles",
+            abilities: input.driver === "claudeAgent" ? "shellAndFiles" : "none",
             instructions: undefined,
-            shell: yield* shellOf(policy.value, thread, input.path),
+            shell: yield* shellOf(policy.value, thread, input.path, input.driver),
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
             webRead: (host) => policy.value.webSearch(thread, host),
@@ -260,9 +300,9 @@ export class KinSessions extends Context.Service<
           return {
             ...base,
             seat: "owner",
-            abilities: "shellAndFiles",
+            abilities: input.driver === "claudeAgent" ? "shellAndFiles" : "lookup",
             instructions: kinInstructions("owner", input.driver),
-            shell: yield* shellOf(policy.value, thread, input.path),
+            shell: yield* shellOf(policy.value, thread, input.path, input.driver),
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
             webRead: (host) => policy.value.webSearch(thread, host),

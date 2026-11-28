@@ -15,7 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { fullSessionRefusal } from "../../AgentSession.ts";
+import { fullSessionRefusal, webSearchRefusal } from "../../AgentSession.ts";
 import * as ServerConfig from "../../../../config.ts";
 import * as CodexAdapterV2 from "../../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Codex from "./codex.ts";
@@ -259,30 +259,32 @@ it.effect(
 );
 
 it.effect(
-  "a Codex task a lead delegated posts on GitHub through the signing gh and asks Kin before each command, as a Claude task does; other Codex threads, and Kin off, are untouched",
+  "a Codex task a lead delegated has no local execution; other Codex threads and Kin off are untouched",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
-      const [, delegated, resumed] = yield* session("task-from-lead", "/work/scratch");
+      const [, delegated, resumed, turn] = yield* session("task-from-lead", "/work/scratch");
       expect(yield* pinnedParams(delegated?.params, stateDir)).toMatchSnapshot(
         "delegated thread/start",
       );
       expect(yield* pinnedParams(resumed?.params, stateDir)).toMatchSnapshot(
         "delegated thread/resume",
       );
-      assert.deepInclude(delegated?.params.config, {
-        ...t3ThreadStart.config,
-        "shell_environment_policy.inherit": "all",
-        "shell_environment_policy.set.PATH": `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
-        "shell_environment_policy.set.KIN_AGENT_NAME": "Tech lead",
+      for (const start of [delegated, resumed]) {
+        assert.deepInclude(start?.params, {
+          approvalPolicy: "never",
+          environments: [],
+          sandbox: "read-only",
+        });
+        const config = start?.params.config as Record<string, unknown>;
+        assert.strictEqual(config["features.shell_tool"], false);
+        assert.strictEqual(config.include_apply_patch_tool, false);
+        assert.notProperty(config, "shell_environment_policy.set.PATH");
+      }
+      assert.deepInclude(turn?.params, {
+        environments: [],
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
       });
-      assert.deepInclude(delegated?.params, {
-        approvalPolicy: "untrusted",
-        approvalsReviewer: "user",
-      });
-      // Its sandbox stays T3's.
-      assert.strictEqual(delegated?.params.sandbox, "workspace-write");
-      assert.notProperty(delegated?.params ?? {}, "environments");
       const plain = yield* session("thread-1", "/work/project");
       assert.deepStrictEqual(
         plain.map(({ method }) => method),
@@ -304,7 +306,7 @@ it.effect(
 type Asked = (payload: unknown) => Effect.Effect<unknown>;
 
 it.effect(
-  "on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn",
+  "on one Codex app-server, the owner's thread marks its search and refuses execution; the shared one stays confined and others are untouched",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -324,7 +326,8 @@ it.effect(
               Effect.provideService(SqlClient.SqlClient, sql),
             ),
           // Codex's own web search stays off in a confined session: nothing asks this.
-          webSearch: () => Effect.die("unused web search"),
+          webSearch: (threadId, host) =>
+            webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: () => Effect.succeed(false),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
           agentName: () => Effect.succeed("Tech lead"),
@@ -410,38 +413,48 @@ it.effect(
           ),
         ),
       );
+      yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
+        audience = 'owner_only' WHERE wakeup_id = 'wake-codex'`;
+      yield* (
+        notified.get("item/completed")?.({
+          threadId: "native-owner",
+          turnId: "turn-native-owner",
+          item: { id: "search", type: "webSearch", query: "weather" },
+        }) ?? Effect.void
+      );
+      const marks = yield* sql<{
+        source: string;
+      }>`SELECT source FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-codex'`;
+      assert.lengthOf(marks, 1);
+      assert.match(marks[0]?.source ?? "", /^web search\t/);
+      assert.strictEqual(
+        yield* fullSessionRefusal(ThreadId.make("kin:tech")),
+        SESSION_REFUSAL.outside,
+      );
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-codex'`;
+      // Even an admitted owner turn refuses stale command and patch requests.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake-codex'`;
       const [plainStart, ownerStart, sharedStart] = sent
         .filter(({ method }) => method === "thread/start")
         .map(({ params }) => params);
       assert.deepStrictEqual(plainStart, startOf("thread-plain", "/work/project"));
       expect(yield* pinnedParams(ownerStart, stateDir)).toMatchSnapshot("owner thread/start");
-      assert.notProperty(ownerStart, "environments");
-      assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
-      assert.strictEqual(ownerStart?.approvalsReviewer, "user");
-      assert.strictEqual(ownerStart?.sandbox, "danger-full-access");
+      assert.deepStrictEqual(ownerStart?.environments, []);
+      assert.strictEqual(ownerStart?.approvalPolicy, "never");
+      assert.strictEqual(ownerStart?.sandbox, "read-only");
       assert.strictEqual(ownerStart?.baseInstructions, kinInstructions("owner", "codex"));
       const config = ownerStart?.config as Record<string, unknown>;
       for (const [key, value] of Object.entries(Codex.FULL_SESSION_CONFIG))
         assert.deepStrictEqual(config[key], value, key);
-      // Search from the cached index and image viewing, as Claude's owner turn has them; unified
-      // exec, whose stdin Codex doesn't ask about, and the user's own servers stay off.
       assert.strictEqual(config.web_search, "cached");
-      assert.strictEqual(config["tools.view_image"], true);
+      assert.strictEqual(config["features.shell_tool"], false);
+      assert.strictEqual(config.include_apply_patch_tool, false);
+      assert.strictEqual(config["tools.view_image"], false);
       assert.strictEqual(config["features.unified_exec"], false);
       assert.strictEqual(config["skills.include_instructions"], false);
       assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
-      // gpt-6.1's search is Codex's own call, made on a custom provider only when it says so.
       assert.strictEqual(config["model_providers.gateway.supports_standalone_web_search"], true);
-      // The signing gh first on PATH and the env a Claude agent's session keeps, nothing else.
-      assert.strictEqual(
-        config["shell_environment_policy.set.PATH"],
-        `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
-      );
-      assert.strictEqual(config["shell_environment_policy.set.KIN_AGENT_NAME"], "Tech lead");
-      const kept = config["shell_environment_policy.include_only"] as ReadonlyArray<string>;
-      for (const name of ["PATH", "HOME", "KIN_AGENT_NAME", "T3CODE_THREAD_ID"])
-        assert.include(kept, name);
-      assert.notInclude(kept, "KIN_GITHUB_APP_ID");
+      assert.notProperty(config, "shell_environment_policy.set.PATH");
       // The shared thread on the same process: no environment, nothing asked, no shell note.
       assert.deepStrictEqual(sharedStart?.environments, []);
       assert.strictEqual(sharedStart?.approvalPolicy, "never");
@@ -455,9 +468,9 @@ it.effect(
         {
           threadId: "native-owner",
           input: t3TurnStart.input,
-          approvalPolicy: "untrusted",
-          approvalsReviewer: "user",
-          sandboxPolicy: { type: "dangerFullAccess" },
+          environments: [],
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
         },
         {
           threadId: "native-shared",
@@ -504,7 +517,6 @@ it.effect(
         { decision: "decline" },
       );
       assert.deepStrictEqual(steers(), [refusedWith(SESSION_REFUSAL.none)]);
-      // The owner's own turn: a command, a patch, a network call and a sub-agent's command run.
       yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
         audience = 'owner_only' WHERE wakeup_id = 'wake-codex'`;
       for (const [method, payload] of [
@@ -513,11 +525,11 @@ it.effect(
         ["item/commandExecution/requestApproval", curl],
         ["item/commandExecution/requestApproval", command("ls", "sub-agent")],
       ] as const)
-        assert.deepStrictEqual(yield* ask(method, payload), { decision: "accept" }, method);
+        assert.deepStrictEqual(yield* ask(method, payload), { decision: "decline" }, method);
       assert.deepStrictEqual(
         yield* ask("execCommandApproval", { conversationId: "native-owner" }),
         {
-          decision: "approved",
+          decision: { denied: { rejection: "This session has no shell or file patches." } },
         },
       );
       // Meanwhile the shared thread on the same process doesn't borrow the owner's turn.

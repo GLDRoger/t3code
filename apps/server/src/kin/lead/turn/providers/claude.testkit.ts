@@ -1,5 +1,6 @@
 import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Layer from "effect/Layer";
 
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -51,7 +52,11 @@ export const captureClaudeOptions = (
           options: original,
         })
         .pipe(Effect.exit);
-    }).pipe(Effect.provide(claude.install(base)), Effect.orDie);
+    }).pipe(
+      Effect.provide(claude.install(base)),
+      Effect.provideService(HostProcess.Environment, environment),
+      Effect.orDie,
+    );
     const [options] = opened;
     if (options === undefined) return yield* Effect.die("Claude did not open");
     return { original, options };
@@ -95,7 +100,9 @@ export const claudeFake: ProviderFake = {
           listed.some((tool) => tool !== "ToolSearch" && tool !== "WebSearch"),
         webSearch: listed === undefined || listed.includes("WebSearch"),
         shell:
-          options.env === undefined
+          options.env === undefined ||
+          listed?.includes("Bash") === false ||
+          options.disallowedTools?.includes("Bash")
             ? undefined
             : {
                 path: options.env.PATH,

@@ -1,4 +1,4 @@
-import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallbackMatcher, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -14,6 +14,8 @@ export interface FileScope {
   readonly tools: ReadonlyArray<string>;
   /** Real attachments directory: `Read` may open a Kin chat attachment directly inside it. */
   readonly attachments?: string;
+  /** Unlike dreams, an interactive turn gets only the attachment paths it was handed. */
+  readonly attachmentPaths?: ReadonlyArray<string>;
   /** `false` refuses every MCP tool too, for a session that must have none. */
   readonly mcp?: boolean;
 }
@@ -36,8 +38,8 @@ const textField = (input: unknown, key: string): string | undefined | null => {
 
 /** The paths and globs a call names, or `undefined` for a tool whose input this doesn't know. */
 const callTargets = (tool: string, input: unknown) => {
-  if (tool === "Read" || tool === "Edit" || tool === "Write") {
-    const file = textField(input, "file_path");
+  if (tool === "Read" || tool === "Edit" || tool === "Write" || tool === "NotebookEdit") {
+    const file = textField(input, tool === "NotebookEdit" ? "notebook_path" : "file_path");
     return typeof file === "string" ? { paths: [file], globs: [] } : undefined;
   }
   if (tool === "Glob" || tool === "Grep") {
@@ -175,6 +177,28 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
     const real = yield* realTarget(lexical);
     if (real === undefined) return false;
     if (inside(root, lexical) && inside(root, real)) {
+      if (
+        scope.attachmentPaths !== undefined &&
+        tool !== "Read" &&
+        tool !== "Grep" &&
+        tool !== "Glob"
+      ) {
+        const protectedPart = /^(?:\.claude|\.mcp\.json|\.gitconfig|\.bashrc|\.zshrc)$/i;
+        for (const target of [lexical, real]) {
+          if (
+            path
+              .relative(root, target)
+              .split(path.sep)
+              .some((part) => protectedPart.test(part)) ||
+            gitHooks.has(path.basename(target).toLowerCase())
+          )
+            return false;
+        }
+      }
+      if (scope.attachmentPaths !== undefined) {
+        const info = yield* fs.stat(real).pipe(Effect.orElseSucceed(() => undefined));
+        if (info !== undefined && info.type !== "File" && info.type !== "Directory") return false;
+      }
       if (tool !== "Grep" && tool !== "Glob") continue;
       const info = yield* fs.stat(real).pipe(Effect.orElseSucceed(() => undefined));
       if (info?.type !== "Directory" || (yield* treeInside(real))) continue;
@@ -182,9 +206,11 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
     }
     const attachment =
       tool === "Read" &&
-      scope.attachments !== undefined &&
-      path.dirname(real) === scope.attachments &&
-      attachmentName.test(path.basename(real));
+      (scope.attachmentPaths === undefined
+        ? scope.attachments !== undefined &&
+          path.dirname(real) === scope.attachments &&
+          attachmentName.test(path.basename(real))
+        : scope.attachmentPaths.includes(real));
     if (!attachment) return false;
   }
   return true;
@@ -200,6 +226,7 @@ export const withConfinementHook = (
 const keptVariables = new Set([
   "PATH",
   "HOME",
+  "GH_CONFIG_DIR",
   "USER",
   "LOGNAME",
   "SHELL",
@@ -239,12 +266,6 @@ const keptPrefixList = [
   "DISABLE_",
 ];
 const keptPrefixes = new RegExp(`^(?:${keptPrefixList.join("|")})`);
-/** The same keep list as globs, for a Codex shell's `shell_environment_policy.include_only`. */
-export const sessionVariablePatterns = [
-  ...keptVariables,
-  ...keptPrefixList.map((prefix) => `${prefix}*`),
-];
-
 export const sessionEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
   Object.fromEntries(
     Object.entries(environment).filter(
@@ -287,6 +308,135 @@ const ownerAuth = Effect.fn("KinClaudeConfinement.ownerAuth")(function* (
   } satisfies AuthSettings;
 });
 
+const shellDomains = [
+  "github.com",
+  "api.github.com",
+  "codeload.github.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "uploads.github.com",
+  "ghcr.io",
+  "registry.npmjs.org",
+  "registry.npmjs.com",
+  "registry.yarnpkg.com",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "crates.io",
+  "index.crates.io",
+  "static.crates.io",
+  "proxy.golang.org",
+  "sum.golang.org",
+];
+
+const shellSecretEnv =
+  /^(?:ANTHROPIC_|AWS_|VERTEX_|GOOGLE_|CLOUD_ML_REGION$|DBUS_SESSION_BUS_ADDRESS$|.*(?:TOKEN|PASSWORD|SECRET|API_KEY)(?:_|$))/i;
+
+interface ShellScope {
+  readonly root: string;
+  readonly stateDir: string;
+  readonly baseDir: string;
+  readonly home: string;
+  readonly attachments: ReadonlyArray<string>;
+  readonly readPaths: ReadonlyArray<string>;
+  readonly logPaths: ReadonlyArray<string>;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+/** This is Claude Code's inline --settings, not permission-mode rules. */
+export const shellSandbox = (scope: ShellScope, path: Path.Path) => {
+  const { root, baseDir, stateDir, home, attachments, readPaths, logPaths, environment } = scope;
+  const underHome = (name: string) => path.join(home, name);
+  const alternate = (name: string) => {
+    const value = environment[name];
+    return value && path.isAbsolute(value) ? [value] : [];
+  };
+  const ghConfig =
+    environment.GH_CONFIG_DIR ??
+    path.join(environment.XDG_CONFIG_HOME || underHome(".config"), "gh");
+  const xdgConfig = environment.XDG_CONFIG_HOME;
+  const denyRead = [
+    baseDir,
+    stateDir,
+    underHome(".t3"),
+    underHome(".kin"),
+    underHome(".config"),
+    underHome(".local/share/keyrings"),
+    underHome("Library/Keychains"),
+    underHome(".ssh"),
+    underHome(".gnupg"),
+    underHome(".aws"),
+    underHome(".azure"),
+    underHome(".kube"),
+    underHome(".docker"),
+    underHome(".netrc"),
+    underHome(".npmrc"),
+    underHome(".git-credentials"),
+    underHome(".pypirc"),
+    underHome(".cargo/credentials"),
+    underHome(".cargo/credentials.toml"),
+    underHome(".config/gcloud"),
+    underHome(".claude"),
+    underHome(".claude.json"),
+    underHome(".codex"),
+    underHome(".gemini"),
+    underHome("kin-current"),
+    underHome("kin-builds"),
+    underHome("kin-update-backups"),
+    underHome("t3code"),
+    underHome(".env"),
+    underHome(".cache/kin-tmp"),
+    ...alternate("XDG_CONFIG_HOME"),
+    ...alternate("CLAUDE_CONFIG_DIR"),
+    ...alternate("CODEX_HOME"),
+    ...alternate("KIN_REPO"),
+    ...alternate("KIN_CHECKOUT"),
+    ...alternate("KIN_UPDATE_BACKUPS"),
+    ...alternate("KIN_BACKUP_DEST"),
+    ...(environment.KIN_CHECKOUT === undefined
+      ? []
+      : alternate("TMPDIR").filter((dir) => !["/tmp", "/private/tmp", "/var/tmp"].includes(dir))),
+    ...alternate("GOOGLE_APPLICATION_CREDENTIALS"),
+    ...alternate("AWS_SHARED_CREDENTIALS_FILE"),
+    ghConfig,
+  ];
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    excludedCommands: [],
+    filesystem: {
+      disabled: false,
+      denyRead: [...new Set(denyRead)],
+      allowRead: [
+        root,
+        ...attachments,
+        ...readPaths,
+        ...logPaths,
+        path.join(ghConfig, "hosts.yml"),
+        path.join(ghConfig, "config.yml"),
+        underHome(".gitconfig"),
+        ...(xdgConfig ? [path.join(xdgConfig, "git/config")] : [underHome(".config/git/config")]),
+      ],
+      allowWrite: [root, ...logPaths],
+    },
+    network: {
+      strictAllowlist: true,
+      allowedDomains: [...shellDomains],
+      allowAllUnixSockets: false,
+      allowLocalBinding: false,
+    },
+    credentials: {
+      envVars: Object.keys(environment)
+        .filter((name) => shellSecretEnv.test(name))
+        .map((name) => ({
+          name,
+          mode: "deny" as const,
+        })),
+    },
+  } satisfies SandboxSettings;
+};
+
 /** Built where the query runner is: a runner's `open` can't require the filesystem itself. */
 export const makeConfiner = Effect.fn("KinClaudeConfinement.makeConfiner")(function* () {
   const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
@@ -298,6 +448,7 @@ export const makeConfiner = Effect.fn("KinClaudeConfinement.makeConfiner")(funct
       cwd === undefined
         ? Effect.undefined
         : fs.realPath(cwd).pipe(Effect.orElseSucceed(() => undefined)),
+    permits: (scope: FileScope, tool: string, input: unknown) => run(permits(scope, tool, input)),
     ownerAuth: (env: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["env"]) =>
       ownerAuth(env).pipe(Effect.provide(context)),
     /**

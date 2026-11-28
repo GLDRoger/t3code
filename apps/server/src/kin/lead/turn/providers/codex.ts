@@ -9,8 +9,7 @@ import * as Schema from "effect/Schema";
 
 import * as CodexAdapterV2 from "../../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { AGENT_THREAD_ENV } from "../../../../preview/PortScanner.ts";
-import { sessionVariablePatterns } from "../../../claudeConfinement.ts";
-import { type KinSessionPlan, KinSessions, type KinShell } from "../session.ts";
+import { type KinSessionPlan, KinSessions } from "../session.ts";
 import type { KinProvider } from "./provider.ts";
 
 const DRIVER = "codex";
@@ -54,20 +53,10 @@ export const CONFINED_CONFIG: Readonly<Record<string, Json>> = {
   "context_management.experimental_mode": false,
 };
 
-/**
- * An owner-only turn's tools, as on Claude: shell and patches, each asked about first; cached web
- * search, which opens no page, so a query reaches no site (curl asks); image viewing. Unified exec
- * stays off: under full access Codex sends stdin to an open session unasked (`stdin_approval.rs`).
- */
+// Cached web search needs no local execution environment.
 export const FULL_SESSION_CONFIG: Readonly<Record<string, Json>> = {
   ...CONFINED_CONFIG,
   web_search: "cached",
-  "tools.view_image": true,
-  include_apply_patch_tool: true,
-  "features.shell_tool": true,
-  // A Codex sub-agent inherits the turn's approval policy and sandbox (codex-cli 0.169), so its
-  // commands and patches ask Kin on this same connection.
-  "agents.enabled": true,
 };
 
 type Server = Readonly<Record<string, Json>>;
@@ -137,9 +126,10 @@ const kinServersOnly = (
   params: Params,
   userServers: ReadonlyArray<string>,
   toolSearch: boolean,
+  partition: boolean,
 ) => {
   const config = { ...(params.config as Readonly<Record<string, Json>> | null | undefined) };
-  kinToolLoading(config, toolSearch);
+  if (partition) kinToolLoading(config, toolSearch);
   for (const name of T3_SERVERS) {
     const server = config[`mcp_servers.${name}`];
     // Codex asks before an MCP call outside full access; nobody answers on a Kin thread.
@@ -184,89 +174,35 @@ const listCatalog = Effect.fn("KinCodex.catalog")(function* (client: Client) {
   return models;
 });
 
-/** The env a Claude agent's session gets (`sessionEnvironment`), the signing `gh` first on PATH. */
-const shellEnvironment = (shell: KinShell) => ({
-  "shell_environment_policy.inherit": "all",
-  "shell_environment_policy.include_only": [
-    ...sessionVariablePatterns,
-    "KIN_AGENT_NAME",
-    AGENT_THREAD_ENV,
-  ],
-  ...signedShell(shell),
-});
-const signedShell = (shell: KinShell) => ({
-  "shell_environment_policy.set.PATH": shell.path,
-  ...(shell.agentName === undefined
-    ? {}
-    : { "shell_environment_policy.set.KIN_AGENT_NAME": shell.agentName }),
-});
+const NO_EXECUTION = {
+  environments: [],
+  approvalPolicy: "never",
+} as const;
+const NO_EXECUTION_REASON = "This session has no shell or file patches.";
 
-/**
- * Codex asks before every command and patch under `untrusted` (no read-only shortcut in codex-cli
- * 0.169), and Kin answers each ask from the plan (`kinApprovals`); the guardian reviewer never does.
- */
-const ASKING = { approvalPolicy: "untrusted", approvalsReviewer: "user" } as const;
-
-/**
- * The plan on Codex's thread params. `confined`: no execution environment (shell, patches and
- * images fail), a read-only sandbox with no network, nothing asked, only T3's MCP servers.
- * `owner`: Codex's shell and patches with full access, as a Claude lead's Bash has, each asked.
- * `delegated`: T3's own task session, asking Kin per command as a Claude task's hook does.
- */
 const threadParams = (params: Params, plan: KinSessionPlan, user: UserConfig) => {
-  const config = params.config as Readonly<Record<string, Json>> | null | undefined;
   if (plan.seat === "dream") return params;
-  // T3's own sandbox stays: Kin only adds its per-command check and the signing shell.
-  if (plan.seat === "delegated")
-    return {
-      ...params,
-      ...ASKING,
-      config: { ...config, ...(plan.shell === undefined ? {} : shellEnvironment(plan.shell)) },
-    };
-  const kin = {
-    ...params,
-    baseInstructions: plan.instructions,
-    developerInstructions: null,
-  };
-  if (plan.seat === "confined")
-    return {
-      ...kin,
-      environments: [],
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      config: {
-        ...kinServersOnly(params, user.servers, plan.toolSearch),
-        ...CONFINED_CONFIG,
-      },
-    };
+  const delegated = plan.seat === "delegated";
+  const owner = plan.seat === "owner";
   return {
-    ...kin,
-    ...ASKING,
-    sandbox: "danger-full-access",
+    ...params,
+    ...(delegated ? {} : { baseInstructions: plan.instructions, developerInstructions: null }),
+    ...NO_EXECUTION,
+    sandbox: "read-only",
     config: {
-      ...kinServersOnly(params, user.servers, plan.toolSearch),
-      ...FULL_SESSION_CONFIG,
-      ...searchThrough(user.provider),
-      ...(plan.shell === undefined ? {} : shellEnvironment(plan.shell)),
+      ...kinServersOnly(params, user.servers, !delegated && plan.toolSearch, !delegated),
+      ...(owner ? FULL_SESSION_CONFIG : CONFINED_CONFIG),
+      ...(owner ? searchThrough(user.provider) : {}),
     },
   };
 };
 
-/**
- * T3 sends full access on every turn; a Kin turn keeps its thread's. T3's thread guidance
- * describes tools a lead doesn't have, as on Claude, so it goes.
- */
-const turnParams = ({ additionalContext, ...params }: Params, plan: KinSessionPlan) =>
-  plan.seat === "confined"
-    ? {
-        ...params,
-        environments: [],
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "readOnly", networkAccess: false },
-      }
-    : plan.seat === "owner"
-      ? { ...params, ...ASKING, sandboxPolicy: { type: "dangerFullAccess" } }
-      : { ...params, ...(additionalContext === undefined ? {} : { additionalContext }), ...ASKING };
+const turnParams = ({ additionalContext, ...params }: Params, plan: KinSessionPlan) => ({
+  ...params,
+  ...(plan.seat !== "delegated" || additionalContext === undefined ? {} : { additionalContext }),
+  ...NO_EXECUTION,
+  sandboxPolicy: { type: "readOnly", networkAccess: false },
+});
 
 const THREAD_METHODS = new Set(["thread/start", "thread/resume"]);
 const TURN_INPUT = new Set(["turn/start", "turn/steer"]);
@@ -387,7 +323,7 @@ const kinApprovals = (
       decided(asked).pipe(
         Effect.map((why) => ({ decision: why === undefined ? "accept" : "decline" })),
       ),
-    // Full access already holds what an admitted call needs; nothing more is ever granted.
+    // Never grant a sandbox escalation on a Kin thread.
     "item/permissions/requestApproval": () => Effect.succeed({ permissions: {} }),
     execCommandApproval: legacy,
     applyPatchApproval: legacy,
@@ -481,14 +417,22 @@ const install = <E, R>(base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFact
             starting.set(thread, plan);
             if (typeof params.threadId === "string") seats.set(params.threadId, plan);
             const user =
-              plan.seat === "delegated" || cwd == null
-                ? { servers: [], provider: undefined }
-                : yield* userConfig(cwd);
+              cwd == null ? { servers: [], provider: undefined } : yield* userConfig(cwd);
             return threadParams(params, plan, user);
+          });
+          yield* client.handleServerNotification("item/completed", ({ threadId, item }) => {
+            const seat = seats.get(threadId);
+            return item.type === "webSearch" && seat?.seat === "owner"
+              ? seat.webRead(undefined).pipe(Effect.asVoid)
+              : Effect.void;
           });
           const asked = answering(
             client,
-            kinApprovals(client, (native) => seats.get(native)?.refusal ?? Effect.undefined),
+            kinApprovals(client, (native) =>
+              (seats.get(native)?.refusal ?? Effect.undefined).pipe(
+                Effect.map((why) => why ?? NO_EXECUTION_REASON),
+              ),
+            ),
             (native) => seats.has(native),
           );
           return rewriting(
@@ -526,12 +470,7 @@ export const codex = {
   lookup: "provider",
   turnContextBeside: false,
   capabilities: {
-    shell: ["shell", "exec_command"],
-    readFiles: ["shell"],
-    editFiles: ["apply_patch"],
     webSearch: ["web_search"],
-    viewImage: ["view_image"],
-    subAgents: ["spawn_agent"],
   },
   install,
 } satisfies KinProvider<CodexAdapterV2.CodexAppServerClientFactory>;

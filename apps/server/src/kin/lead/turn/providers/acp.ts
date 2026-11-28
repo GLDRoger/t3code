@@ -136,30 +136,21 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
                     toolLookup: false,
                   });
             if (plan === undefined || plan.seat === "dream") return yield* make(input);
-            const confined = plan.seat === "confined";
+            if (plan.seat !== "confined")
+              return yield* AcpErrors.AcpRequestError.invalidRequest(
+                "Kin can't use this provider in a private chat or helper task because its built-in tools can't be fenced.",
+              );
+
             const runtime = yield* make({
               ...input,
               ...(isAntigravity && plan.instructions !== undefined
                 ? { sessionSystemPromptAppend: plan.instructions }
                 : {}),
-              processEnvironment: {
-                ...input.processEnvironment,
-                ...(plan.shell === undefined
-                  ? {}
-                  : {
-                      PATH: plan.shell.path,
-                      ...(plan.shell.agentName === undefined
-                        ? {}
-                        : { KIN_AGENT_NAME: plan.shell.agentName }),
-                    }),
+              clientCapabilities: {
+                ...input.clientCapabilities,
+                fs: { readTextFile: false, writeTextFile: false },
+                terminal: false,
               },
-              clientCapabilities: confined
-                ? {
-                    ...input.clientCapabilities,
-                    fs: { readTextFile: false, writeTextFile: false },
-                    terminal: false,
-                  }
-                : input.clientCapabilities,
             });
             return shaped(runtime, plan, isAntigravity);
           });

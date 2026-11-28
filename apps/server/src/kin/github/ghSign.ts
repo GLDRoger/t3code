@@ -236,7 +236,7 @@ case "$1" in gh) repo=$(shift; kin_repo "$@") ;; *) repo=$(kin_repo "$@") ;; esa
 flat() { printf '%s' "$1" | tr '\\t\\r\\n' '   '; }
 T=$(printf '\\t')
 line="$(date +%s)$T$$$T$(flat "$KIN_AGENT_NAME")$T$(flat "$repo")$T$(flat "$*")"
-{ mkdir -p "$APP" && : >> "$LOG" && KIN_REFUSED=$(mktemp "$APP/.refused.XXXXXX"); } 2>/dev/null || {
+{ mkdir -p "$APP" && : >> "$LOG" && KIN_REFUSED=$(mktemp "\${TMPDIR:-/tmp}/kin-gh-refused.XXXXXX"); } 2>/dev/null || {
   echo "kin: Kin couldn't record this use of the owner's login, so it didn't run." >&2
   exit 1
 }

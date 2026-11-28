@@ -1,8 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`a Codex task a lead delegated posts on GitHub through the signing gh and asks Kin before each command, as a Claude task does; other Codex threads, and Kin off, are untouched > delegated thread/resume 1`] = `"376561be539bd682127cdbd712f5cb27095d0b438d74209577eb66dd978834dd"`;
+exports[`a Codex task a lead delegated has no local execution; other Codex threads and Kin off are untouched > delegated thread/resume 1`] = `"5d969c737c240b1a80ca18ab763aaf1660d1d31144d7725e93a5d9f0dd978020"`;
 
-exports[`a Codex task a lead delegated posts on GitHub through the signing gh and asks Kin before each command, as a Claude task does; other Codex threads, and Kin off, are untouched > delegated thread/start 1`] = `"efa67a9a9c66201b45c579cefd007ea47a32cd280f414df7983e0f532002eb86"`;
+exports[`a Codex task a lead delegated has no local execution; other Codex threads and Kin off are untouched > delegated thread/start 1`] = `"5007e40fbebec55b4b066a350033355ab32ef40b133f34b08f67424b1762bbc0"`;
 
 exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-6.1-sol thread/resume 1`] = `"75662ed0947bde070ed07afdbc359cef1038762209407d205ded475e092a3b0d"`;
 
@@ -12,4 +12,4 @@ exports[`a Kin agent's turn others read runs on Codex with no environment, no ne
 
 exports[`a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint > gpt-unlisted-1 thread/start 1`] = `"b7f4e5c851aad1d247a6d09c8b860aadf84ed64dd79ad9b37206ce9c4b64ab7e"`;
 
-exports[`on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn > owner thread/start 1`] = `"f5c52cfe62e6592ea6ed8ac797a6c302b503109c408d42a155bb39de7a21f949"`;
+exports[`on one Codex app-server, the owner's thread marks its search and refuses execution; the shared one stays confined and others are untouched > owner thread/start 1`] = `"90e890321fad03284ef5f5a4938994d2d6fcb9b88902b670cfb7974bce8a448a"`;

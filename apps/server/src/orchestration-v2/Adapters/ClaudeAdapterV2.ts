@@ -778,6 +778,7 @@ export type ClaudeAgentSdkQueryOptions = Omit<
 export type ClaudeAgentSdkQueryOpenInput = {
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  readonly attachmentPaths?: ReadonlyArray<string>;
 } & (
   | {
       readonly refresh?: never;
@@ -958,6 +959,10 @@ export class ClaudeSettingsLaunchArgError extends Schema.TaggedError<ClaudeSetti
 }
 
 export interface ClaudeAgentSdkQueryRunnerShape {
+  readonly scopeAttachments?: (
+    threadId: ThreadId,
+    cwd: string | undefined,
+  ) => Effect.Effect<boolean>;
   readonly allocateSessionId: Effect.Effect<string, ClaudeAgentSdkQueryRunnerError>;
   readonly open: (
     input: ClaudeAgentSdkQueryOpenInput,
@@ -13571,11 +13576,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(
+          const policyKey = claudeEffectiveQueryPolicyKey(
             queryPolicy,
             mcpOverrides,
             turnInput.runtimePolicy.workspace,
           );
+          const scopesAttachments =
+            queryRunner.scopeAttachments !== undefined &&
+            (yield* queryRunner.scopeAttachments(
+              turnInput.threadId,
+              turnInput.runtimePolicy.cwd ?? undefined,
+            ));
+          const attachmentPaths = !scopesAttachments
+            ? undefined
+            : (yield* Effect.forEach(turnInput.message.attachments, (attachment) => {
+                const file = resolveAttachmentPath({ attachmentsDir, attachment });
+                return file === null
+                  ? Effect.succeed([])
+                  : DocumentText.resolveExtractedTextPath(file).pipe(
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                      Effect.map((text) => (text === undefined ? [file] : [file, text])),
+                    );
+              }))
+                .flat()
+                .sort();
+          const queryPolicyKey =
+            attachmentPaths === undefined
+              ? policyKey
+              : encodeClaudeJson([policyKey, attachmentPaths]);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
@@ -13800,6 +13828,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   threadId: turnInput.threadId,
                   providerSessionId: input.providerSessionId,
                   options: queryOptions,
+                  ...(attachmentPaths === undefined ? {} : { attachmentPaths }),
                   ...(turnInput.resume ? { resume: true } : {}),
                 })
                 .pipe(Effect.map((querySession) => ({ program, querySession }))),

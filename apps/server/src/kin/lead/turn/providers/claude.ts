@@ -1,15 +1,20 @@
 import type { HookCallback, HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { ServerConfig } from "../../../../config.ts";
 import { ServerSettingsService } from "../../../../serverSettings.ts";
 import {
   type AuthSettings,
+  type FileScope,
   makeConfiner,
   sessionEnvironment,
+  shellSandbox,
   withConfinementHook,
 } from "../../../claudeConfinement.ts";
 import { type KinSessionPlan, KinSessions } from "../session.ts";
@@ -57,6 +62,10 @@ export const OWNER_SEAT_OFF = [
 ];
 
 export const OWNER_SEAT_NATIVE_TOOLS = ["Bash", "Read", "Edit", "Write", "WebSearch"] as const;
+const FILE_TOOLS = [...capabilities.readFiles, "Edit", "Write", "NotebookEdit"];
+const SHELL_OFF = "This session has no shell because Kin couldn't secure it.";
+const FILE_REFUSAL =
+  "This file tool can use only your working folder and can read only the attachments given to this turn.";
 
 export const OWNER_SEAT_NO_SUBAGENTS = [
   "Agent",
@@ -87,12 +96,12 @@ const kinTools = (options: Options, plan: KinSessionPlan) =>
     ? { search: "false" as const, mcpServers: undefined }
     : { search: "true" as const, mcpServers: options.mcpServers };
 
-const nativeTools = (plan: KinSessionPlan, search: boolean) => {
+const nativeTools = (plan: KinSessionPlan, search: boolean, bash: boolean) => {
   if (plan.seat === "delegated") return undefined;
   const lookup = search ? ["ToolSearch"] : [];
   switch (plan.abilities) {
     case "shellAndFiles":
-      return [...OWNER_SEAT_NATIVE_TOOLS, ...lookup];
+      return [...OWNER_SEAT_NATIVE_TOOLS.filter((tool) => tool !== "Bash" || bash), ...lookup];
     case "lookup":
       return [...lookup, CONFINED_SEARCH];
     case "none":
@@ -150,6 +159,8 @@ const apply = (
   session: {
     readonly hook: HookCallbackMatcher | undefined;
     readonly auth: AuthSettings;
+    readonly scope: FileScope | undefined;
+    readonly sandbox: ReturnType<typeof shellSandbox> | undefined;
     readonly environment: NodeJS.ProcessEnv;
     readonly context: SessionContext.KinSessionContext["Service"] | undefined;
     readonly logCompaction: (summaryLength: number) => Promise<void>;
@@ -158,15 +169,23 @@ const apply = (
   // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
   if (plan.seat === "dream") return { ...options, settingSources: [] };
   const { settings, env } = options;
+  const fenced = session.scope !== undefined;
+  const {
+    additionalDirectories: _additionalDirectories,
+    extraArgs: _extraArgs,
+    plugins: _plugins,
+    ...noLocalSettings
+  } = options;
+  const shell = session.sandbox === undefined ? undefined : plan.shell;
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
-  const tools = nativeTools(plan, loading.search === "true");
+  const tools = nativeTools(plan, loading.search === "true", shell !== undefined);
   const confined = plan.seat === "confined";
-  const owner = plan.seat === "owner";
   const hooks =
     session.hook === undefined ? undefined : withConfinementHook(options.hooks, session.hook);
   return {
-    ...options,
+    ...(fenced ? noLocalSettings : options),
+    ...(session.scope?.root === undefined ? {} : { cwd: session.scope.root }),
     settingSources: [],
     ...(plan.instructions === undefined
       ? {}
@@ -181,17 +200,17 @@ const apply = (
             ]),
           ],
         }
-      : owner
-        ? {
-            disallowedTools: [
-              ...new Set([
-                ...(options.disallowedTools ?? []),
-                ...OWNER_SEAT_OFF,
-                ...OWNER_SEAT_NO_SUBAGENTS,
-              ]),
-            ],
-          }
-        : {}),
+      : {
+          disallowedTools: [
+            ...new Set([
+              ...(options.disallowedTools ?? []),
+              ...OWNER_SEAT_OFF,
+              ...OWNER_SEAT_NO_SUBAGENTS,
+              "PowerShell",
+              ...(shell === undefined ? ["Bash", ...capabilities.backgroundShell] : []),
+            ]),
+          ],
+        }),
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
@@ -209,30 +228,51 @@ const apply = (
               : hooks,
         }),
     // A settings file path can't take keys.
-    ...(typeof settings === "string"
+    ...(typeof settings === "string" && !fenced
       ? {}
       : {
           settings: {
             ...session.auth,
-            ...settings,
+            ...(typeof settings !== "object"
+              ? {}
+              : !fenced
+                ? settings
+                : settings.showThinkingSummaries === undefined
+                  ? {}
+                  : { showThinkingSummaries: settings.showThinkingSummaries }),
             ...(confined ? {} : NO_PROVIDER_FOOTER),
-            ...(owner
+            ...(session.sandbox === undefined ? {} : { sandbox: session.sandbox }),
+            ...(session.scope === undefined
+              ? {}
+              : {
+                  permissions: {
+                    blockWritesOutsideWorkingDirectories: true,
+                    workingDirectoriesAsGiven:
+                      session.scope.root === undefined ? [] : [session.scope.root],
+                  },
+                }),
+
+            ...(fenced
               ? { disableBundledSkills: true, disableWorkflows: true, disableAgentView: true }
               : {}),
             // Its folder is named after the host's account: a lead never sees it (G07).
             autoMemoryEnabled: false,
             autoDreamEnabled: false,
             ...(plan.seat === "owner" ? { idleCompaction: false } : {}),
-            env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: loading.search },
+            env: {
+              ...session.auth.env,
+              ...(typeof settings === "object" ? settings.env : undefined),
+              ENABLE_TOOL_SEARCH: loading.search,
+            },
           },
         }),
     env: {
       ...environment,
-      ...(plan.shell === undefined
+      ...(shell === undefined
         ? {}
         : {
-            PATH: plan.shell.path,
-            ...(plan.shell.agentName === undefined ? {} : { KIN_AGENT_NAME: plan.shell.agentName }),
+            PATH: shell.path,
+            ...(shell.agentName === undefined ? {} : { KIN_AGENT_NAME: shell.agentName }),
           }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -270,7 +310,11 @@ const hostOf = (input: unknown) => {
  * hook throws or times out. Kin's own tools answer to Kin's gates, except in a delegated task, whose
  * MCP tools are T3's.
  */
-const decisionHook = (plan: KinSessionPlan): HookCallbackMatcher => ({
+const decisionHook = (
+  plan: KinSessionPlan,
+  files: (tool: string, input: unknown) => Promise<boolean>,
+  prepareShell: Effect.Effect<boolean>,
+): HookCallbackMatcher => ({
   onFailure: "block",
   hooks: [
     async (input) => {
@@ -285,7 +329,15 @@ const decisionHook = (plan: KinSessionPlan): HookCallbackMatcher => ({
       if (kinTool && plan.seat !== "delegated") return {};
       const reason = await Effect.runPromise(plan.refusal);
       if (reason !== undefined) return refused(reason);
-      if (!WEB_READS.has(input.tool_name)) return {};
+      if (kinTool || input.tool_name === "TodoWrite") return {};
+      if (
+        input.tool_name === "Bash" ||
+        capabilities.backgroundShell.some((tool) => tool === input.tool_name)
+      ) {
+        return (await Effect.runPromise(prepareShell)) ? {} : refused(SHELL_OFF);
+      }
+      if (!WEB_READS.has(input.tool_name))
+        return (await files(input.tool_name, input.tool_input)) ? {} : refused(FILE_REFUSAL);
       // What it reads is outside text: the turn is marked before the result reaches the model.
       const marked = await Effect.runPromise(plan.webRead(hostOf(input.tool_input)));
       return marked === undefined ? {} : refused(marked);
@@ -301,6 +353,17 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const sessions = yield* KinSessions;
       if (!sessions.enabled) return runner;
       const confiner = yield* makeConfiner();
+      const config = yield* ServerConfig;
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const relative = (parent: string, child: string) => {
+        const result = path.relative(parent, child);
+        return !path.isAbsolute(result) && result.split(path.sep)[0] !== ".." ? result : undefined;
+      };
+      const literal = (name: string) => !/[?*[\]{}\r\n]/.test(name);
+      const stateDir = (yield* confiner.root(config.stateDir)) ?? config.stateDir;
+      const baseDir = (yield* confiner.root(config.baseDir)) ?? config.baseDir;
+      const attachmentsDir = (yield* confiner.root(config.attachmentsDir)) ?? config.attachmentsDir;
       const context = Option.getOrUndefined(
         yield* Effect.serviceOption(SessionContext.KinSessionContext),
       );
@@ -309,6 +372,16 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const runHook = Effect.runPromiseWith(yield* Effect.context<never>());
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
+        scopeAttachments: Effect.fn("KinClaude.scopeAttachments")(function* (threadId, cwd) {
+          const plan = yield* sessions.plan({
+            threadId,
+            cwd,
+            driver: DRIVER,
+            path: undefined,
+            toolLookup: false,
+          });
+          return plan?.seat === "owner" || plan?.seat === "delegated";
+        }),
         open: Effect.fn("KinClaude.open")(function* (input) {
           const environment = yield* HostProcess.Environment;
           const plan = yield* sessions.plan({
@@ -337,12 +410,105 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
               yield* Effect.logError("Kin Claude owner seat is missing KinSessionContext");
             }
           }
+          const fenced = plan.seat === "owner" || plan.seat === "delegated";
+          const auth = yield* confiner.ownerAuth(input.options.env);
+          let scope: FileScope | undefined;
+          let sandbox: ReturnType<typeof shellSandbox> | undefined;
+          if (fenced) {
+            const env = input.options.env ?? environment;
+            const resolveHome =
+              env.HOME ?? environment.HOME ?? env.USERPROFILE ?? environment.USERPROFILE;
+            const home =
+              resolveHome && path.isAbsolute(resolveHome)
+                ? ((yield* confiner.root(resolveHome)) ?? resolveHome)
+                : undefined;
+            const original = input.options.cwd;
+            let root = yield* confiner.root(original);
+            // In a lead seat the only allowed opening in state is the lead's actual checkout.
+            // A delegated target can use its own Scratch folder or an explicit project, never state.
+            const kinRoot = path.join(stateDir, "kin");
+            const scratch = path.join(baseDir, "scratch");
+            if (
+              root !== undefined &&
+              (!literal(root) ||
+                (plan.seat === "owner"
+                  ? !relative(kinRoot, root) ||
+                    (original !== undefined &&
+                      relative(path.join(config.stateDir, "kin"), original) !== undefined &&
+                      path.join(kinRoot, relative(path.join(config.stateDir, "kin"), original)!) !==
+                        root) ||
+                    ["gh-sign", "gh-app"].some(
+                      (folder) => relative(path.join(kinRoot, folder), root!) !== undefined,
+                    )
+                  : relative(root, baseDir) !== undefined ||
+                    (relative(baseDir, root) !== undefined && !relative(scratch, root)) ||
+                    relative(stateDir, root) !== undefined))
+            )
+              root = undefined;
+            const attachments = (yield* Effect.forEach(input.attachmentPaths ?? [], (file) =>
+              fs.lstat(file).pipe(
+                Effect.flatMap((info) =>
+                  info.type === "File" ? confiner.root(file) : Effect.undefined,
+                ),
+                Effect.orElseSucceed(() => undefined),
+                Effect.map((real) =>
+                  real === path.join(attachmentsDir, path.basename(file)) && literal(real)
+                    ? real
+                    : undefined,
+                ),
+              ),
+            )).filter((file) => file !== undefined);
+            const shellEnvironment = {
+              ...environment,
+              ...env,
+              ...auth.env,
+              ...(typeof input.options.settings === "object" ? input.options.settings.env : {}),
+            };
+            if (root !== undefined && home !== undefined) {
+              const settings = shellSandbox(
+                {
+                  root,
+                  home,
+                  baseDir,
+                  stateDir,
+                  attachments,
+                  readPaths: plan.shell?.readPaths ?? [],
+                  logPaths: plan.shell?.logPaths ?? [],
+                  environment: shellEnvironment,
+                },
+                path,
+              );
+              const allowedRoot = root;
+              const unsafe = settings.filesystem.denyRead.some(
+                (deny) =>
+                  relative(allowedRoot, deny) !== undefined ||
+                  (relative(deny, allowedRoot) !== undefined &&
+                    deny !== baseDir &&
+                    deny !== stateDir &&
+                    deny !== path.join(home, ".t3")),
+              );
+              if (unsafe) root = undefined;
+              else if (plan.shell !== undefined) sandbox = settings;
+            } else root = undefined;
+            scope = { root, tools: FILE_TOOLS, attachmentPaths: attachments };
+          }
           return yield* runner.open({
             ...input,
             options: apply(input.options, plan, {
               // The refresh already denies all tools; the normal policy hook could mark a wake-up.
-              hook: input.refresh ? undefined : decisionHook(plan),
-              auth: yield* confiner.ownerAuth(input.options.env),
+              hook: input.refresh
+                ? undefined
+                : decisionHook(
+                    plan,
+                    (tool, args) =>
+                      scope === undefined
+                        ? Promise.resolve(false)
+                        : confiner.permits(scope, tool, args),
+                    sandbox === undefined ? Effect.succeed(false) : plan.shell!.prepareLogs,
+                  ),
+              auth,
+              scope,
+              sandbox,
               environment,
               context,
               logCompaction: (summaryLength) =>
