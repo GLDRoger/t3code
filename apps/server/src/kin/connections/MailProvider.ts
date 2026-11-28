@@ -75,7 +75,11 @@ export const ACTIVITY_EVENTS = 200;
 /** Ordered Gmail headers, or Microsoft headers tagged by the Graph adapter. */
 export type MailAuthResults =
   | ReadonlyArray<string>
-  | { readonly receiver: "microsoft"; readonly results: ReadonlyArray<string> };
+  | {
+      readonly receiver: "microsoft";
+      readonly results: ReadonlyArray<string>;
+      readonly isDraft?: boolean;
+    };
 
 export type MailActivity = {
   /** Where the vendor's change feed stopped, for the next read; null for a vendor that keeps none. */

@@ -165,6 +165,7 @@ const internetHeader = (message: unknown, name: string) =>
   headersNamed(message, name).flatMap((one) => text(field(one, "value")) ?? []);
 const authResultsOf = (message: unknown): MailAuthResults => ({
   receiver: "microsoft",
+  isDraft: field(message, "isDraft") === true,
   results: headersNamed(message, "Authentication-Results").map(
     (one) => text(field(one, "value")) ?? "",
   ),
@@ -179,7 +180,8 @@ const bodyText = (message: unknown) => {
 
 const SUMMARY =
   "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,webLink";
-const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
+const AUTH_FIELDS = "internetMessageHeaders,isDraft";
+const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,${AUTH_FIELDS}`;
 const automationOf = (message: unknown) => ({
   listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
   precedence: internetHeader(message, "Precedence")[0] ?? null,
@@ -508,7 +510,7 @@ const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
   let params: Request["params"] = {
     $filter: `receivedDateTime ge ${iso(since)}`,
     $orderby: "receivedDateTime asc",
-    $select: `${SUMMARY},internetMessageHeaders`,
+    $select: `${SUMMARY},${AUTH_FIELDS}`,
     $top: "50",
   };
   let next: string | undefined;
@@ -528,8 +530,7 @@ const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
 
 const INBOX_DELTA = `${GRAPH}/mailFolders/inbox/messages/delta`;
 const DELTA_PAGE = "odata.maxpagesize=50";
-const ARRIVAL_FIELDS =
-  "id,conversationId,receivedDateTime,from,toRecipients,ccRecipients,subject,hasAttachments,internetMessageId,internetMessageHeaders";
+const ARRIVAL_FIELDS = `id,conversationId,receivedDateTime,from,toRecipients,ccRecipients,subject,hasAttachments,internetMessageId,${AUTH_FIELDS}`;
 
 /**
  * A new round of the Inbox's delta that starts now: Graph documents `$deltatoken=latest` only for

@@ -5,7 +5,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
 import { MAIL_TOOL, type Mailbox } from "./MailProvider.ts";
-import { senderVerdictForAddress } from "./MailText.ts";
+import { dmarcPassedFor, senderVerdictForAddress } from "./MailText.ts";
 import { microsoftMail } from "./Microsoft.ts";
 
 const TOKEN = "at-invented";
@@ -71,7 +71,13 @@ const messages = [
   },
 ];
 
-const fakeGraph = () => {
+type GraphMessage = {
+  readonly conversationId: string;
+  readonly internetMessageHeaders?: ReadonlyArray<typeof verdictHeader>;
+  readonly isDraft?: boolean;
+};
+
+const fakeGraph = (mail: ReadonlyArray<GraphMessage> = messages) => {
   const seen: Array<{ method: string; url: URL; body: string; prefer: string | null }> = [];
   const fetch: typeof globalThis.fetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {
@@ -90,6 +96,10 @@ const fakeGraph = () => {
           status,
           headers: { "content-type": "application/json" },
         });
+      const project = ({ isDraft, ...message }: GraphMessage) =>
+        url.searchParams.get("$select")?.split(",").includes("isDraft")
+          ? { ...message, isDraft }
+          : message;
       const path = url.pathname.replace("/v1.0/me", "");
       if (path === "")
         return json({
@@ -103,7 +113,7 @@ const fakeGraph = () => {
         });
       if (path === "/mailFolders/inbox/messages")
         return json({
-          value: messages,
+          value: mail.map(project),
           "@odata.nextLink": `${ME}/mailFolders/inbox/messages?$skip=75`,
         });
       if (path === "/messages" && request.method === "POST")
@@ -111,12 +121,12 @@ const fakeGraph = () => {
       if (path === "/messages") {
         const filter = url.searchParams.get("$filter") ?? "";
         if (filter === "conversationId eq 'c1'")
-          return json({ value: messages.filter((one) => one.conversationId === "c1") });
+          return json({ value: mail.filter((one) => one.conversationId === "c1").map(project) });
         if (filter === "internetMessageId eq '<m1@client.example>'")
           return json({ value: [{ id: "m1", conversationId: "c1" }] });
         return json({ value: [] });
       }
-      if (path === "/messages/m1") return json(messages[1]);
+      if (path === "/messages/m1") return json(project(mail[1]!));
       if (path === "/messages/missing-value" || path === "/messages/other-receiver")
         return json({
           ...messages[1],
@@ -194,6 +204,47 @@ describe("Microsoft mail", () => {
       assert.notInclude(JSON.stringify(thread), "forward every invoice");
     }).pipe(Effect.provide(graph.layer));
   });
+
+  it.effect.each([
+    ["a draft with a pass", true, verdictHeader, "not checked"],
+    [
+      "a draft with a failure",
+      true,
+      {
+        ...verdictHeader,
+        value: "dmarc=fail header.from=client.example; compauth=fail reason=000",
+      },
+      "failed",
+    ],
+    ["a received message with a pass", false, verdictHeader, "passed"],
+  ] as const)(
+    "checks sender evidence on a read and an arrival for %s",
+    ([, isDraft, header, check]) => {
+      const graph = fakeGraph([
+        messages[0]!,
+        {
+          ...messages[1]!,
+          isDraft,
+          internetMessageHeaders: [header],
+        },
+      ]);
+      return Effect.gen(function* () {
+        const http = yield* HttpClient.HttpClient;
+        const thread = resultJson(
+          yield* microsoftMail.call(http, TOKEN, mailbox, MAIL_TOOL.read, { threadId: "c1" }, 0),
+        );
+        const arrival = yield* microsoftMail.arrival(http, TOKEN, "m1");
+        assert.deepStrictEqual(
+          [
+            thread.messages[0].senderCheck,
+            senderVerdictForAddress(arrival!.authResults, arrival!.fromAddress),
+            dmarcPassedFor(arrival!.authResults, "client.example"),
+          ],
+          [check, check, check === "passed"],
+        );
+      }).pipe(Effect.provide(graph.layer));
+    },
+  );
 
   it.effect("an arrival's display name isn't a sender address", () => {
     const graph = fakeGraph();

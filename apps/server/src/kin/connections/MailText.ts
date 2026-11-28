@@ -140,7 +140,9 @@ const receiverVerdicts = (auth: MailAuthResults) => {
     const verdicts = parseVerdicts(header);
     // Microsoft stamps inbound mail. A second result makes the receiver's stamp ambiguous.
     const vouches =
-      METHOD_RESULT.test(header) && verdicts.some(({ method }) => method === "compauth");
+      auth.isDraft !== true &&
+      METHOD_RESULT.test(header) &&
+      verdicts.some(({ method }) => method === "compauth");
     return { vouches, verdicts };
   }
   // Gmail puts its own named header above any results carried with the message.
