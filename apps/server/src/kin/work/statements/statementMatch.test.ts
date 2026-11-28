@@ -98,7 +98,9 @@ describe("statement matching", () => {
     ["Tidewater Freight", "2026-10-05", "INR", undefined, undefined],
     ["Tidewater Freight", "2026-10-05", "INR", "84.000000", 30],
     ["Tidewater Freight", "2026-10-05", "INR", "42.000000", undefined],
-    ["Tidewater Freight INV-12", "2026-10-05", "INR", "42.000000", 65],
+    ["Tidewater Freight INV-12", "2026-10-05", "INR", "84.000000", 65],
+    ["Tidewater Freight INV-12", "2026-10-05", "INR", "75.000000", undefined],
+    ["Tidewater Freight INV-12", "2026-10-05", "INR", "94.000000", undefined],
     ["Other transfer", "2026-10-05", "INR", "83.500000", undefined],
     ["Tidewater Freight INV-12", "2026-09-29", "INR", undefined, undefined],
     ["Tidewater Freight INV-12", "2026-10-05", "USD", undefined, undefined],
@@ -117,6 +119,27 @@ describe("statement matching", () => {
       assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "rate");
       assert.strictEqual(offer?.rate, score === undefined ? undefined : "83.500000");
       assert.isEmpty(match([credit], [owed])[0]!.candidates);
+    },
+  );
+
+  it.each([
+    [8_250_000, "82.500000", 65],
+    [8_250_001, "82.500010", undefined],
+    [6_750_000, "67.500000", 65],
+    [6_749_999, "67.499990", undefined],
+  ] as const)(
+    "bands a cited credit of %i paise, a rate of %s, at 75.000000",
+    (amountMinor, rate, score) => {
+      const credit = row({ description: "Tidewater Freight INV-12", amountMinor });
+      const owed = invoice({
+        currency: "USD",
+        amountMinor: 100_000,
+        number: "INV-12",
+        client: "Tidewater Freight",
+      });
+      const offer = rateOffer(credit, owed, "INR", "75.000000");
+      assert.strictEqual(offer?.candidate.score, score);
+      assert.strictEqual(offer?.rate, score === undefined ? undefined : rate);
     },
   );
 
