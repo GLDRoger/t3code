@@ -1090,6 +1090,38 @@ it.effect(
         assert.deepEqual((yield* answer(byKey, "record_get", { key })).content, `{"key":"${key}"}`);
       const other = yield* answer(byKey, "record_get", { key: "W-9" });
       assert.deepEqual([other.is_error, other.content], [true, "No entry W-9."]);
+      // A record write meets its rules as Kin's decoder reads it, a list's own field in either
+      // shape alike, and a call Kin refuses fails with Kin's words.
+      const changed = (field: string) => ({ key: "W-84", rev: 3, state: "open", changed: [field] });
+      const helpers = kinCase({
+        mocks: {
+          record_update: {
+            $when: [{ args: { alsoOn: "~" }, result: changed("alsoOn") }],
+            $else: changed("notes"),
+          },
+        },
+      });
+      for (const input of [
+        { key: "W-84", fields: { alsoOn: ["Finance"] } },
+        { key: "W-84", alsoOn: ["Finance"] },
+      ]) {
+        const result = yield* answer(helpers, "record_update", input);
+        assert.deepEqual(
+          [result.is_error, result.content],
+          [undefined, JSON.stringify(changed("alsoOn"))],
+        );
+      }
+      const offClients = yield* answer(helpers, "record_update", {
+        key: "W-84",
+        taxNumber: "29ABCDE1234F1Z5",
+      });
+      assert.deepEqual(
+        [offClients.is_error, offClients.content],
+        [
+          true,
+          "taxNumber goes on clients alone: change the client in its own call. Nothing was written.",
+        ],
+      );
       // A connection call's text arguments are read as Kin reads them before mocks match and calls
       // are graded; text that holds no object is Kin's own refusal, never a mock's answer.
       const mail = { to: ["kabir@tidewater.example"], body: 'Hi Kabir, "reason": {ours}' };

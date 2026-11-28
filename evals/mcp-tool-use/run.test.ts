@@ -2129,51 +2129,6 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
       }),
       { is_error: true, content: '{"_tag":"No"}' },
     );
-    // A record write is answered as Kin reads it: either shape of a list's own field meets the
-    // same rule, and a call Kin refuses fails with Kin's words.
-    const changed = (field: string) => ({ key: "W-84", rev: 3, state: "open", changed: [field] });
-    const record = makeSample(
-      {
-        ...refusing,
-        setup: {
-          ...refusing.setup,
-          mocks: {
-            record_update: {
-              $when: [{ args: { alsoOn: "~" }, result: changed("alsoOn") }],
-              $else: changed("notes"),
-            },
-          },
-        },
-      },
-      base,
-    );
-    record.tools.push({ name: "mcp__t3-code__record_update" });
-    for (const [id, input, content] of [
-      ["nested", { key: "W-84", fields: { alsoOn: ["Finance"] } }, '"changed":["alsoOn"]'],
-      ["top", { key: "W-84", alsoOn: ["Finance"] }, '"changed":["alsoOn"]'],
-    ] as const) {
-      const result = yield* answerToolCall(record, config, {
-        type: "tool_use",
-        id,
-        name: "mcp__t3-code__record_update",
-        input,
-      });
-      assert.isUndefined(result.is_error, id);
-      assert.include(String(result.content), content, id);
-    }
-    assert.deepInclude(
-      yield* answerToolCall(record, config, {
-        type: "tool_use",
-        id: "refused",
-        name: "mcp__t3-code__record_update",
-        input: { key: "W-84", taxNumber: "29ABCDE1234F1Z5" },
-      }),
-      {
-        is_error: true,
-        content:
-          "taxNumber goes on clients alone: change the client in its own call. Nothing was written.",
-      },
-    );
     // A sequence mock answers each call with its next result, then repeats the last.
     const flow = makeSample(browserCase("br-flow-qa-missing-cli"), base);
     flow.tools.push({ name: "mcp__t3-code__preview_snapshot" });
