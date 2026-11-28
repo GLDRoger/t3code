@@ -602,6 +602,66 @@ it.effect("a Monday tap records the GitHub state of the newly armed run", () => 
   );
 });
 
+// Naming who asked gives no one a tap: a work card is the owner's and co-owners' alone, even for
+// the teammate it names (`chatOwnAsker`).
+it.effect.each([
+  ["start", "zoya", "undo"],
+  ["start", "sam", "undo"],
+  ["chase", "zoya", "undo"],
+  ["chase", "sam", "undo"],
+  ["ask", "zoya", "start_now"],
+  ["ask", "zoya", "monday"],
+  ["ask", "zoya", "cancel"],
+  ["ask", "sam", "cancel"],
+] as const)("Zoya's %s card in Rhea's chat refuses %s's %s", ([mode, tapper, action]) => {
+  const zoyas = makeDeferral("def-1", { on_due: mode, said_by: "zoya" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES ('zoya', ${orgId}, 'zoya', 'zoya', 'member', 0)`;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(zoyas);
+    if (mode === "ask") yield* tick(dueAt);
+    // As the asked card's table does: teammates beside the card, once it is drawn.
+    yield* sql`DELETE FROM kin_people WHERE person_id = 'zoya'`;
+    yield* joinChat("zoya", "member");
+    yield* joinChat("sam", "member");
+    const card = yield* cardOf("def-1");
+    assert.deepInclude(card, { askedBy: { personId: KinPersonId.make("zoya"), name: "zoya" } });
+    assert.include(card.actions, action);
+    const before = yield* runOf("def-1");
+    const refused = yield* tap(action, tapper);
+    assert.equal(outcome(refused), "not_allowed");
+    assert.notInclude(JSON.stringify(refused), KIN_ASKER_ONLY_REFUSAL);
+    assert.deepStrictEqual(yield* runOf("def-1"), before);
+  }).pipe(Effect.provide(layerFor([zoyas])));
+});
+
+it.effect("a Monday tap waits on GitHub only briefly, then moves it without GitHub's state", () => {
+  const linked = makeDeferral("def-1", { links: [issue] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    yield* tick(headsUpAt);
+    const reading = yield* Deferred.make<void>();
+    const never = {
+      readRepo: () => Deferred.succeed(reading, undefined).pipe(Effect.andThen(Effect.never)),
+    };
+    const tapping = yield* tap("monday").pipe(
+      Effect.provideService(KinDeferralGithubReader, never),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(reading);
+    yield* TestClock.adjust("3 seconds");
+    assert.equal(outcome(yield* Fiber.join(tapping)), "ok");
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ snapshot: string }>`SELECT snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+    assert.deepInclude(JSON.parse(row!.snapshot), { github: null });
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+  }).pipe(Effect.provide(layerFor([linked])));
+});
+
 it.effect("a card in Rhea's chat names Meera when Meera asked", () => {
   const meera = makeDeferral("def-2", { said_by: "meera" });
   return Effect.gen(function* () {
@@ -2259,6 +2319,7 @@ it.effect.each([
   "sync lost after commit",
   "undo cancel",
   "owner restore with GitHub",
+  "owner restore while GitHub never answers",
   "legacy schedule",
 ] as const)("committed memory arms or disarms immediately: %s", (scenario) =>
   Effect.gen(function* () {
@@ -2287,7 +2348,8 @@ it.effect.each([
     const seeded = scenario !== "set two" && scenario !== "legacy schedule";
     yield* git(source, ["init", "-b", "main"]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules.\n");
-    const restore = scenario === "owner restore with GitHub";
+    const hung = scenario === "owner restore while GitHub never answers";
+    const restore = scenario === "owner restore with GitHub" || hung;
     if (seeded)
       yield* fs.writeFileString(
         `${source}/${path}`,
@@ -2335,9 +2397,10 @@ it.effect.each([
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
     );
-    const github = fakeGithub(
-      new Map([["acme/api#12", { state: "open", assignees: [], linkedPrs: [] }]]),
-    );
+    const reading = yield* Deferred.make<void>();
+    const github = hung
+      ? { readRepo: () => Deferred.succeed(reading, undefined).pipe(Effect.andThen(Effect.never)) }
+      : fakeGithub(new Map([["acme/api#12", { state: "open", assignees: [], linkedPrs: [] }]]));
     const runtime = Layer.merge(writerLayer, Watchdogs.layer).pipe(
       Layer.provideMerge(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
       Layer.provideMerge(
@@ -2368,6 +2431,21 @@ it.effect.each([
         return row;
       });
 
+      if (hung) {
+        // A person waits on this restore: GitHub gets a few seconds, then it arms without its state.
+        const restoring = yield* writer
+          .restore(orgId, { itemId: KinMemoryItemId.make("def-written") })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(reading);
+        yield* TestClock.adjust("3 seconds");
+        assert.deepInclude(yield* Fiber.join(restoring), { restored: true });
+        const [row] = yield* sql<{ state: string; snapshot: string }>`SELECT state,
+            snapshot_json AS snapshot
+          FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = 'def-written'`;
+        assert.equal(row?.state, "armed");
+        assert.deepInclude(JSON.parse(row!.snapshot), { github: null });
+        return;
+      }
       if (restore) {
         assert.isUndefined(yield* runOf("def-written"));
         assert.deepInclude(

@@ -121,7 +121,11 @@ import {
   askedForCard,
   questionForCard,
 } from "../questions/openQuestions.ts";
-import { KinDeferralGithubReader, readGithubLinks } from "../triggers/deferralGithub.ts";
+import {
+  asPersonWaits,
+  KinDeferralGithubReader,
+  readGithubLinks,
+} from "../triggers/deferralGithub.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -2157,7 +2161,7 @@ const make = Effect.gen(function* () {
     const { orgId, personId } = identity.value;
     const item = yield* attached
       .read(orgId, KinMemoryItemId.make(itemId))
-      .pipe(Effect.orElseSucceed(() => undefined));
+      .pipe(asPersonWaits, Effect.orElseSucceed(() => undefined));
     if (item === undefined || Option.isNone(item) || input.actionId !== "monday") return item;
     const target = yield* tapTarget(identity.value, input.widgetId).pipe(Effect.option);
     if (Option.isNone(target)) return item;
@@ -2177,6 +2181,7 @@ const make = Effect.gen(function* () {
     const reader = attached.github ?? (yield* KinDeferralGithubReader);
     const githubAtMove = yield* readGithubLinks(orgId, item.value.head.links).pipe(
       Effect.provideService(KinDeferralGithubReader, reader),
+      asPersonWaits,
     );
     return Option.some({ ...item.value, githubAtMove });
   });
