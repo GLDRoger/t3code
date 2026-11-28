@@ -160,6 +160,8 @@ import BillCrops from "./migrations/K236_BillCrops.ts";
 import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
 import BillSenders from "./migrations/K238_BillSenders.ts";
 import BillMail from "./migrations/K239_BillMail.ts";
+import RemovedRuleCards from "./migrations/K240_RemovedRuleCards.ts";
+import BillPreviewIds from "./migrations/K241_BillPreviewIds.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -401,6 +403,8 @@ const migrations = {
   "237_CardTapDeliveries": CardTapDeliveries,
   "238_BillSenders": BillSenders,
   "239_BillMail": BillMail,
+  "240_RemovedRuleCards": RemovedRuleCards,
+  "241_BillPreviewIds": BillPreviewIds,
 };
 const loader = Migrator.fromRecord(migrations);
 

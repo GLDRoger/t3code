@@ -2148,7 +2148,11 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
-      refreshTrigger: kinWorkRefreshOn(["expenses"], billsAdded),
+      refreshTrigger: kinWorkRefreshOn(["expenses"], (target) =>
+        Atom.make(
+          (get) => `${get(billsAdded(target))}:${get(kinRefreshOn("moneyStatements")(target))}`,
+        ),
+      ),
     }),
     billsAdd: createKinRpcCommand(runtime, {
       label: "kin:bills:add",

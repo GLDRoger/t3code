@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { KinTrimmedText, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, KinTrimmedText, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinChatId, KinOrgId, KinPersonId } from "./kinChat.ts";
 
 const id = TrimmedNonEmptyString.check(Schema.isMaxLength(160));
@@ -191,6 +191,7 @@ export const KinMailRuleCardState = Schema.Struct({
     Schema.Struct({
       status: Schema.Literal("on"),
       ruleId: id,
+      removedAt: Schema.optionalKey(IsoDateTime),
       /** Who tapped Turn on, by name at the time; absent on cards answered before it was kept. */
       by: Schema.optionalKey(
         Schema.Struct({
@@ -251,6 +252,7 @@ export const KinMailRule = Schema.Struct({
   fired: count,
   atLimit: Schema.Boolean,
   lastWakeAt: Schema.NullOr(time),
+  lastRanAt: Schema.optional(IsoDateTime),
   createdAt: time,
   updatedAt: time,
 });
