@@ -2065,7 +2065,7 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a thumbs-up wakes the agent only on a message it waits on", () =>
+  it.effect("a thumbs-up on a billing sender card wakes nothing", () =>
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed(false, {
         owner: "Rhea",
@@ -2156,6 +2156,36 @@ describe("KinChatService", () => {
       });
       yield* react(latest.messageId, "❌");
 
+      yield* TestClock.adjust("30 seconds");
+      const [wake] = yield* sql<{ wakeupId: KinWakeupId }>`
+        SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+        WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND status = 'running'`;
+      const billing = yield* service.ask(
+        { ...agent, wakeupId: wake!.wakeupId, hostPosted: true },
+        {
+          chatId: chat.chatId,
+          clientMessageId: "kin-bill-sender:bills@inkspot.example",
+          question: "Read bills from bills@inkspot.example?",
+          options: [{ label: "Approve" }, { label: "Decline" }],
+          silent: true,
+        },
+      );
+      const billingReaction = yield* react(billing.messageId, "👍");
+      assert.deepInclude(
+        (yield* service.history(person, { chatId: chat.chatId, beforeSeq: 100, limit: 10 }))
+          .reactions ?? [],
+        billingReaction,
+      );
+      yield* TestClock.adjust("30 seconds");
+      const quoted = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "billing-sender-quoted",
+        body: "For Inkspot Cloud, the billing sender is bills@inkspot.example.",
+        intent: "answer",
+        replyTo: billing.messageId,
+      });
+      yield* react(quoted.messageId, "👎");
+
       yield* hub.publish({
         type: "message.posted",
         orgId: person.orgId,
@@ -2173,6 +2203,7 @@ describe("KinChatService", () => {
           { messageId: card.messageId, emoji: "👍" },
           { messageId: plain.messageId, emoji: "👎" },
           { messageId: latest.messageId, emoji: "❌" },
+          { messageId: quoted.messageId, emoji: "👎" },
         ],
       );
     }).pipe(Effect.provide(layer)),
