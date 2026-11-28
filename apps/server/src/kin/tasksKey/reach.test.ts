@@ -671,6 +671,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.bills.list": "not a person action (screens only: Money bills list)",
   "kin.bills.keepRead": "stays in the app: 2 (money)",
   "kin.bills.addAnyway": "stays in the app: 2 (money)",
+  "kin.bills.keepEntered": "stays in the app: 2 (money)",
   "kin.bills.dismiss": "stays in the app: 6 (deleting or archiving)",
   "kin.bills.readAgain": "not reached yet: reading bills again; not exposed",
   "kin.push.registerDevice": "not a person action (screens only: this device's notifications)",

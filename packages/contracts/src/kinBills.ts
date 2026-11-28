@@ -255,15 +255,21 @@ export const KinBillsAddAnywayInput = Schema.Struct({
   orgId: KinOrgId,
   sha256: KinBillSha256,
   clientRequestId: RequestId,
-  /**
-   * A bill not read cleanly, kept with the person's own figures in place of the read: its
-   * expense is made from these, as the person's, and kept at once. Older hosts refuse it.
-   */
-  entered: Schema.optional(KinBillRead),
 });
 export type KinBillsAddAnywayInput = typeof KinBillsAddAnywayInput.Type;
 export const KinBillsAddAnywayResult = Schema.Struct({ expense: KinRecordKey });
 export type KinBillsAddAnywayResult = typeof KinBillsAddAnywayResult.Type;
+
+export const KinBillsKeepEnteredInput = Schema.Struct({
+  ...KinBillsAddAnywayInput.fields,
+  entered: KinBillRead,
+});
+export type KinBillsKeepEnteredInput = typeof KinBillsKeepEnteredInput.Type;
+export const KinBillsKeepEnteredResult = Schema.Union([
+  KinBillsAddAnywayResult,
+  Schema.Struct({ duplicateOf: KinRecordKey }),
+]);
+export type KinBillsKeepEnteredResult = typeof KinBillsKeepEnteredResult.Type;
 
 export const KinBillsDismissInput = Schema.Struct({ orgId: KinOrgId, sha256: KinBillSha256 });
 export type KinBillsDismissInput = typeof KinBillsDismissInput.Type;
@@ -285,6 +291,7 @@ const KIN_BILL_WS_METHODS = {
   list: "kin.bills.list",
   keepRead: "kin.bills.keepRead",
   addAnyway: "kin.bills.addAnyway",
+  keepEntered: "kin.bills.keepEntered",
   dismiss: "kin.bills.dismiss",
   readAgain: "kin.bills.readAgain",
 } as const;
@@ -312,6 +319,11 @@ export const KinBillRpcs = [
     success: KinBillsAddAnywayResult,
     error,
   }),
+  Rpc.make(KIN_BILL_WS_METHODS.keepEntered, {
+    payload: KinBillsKeepEnteredInput,
+    success: KinBillsKeepEnteredResult,
+    error,
+  }),
   Rpc.make(KIN_BILL_WS_METHODS.dismiss, {
     payload: KinBillsDismissInput,
     success: KinBillsDismissResult,
@@ -330,6 +342,7 @@ export const KIN_BILL_RPC_SCOPES = {
   [KIN_BILL_WS_METHODS.list]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.keepRead]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.addAnyway]: AuthKinChatScope,
+  [KIN_BILL_WS_METHODS.keepEntered]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.dismiss]: AuthKinChatScope,
   [KIN_BILL_WS_METHODS.readAgain]: AuthKinChatScope,
 } as const;
