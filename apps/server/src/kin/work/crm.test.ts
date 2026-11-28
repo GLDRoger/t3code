@@ -218,7 +218,12 @@ const setup = (sourceEventId: string) =>
 const FIELDS_SAID =
   "Juniper Cold Chain is 27ABCDE1234F1Z5 in Maharashtra; now 29ABCDE1234F1Z5 in Karnataka, Net 45, 2 Harbour Road.";
 const recordWriteShapes = [
-  { list: "work", title: "Tidewater dispatch", before: { size: "S" }, after: { size: "M" } },
+  {
+    list: "work",
+    title: "Tidewater dispatch",
+    before: { size: "S", alsoOn: ["Mate"] },
+    after: { size: "M" },
+  },
   {
     list: "clients",
     title: "Juniper Cold Chain",
@@ -233,13 +238,14 @@ const recordWriteShapes = [
     list: "contacts",
     title: "Zoya",
     columns: { client: "C-1" },
-    before: { emails: ["zoya@juniper.invalid", "zoya@tidewater.invalid"] },
+    before: { emails: ["zoya@juniper.invalid", "zoya@tidewater.invalid"], tags: ["dentists"] },
     after: { role: "Dispatch" },
   },
   {
     list: "projects",
     title: "Tidewater Freight",
-    before: { repos: ["tidewater/dispatch"] },
+    columns: { category: "campaign" },
+    before: { repos: ["tidewater/dispatch"], audience: "dentists" },
     after: { billing: "fixed", value: "4200" },
   },
   {
@@ -298,6 +304,9 @@ it.effect.each(recordWriteShapes)("record writes accept nested fields on $list",
     });
     const initial = yield* stored(oldKey);
     assert.deepStrictEqual(yield* stored(newKey), initial);
+    // Kept, not dropped in both shapes alike.
+    for (const key of Object.keys(row.before).filter((one) => one !== "kind"))
+      assert.property(initial.fields, key);
     if (row.list === "clients")
       assert.deepStrictEqual(initial.fields, {
         gstin: row.before.gstin,
@@ -615,6 +624,30 @@ it.effect(
       const [client, expense] = yield* stored();
       assert.deepInclude(client, { terms: "Net 45" });
       assert.deepInclude(expense, { vendor: "Tidewater Freight" });
+      // A defined list's own field at the top of the row is refused, not dropped.
+      const top = yield* decodeCreate({
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "expenses",
+            title: "Juniper crates",
+            amount: "900",
+            date: "2026-11-21",
+            vendor: "Tidewater Freight",
+          },
+        ],
+      }).pipe(
+        Effect.flatMap((input) => LeadWork.create(scope, input)),
+        Effect.flip,
+      );
+      assert.strictEqual(
+        top.message,
+        'Expenses takes no "vendor"; pass one of: list, title, owner, state, waitingOn, due, notes, category, side, client, project, repo, amount, currency, date, finishedOn, repeat, fields, steps, urgent, sensitive, suggested, confirmed, besides, at.',
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT key FROM kin_records WHERE org_id = ${orgId} AND title = 'Juniper crates'`,
+        [],
+      );
       // One change for both reads fields as the defined list's, which a client has none of.
       const refused = yield* decodeUpdate({
         sourceEventId: "again-event",
