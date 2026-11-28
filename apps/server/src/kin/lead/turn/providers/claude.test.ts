@@ -747,6 +747,8 @@ it.effect(
       assert.match(fullEnv?.TMPDIR ?? "", /kin-session-tmp[/\\]session-/);
       assert.deepStrictEqual(fullEnv, {
         TMPDIR: fullEnv?.TMPDIR,
+        // The sandbox hands its commands this as TMPDIR; unset, every session shares one.
+        CLAUDE_CODE_TMPDIR: fullEnv?.TMPDIR,
         npm_config_cache: `${fullEnv?.TMPDIR}/npm-cache`,
         PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
         HOME: "/home/kin",
@@ -787,6 +789,7 @@ it.effect(
       assert.deepStrictEqual(preconfigured?.env, {
         ...fullEnv,
         TMPDIR: preconfigured?.env?.TMPDIR,
+        CLAUDE_CODE_TMPDIR: preconfigured?.env?.TMPDIR,
         npm_config_cache: `${preconfigured?.env?.TMPDIR}/npm-cache`,
         CLAUDE_CODE_PROMPT_CACHE_TTL: "5m",
       });
@@ -1301,6 +1304,7 @@ it.effect(
       assert.notStrictEqual(child?.env?.TMPDIR, grandchild?.env?.TMPDIR);
       assert.deepStrictEqual(child?.env, {
         TMPDIR: child?.env?.TMPDIR,
+        CLAUDE_CODE_TMPDIR: child?.env?.TMPDIR,
         npm_config_cache: `${child?.env?.TMPDIR}/npm-cache`,
         PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:${FIXTURE_NODE_BIN}:/usr/bin`,
         HOME: "/home/kin",

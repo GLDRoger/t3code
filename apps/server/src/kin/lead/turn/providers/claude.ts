@@ -312,7 +312,13 @@ const apply = (
             PATH: shell.path,
             ...(session.temp === undefined
               ? {}
-              : { TMPDIR: session.temp.path, npm_config_cache: session.temp.npmCache }),
+              : {
+                  TMPDIR: session.temp.path,
+                  // Claude Code's sandbox gives its commands this as TMPDIR and keeps it open
+                  // through the read deny; unset, it is /tmp/claude, which every session shares.
+                  CLAUDE_CODE_TMPDIR: session.temp.path,
+                  npm_config_cache: session.temp.npmCache,
+                }),
             ...(shell.agentName === undefined ? {} : { KIN_AGENT_NAME: shell.agentName }),
           }),
       ENABLE_TOOL_SEARCH: loading.search,
