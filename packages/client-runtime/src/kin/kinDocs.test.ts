@@ -225,6 +225,17 @@ describe("kinSearchHit", () => {
       ["BT-4", "Closed", "Bank transaction: Fix the tins. BT-4. Closed"],
       [null, null, "Remembered: Fix the tins"],
     ]);
+    // A snippet that ends its own sentence gets no second full stop.
+    expect(
+      kinSearchHit({
+        ...base,
+        key: "P-1",
+        kind: "projects",
+        closed: false,
+        title: "Lumen Grove",
+        snippet: "Ask the clinic before launch.",
+      }).accessibilityLabel,
+    ).toBe("Project: Lumen Grove. Ask the clinic before launch. P-1");
   });
 });
 

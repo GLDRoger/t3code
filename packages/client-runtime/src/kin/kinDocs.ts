@@ -1478,9 +1478,15 @@ export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSea
       identifier,
       hit.sensitive && hit.kind !== "memory" ? "Private" : null,
       closed,
-    ]
-      .filter(Boolean)
-      .join(". "),
+    ].reduce<string>(
+      (said, part) =>
+        part === null || part === ""
+          ? said
+          : said === ""
+            ? part
+            : `${said}${/[.!?…]$/.test(said) ? " " : ". "}${part}`,
+      "",
+    ),
   };
 }
 

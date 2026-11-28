@@ -387,7 +387,7 @@ export function kinDeferralCardView(
     ...(settled ? { summary } : {}),
     accessibilityLabel: kinSentences([
       `${kind}: ${title}`,
-      ...(settled ? [how] : []),
+      ...(!settled ? [] : closed === "started" ? [CLOSED_WORD.started, how] : [how]),
       ...body.lines,
     ]),
   };

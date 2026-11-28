@@ -25,7 +25,7 @@ import {
   kinListCheckInput,
   kinListEditDraftOf,
   kinListCanOpenToTeam,
-  kinEntryShareCopy,
+  kinEntryWhoSees,
   kinListEditInput,
   kinAmountAsking,
   kinAmountCheck,
@@ -691,15 +691,16 @@ describe("a list by its definition", () => {
     ).toEqual({ ok: false, problem: "Every status needs a name." });
   });
 
-  it("says the whole team sees an entry its team list shows them, as the host decides", () => {
+  it("says the whole team sees an entry its team list shows them, with no switch, as the host decides", () => {
     const opened = Date.parse("2026-10-01T00:00:00.000Z");
     const team = list({ team: true, teamSince: opened });
     const entry = record({});
-    const whole =
+    const owners =
       "Everyone on the team sees this. Amounts and private details stay hidden from anyone without Money.";
-    const ownerSide = "Only the owner and co-owners see this, and the lead of its project.";
-    expect(kinEntryShareCopy(entry, team, null).off).toBe(whole);
-    expect(kinEntryShareCopy(entry, team, null).on).toBe(whole);
+    const teammate = "Everyone on the team sees this.";
+    // The owner and a co-owner are both owner level; a teammate is not.
+    expect(kinEntryWhoSees(entry, team, null, true)).toEqual({ line: owners });
+    expect(kinEntryWhoSees(entry, team, null, false)).toEqual({ line: teammate });
     for (const [item, def] of [
       [entry, list({})],
       [entry, null],
@@ -709,14 +710,16 @@ describe("a list by its definition", () => {
       [record({ sensitive: true }), team],
       [record({ sensitiveInherited: true }), team],
       [record({ createdAt: "2026-09-30T23:59:59.000Z" }), team],
-    ] as const)
-      expect(kinEntryShareCopy(item, def, null).off).toBe(ownerSide);
+    ] as const) {
+      expect(kinEntryWhoSees(item, def, null, true)).toBeNull();
+      expect(kinEntryWhoSees(item, def, null, false)).toBeNull();
+    }
     // A team list taking payments is in Money: the team sees it only while Money is on.
     const paid = list({ team: true, teamSince: opened, payments: true });
     const moneyOff = { rev: 1, sections: [{ id: "money", on: false }] } as never;
-    expect(kinEntryShareCopy(entry, paid, null).off).toBe(whole);
-    expect(kinEntryShareCopy(entry, paid, moneyOff).off).toBe(ownerSide);
-    expect(kinEntryShareCopy(entry, team, moneyOff).off).toBe(whole);
+    expect(kinEntryWhoSees(entry, paid, null, true)).toEqual({ line: owners });
+    expect(kinEntryWhoSees(entry, paid, moneyOff, true)).toBeNull();
+    expect(kinEntryWhoSees(entry, team, moneyOff, false)).toEqual({ line: teammate });
   });
 
   it("offers the team switch only on a company-made list that isn't sensitive, and sends only a change", () => {
