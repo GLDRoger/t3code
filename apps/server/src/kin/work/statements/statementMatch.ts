@@ -427,8 +427,7 @@ export const rateCandidate = (row: StatementRow, invoice: InvoiceCandidate, curr
 
 /**
  * A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency.
- * One that only names the client proves no rate: it is offered only near `recorded`, the rate of
- * a recent payment the company took in this pair (`recordedRate`), and never without one.
+ * It must be near a recent recorded rate for the currency pair. Without one, it must cite the invoice.
  */
 export const rateOffer = (
   row: StatementRow,
@@ -439,8 +438,9 @@ export const rateOffer = (
   const offer = rateCandidate(row, invoice, currency);
   if (
     offer === undefined ||
-    (offer.cited === undefined &&
-      (recorded === undefined || Math.abs(Number(offer.rate) / Number(recorded) - 1) > RATE_BAND))
+    (recorded === undefined
+      ? offer.cited === undefined
+      : Math.abs(Number(offer.rate) / Number(recorded) - 1) > RATE_BAND)
   )
     return undefined;
   return offer;
