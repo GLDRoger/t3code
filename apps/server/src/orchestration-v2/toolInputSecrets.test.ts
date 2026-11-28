@@ -7,7 +7,7 @@ import { redactToolInputSecrets } from "./toolInputSecrets.ts";
 const now = DateTime.makeUnsafe("2026-11-13T00:00:00.000Z");
 
 describe("redactToolInputSecrets", () => {
-  it("never stores a password argument a lead passed to a tool", () => {
+  it("never stores secret arguments a lead passed to a tool", () => {
     const item = {
       id: TurnItemId.make("turn-item:statement"),
       threadId: ThreadId.make("thread:lead"),
@@ -28,14 +28,34 @@ describe("redactToolInputSecrets", () => {
       input: {
         attachment: "statement.pdf",
         password: "lakeview2026",
-        nested: [{ pdfPassword: "x" }],
+        apiKey: "example-api-key",
+        token: "example-token",
+        nested: [
+          {
+            pdfPassword: "x",
+            pin: "1234",
+            "http-Authorization": "Bearer example",
+            client_secret: "example-secret",
+            loginOTP: "123456",
+          },
+        ],
       },
     } as const;
     expect(redactToolInputSecrets(item)).toMatchObject({
       input: {
         attachment: "statement.pdf",
         password: "[REDACTED]",
-        nested: [{ pdfPassword: "[REDACTED]" }],
+        apiKey: "[REDACTED]",
+        token: "[REDACTED]",
+        nested: [
+          {
+            pdfPassword: "[REDACTED]",
+            pin: "[REDACTED]",
+            "http-Authorization": "[REDACTED]",
+            client_secret: "[REDACTED]",
+            loginOTP: "[REDACTED]",
+          },
+        ],
       },
     });
     const plain = { ...item, input: { attachment: "statement.pdf" } };
