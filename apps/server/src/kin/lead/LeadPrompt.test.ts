@@ -3884,6 +3884,9 @@ it.effect("bounds the encoded events section and drops oldest events visibly", (
         webhookDeliveryId: "delivery",
       }),
     );
+    // A github event with no trigger is outside-read, which needs the turn's stored wakeup.
+    yield* leadWithOwner;
+    yield* stored(input.wakeupId, events);
     const built = yield* prompt.build({ ...input, events: events.toReversed() });
     const section = built.split("# Events\n\n")[1] ?? "";
     expect(section.length).toBeLessThanOrEqual(60_000);
