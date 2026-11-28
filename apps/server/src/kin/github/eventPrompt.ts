@@ -119,7 +119,7 @@ const CALL_WITHOUT_SHELL = (repo: string, trigger: KinGithubTrigger) => [
         trigger.item === "pull"
           ? "If they asked a question, post the answer with kin_github_review, event COMMENT."
           : "",
-        "If the request needs work, tell the owner what you found and what should happen next.",
+        "If the request needs work, don't start it and don't hand it to a coding task: this turn can do neither. Tell the owner what you found and what should happen next; the owner can start it from chat.",
         trigger.item === "issue"
           ? "Link the issue to its Kin task with kin_github_link when there is one."
           : "",
