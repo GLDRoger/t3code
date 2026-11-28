@@ -1,4 +1,5 @@
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as AcpError from "./errors.ts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -1355,7 +1356,17 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         stdio: Stdio.make({
           args: Effect.succeed([]),
           stdin: Stream.never,
-          stdout: () => Sink.forEach(() => Effect.fail(new Error("write EPIPE"))),
+          stdout: () =>
+            Sink.forEach(() =>
+              Effect.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "Stdio",
+                  method: "write",
+                  description: "write EPIPE",
+                }),
+              ),
+            ),
           stderr: () => Sink.drain,
         }),
         terminationError: Effect.succeed(new AcpError.AcpProcessExitedError({ code: 134 })),
