@@ -7,6 +7,9 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { Tool } from "effect/ai";
+import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import { KinBillToolkit } from "./mcp/billTools.ts";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import {
   EnvironmentId,
@@ -354,6 +357,161 @@ const mailedInvoice = mailedIn("INR", "180");
 
 const expenseOf = (batchId: string) =>
   Bills.list(as(rhea), { orgId, batchId }).pipe(Effect.map((view) => view.bills[0]!.expense!));
+
+const readerScope: McpInvocationScope = {
+  environmentId: EnvironmentId.make("fixture"),
+  requestNamespace: "fixture",
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: undefined,
+};
+
+describe("batched bill tools", () => {
+  it("advertises only bounded arrays of complete entry schemas", () => {
+    for (const [tool, field, required] of [
+      [KinBillToolkit.tools.bill_read, "bills", ["bill", "readable"]],
+      [KinBillToolkit.tools.bill_cut, "cuts", ["bill", "boxes"]],
+    ] as const) {
+      const schema = advertisedJsonSchema(tool, { kin: true });
+      assert.deepStrictEqual(Object.keys(schema.properties ?? {}), [field]);
+      assert.deepStrictEqual(schema.required, [field]);
+      assert.deepNestedInclude(Tool.getJsonSchema(tool), {
+        [`properties.${field}.minItems`]: 1,
+        [`properties.${field}.maxItems`]: 12,
+        [`properties.${field}.items.required`]: required,
+      });
+      const accepts = Schema.is(tool.parametersSchema);
+      assert.isFalse(accepts({ [field]: [] }));
+      assert.isFalse(accepts({ [field]: Array.from({ length: 13 }, () => ({})) }));
+    }
+  });
+
+  it.effect(
+    "settles twelve reads independently in order, including malformed and repeated entries",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            clientRequestId: "twelve-reads",
+            attachments: yield* Effect.forEach(
+              Array.from({ length: 14 }, (_, index) => index + 1),
+              (n) => upload(`bill-${n}.jpg`, String(n)),
+            ),
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { events, wakeupId } = yield* claimTurn(1);
+        const event = events.find((entry) => entry._tag === "bills.read")!;
+        assert.lengthOf(event.bills, 12);
+        const printed = { readable: true, vendor: "Tidewater Freight", date: "2026-11-03" };
+        const valid = Array.from({ length: 8 }, (_, index) => ({
+          bill: `B${index + 5}`,
+          ...printed,
+          amount: String(index + 5),
+        }));
+        const result = yield* LeadBills.read(
+          readerScope,
+          yield* decodeReaderInput({
+            bills: [
+              { bill: "B1", ...printed, amount: "1" },
+              { bill: "B13", ...printed, amount: "13" },
+              { bill: "B2", ...printed, date: "yesterday", amount: "2" },
+              { bill: "B1", ...printed, amount: "99" },
+              ...valid,
+            ],
+          }),
+        );
+        assert.deepStrictEqual(
+          result.results.map(({ bill }) => bill),
+          ["B1", "B13", "B2", "B1", ...valid.map(({ bill }) => bill)],
+        );
+        assert.include(result.results[1]?.result, "No bill B13 in this turn");
+        assert.include(result.results[2]?.result, "B2 was not saved.");
+        assert.strictEqual(result.results[3]?.result, "B1 is already answered.");
+        const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        const amounts = new Map(bills.map((row) => [row.sha256, row.read.amount]));
+        assert.strictEqual(amounts.get(event.bills[0]!), "1");
+        assert.isUndefined(amounts.get(event.bills[1]!));
+        assert.strictEqual(amounts.get(event.bills[11]!), "12");
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(yield* sql`SELECT record_id FROM kin_records WHERE confirmed = 0`, 9);
+        assert.lengthOf(yield* sql`SELECT record_id FROM kin_records WHERE confirmed = 1`, 0);
+        yield* endTurn(wakeupId);
+        const next = yield* claimTurn(2);
+        assert.lengthOf(next.events.find((entry) => entry._tag === "bills.read")!.bills, 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("isolates malformed and refused cuts from a valid cut of the same photo", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          clientRequestId: "batch-cuts",
+          attachments: [yield* photoPage, yield* upload("other.jpg", "another bill")],
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      yield* claimTurn(1);
+      const box = threeBoxes[0]!;
+      const result = yield* LeadBills.cut(
+        readerScope,
+        yield* Schema.decodeEffect(LeadBills.CutInput)({
+          cuts: [
+            { bill: "B1", boxes: [] },
+            { bill: "B9", boxes: [box] },
+            { bill: "B1", boxes: [[800, 0, 201, 100]] },
+            { bill: "B1", boxes: [box] },
+            { bill: "B1", boxes: [box] },
+          ],
+        }),
+      );
+      assert.deepStrictEqual(
+        result.results.map(({ bill }) => bill),
+        ["B1", "B9", "B1", "B1", "B1"],
+      );
+      assert.include(result.results[0]?.result, "Nothing was cut.");
+      assert.include(result.results[1]?.result, "No bill B9 in this turn");
+      assert.include(result.results[2]?.result, "Kin couldn't cut this page");
+      assert.include(result.results[3]?.result, "Cut 1 piece");
+      assert.include(result.results[4]?.result, "B1 is already answered.");
+      const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.strictEqual(bills.filter(({ name }) => name?.includes("bill 1 of 1")).length, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("answers an old stored event and an already-issued single-bill tool call", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* addPage(yield* upload("older.jpg", "before the batch tools"));
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_events SET json = json_remove(json, '$.photosPrepared')
+        WHERE tag = 'bills.read'`;
+      yield* claimTurn(1);
+      const result = yield* LeadBills.read(
+        readerScope,
+        yield* decodeReaderInput({
+          bill: "B1",
+          readable: true,
+          amount: "24",
+          vendor: "Harbor Cafe",
+          date: "2026-11-03",
+        }),
+      );
+      assert.deepStrictEqual(result, {
+        results: [{ bill: "B1", result: "B1 saved; the owner keeps it." }],
+      });
+      const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.strictEqual(bills[0]?.read.amount, "24");
+    }).pipe(Effect.provide(layer)),
+  );
+});
 
 describe("bills in bulk", () => {
   it.effect("quotes the body of a mail bill, refuses cutting and keeps a failed read visible", () =>
@@ -1350,9 +1508,8 @@ describe("bills in bulk", () => {
         ["none.png", { vendor: "Tidewater Freight", date: "2026-11-03" }],
         ["paise.png", printed("Indus Couriers", "1200.50", "PKR")],
       ]);
-      // Nine bills are two turns, claimed in either order: each answers its own by file.
-      for (const n of [1, 2]) {
-        const { wakeupId, events } = yield* claimTurn(n);
+      {
+        const { wakeupId, events } = yield* claimTurn(1);
         const event = events[0]!;
         if (event._tag !== "bills.read") return assert.fail("no bills turn");
         for (const [index, hash] of event.bills.entries()) {
@@ -1393,6 +1550,85 @@ describe("bills in bulk", () => {
       );
     }).pipe(Effect.provide(layer)),
   );
+
+  for (const [country, home, ownMark, otherMark, other] of [
+    ["IN", "INR", " ₹ ", "eUrOs", "EUR"],
+    ["US", "USD", " $ ", " ₹ ", "INR"],
+  ] as const) {
+    it.effect(`resolves only safe printed currency marks for a ${home} company`, () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: rhea },
+          { country, homeCurrency: home },
+          undefined,
+        );
+        const marks = [
+          undefined,
+          ownMark,
+          otherMark,
+          home === "INR" ? "$" : "¥",
+          "Mystery",
+          "£",
+          "€",
+        ];
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            clientRequestId: "marks",
+            attachments: yield* Effect.forEach(marks, (_, i) => upload(`mark-${i}.jpg`, String(i))),
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { wakeupId } = yield* claimTurn(1);
+        for (const [index, currencyMark] of marks.entries())
+          yield* read({
+            bill: `B${index + 1}`,
+            vendor: "Harbor Cafe",
+            date: "2026-11-03",
+            amount: String(40 + index),
+            ...(currencyMark === undefined ? {} : { currencyMark }),
+            ...(index === 6 ? { currency: "CAD" } : {}),
+          });
+        yield* endTurn(wakeupId);
+        const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        assert.deepStrictEqual(
+          bills.map(({ read }) => [read.currency, read.currencyAssumed]),
+          [
+            [home, true],
+            [home, undefined],
+            [other, undefined],
+            [undefined, undefined],
+            [undefined, undefined],
+            [undefined, undefined],
+            ["CAD", undefined],
+          ],
+        );
+        assert.deepStrictEqual(
+          bills.map(({ read }) => read.currencyMark),
+          marks,
+        );
+        assert.deepStrictEqual(
+          bills.slice(3, 6).map(({ state, problem }) => [state, problem]),
+          [
+            ["unreadable", "Couldn't read: currency."],
+            ["unreadable", "Couldn't read: currency."],
+            ["unreadable", "Couldn't read: currency."],
+          ],
+        );
+        const summary = yield* card(added.batchId);
+        assert.deepStrictEqual(
+          summary.needs?.map(({ reason }) => reason),
+          ["the currency isn't clear.", "the currency isn't clear.", "the currency isn't clear."],
+        );
+        assert.strictEqual(summary.keepable?.count, 4);
+        assert.notInclude(JSON.stringify(summary), "Mystery");
+        assert.notInclude(JSON.stringify(summary), "¥");
+      }).pipe(Effect.provide(layer)),
+    );
+  }
 
   it.effect("uses the company's own currency to parse a bill's unmarked total and tax", () =>
     Effect.gen(function* () {
@@ -2227,7 +2463,7 @@ describe("bills in bulk", () => {
       const before = yield* revision;
       assert.strictEqual((yield* card(added.batchId)).text, "Reading 1 photo.");
       const { events } = yield* claimTurn(1);
-      // Midnight in Kolkata, when the day's limit resets: two turns held, one change.
+      // Midnight in Kolkata, when the day's limit resets: one change.
       const reset = Date.parse("2026-11-20T18:30:00.000Z");
       yield* Bills.paused(orgId, events, reset);
       yield* Bills.paused(orgId, events, reset);
@@ -2524,36 +2760,70 @@ describe("bill_cut", () => {
     }).pipe(Effect.provide(services)),
   );
 
-  it.effect("five 6 MiB phone originals are read in one turn, all five shown", () =>
+  it.effect("twelve large phone originals are read in one turn when their shown copies fit", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const jpeg = yield* Effect.promise(() => createCanvas(400, 300).encode("jpeg", 90));
       // A phone's original: a readable JPEG of about 6 MiB, each one different bytes.
-      const files = yield* Effect.forEach([1, 2, 3, 4, 5], (n) =>
-        upload(
-          `IMG_000${n}.jpg`,
-          Buffer.concat([jpeg, Buffer.alloc(6 * 1024 * 1024, n)]),
-          "image/jpeg",
-        ),
+      const files = yield* Effect.forEach(
+        Array.from({ length: 12 }, (_, i) => i + 1),
+        (n) =>
+          upload(
+            `IMG_000${n}.jpg`,
+            Buffer.concat([jpeg, Buffer.alloc(6 * 1024 * 1024, n)]),
+            "image/jpeg",
+          ),
       );
       yield* Bills.add(
         as(rhea),
-        { orgId, attachments: files, clientRequestId: "five" },
+        { orgId, attachments: files, clientRequestId: "twelve-copies" },
         TEST_UPLOAD_OWNER,
       );
       const queued = yield* sql<{
         bills: number;
       }>`SELECT json_array_length(json, '$.bills') AS bills
         FROM kin_events WHERE org_id = ${orgId} AND tag = 'bills.read' ORDER BY event_id`;
-      assert.deepStrictEqual(queued, [{ bills: 5 }]);
+      assert.deepStrictEqual(queued, [{ bills: 12 }]);
       const { events } = yield* claimTurn(1);
       const turn = (yield* billTurn(
         orgId,
         events.find((one) => one._tag === "bills.read")!,
       ))!;
       const model = yield* (yield* KinTurnContent).prepare({ ...turn, billPhotos: true });
-      assert.lengthOf(model.attachments, 5);
+      assert.lengthOf(model.attachments, 12);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("splits an unprepared turn when the shown pictures cross the byte ceiling", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const jpeg = yield* Effect.promise(() => createCanvas(400, 300).encode("jpeg", 90));
+      const files = yield* Effect.forEach([1, 2, 3, 4, 5, 6, 7], (n) =>
+        upload(
+          `large-${n}.jpg`,
+          Buffer.concat([jpeg, Buffer.alloc(3 * 1024 * 1024, n)]),
+          "image/jpeg",
+        ),
+      );
+      yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: files, clientRequestId: "shown-bytes" },
+        TEST_UPLOAD_OWNER,
+      );
+      const { events, wakeupId } = yield* claimTurn(1);
+      const event = events.find((entry) => entry._tag === "bills.read")!;
+      const turn = (yield* billTurn(orgId, event))!;
+      const model = yield* (yield* KinTurnContent).prepare({ ...turn, billPhotos: true });
+      assert.lengthOf(event.bills, 6);
+      assert.lengthOf(model.attachments, 6);
+      assert.isAtMost(
+        model.attachments.reduce((sum, file) => sum + file.sizeBytes, 0),
+        20 * 1024 * 1024,
+      );
+      yield* endTurn(wakeupId);
+      const next = yield* claimTurn(2);
+      assert.lengthOf(next.events.find((entry) => entry._tag === "bills.read")!.bills, 1);
     }).pipe(Effect.provide(layer)),
   );
 

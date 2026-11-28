@@ -8,6 +8,7 @@ import { McpSchema, Tool } from "effect/ai";
 import { turnEventToolkit } from "../../lead/eventIds.ts";
 
 import * as ServerConfig from "../../../config.ts";
+import { AcceptedUnadvertisedArguments } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -60,16 +61,20 @@ export const KinBillToolkit = turnEventToolkit(
   Tool.make("bill_read", {
     ...shared,
     description:
-      "Read one bill Kin handed this turn, even if it spans several pages. Send only what is printed. Leave blanks blank; never guess or convert. Use bill_cut if the file shows separate bills.",
+      "Read the bills Kin handed this turn in one call, with 1 to 12 entries in bills. A bill over several pages is one entry. Send only what is printed. Leave blanks blank; never guess or convert. Use bill_cut if the file shows separate bills.",
     parameters: Bills.ReadInput,
     success: Bills.ReadResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(AcceptedUnadvertisedArguments, Bills.legacyReadFields)
+    .annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("bill_cut", {
     ...shared,
     dependencies: [...shared.dependencies, KinAttachmentStore],
     description:
-      "Cut a photo or PDF page that shows separate bills, with one box per bill. Include the whole bill but none of a neighbour's print. Kin brings each piece back as its own bill to read. For a PDF, call once per page with bills to cut.",
+      "Cut the files that show separate bills in one call, with 1 to 12 entries in cuts and one box per bill. Include the whole bill but none of a neighbour's print. Kin brings each piece back as its own bill to read. For a PDF, use one entry per page with bills to cut.",
     parameters: Bills.CutInput,
     success: Bills.ReadResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(AcceptedUnadvertisedArguments, Bills.legacyCutFields)
+    .annotate(McpSchema.EnabledWhen, enabled),
 );

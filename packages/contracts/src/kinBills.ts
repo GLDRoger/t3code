@@ -22,6 +22,7 @@ import { KinRecordKey, KinRecordState } from "./kinWork.ts";
  */
 
 export const KIN_BILL_BATCH_CARD = "bill_batch";
+export const KIN_BILLS_PER_TURN = 12;
 /** Files one add takes, as one chat message does. */
 const KIN_BILLS_MAX_FILES = 100;
 
@@ -57,6 +58,8 @@ export const KinBillRead = Schema.Struct({
   /** The printed figures as plain numbers (`1200.50`), never converted, in `currency`. */
   amount: Schema.optional(Label),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
+  /** The printed currency symbol or word, when the bill did not print a code. */
+  currencyMark: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8))),
   /** Set by Kin only when the bill did not print its currency. */
   currencyAssumed: Schema.optional(Schema.Literal(true)),
   tax: Schema.optional(Label),

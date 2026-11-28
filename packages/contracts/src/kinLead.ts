@@ -15,6 +15,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { KIN_BILLS_PER_TURN } from "./kinBills.ts";
 import {
   KinAgentId,
   KinAuthor,
@@ -1050,7 +1051,7 @@ export const KinEvent = Schema.Union([
     photosPrepared: Schema.optionalKey(Schema.Literal(true)),
     bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
       Schema.isMinLength(1),
-      Schema.isMaxLength(10),
+      Schema.isMaxLength(KIN_BILLS_PER_TURN),
     ),
   }),
   Schema.TaggedStruct("resume", {
