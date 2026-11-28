@@ -43,7 +43,8 @@ export const KinBillSenderRpcs = [
   Rpc.make(methods.remove, { payload: sender, error }),
   Rpc.make(methods.add, {
     payload: sender,
-    success: Schema.Union([Schema.Void, Schema.Struct({ message: Schema.String })]),
+    // Struct first: Void accepts any value, so it would swallow the sentence.
+    success: Schema.Union([Schema.Struct({ message: Schema.String }), Schema.Void]),
     error,
   }),
   Rpc.make(methods.readSince, {
