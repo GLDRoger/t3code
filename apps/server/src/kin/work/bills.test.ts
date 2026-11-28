@@ -2097,6 +2097,97 @@ describe("bills in bulk", () => {
   );
 
   it.effect(
+    "a bill not read cleanly is kept with the owner's own figures, once, and the card counts each read as it lands",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            attachments: [yield* upload("cafe.png", "harbor"), yield* upload("cloud.png", "ink")],
+            clientRequestId: "add",
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { wakeupId } = yield* claimTurn(1);
+        yield* read({
+          bill: "B1",
+          vendor: "Harbor Cafe",
+          amount: "1200",
+          currency: "INR",
+          tax: "60",
+          category: "meals",
+          number: "HC-12",
+        });
+        // Each read redraws the card as it lands, not only once the turn is over.
+        assert.include(yield* card(added.batchId), { text: "Reading 2 photos.", done: 1 });
+        yield* read({ bill: "B2", readable: false });
+        yield* endTurn(wakeupId);
+        const [cafe, cloud] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId }))
+          .bills;
+        assert.deepStrictEqual([cafe!.state, cafe!.problem], ["unreadable", "Couldn't read: date"]);
+        const entered = {
+          vendor: "Harbor Cafe",
+          date: "2026-11-06",
+          amount: "1250",
+          currency: "INR",
+          tax: "62.50",
+          category: "meals",
+          number: "HC-12",
+        };
+        const keep = (who: ReturnType<typeof as>, sha256: string, values: KinBillRead = entered) =>
+          Bills.addAnyway(who, { orgId, sha256, clientRequestId: "fix", entered: values });
+        // Only the owner or a co-owner keeps a bill; a figure left out is refused, nothing made.
+        assert.include(yield* keep(as(zoya), cafe!.sha256).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        const { date: _date, ...noDate } = entered;
+        assert.include(yield* keep(as(meera), cafe!.sha256, noDate).pipe(Effect.flip), {
+          message: "Enter the date.",
+        });
+        const kept = yield* keep(as(meera), cafe!.sha256);
+        assert.deepStrictEqual(yield* keep(as(meera), cafe!.sha256), kept);
+        const after = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+        assert.deepStrictEqual(
+          after.map((bill) => [bill.state, bill.expense?.key]),
+          [
+            ["kept", kept.expense],
+            ["unreadable", undefined],
+          ],
+        );
+        assert.deepInclude(after[0]!.expense, {
+          vendor: "Harbor Cafe",
+          date: "2026-11-06",
+          amount: { minor: 125_000, currency: "INR" },
+          tax: { minor: 6_250, currency: "INR" },
+          category: "meals",
+          state: "done",
+        });
+        assert.strictEqual(after[0]!.read.number, "HC-12");
+        // Every figure on it is Meera's: the expense is hers from its first change.
+        const changes = yield* sql<{ kind: string; actor: string; id: string }>`SELECT c.kind,
+            c.actor_kind AS actor, c.actor_id AS id
+          FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+          WHERE r.org_id = ${orgId} AND r.key = ${kept.expense} ORDER BY c.seq`;
+        assert.deepStrictEqual(
+          changes.map((change) => [change.actor, change.id]),
+          changes.map(() => ["person", meera]),
+        );
+        // A bill with nothing in question is still only added anyway as a duplicate.
+        assert.include(
+          yield* Bills.addAnyway(as(rhea), {
+            orgId,
+            sha256: cloud!.sha256,
+            clientRequestId: "plain",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "a dismissed bill, or one whose chat was cleared, comes back when added again; a dropped one says so",
     () =>
       Effect.gen(function* () {

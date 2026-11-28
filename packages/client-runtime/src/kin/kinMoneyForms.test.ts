@@ -294,6 +294,18 @@ describe("an expense typed by hand", () => {
     const funded = kinExpenseInput(orgId, { ...named, amount: "12", fundedBy: "meera" }, send);
     expect(funded.ok && funded.input.fundedBy).toBe("meera");
     expect(kinExpenseTyped({ ...draft, fundedBy: "meera" }, draft)).toBe(true);
+    // A currency picked takes a plain number; left alone, it is the company's.
+    expect(kinExpenseInput(orgId, { ...named, amount: "49", currency: "USD" }, send)).toMatchObject(
+      {
+        ok: true,
+        input: { amount: { minor: 4_900, currency: "USD" } },
+      },
+    );
+    expect(kinExpenseInput(orgId, { ...named, amount: "49" }, send)).toMatchObject({
+      ok: true,
+      input: { amount: { minor: 4_900, currency: "INR" } },
+    });
+    expect(kinExpenseTyped({ ...draft, currency: "USD" }, draft)).toBe(true);
   });
 
   it("offers only people, and only on a list that has Funded by, as who funded an expense", () => {

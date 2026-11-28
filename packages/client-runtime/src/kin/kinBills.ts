@@ -4,6 +4,7 @@ import {
   KinBillBatchCard,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   formatKinWhen,
+  kinCurrency,
   kinWhenFormat,
   parseKinMoney,
   type KinAttachment,
@@ -98,8 +99,26 @@ export const KIN_BILLS = {
     dismiss: "Dismiss",
     byHand: "Enter by hand",
     readAgain: "Read again",
+    fix: "Fix and keep",
   },
-  needsDate: "Every other figure was read: enter the date by hand, or read it again.",
+  /** A bill not read cleanly, its read filled in for the person to finish and keep. */
+  fix: {
+    title: "Fix and keep",
+    hint: "What Kin read is filled in. Fill in what's missing, and it's kept as an expense.",
+    currency: "Currency",
+    needed: "Needed",
+    receipt: "Receipt",
+    keep: "Keep",
+    problem: {
+      vendor: "Enter who was paid.",
+      date: "Enter the date.",
+      amount: "Enter the amount.",
+      tax: "The tax isn't an amount.",
+    },
+  },
+  readUnreadAgain: (count: number) =>
+    count === 1 ? "Read the unread one again" : `Read the ${count} unread again`,
+  needsDate: "Every other figure was read: fix the date and keep it, or read it again.",
   open: (key: string) => `Open ${key}`,
   alreadyDropped: (name: string) => `${name} was added before, and its expense was dropped.`,
   keepAll: "Keep all that read cleanly",
@@ -176,6 +195,7 @@ export type KinBillAction =
   | "openDuplicate"
   | "byHand"
   | "readAgain"
+  | "fix"
   | "openExpense";
 
 export type KinBillTone = "muted" | "active" | "attention" | "done";
@@ -276,11 +296,14 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
       return row.duplicateOf === undefined
         ? ["addAnyway", "dismiss"]
         : ["addAnyway", "dismiss", "openDuplicate"];
-    case "unreadable":
+    case "unreadable": {
+      // Anything read is finished in place; a blank read is entered by hand.
+      const first = kinBillReadAny(row.read) ? "fix" : "byHand";
       // A clean read in question, or a photo Kin can't read, reads the same again.
       return row.readClean === true || row.wrongKind === true
-        ? ["byHand", "dismiss"]
-        : ["byHand", "readAgain", "dismiss"];
+        ? [first, "dismiss"]
+        : [first, "readAgain", "dismiss"];
+    }
     case "kept":
     case "dropped":
       return row.expense === undefined ? [] : ["openExpense"];
@@ -288,6 +311,11 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
       return [];
   }
 }
+
+const kinBillReadAny = (read: KinBillRead) =>
+  [read.vendor, read.date, read.amount, read.tax, read.category, read.number].some(
+    (value) => blank(value) !== null,
+  );
 
 // The host's own words for a bill whose date alone was left blank, alone or before the agent's.
 const DATE_ONLY = /^Couldn't read: date(?:\.|$)/;
@@ -467,7 +495,11 @@ export function kinBillReviewCounts(
   return { ...states, date: Math.min(date, states.unreadable - (states.check ?? 0)) };
 }
 
-/** "12 bills: 5 to keep, 1 looks like a duplicate, 3 kept." The host writes no line for this. */
+/**
+ * "12 bills: 5 to keep, 1 looks like a duplicate, 3 kept." The host writes no line for this. Only
+ * bills whose read has landed are counted as bills: a photo still being read may yet be cut into
+ * several, so what is being read is said apart, and the count of bills never shrinks on its own.
+ */
 export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
   const check = counts.check ?? 0;
   const date = counts.date ?? 0;
@@ -481,13 +513,22 @@ export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
       : `${counts.unreadable - check - date} couldn't be read`,
     check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
     date <= 0 ? null : date === 1 ? "1 needs its date" : `${date} need their date`,
-    counts.reading === 0 ? null : `${counts.reading} being read`,
     counts.kept === 0 ? null : `${counts.kept} kept`,
     counts.dropped === 0 ? null : `${counts.dropped} dropped`,
   ].filter((part) => part !== null);
-  const total = bills === 1 ? "1 bill" : `${bills} bills`;
-  return parts.length === 0 ? `${total}.` : `${total}: ${parts.join(", ")}.`;
+  const settled = Math.max(0, bills - counts.reading);
+  if (counts.reading > 0 && settled === 0) return `${counts.reading} being read.`;
+  const total = settled === 1 ? "1 bill" : `${settled} bills`;
+  const line =
+    parts.length === 0
+      ? `${total}.`
+      : `${total}${counts.reading > 0 ? " so far" : ""}: ${parts.join(", ")}.`;
+  return counts.reading === 0 ? line : `${line} ${counts.reading} more being read.`;
 }
+
+/** The bills "Read the unread again" asks for: each one whose own Read again is offered. */
+export const kinBillsUnreadAgain = (views: ReadonlyArray<KinBillRowView>) =>
+  views.filter((view) => view.actions.includes("readAgain"));
 
 /** Keep all is offered while at least one bill was read cleanly and is still a suggestion. */
 export const kinBillsCanKeepAll = (counts: KinBillCounts) => counts.read > 0;
@@ -863,11 +904,98 @@ export function kinBillExpenseStart(
     (one) => one.toLowerCase() === read.category?.trim().toLowerCase(),
   );
   const amount = blank(read.amount);
+  const vendor = blank(read.vendor);
   return {
     receipt: row.file.attachmentId,
-    ...(blank(read.vendor) === null ? {} : { vendor: blank(read.vendor) ?? "" }),
+    ...(vendor === null ? {} : { title: vendor, vendor }),
     ...(blank(read.date) === null ? {} : { paidOn: blank(read.date) ?? "" }),
-    ...(amount !== null && read.currency === home ? { amount } : {}),
+    ...(amount === null ? {} : { amount, currency: read.currency ?? home }),
     ...(category === undefined ? {} : { category }),
   };
 }
+
+// Fix and keep: a bill not read cleanly, finished by the person
+
+export interface KinBillFixDraft {
+  readonly vendor: string;
+  /** `YYYY-MM-DD`, or empty. */
+  readonly date: string;
+  /** As typed: a code or symbol typed with it names its own currency. */
+  readonly amount: string;
+  readonly currency: string;
+  readonly tax: string;
+  /** One of the list's categories as stored, or empty. */
+  readonly category: string;
+  readonly number: string;
+}
+
+/** Every figure read in its place, a blank left empty; the currency read, else the company's. */
+export function kinBillFixStart(
+  row: Pick<KinBillRow, "read">,
+  home: string,
+  categories: ReadonlyArray<string>,
+): KinBillFixDraft {
+  const { read } = row;
+  return {
+    vendor: blank(read.vendor) ?? "",
+    date: blank(read.date) ?? "",
+    amount: blank(read.amount) ?? "",
+    currency: blank(read.currency) ?? home,
+    tax: blank(read.tax) ?? "",
+    category:
+      categories.find((one) => one.toLowerCase() === read.category?.trim().toLowerCase()) ?? "",
+    number: blank(read.number) ?? "",
+  };
+}
+
+const NEEDED = ["vendor", "date", "amount"] as const;
+
+/** The figures a kept bill must have that are still empty, to mark as needed. */
+export const kinBillFixNeeds = (draft: KinBillFixDraft) =>
+  NEEDED.filter((key) => draft[key].trim() === "");
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A figure as the host reads one off a bill: a plain number in its currency. */
+const plainFigure = (minor: number, currency: string) => {
+  const { decimals } = kinCurrency(currency);
+  if (decimals === 0) return String(minor);
+  const whole = String(minor).padStart(decimals + 1, "0");
+  return `${whole.slice(0, -decimals)}.${whole.slice(-decimals)}`;
+};
+
+/** The figures the host keeps the bill with, or the first one to fix. */
+export function kinBillFixInput(
+  draft: KinBillFixDraft,
+):
+  | { readonly ok: true; readonly entered: KinBillRead }
+  | { readonly ok: false; readonly problem: string } {
+  const { problem } = KIN_BILLS.fix;
+  const vendor = draft.vendor.replace(/\s+/gu, " ").trim().slice(0, 200);
+  if (vendor === "") return { ok: false, problem: problem.vendor };
+  if (!DAY.test(draft.date.trim())) return { ok: false, problem: problem.date };
+  const amount = parseKinMoney(draft.amount, draft.currency);
+  if (!("money" in amount) || amount.money.minor <= 0)
+    return { ok: false, problem: problem.amount };
+  const { currency } = amount.money;
+  const tax = draft.tax.trim() === "" ? null : parseKinMoney(draft.tax, currency);
+  if (tax !== null && (!("money" in tax) || tax.money.currency !== currency || tax.money.minor < 0))
+    return { ok: false, problem: problem.tax };
+  const number = blank(draft.number);
+  return {
+    ok: true,
+    entered: {
+      vendor,
+      date: draft.date.trim(),
+      amount: plainFigure(amount.money.minor, currency),
+      currency,
+      ...(tax === null || !("money" in tax) ? {} : { tax: plainFigure(tax.money.minor, currency) }),
+      ...(draft.category === "" ? {} : { category: draft.category }),
+      ...(number === null ? {} : { number: number.slice(0, 200) }),
+    },
+  };
+}
+
+/** The currencies a bill's form offers: the company's, and the one read off the bill. */
+export const kinBillCurrencies = (home: string, read?: string) =>
+  read === undefined || read === "" || read === home ? [home] : [home, read];
