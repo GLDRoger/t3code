@@ -58,6 +58,7 @@ export const boundReview = Effect.fn("KinGitHubReview.bound")(function* (turn: {
     again: number;
     inside: number | null;
     ownerAuthored: number | null;
+    item: string | null;
     outside: number;
   }>`SELECT event_id AS "eventId", json_extract(json, '$.repo') AS repo,
       json_extract(json, '$.trigger.number') AS number,
@@ -67,6 +68,7 @@ export const boundReview = Effect.fn("KinGitHubReview.bound")(function* (turn: {
       json_extract(json, '$.trigger.pull.reReview') IS NOT NULL AS again,
       json_extract(json, '$.trigger.inside') AS inside,
       json_extract(json, '$.trigger.ownerAuthored') AS "ownerAuthored",
+      json_extract(json, '$.trigger.item') AS item,
       (json_extract(json, '$.trigger.inside') = 0
         AND json_extract(json, '$.trigger.kind') IN ('review', 'review_request')) AS outside
     FROM kin_events
@@ -82,6 +84,7 @@ export const boundReview = Effect.fn("KinGitHubReview.bound")(function* (turn: {
       !githubWakeHasShell({
         inside: row.inside === 1,
         ownerAuthored: row.ownerAuthored === 1 ? true : undefined,
+        item: row.item === "issue" ? "issue" : "pull",
       }),
   );
   if (event === undefined) return undefined;

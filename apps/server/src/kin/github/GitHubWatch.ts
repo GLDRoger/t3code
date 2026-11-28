@@ -1601,16 +1601,19 @@ export const make = Effect.gen(function* () {
           : undefined;
       const ownerLogin = account.login.toLowerCase();
       const byOwner = (login: string | undefined) => login?.toLowerCase() === ownerLogin;
-      // No commit authors are read; a known PR head uses the PR opener as its proxy.
       const ownerAuthored =
         trigger.ownerActed === true &&
         byOwner(current.author) &&
-        (current.item === "issue" || current.pull !== undefined) &&
+        current.item === "issue" &&
         (related?.every((item) => byOwner(item.author)) ?? true) &&
         (triageConversation?.every((comment) => byOwner(comment.author)) ?? true)
           ? true
           : undefined;
-      const hasShell = githubWakeHasShell({ inside: trigger.inside, ownerAuthored });
+      const hasShell = githubWakeHasShell({
+        inside: trigger.inside,
+        ownerAuthored,
+        item: current.item,
+      });
       const diff =
         moved !== undefined
           ? moved.diff

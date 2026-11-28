@@ -771,7 +771,7 @@ export const KinGithubTrigger = Schema.Struct({
   author: Schema.String,
   association: Schema.String,
   inside: Schema.Boolean,
-  /** The watch could attribute the actor and shown material to the connected owner login. */
+  /** The watch could attribute the actor and the issue's shown text to the connected owner login. */
   ownerAuthored: Schema.optional(Schema.Literal(true)),
   /** The words that called the agent, or the PR's body; clipped. */
   text: Schema.String,
@@ -829,10 +829,15 @@ export const KinGithubTrigger = Schema.Struct({
 });
 export type KinGithubTrigger = typeof KinGithubTrigger.Type;
 
+/** Anyone who can write may push to a pull request's branch, so no pull request wake has a shell. */
 export const githubWakeHasShell = (
-  trigger: Pick<KinGithubTrigger, "inside" | "ownerAuthored">,
+  trigger: Pick<KinGithubTrigger, "inside" | "ownerAuthored" | "item">,
   askedBy?: string,
-) => trigger.inside && trigger.ownerAuthored === true && askedBy === undefined;
+) =>
+  trigger.inside &&
+  trigger.ownerAuthored === true &&
+  trigger.item === "issue" &&
+  askedBy === undefined;
 
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {

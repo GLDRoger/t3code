@@ -68,14 +68,24 @@ it("only suggests gh or running tests when the owner authored the wake", () => {
   expect(writer).toContain("REQUEST_CHANGES");
   expect(writer).not.toMatch(/\bgh |run the tests/);
 
-  const owner = githubTriggerText(REPO, {
+  // Anyone who can write may push to the owner's branch: the owner's own pull request gets no shell.
+  const ownersPull = githubTriggerText(REPO, {
     ...pull,
     author: "rhea",
     ownerAuthored: true,
     pull: { ...pull.pull, ownersOwn: true },
   });
-  expect(owner).toContain("check it out and run the tests when that is quick");
-  expect(owner).toContain("gh pr review");
+  expect(ownersPull).toContain("This turn has no shell");
+  expect(ownersPull).not.toMatch(/\bgh |run the tests/);
+
+  const ownersIssue = githubTriggerText(REPO, {
+    ...issue("triage", true),
+    kind: "call",
+    author: "rhea",
+    ownerAuthored: true,
+  });
+  expect(ownersIssue).toContain("gh issue comment");
+  expect(ownersIssue).not.toContain("This turn has no shell");
 });
 
 it.each([

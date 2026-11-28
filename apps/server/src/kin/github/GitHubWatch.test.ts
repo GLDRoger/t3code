@@ -476,10 +476,11 @@ describe("KinGitHubWatch", () => {
           githubWakeHasShell(trigger),
           trigger.pull?.diff !== undefined,
         ]),
+        // A writer may push to the owner's branch, so the owner's own pull request gets no shell.
         [
-          [ownPull, "review", owner, true, false],
+          [ownPull, "review", owner, false, true],
           [writerPull, "review", writer, false, true],
-          [ownPull, "call", owner, true, false],
+          [ownPull, "call", owner, false, true],
           [ownPull, "call", writer, false, true],
           [writerPull, "call", owner, false, true],
           [ownPull, "label", owner, false, true],

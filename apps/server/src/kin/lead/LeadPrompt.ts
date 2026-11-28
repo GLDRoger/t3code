@@ -1445,7 +1445,8 @@ export class KinLeadPrompt extends Context.Service<
                     (event) =>
                       event._tag === "github" &&
                       (event.askedBy !== undefined ||
-                        (event.trigger !== undefined && !githubWakeHasShell(event.trigger))),
+                        event.trigger === undefined ||
+                        !githubWakeHasShell(event.trigger)),
                   )
                 ? "github"
                 : input.events.some((event) => event._tag === "bills.read")
