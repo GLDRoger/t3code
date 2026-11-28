@@ -380,13 +380,14 @@ it.effect.each(
             const result = yield* Effect.result(write);
             const stored = yield* rows;
             return yield* Effect.fail({
+              _tag: "Probe" as const,
               allowed: result._tag === "Success",
               message: result._tag === "Failure" ? String(result.failure) : "",
               stored,
             });
           }),
         )
-        .pipe(Effect.flip);
+        .pipe(Effect.catchTags({ Probe: Effect.succeed }));
     const name = field === "gstin" ? "taxNumber" : field === "placeOfSupply" ? "taxPlace" : field;
     const legacy = list === "deals" ? { fields: { [field]: null } } : { [field]: null };
     const nested = { fields: { [name]: null } };
