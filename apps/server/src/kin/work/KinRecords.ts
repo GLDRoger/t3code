@@ -109,6 +109,7 @@ import {
   byKey,
   CODING_AGENT_NAME,
   countedEntry,
+  endOfDay,
   effectivelySensitive,
   OWN_LABEL_LISTS,
   encodeRepeat,
@@ -2466,7 +2467,21 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const now = yield* Clock.currentTimeMillis;
+        const datesPayment =
+          row.registerId === "expenses" &&
+          writer.actor._tag === "person" &&
+          row.state === "open" &&
+          row.dateAt === null &&
+          asked.state === "done" &&
+          asked.dateAt === undefined;
+        const zone = datesPayment ? yield* ownerZone(orgId).pipe(provideSql) : undefined;
+        const given =
+          zone !== undefined
+            ? { ...asked, dateAt: endOfDay(dayIn(now, zone), zone), dateAllDay: true }
+            : contact === undefined
+              ? asked
+              : { ...asked, fields: contact };
         const patch =
           given.fields === undefined
             ? given
@@ -2505,7 +2520,6 @@ const make = Effect.gen(function* () {
         if (writer.teammate === true && writer.actor._tag === "person")
           yield* teamGuard(orgId, writer.actor.personId, write).pipe(provideSql);
         if (writer.view !== undefined) yield* viewGuard(orgId, writer.view, write).pipe(provideSql);
-        const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
         const list = def.id;
