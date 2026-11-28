@@ -1259,7 +1259,9 @@ describe("pulse check-ins", () => {
       yield* storeArrival(priya, "priya@lumen.example");
       yield* storeArrival(ravi, "ravi.home@lumen.example");
       yield* storeArrival(forged, "priya@lumen.example", {
-        headers: { authResults: ["mx.example; dmarc=fail (p=reject) header.from=lumen.example"] },
+        headers: {
+          authResults: ["mx.google.com; dmarc=fail (p=reject) header.from=lumen.example"],
+        },
       });
       yield* storeArrival(forged, "priya@lumen.example", {
         messageId: "older",

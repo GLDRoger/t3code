@@ -38,6 +38,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as KinEnabled from "../kin/KinEnabled.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -170,8 +171,10 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly failSecretRead?: (name: string) => boolean;
     readonly linked?: boolean;
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
+    readonly readThreadRecords?: ThreadManagementService.ThreadManagementService["Service"]["getThreadRecords"];
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
     readonly catchUpThreads?: ReadonlyArray<OrchestrationV2ThreadShell>;
+    readonly kinEnabled?: boolean;
   } = {},
 ) {
   const values = new Map<string, Uint8Array>(
@@ -241,7 +244,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getRunCount: () => Effect.die("unused run count"),
     getMessagesById: () => Effect.die("unused messages by id"),
     getTurnItem: () => Effect.die("unused turn item read"),
-    getThreadRecords: () => Effect.die("unused record read"),
+    getThreadRecords: options.readThreadRecords ?? unused,
     getThreadProjection: unused,
     getCheckpointContext: unused,
     getThreadSnapshot: unused,
@@ -312,6 +315,12 @@ const makeTestRelay = Effect.fnUntraced(function* (
     updatedAt: NOW,
     deletedAt: null,
   };
+  const extraProjects = [
+    ...new Set((options.catchUpThreads ?? []).map((thread) => thread.projectId)),
+  ]
+    .filter((id) => id !== PROJECT_ID)
+    .map((id) => ({ ...project, id }));
+  const allProjects = [project, ...extraProjects];
   const relay = yield* AgentAwarenessRelay.make.pipe(
     Effect.provide(EnvironmentKeys.layer),
     Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
@@ -327,19 +336,120 @@ const makeTestRelay = Effect.fnUntraced(function* (
       delete: unused,
       getByWorkspaceRoot: unused,
       workspaceScanDirectory: unused,
-      snapshot: Effect.succeed({ projects: [project], updatedAt: NOW }),
+      snapshot: Effect.succeed({ projects: allProjects, updatedAt: NOW }),
       listPage: unused,
       getShell: unused,
       listShells: unused,
-      getById: () => Effect.succeedSome(project),
+      getById: (id) =>
+        Effect.succeed(Option.fromUndefinedOr(allProjects.find((project) => project.id === id))),
     }),
     Effect.provideService(FetchHttpClient.Fetch, fetch),
+    Effect.provideService(KinEnabled.KinEnabled, {
+      enabled: options.kinEnabled ?? false,
+      reportFailure: unused,
+    }),
     Effect.provide(NodeCrypto.layer),
   );
   return { relay, secrets, secretReads, currentShell, shellReads, publications, catchUp };
 });
 
 describe("AgentAwarenessRelay", () => {
+  it.effect("keeps a deleted Kin project thread out of relay tombstones", () =>
+    Effect.gen(function* () {
+      const deleted = shell({ projectId: ProjectId.make("kin:org:lead") });
+      const occurredAt = DateTime.makeUnsafe(NOW);
+      const projection = ProjectionStore.emptyProjection({
+        id: EventId.make("event:kin-project-thread"),
+        type: "thread.created",
+        threadId: deleted.id,
+        occurredAt,
+        payload: { ...deleted, lastVisitedAt: null },
+      });
+      const { relay, publications } = yield* makeTestRelay({
+        kinEnabled: true,
+        readShell: () => Effect.succeed(null),
+        readThreadRecords: () =>
+          Effect.succeed({
+            ...projection,
+            thread: { ...projection.thread, deletedAt: occurredAt },
+          }),
+      });
+      yield* relay.publishThread(deleted.id);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.isEmpty(publications);
+    }),
+  );
+
+  it.effect("still clears a deleted ordinary thread's card on a Kin host", () =>
+    Effect.gen(function* () {
+      const ordinary = shell();
+      const occurredAt = DateTime.makeUnsafe(NOW);
+      const projection = ProjectionStore.emptyProjection({
+        id: EventId.make("event:ordinary-thread"),
+        type: "thread.created",
+        threadId: ordinary.id,
+        occurredAt,
+        payload: { ...ordinary, lastVisitedAt: null },
+      });
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        kinEnabled: true,
+        readThreadRecords: () =>
+          Effect.succeed({
+            ...projection,
+            thread: { ...projection.thread, deletedAt: occurredAt },
+          }),
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* relay.drain;
+      yield* Ref.set(currentShell, null);
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
+  it.effect("does not publish a Kin wake-up thread or its subagent, including at startup", () =>
+    Effect.gen(function* () {
+      const kinId = ThreadId.make("kin-shared:wake");
+      const kinProjectId = ProjectId.make("kin:org:lead");
+      const kin = shell({
+        id: kinId,
+        projectId: kinProjectId,
+        lineage: { rootThreadId: kinId, parentThreadId: null, relationshipToParent: null },
+      });
+      const child = waitingChild({
+        lineage: { rootThreadId: kinId, parentThreadId: kinId, relationshipToParent: "subagent" },
+      });
+      const projectThread = shell({ id: SECOND_THREAD_ID, projectId: kinProjectId });
+      const ordinary = shell();
+      const shells = new Map(
+        [kin, child, projectThread, ordinary].map((thread) => [thread.id, thread]),
+      );
+      const { relay, publications, catchUp, shellReads } = yield* makeTestRelay({
+        kinEnabled: true,
+        readShell: (id) => Effect.succeed(shells.get(id) ?? null),
+        catchUpThreads: [kin, projectThread, ordinary],
+      });
+      yield* relay.publishThread(kinId);
+      yield* relay.publishThread(CHILD_THREAD_ID);
+      yield* relay.publishThread(SECOND_THREAD_ID);
+      yield* relay.start();
+      yield* TestClock.adjust("1 second");
+      yield* relay.drain;
+      assert.equal(catchUp.activitySnapshotReads, 1);
+      assert.deepEqual(
+        publications.map(({ state }) => state?.threadId),
+        [THREAD_ID],
+      );
+      assert.deepEqual(shellReads, [CHILD_THREAD_ID, SECOND_THREAD_ID, THREAD_ID]);
+    }),
+  );
+
   it.effect("publishes the parent as needing approval while its subagent waits", () =>
     Effect.gen(function* () {
       const shells = yield* Ref.make(

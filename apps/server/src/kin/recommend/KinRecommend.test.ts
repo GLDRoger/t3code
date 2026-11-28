@@ -1442,7 +1442,7 @@ const forwardBankMail = Effect.fn("RecommendTest.forwardBankMail")(function* (
     unread: true,
     messageId: "<invented@harborbank.example>",
     references: null,
-    authResults: ["mx.tidewater.example; dmarc=pass header.from=harborbank.example"],
+    authResults: ["mx.google.com; dmarc=pass header.from=harborbank.example"],
     body: {
       text: `INR 1,250.00 has been credited to account **4821 on 24-11-2026. UTR No: INVENTED1. ${endings}`,
       attachments: [],

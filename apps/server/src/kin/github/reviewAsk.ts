@@ -2,6 +2,7 @@ import {
   KinAgentId,
   KinChatError,
   KinChatId,
+  type KinEvent,
   type KinOrgId,
   KinPersonId,
   KinWakeupId,
@@ -22,6 +23,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
+import { reviewAccessRefused } from "./askedFor.ts";
 import { blocksKey, boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
   type ApiAnswer,
@@ -86,7 +88,7 @@ export const ASK_REFUSAL = {
   unwatched: (repo: string, ownerLevel: boolean) =>
     `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, the step and the repo first, then who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
   noLogin: (name: string) =>
-    `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo; they can add theirs under You → GitHub username, or an owner on their page. ${NOTHING}`,
+    `Kin can review only named public repos for ${name} until the owner or a co-owner sets a GitHub username in Team. ${NOTHING}`,
 } as const;
 export const PULL_REFUSAL = {
   missing: `Kin can't find this pull request. ${NOTHING}`,
@@ -143,6 +145,42 @@ export const maySee = Effect.fn("KinGitHubReviewAsk.mayAsk")(function* (
     : member.status === 404
       ? ("no" as const)
       : member;
+});
+
+const mayReadAskedReview = Effect.fn("KinGitHubReviewAsk.mayRead")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: string;
+  readonly askedBy: string;
+  readonly repo: string;
+}) {
+  if (yield* isMemoryRepo(input.repo)) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [asker] = yield* sql<{ login: string | null; owner: string }>`SELECT
+      p.github_login AS login, a.owner_person_id AS owner
+    FROM kin_people p JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = ${input.agentId}
+    WHERE p.org_id = ${input.orgId} AND p.person_id = ${input.askedBy} AND p.removed_at IS NULL`;
+  if (asker === undefined) return false;
+  const api = yield* KinGitHubApi;
+  if ((yield* api.connected()) === null) return false;
+  const himself = isOwnerHimself({ personId: asker.owner }, input.askedBy);
+  const get = (path: string) => api.call({ path });
+  if ((yield* maySee(get, input.repo, { himself, login: asker.login })) !== "yes") return false;
+  // The connected login must still reach the repo before a queued excerpt is used.
+  return !himself || (yield* get(`repos/${input.repo}`)).status === 200;
+});
+
+/** Before the prompt receives the queued excerpt. The queue's settlement tells the asker. */
+export const askedReviewMayStart = Effect.fn("KinGitHubReviewAsk.mayStart")(function* (
+  event: Extract<KinEvent, { _tag: "github" }>,
+  wakeupId: KinWakeupId,
+) {
+  if (event.askedBy === undefined) return true;
+  if (yield* mayReadAskedReview({ ...event, askedBy: event.askedBy })) return true;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_events SET json = json_set(json, '$._reviewAccessRefusedIn', ${wakeupId})
+    WHERE org_id = ${event.orgId} AND event_id = ${event.eventId}
+      AND wakeup_id = ${wakeupId} AND state = 'claimed'`;
+  return false;
 });
 
 /** The one person whose own direct chat with this agent the turn answers, or undefined. */
@@ -467,24 +505,31 @@ const decodeRange = Schema.decodeUnknownOption(
  * cut, of the same range at the same head, so a review with no shell can read all of it.
  */
 export const readReviewDiff = Effect.fn("KinGitHubReviewAsk.diff")(function* (
-  lead: { readonly orgId: KinOrgId; readonly wakeupId: string },
+  lead: { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string },
   input: typeof DiffInput.Type,
 ) {
   const bound = yield* boundReview(lead);
   if (bound === undefined || bound.head === undefined) return yield* refuse(DIFF_REFUSAL.unbound);
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{
+    askedBy: string | null;
     baseRef: string;
     baseSha: string | null;
     from: string | null;
     whole: number | null;
-  }>`SELECT json_extract(json, '$.trigger.pull.baseRef') AS "baseRef",
+  }>`SELECT json_extract(json, '$.askedBy') AS "askedBy",
+      json_extract(json, '$.trigger.pull.baseRef') AS "baseRef",
       json_extract(json, '$.trigger.pull.baseSha') AS "baseSha",
       json_extract(json, '$.trigger.pull.reReview.from') AS "from",
       json_extract(json, '$.trigger.pull.reReview.whole') AS whole
     FROM kin_events WHERE org_id = ${lead.orgId} AND event_id = ${bound.eventId}`;
   const range = decodeRange(row);
   if (Option.isNone(range)) return yield* refuse(DIFF_REFUSAL.unread);
+  if (
+    row?.askedBy != null &&
+    !(yield* mayReadAskedReview({ ...lead, repo: bound.repo, askedBy: row.askedBy }))
+  )
+    return yield* refuse(reviewAccessRefused(`${bound.repo}#${bound.number}`));
   const api = yield* KinGitHubApi;
   const read = yield* wholeDiff(
     (path, headers) => api.call({ path, ...(headers === undefined ? {} : { headers }) }),

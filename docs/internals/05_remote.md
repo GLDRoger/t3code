@@ -40,6 +40,10 @@ side lists and revokes it in Sharing & access like any other session, and owns i
   [`PeerThreadRelay`](../../apps/server/src/peer/PeerThreadRelay.ts) proxies the same stream format
   read-only so there is no second transcript schema to maintain.
 
+Kin hosts lock peer links and guest sharing off through the server's built-in managed policy.
+The [activity publisher](../../apps/server/src/relay/AgentAwarenessRelay.ts) keeps Kin project
+threads and their delegated work out of the relay, including work delegated to Scratch.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects directly to each

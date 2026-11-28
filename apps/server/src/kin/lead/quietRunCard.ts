@@ -121,8 +121,8 @@ export const postQuietRunCard = Effect.fn("KinQuietRun.postCard")(function* (
     .findLast((text) => classifySegment(text, "tool") === "note");
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const [lead] = yield* sql<{ ownerPersonId: KinPersonId }>`
-      SELECT a.owner_person_id AS "ownerPersonId" FROM kin_wakeups w
+      const [lead] = yield* sql<{ ownerPersonId: KinPersonId; audience: string | null }>`
+      SELECT a.owner_person_id AS "ownerPersonId", w.audience FROM kin_wakeups w
       JOIN kin_agents a ON a.org_id = w.org_id AND a.agent_id = w.agent_id
       WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId} AND w.agent_id = ${agentId}
         AND w.status = 'running' AND w.aborted_at IS NULL AND w.thread_id = ${run.threadId}
@@ -180,7 +180,10 @@ export const postQuietRunCard = Effect.fn("KinQuietRun.postCard")(function* (
           chatId: lane.chatId,
           clientMessageId: clientId(wakeupId, ask),
           question: `Still working on ${what === "" ? "this" : `“${what}”`}: no sign of progress for ${ask === 1 ? "15 minutes" : "an hour"}. Keep going or stop?`,
-          ...(note === undefined ? {} : { detail: `Last note: “${note.trim()}”` }),
+          // Only the audience used to build the run's prompt is safe for its progress notes.
+          ...(lead.audience === "shared" && note !== undefined
+            ? { detail: `Last note: “${note.trim()}”` }
+            : {}),
           options: actions.map(({ label }) => ({ label })),
           actions,
           untilAnswered: true,

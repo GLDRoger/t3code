@@ -27,7 +27,7 @@ const describePolicy = (
   }
   const settings = Object.entries(document.settings ?? {});
   const lines = [
-    `Managed by ${document.organization} (${policy.path}, fingerprint ${loaded.fingerprint}).`,
+    `Managed by ${document.organization} (${loaded.source}, fingerprint ${loaded.fingerprint}).`,
     ...(document.supportUrl === undefined ? [] : [`Support: ${document.supportUrl}`]),
     "",
     settings.length === 0 ? "No managed settings." : "Settings:",

@@ -77,7 +77,7 @@ export const namedDue = (
   if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
     return {
       refused:
-        "by is the day you'll take your default, YYYY-MM-DD, from today to a month out; leave it out for the end of their next working day.",
+        "by is the day the answer is due, YYYY-MM-DD, from today to a month out; leave it out for the end of their next working day.",
     };
   return { at };
 };
@@ -153,7 +153,7 @@ export const repeats = (
   asked.about.some((key) => open.about.includes(key));
 
 /**
- * Words for doing something that leaves the company or moves money: such a default is never taken.
+ * Words that suggest sending something out or moving money, for the note to the asker.
  * A word joined to another by a hyphen names a field or a thing ("Paid-by", "send-later"), not an act.
  */
 const LEAVES =
@@ -168,24 +168,19 @@ const moneyTerm = (text: string) =>
   [...text.matchAll(CODE_BESIDE_NUMBER)].some((found) => isKinCurrency(found[1] ?? found[2] ?? ""));
 
 /**
- * Why Kin may not take `label` on its own at the day, or undefined when it may: never when the
- * asker said "none", when the question is about a money record, when any option names an amount
- * or a rate, or when the default, or a bare yes's question, reads as sending something out or
- * moving money.
+ * A reason to give the asker when a plain default waits: a money record, a named amount or rate,
+ * or wording that suggests an outside action. The plan decides what can run.
  */
-export const unsafeDefault = (
-  label: string | null,
+export const plainDefaultReason = (
+  label: string,
   question: string,
   terms: { readonly labels?: ReadonlyArray<string>; readonly aboutMoney?: boolean } = {},
-): "none" | "money" | "leaves" | undefined => {
-  if (label === null) return "none";
+): "money" | "leaves" | undefined => {
   if (terms.aboutMoney === true) return "money";
   const bare = label.trim().split(/\s+/).length <= 3;
   if ([label, ...(terms.labels ?? []), ...(bare ? [question] : [])].some(moneyTerm)) return "money";
   return LEAVES.test(label) || (bare && LEAVES.test(question)) ? "leaves" : undefined;
 };
-export const safeDefault = (...args: Parameters<typeof unsafeDefault>) =>
-  unsafeDefault(...args) === undefined;
 
 /** "today", "tomorrow", "on Wednesday", "on Wed 3 Dec", "yesterday", "on Monday" (past), on `zone`'s clock. */
 export const dayWord = (at: number, now: number, zone: string) => {

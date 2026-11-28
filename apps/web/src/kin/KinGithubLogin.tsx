@@ -23,6 +23,8 @@ export function KinGithubLoginRow(props: {
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
+  /** The owner or a co-owner reads it: only they set a username. */
+  readonly editable: boolean;
   /** The settings search id that lands on this row. */
   readonly searchId?: string;
 }) {
@@ -30,6 +32,20 @@ export function KinGithubLoginRow(props: {
   const [editing, setEditing] = useKinFormOpen();
   if (profile.githubLogin === undefined) return null;
   const login = profile.githubLogin;
+  if (!props.editable)
+    return (
+      <KinSettingsRow
+        {...(props.searchId === undefined ? {} : { searchId: props.searchId })}
+        title={KIN_GITHUB_LOGIN.label}
+        wrap
+        detail={
+          <>
+            <span className="block">{login ?? KIN_GITHUB_LOGIN.none}</span>
+            <span className="block">{KIN_GITHUB_LOGIN.ownerSets}</span>
+          </>
+        }
+      />
+    );
   return (
     <>
       <KinSettingsRow
