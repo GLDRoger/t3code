@@ -140,20 +140,19 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   in the chat. Tapping an answer answers the agent; it is never an approval. An answer with a line
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
-  never does it, and Kin never takes such an answer as a default: it waits for your tap.
+  never runs the action.
   On a phone, the notice of an agent's question with two answers lists them as 1 and 2; press
   and hold it (on Android, expand it) and tap **Answer 1** or **Answer 2** to answer without
   finding the chat. The phone
   unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
   question with more answers, opens the card instead.
-- **It asks once, and says what it will do.** An agent's question comes with the answer it will go
-  with and the day, by default the end of your next working day (until 19:30). If you don't answer
-  by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
-  that would send, post or move money has no such default: it is raised once more the next working
-  morning and then waits for you. Another agent won't ask you the same thing while it is open.
-  To change the answer before the day, tap another one. You can also answer in words in the chat
-  it asked in: only that agent takes it from what you wrote, the card says so, and Undo beside it
-  opens the question again. It then waits for your answer with no default, and anything already
+- **It asks once, and says what it will do.** When the default option shows an action to mark a task
+  or list entry done or drop it, Kin can take it on the day shown if you haven't answered. Kin tells
+  you what it did and gives you an Undo button. If the agent asks a question for itself without an
+  automatic default, Kin raises the question once more the next working morning and waits for you.
+  Another agent won't ask you the same thing while it is open. Tap an option to answer. You can
+  also answer in words in the chat it asked in: only that agent takes it from what you wrote,
+  the card says so, and Undo beside it opens the question again. It then waits for your answer with no default, and anything already
   done from the first answer stands.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.

@@ -31,14 +31,15 @@ VARIABLES
   st,       \* kin_questions.state: "none", "open", "answered", "default_taken", "withdrawn",
             \* "dismissed", "lapsed"
   asker,    \* kin_questions.agent_id
-  safe,     \* kin_questions.safe: the default may be taken alone
+  safe,     \* kin_questions.safe: legacy plain defaults may also have this flag
+  sealed,   \* the named option carries a server-sealed plan
   leaves,   \* the default would send something out or move money (the truth, not the flag)
   askedAt, due,
   raised,   \* kin_questions.raised_at is set
   raises,   \* raise cards posted
   card,     \* the question's card takes taps (a raise replaces it with another that does)
-  turns,    \* turns queued to take its default (kin_events, dedupe question:<id>)
-  done,     \* times its default was done by a turn
+  taken,    \* times the sweep took its default
+  done,     \* times the sealed action ran
   outside,  \* defaults done that left the company or moved money
   memo,     \* what a broken sweep remembers in memory only
   other,    \* kin_questions.for_chat_id is set: asked for another chat
@@ -52,7 +53,7 @@ VARIABLES
   raisedAt, \* when it was raised (-1 before, or LongAgo); kept only for one asked for another chat
   told      \* lapse lines in the chat it was asked for, each with its asker's one turn there
 
-vars == <<clock, up, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card, turns,
+vars == <<clock, up, outages, st, asker, safe, sealed, leaves, askedAt, due, raised, raises, card, taken,
           done, outside, memo, other, posted, back, there, pend, dismissedAt, renewed,
           unsigned, raisedAt, told>>
 lane == <<other, posted, back, there, pend, dismissedAt, renewed>>
@@ -63,13 +64,14 @@ Init ==
   /\ st = [q \in Qs |-> "none"]
   /\ asker = [q \in Qs |-> "finance"]
   /\ safe = [q \in Qs |-> FALSE]
+  /\ sealed = [q \in Qs |-> FALSE]
   /\ leaves = [q \in Qs |-> FALSE]
   /\ askedAt = [q \in Qs |-> 0]
   /\ due = [q \in Qs |-> 0]
   /\ raised = [q \in Qs |-> FALSE]
   /\ raises = [q \in Qs |-> 0]
   /\ card = [q \in Qs |-> FALSE]
-  /\ turns = [q \in Qs |-> 0]
+  /\ taken = [q \in Qs |-> 0]
   /\ done = [q \in Qs |-> 0]
   /\ outside = 0
   /\ memo = {}
@@ -88,17 +90,18 @@ Unchanged(vs) == UNCHANGED vs
 
 (* kin_ask through planAsk and recordAsk, or askPerson for another chat: an agent asks about the
    same record with the same intent. Refused while one is open (`repeats`, askPerson's
-   `askedAgain`); a second slot is used only after the first. `says` is the default the agent
-   names; safeDefault adds the words check. Asked for another chat there is no default, and in
-   the person's quiet hours or away days (`holdFor`) it is stored with no card. *)
+   `askedAgain`); a second slot is used only after the first. New plain defaults wait; a plain
+   default stored by an earlier version can still carry the safe flag. A question asked for another
+   chat has no default and may be held without a card (`holdFor`). *)
 RecentDismissal(at) == dismissedAt >= 0 /\ at <= dismissedAt + DismissalWindow
 
-Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
+Ask(q, defaultKind, isOther, isHeld, freshWords, isUnsigned) ==
   /\ up
   /\ st[q] = "none"
   /\ q = 2 => st[1] # "none"
   /\ isHeld => isOther
   /\ isUnsigned => isOther
+  /\ defaultKind = "stored_plain" => ~isOther
   /\ clock + Delay + RaiseGap + (IF isOther THEN Delay ELSE 0) <= Horizon
   /\ Broken = "no-repeat-check" \/ Open = {}
   /\ freshWords => (q = 2 /\ ~isOther /\ RecentDismissal(clock))
@@ -109,9 +112,10 @@ Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
   /\ asker' = [asker EXCEPT ![q] = Asks[q]]
   /\ safe' = [safe EXCEPT ![q] =
        IF isOther /\ Broken # "default-for-other" THEN FALSE
-       ELSE IF Broken = "no-words-check" THEN says ELSE says /\ ~isOut]
-  \* Only a default that can be taken is ever done, so only its truth is kept.
-  /\ leaves' = [leaves EXCEPT ![q] = isOut /\ (safe'[q] \/ Broken = "no-safety")]
+       ELSE defaultKind \in {"task", "stored_plain"}
+         \/ (defaultKind = "outside" /\ Broken = "no-action-check")]
+  /\ sealed' = [sealed EXCEPT ![q] = safe'[q] /\ defaultKind \in {"task", "outside"}]
+  /\ leaves' = [leaves EXCEPT ![q] = safe'[q] /\ defaultKind = "outside"]
   /\ askedAt' = [askedAt EXCEPT ![q] = clock]
   /\ due' = [due EXCEPT ![q] = clock + Delay]
   /\ card' = [card EXCEPT ![q] = ~isHeld]
@@ -119,7 +123,7 @@ Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
   /\ posted' = [posted EXCEPT ![q] = ~isHeld]
   /\ memo' = IF Broken = "timer-in-memory" THEN memo \cup {q} ELSE memo
   /\ unsigned' = [unsigned EXCEPT ![q] = isUnsigned]
-  /\ UNCHANGED <<clock, up, outages, raised, raises, turns, done, outside, back, there, pend, dismissedAt>>
+  /\ UNCHANGED <<clock, up, outages, raised, raises, taken, done, outside, back, there, pend, dismissedAt>>
   /\ UNCHANGED <<raisedAt, told>>
 
 (* settleDue's postHeld: once the person's hold lets it through, the held card is posted and its
@@ -130,7 +134,7 @@ Post(q) ==
   /\ posted' = [posted EXCEPT ![q] = TRUE]
   /\ card' = [card EXCEPT ![q] = TRUE]
   /\ due' = [due EXCEPT ![q] = clock + Delay]
-  /\ UNCHANGED <<clock, up, outages, st, asker, safe, leaves, askedAt, raised, raises, turns, done,
+  /\ UNCHANGED <<clock, up, outages, st, asker, safe, sealed, leaves, askedAt, raised, raises, taken, done,
                  outside, memo, other, back, there, pend, dismissedAt, renewed>>
   /\ UNCHANGED lapse
 
@@ -148,14 +152,15 @@ Deliver(q) ==
   /\ up /\ q \in pend
   /\ back' = [back EXCEPT ![q] = back[q] + 1]
   /\ pend' = pend \ {q}
-  /\ UNCHANGED <<clock, up, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card,
-                 turns, done, outside, memo, other, posted, there, dismissedAt, renewed>>
+  /\ UNCHANGED <<clock, up, outages, st, asker, safe, sealed, leaves, askedAt, due, raised, raises, card,
+                 taken, done, outside, memo, other, posted, there, dismissedAt, renewed>>
   /\ UNCHANGED lapse
 
 (* Answered, withdrawn or dismissed, nothing reads a question's default, day, hold or raise
    again: they are cleared, so a closed question keeps one copy. *)
 Forget(q) ==
   /\ safe' = [safe EXCEPT ![q] = FALSE]
+  /\ sealed' = [sealed EXCEPT ![q] = FALSE]
   /\ due' = [due EXCEPT ![q] = LongAgo]
   /\ raised' = [raised EXCEPT ![q] = FALSE]
   /\ raises' = [raises EXCEPT ![q] = 0]
@@ -176,7 +181,7 @@ Tap(q) ==
   /\ there' = IF other[q] /\ Broken = "tap-wakes-there"
        THEN [there EXCEPT ![q] = there[q] + 1] ELSE there
   /\ Forget(q)
-  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, turns, done, outside, memo, other,
+  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, taken, done, outside, memo, other,
                  dismissedAt, renewed, told>>
 
 (* kin_ask_close: answered in words by its asker from the person's own message in its chat, or
@@ -191,7 +196,7 @@ Close(q, outcome) ==
   /\ card' = [card EXCEPT ![q] = FALSE]
   /\ IF outcome = "answered" THEN SendBack(q) ELSE UNCHANGED <<back, pend>>
   /\ Forget(q)
-  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, turns, done, outside, memo, other,
+  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, taken, done, outside, memo, other,
                  there, renewed, told>>
 
 (* A plain choice card stops taking taps a day after it was posted; an open question's does not
@@ -200,8 +205,8 @@ Expire(q) ==
   /\ Broken = "day-expiry"
   /\ card[q] /\ st[q] = "open" /\ clock >= askedAt[q] + DayLong
   /\ card' = [card EXCEPT ![q] = FALSE]
-  /\ UNCHANGED <<clock, up, outages, st, asker, safe, leaves, askedAt, due, raised, raises,
-                 turns, done, outside, memo>>
+  /\ UNCHANGED <<clock, up, outages, st, asker, safe, sealed, leaves, askedAt, due, raised, raises,
+                 taken, done, outside, memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED lapse
 
@@ -218,7 +223,7 @@ Tick ==
   /\ clock' = clock + 1
   /\ due' = [q \in Qs |-> Spent(due[q], RaiseGap)]
   /\ raisedAt' = [q \in Qs |-> Spent(raisedAt[q], Delay)]
-  /\ UNCHANGED <<up, outages, st, asker, safe, leaves, askedAt, raised, raises, card, turns,
+  /\ UNCHANGED <<up, outages, st, asker, safe, sealed, leaves, askedAt, raised, raises, card, taken,
                  done, outside, memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED <<unsigned, told>>
@@ -228,33 +233,44 @@ Stop ==
   /\ up' = FALSE /\ outages' = outages + 1
   /\ memo' = {}
   /\ pend' = {}
-  /\ UNCHANGED <<clock, st, asker, safe, leaves, askedAt, due, raised, raises, card, turns, done,
+  /\ UNCHANGED <<clock, st, asker, safe, sealed, leaves, askedAt, due, raised, raises, card, taken, done,
                  outside, other, posted, back, there, dismissedAt, renewed>>
   /\ UNCHANGED lapse
 
 Start ==
   /\ ~up /\ up' = TRUE
-  /\ UNCHANGED <<clock, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card,
-                 turns, done, outside, memo>>
+  /\ UNCHANGED <<clock, outages, st, asker, safe, sealed, leaves, askedAt, due, raised, raises, card,
+                 taken, done, outside, memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED lapse
 
 (* openQuestions.ts settleDue on the deferral tick, takeDefault: one transaction moves an open,
-   safe row past its day to default_taken, queues the asker's turn and closes the card. The
+   safe row past its day to default_taken, runs its sealed action and closes the card. The
    broken sweep checks what it remembers instead of the row. *)
 TakeDefault(q) ==
   /\ up
   /\ IF Broken = "memory-settled"
        THEN st[q] \in {"open", "default_taken"} /\ q \notin memo /\ safe[q]
-       ELSE st[q] = "open" /\ (safe[q] \/ Broken = "no-safety")
+       ELSE st[q] = "open" /\ safe[q]
+  /\ sealed[q] \/ Broken = "no-seal-check"
   /\ Broken = "early" \/ clock >= due[q]
   /\ Broken # "timer-in-memory" \/ q \in memo
   /\ st' = [st EXCEPT ![q] = "default_taken"]
-  /\ turns' = [turns EXCEPT ![q] = turns[q] + 1]
+  /\ taken' = [taken EXCEPT ![q] = taken[q] + 1]
+  /\ done' = [done EXCEPT ![q] = done[q] + 1]
+  /\ outside' = IF leaves[q] THEN outside + 1 ELSE outside
   /\ card' = [card EXCEPT ![q] = Broken = "answer-after-take"]
   /\ memo' = IF Broken = "memory-settled" THEN memo \cup {q} ELSE memo
-  /\ UNCHANGED <<clock, up, outages, asker, safe, leaves, askedAt, due, raised, raises, done,
-                 outside>>
+  /\ UNCHANGED <<clock, up, outages, asker, safe, sealed, leaves, askedAt, due, raised, raises>>
+  /\ UNCHANGED lane
+  /\ UNCHANGED lapse
+
+(* takeDefault finds no plan on a stored plain default. The same question stays open for its raise. *)
+HoldPlainDefault(q) ==
+  /\ up /\ st[q] = "open" /\ safe[q] /\ ~sealed[q] /\ clock >= due[q]
+  /\ safe' = [safe EXCEPT ![q] = FALSE]
+  /\ UNCHANGED <<clock, up, outages, st, asker, sealed, leaves, askedAt, due, raised, raises,
+                 card, taken, done, outside, memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED lapse
 
@@ -272,7 +288,7 @@ Raise(q) ==
   /\ raises' = [raises EXCEPT ![q] = raises[q] + 1]
   /\ card' = [card EXCEPT ![q] = TRUE]
   /\ raisedAt' = IF other[q] THEN [raisedAt EXCEPT ![q] = clock] ELSE raisedAt
-  /\ UNCHANGED <<clock, up, outages, st, asker, safe, leaves, askedAt, due, turns, done, outside,
+  /\ UNCHANGED <<clock, up, outages, st, asker, safe, sealed, leaves, askedAt, due, taken, done, outside,
                  memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED <<unsigned, told>>
@@ -292,36 +308,23 @@ Lapse(q) ==
   /\ st' = [st EXCEPT ![q] = "lapsed"]
   /\ card' = [card EXCEPT ![q] = FALSE]
   /\ told' = IF Broken = "lapse-silent" THEN told ELSE [told EXCEPT ![q] = told[q] + 1]
-  /\ UNCHANGED <<clock, up, outages, asker, safe, leaves, askedAt, due, raised, raises, turns,
+  /\ UNCHANGED <<clock, up, outages, asker, safe, sealed, leaves, askedAt, due, raised, raises, taken,
                  done, outside, memo>>
   /\ UNCHANGED lane
   /\ UNCHANGED <<unsigned, raisedAt>>
 
-(* The asker's turn (LeadPrompt, dueTurnText): it does the default with its tools. Anything that
-   would leave the company still stops at its Confirm card, which this model leaves out; the
-   rule below is that the server never asks for such a default. *)
-RunTurn(q) ==
-  /\ up
-  /\ turns[q] > done[q]
-  /\ done' = [done EXCEPT ![q] = done[q] + 1]
-  /\ outside' = IF leaves[q] THEN outside + 1 ELSE outside
-  /\ UNCHANGED <<clock, up, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card,
-                 turns, memo>>
-  /\ UNCHANGED lane
-  /\ UNCHANGED lapse
-
 Next ==
-  \/ \E q \in Qs, says \in BOOLEAN, isOut \in BOOLEAN, isOther \in BOOLEAN,
-       isHeld \in BOOLEAN, freshWords \in BOOLEAN, isUnsigned \in BOOLEAN :
-       Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned)
-  \/ \E q \in Qs : Tap(q) \/ Expire(q) \/ TakeDefault(q) \/ Raise(q) \/ RunTurn(q) \/ Lapse(q)
+  \/ \E q \in Qs, defaultKind \in {"none", "plain", "stored_plain", "task", "outside"},
+       isOther \in BOOLEAN, isHeld \in BOOLEAN, freshWords \in BOOLEAN, isUnsigned \in BOOLEAN :
+       Ask(q, defaultKind, isOther, isHeld, freshWords, isUnsigned)
+  \/ \E q \in Qs : Tap(q) \/ Expire(q) \/ TakeDefault(q) \/ HoldPlainDefault(q) \/ Raise(q) \/ Lapse(q)
   \/ \E q \in Qs : Post(q) \/ Deliver(q)
   \/ \E q \in Qs, outcome \in {"answered", "withdrawn", "dismissed"} : Close(q, outcome)
   \/ Tick \/ Stop \/ Start
 
 Fairness ==
   /\ WF_vars(Tick) /\ WF_vars(Start)
-  /\ \A q \in Qs : WF_vars(TakeDefault(q)) /\ WF_vars(Raise(q)) /\ WF_vars(RunTurn(q))
+  /\ \A q \in Qs : WF_vars(TakeDefault(q)) /\ WF_vars(HoldPlainDefault(q)) /\ WF_vars(Raise(q))
   /\ \A q \in Qs : WF_vars(Lapse(q))
   /\ \A q \in Qs : WF_vars(Post(q)) /\ WF_vars(Deliver(q))
 
@@ -332,17 +335,18 @@ OnceWhileOpen == Cardinality(Open) <= 1
 DismissalStands ==
   (st[2] # "none" /\ ~other[2] /\ RecentDismissal(askedAt[2]) /\ askedAt[2] >= dismissedAt) =>
     renewed
-NeverBeforeItsDay == \A q \in Qs : turns[q] > 0 => (st[q] = "default_taken" /\ clock >= due[q])
-TakenOnce == \A q \in Qs : turns[q] <= 1 /\ done[q] <= 1
-AnsweredOrTaken == \A q \in Qs : st[q] = "answered" => turns[q] = 0
+NeverBeforeItsDay == \A q \in Qs : taken[q] > 0 => (st[q] = "default_taken" /\ clock >= due[q])
+TakenOnce == \A q \in Qs : taken[q] <= 1 /\ done[q] <= 1
+AnsweredOrTaken == \A q \in Qs : st[q] = "answered" => taken[q] = 0
 NothingLeaves == outside = 0
+NoDefaultWithoutPlan == \A q \in Qs : st[q] = "default_taken" => sealed[q]
 TapsWhileOpen == \A q \in Qs : (st[q] = "open" /\ posted[q]) => card[q]
 RaisedOnce == \A q \in Qs : raises[q] <= 1
 \* Every question ends: answered, its default taken and done, withdrawn, dismissed or lapsed; one
 \* with no safe default asked in its own chat ends or rests, raised once, in Waiting on you.
 Settles(q) ==
   \/ st[q] \in {"answered", "withdrawn", "dismissed", "lapsed"}
-  \/ (st[q] = "default_taken" /\ done[q] = turns[q])
+  \/ (st[q] = "default_taken" /\ done[q] = taken[q])
   \/ (st[q] = "open" /\ ~safe[q] /\ raised[q] /\ ~other[q])
 AlwaysEnds == \A q \in Qs : (st[q] = "open") ~> Settles(q)
 \* Asked for another chat and unanswered, it lapses: the chat it was asked for hears once, never
@@ -353,7 +357,7 @@ LapsesAfterItsDay == \A q \in Qs : (st[q] = "lapsed" /\ raised[q]) => clock >= r
 UnsignedNotAskedAgain == \A q \in Qs : unsigned[q] => raises[q] = 0
 \* Asked for another chat: nobody answers for the person, and the answer wakes the asker once, in
 \* the chat that asked, never in the person's own.
-NoDefaultForOther == \A q \in Qs : other[q] => turns[q] = 0
+NoDefaultForOther == \A q \in Qs : other[q] => taken[q] = 0
 OneWake == \A q \in Qs : other[q] => (back[q] <= 1 /\ there[q] = 0)
 AnswerGoesBack == \A q \in Qs : (other[q] /\ st[q] = "answered") ~> back[q] = 1
 =============================================================================

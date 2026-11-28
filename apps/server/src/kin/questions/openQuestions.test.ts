@@ -279,6 +279,41 @@ const reminderAsk = {
   intent: "draft payment reminder",
 };
 
+const taskCloseAsk = Effect.fn("test.taskCloseAsk")(function* (
+  studio: Effect.Success<typeof ambermill>,
+  title: string,
+) {
+  const { orgId, owner, services } = studio;
+  const records = Context.get(services, KinRecords);
+  const { row } = yield* records.create(
+    orgId,
+    {
+      actor: { _tag: "person", personId: owner.personId },
+      via: "owner",
+      askedBy: owner.personId,
+    },
+    {
+      title,
+      owner: { _tag: "person", personId: owner.personId },
+      originKey: title,
+      team: true,
+    },
+  );
+  return {
+    task: row,
+    input: {
+      question: `Close the task “${title}”?`,
+      options: [
+        { label: "Close it", action: { kind: "done", target: row.key } },
+        { label: "Leave it" },
+      ],
+      default: "Close it",
+      about: [row.key],
+      intent: "close the task",
+    },
+  };
+});
+
 const questionRow = (sql: SqlClient.SqlClient, id: string) =>
   sql<{ state: string; raised: number | null; raiseWidget: string | null; answer: string | null }>`
     SELECT state, raised_at AS raised, raise_widget_id AS "raiseWidget", answer
@@ -297,57 +332,142 @@ const settle = Effect.fn("test.settle")(function* (orgId: string, at: number) {
   });
 });
 
+it.effect("a plain default waits at its day while a sealed task default is taken", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const studio = yield* ambermill;
+      const { sql, chats, owner, orgId, services, chatOf, wake } = studio;
+      const repo = Context.get(services, KinChatRepository);
+      const chatId = chatOf("finance");
+      const ask = Effect.fn("test.ask")(function* (
+        input: Record<string, unknown>,
+        message: string,
+      ) {
+        yield* wake(
+          "finance",
+          yield* chats.send(owner, { chatId, body: message, clientMessageId: message }),
+        );
+        const asked = yield* callAs("finance", "kin_ask", input);
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        assert.strictEqual(asked.value.by, TUE_1930_ISO);
+        return asked.value.question as string;
+      });
+      const plain = yield* ask(
+        {
+          question: "What should happen with the Tidewater Freight reminder?",
+          options: [{ label: "Bhejo reminder" }, { label: "Keep it" }],
+          default: "Bhejo reminder",
+        },
+        "Tidewater Freight reminder",
+      );
+      const legacy = yield* ask(
+        {
+          question: "What should happen with the Harbor Bank reminder?",
+          options: [{ label: "Bhejo reminder" }, { label: "Keep it" }],
+          default: "Bhejo reminder",
+        },
+        "Harbor Bank reminder",
+      );
+      // This card was saved before plain defaults stopped being marked safe.
+      yield* sql`UPDATE kin_questions SET safe = 1, act_at = due_at WHERE question_id = ${legacy}`;
+      const { task, input } = yield* taskCloseAsk(studio, "Review the Inkspot Cloud notes");
+      const sealed = yield* ask(input, "Inkspot Cloud notes");
+
+      yield* settle(orgId, TUE_1930 - 1);
+      assert.strictEqual((yield* questionRow(sql, sealed)).state, "open");
+      yield* settle(orgId, TUE_1930);
+      assert.strictEqual((yield* questionRow(sql, sealed)).state, "default_taken");
+      assert.deepStrictEqual(
+        yield* sql`SELECT state FROM kin_records WHERE record_id = ${task.recordId}`,
+        [{ state: "done" }],
+      );
+      assert.strictEqual((yield* questionRow(sql, plain)).state, "open", "new plain option");
+      assert.strictEqual((yield* questionRow(sql, legacy)).state, "open", "stored plain option");
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+
+      const morning = Date.UTC(2026, 10, 18, 5);
+      assert.strictEqual(yield* settle(orgId, morning), 2);
+      assert.strictEqual(yield* settle(orgId, morning + 60_000), 0);
+      for (const questionId of [plain, legacy]) {
+        const row = yield* questionRow(sql, questionId);
+        assert.strictEqual(row.state, "open");
+        const card = Option.getOrThrow(
+          yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(row.raiseWidget!) }),
+        );
+        assert.include(
+          (card.state as { detail: string }).detail,
+          "Nothing happens until you answer.",
+        );
+        yield* chats.act(owner, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId: `pick-${questionId}`,
+        });
+        assert.deepInclude(yield* questionRow(sql, questionId), {
+          state: "answered",
+          answer: "Bhejo reminder",
+        });
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // Finance asks the owner with a default; the Chief of staff asking the same is refused; at the
 // day Finance's default is taken once and its card says so; the card takes no tap after.
 it.effect("a question is asked once, and its default is taken once at its day", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
-      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const studio = yield* ambermill;
+      const { sql, chats, owner, orgId, services, chatOf, wake } = studio;
+      const { task, input } = yield* taskCloseAsk(studio, "Review the Tidewater Freight notes");
+      const label = `Mark ${task.key} done`;
       const repo = Context.get(services, KinChatRepository);
       yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${owner.personId}`;
       yield* wake(
         "finance",
         yield* chats.send(owner, {
           chatId: chatOf("finance"),
-          body: "What about VIOM?",
+          body: "What about the Tidewater Freight notes?",
           clientMessageId: "m1",
         }),
       );
-      const asked = yield* callAs("finance", "kin_ask", reminderAsk);
+      const asked = yield* callAs("finance", "kin_ask", input);
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
       assert.strictEqual(asked.value.by, TUE_1930_ISO);
       const questionId = asked.value.question as string;
       // The card keeps taking taps past a day; Waiting on you says what Finance will do, and when.
       const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
-      assert.deepInclude(waiting!.ask!, { agent: "Finance", default: "Draft it" });
+      assert.deepInclude(waiting!.ask!, { agent: "Finance", default: label });
       assert.strictEqual(waiting!.ask!.by, TUE_1930_ISO);
       assert.deepStrictEqual(
         waiting!.ask!.options.map((option) => option.label),
-        ["Draft it", "Leave it"],
+        [label, "Leave it"],
       );
 
-      // The Chief of staff asks the same thing about the same invoice: refused, nothing posted.
+      // The Chief of staff asks about the same task and intent: nothing is posted.
       yield* wake(
         "chief",
         yield* chats.send(owner, {
           chatId: chatOf("chief"),
-          body: "Anything on money?",
+          body: "Are the Tidewater Freight notes ready?",
           clientMessageId: "m2",
         }),
       );
       const again = yield* callAs("chief", "kin_ask", {
-        ...reminderAsk,
-        question: "Should Finance draft the payment reminders?",
+        ...input,
+        question: "Should Finance close the Tidewater Freight notes task?",
         options: [{ label: "Yes" }, { label: "No" }],
         default: "Yes",
-        about: ["INV-8", "INV-9"],
-        intent: "Draft the payment reminders",
+        intent: "Close the task",
       });
       assert.isFalse(again.ok);
-      assert.match(
+      assert.include(
         String(again.value.message ?? JSON.stringify(again.value)),
-        /Already asked by Finance today: .*Default “Draft it” tomorrow/,
+        `Already asked by Finance today: “${input.question}”. Default “${label}” tomorrow.`,
       );
       const cards = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE chat_id = ${chatOf("chief")} AND type = 'choice'`;
@@ -360,17 +480,13 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         now: IST_MON_1130,
       });
       assert.include(section!.body, `${questionId}, Finance, today:`);
-      assert.include(section!.body, "default “Draft it” tomorrow");
+      assert.include(section!.body, `default “${label}” tomorrow`);
 
       // Never before its day; once at it; never twice. Her quiet hours hold the news of it.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"19:00","to":"21:00"}'
         WHERE person_id = ${owner.personId}`;
-      const told = sql<{
-        author: string;
-        body: string;
-        widget: string | null;
-        when: string | null;
-      }>`SELECT m.author_agent_id AS author, m.body, m.widget_id AS widget, m.when_json AS "when"
+      const told = sql<{ author: string; widget: string }>`SELECT
+          m.author_agent_id AS author, m.widget_id AS widget
         FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id AND m.message_id = t.event_id
         WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
@@ -416,27 +532,20 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
       assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
-      assert.deepStrictEqual(yield* dueEvents(sql, orgId), [
-        { agent: "finance", key: `question:${questionId}` },
-      ]);
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
       assert.lengthOf(yield* told, 0);
-      // At 21:00 her time she is told once, from Finance, as a line: Finance's turn does the
-      // default, so there is nothing for Kin to put back. It was her question alone, so it says
-      // she didn't answer, by when on her clock; each of her devices says that time on its own.
+      // Quiet hours end at 21:00. One notice is posted on the owner's clock.
       yield* settle(orgId, TUE_1930 + 90 * 60_000);
       yield* settle(orgId, TUE_1930 + 91 * 60_000);
-      assert.deepStrictEqual(yield* told, [
-        {
-          author: "finance",
-          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
-          widget: null,
-          when: JSON.stringify({
-            at: TUE_1930_ISO,
-            zone: "Asia/Kolkata",
-            text: "7:30 pm (Tue 17 Nov)",
-          }),
-        },
-      ]);
+      const notices = yield* told;
+      assert.lengthOf(notices, 1);
+      assert.strictEqual(notices[0]!.author, "finance");
+      const notice = Option.getOrThrow(
+        yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(notices[0]!.widget) }),
+      );
+      assert.deepInclude(notice.state, {
+        question: `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “${label}” for ${task.key} ${task.title}.`,
+      });
       const card = Option.getOrThrow(
         yield* repo.getWidget({
           orgId,
@@ -446,8 +555,8 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.isNotNull(card.closedAt);
       // The notice above says she didn't answer; the card only reads as closed.
       assert.deepStrictEqual((card.state as { outcome: unknown }).outcome, {
-        title: "Went with “Draft it”",
-        text: 'Went with “Draft it”. Say "undo it" in the chat to reverse.',
+        title: `Went with “${label}”`,
+        text: `Went with “${label}”.`,
       });
       // A tap after the default was taken changes nothing: the card is closed.
       const late = yield* chats
@@ -461,13 +570,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         .pipe(Effect.flip);
       assert.include(late, { reason: "widget_changed" });
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
-      // The turn Kin starts tells Finance to do it, and that Kin tells Rhea.
-      const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
-      assert.include(
-        due!.text,
-        "Kin tells Rhea Rao it went with “Draft it”, so don't say that again.",
-      );
-      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      assert.lengthOf(yield* Questions.openFor(KinOrgId.make(orgId), owner.personId), 0);
 
       // Once INV-8 is a real invoice, any default about it waits for Rhea.
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
@@ -491,8 +594,12 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         intent: "draft second reminder",
       });
       assert.isTrue(money.ok, JSON.stringify(money.value));
-      const [unsafe] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
-      assert.isNull(unsafe!.ask!.default);
+      assert.strictEqual(money.value.untaken, "money");
+      const waitingOnInvoice = (yield* repo.listOpenWaiting({
+        orgId,
+        personId: owner.personId,
+      })).find((item) => item.widgetId === money.value.widgetId);
+      assert.isNull(waitingOnInvoice!.ask!.default);
 
       // A whole-day row stored before it meant "not set" names no working days: a question asked
       // on a Saturday is due on Monday, as with no hours, not on Sunday.
@@ -1209,39 +1316,36 @@ it.effect("a reply written before the asking turn ended counts as the answer", (
   ),
 );
 
-// Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
-// back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
-// tells: Rhea, who is back, is told of her next one in that same pass.
 it.effect("a taken default is owed until told, and held ones don't crowd out people back", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
-      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const { sql, chats, owner, orgId, chatOf } = yield* ambermill;
       const chatId = chatOf("finance");
-      const ask = Effect.fn("test.ask")(function* (body: string, input: typeof reminderAsk) {
-        yield* wake("finance", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
-        const asked = yield* callAs("finance", "kin_ask", input);
-        assert.isTrue(asked.ok, JSON.stringify(asked.value));
-        return { id: asked.value.question as string, due: Date.parse(asked.value.by as string) };
-      });
+      const owe = (id: string, person: string, chat: KinChatId, taken: number) =>
+        sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, default_label, safe, asked_at, due_at, act_at, state, raised_at,
+            closed_at)
+          VALUES (${id}, ${orgId}, 'finance', ${person}, ${chat}, 'card',
+            ${`Invented question ${id}?`}, 'Yes', 1, 0, ${taken}, ${taken}, 'default_taken',
+            ${taken}, ${taken})`;
       const told = (questionId: string) =>
         sql`SELECT 1 FROM kin_pulse_told
           WHERE org_id = ${orgId} AND fact_key = ${`default_taken:${questionId}`}`;
       const posted = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
         WHERE org_id = ${orgId} AND chat_id = ${chatId}`.pipe(Effect.map((rows) => rows[0]!.n));
-      const day = 86_400_000;
 
-      const first = yield* ask("What about VIOM?", reminderAsk);
-      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(first.due + 42 * day));
-      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = ${owner.personId}`;
-      assert.strictEqual(yield* settle(orgId, first.due), 1);
-      yield* settle(orgId, first.due + 31 * day);
-      assert.lengthOf(yield* told(first.id), 0);
+      // A notice from six weeks ago is still owed. Start with the completed row so the fixture
+      // can also cover a plain default taken before Kin required a sealed plan.
+      yield* owe("q-first", owner.personId, chatId, IST_MON_1130 - 42 * 86_400_000);
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-17' WHERE person_id = ${owner.personId}`;
+      yield* settle(orgId, IST_MON_1130);
+      assert.lengthOf(yield* told("q-first"), 0);
       const away = yield* posted;
-      const home = Date.parse(`${back}T06:00:00.000Z`);
-      yield* settle(orgId, home);
-      yield* settle(orgId, home + 60_000);
-      assert.lengthOf(yield* told(first.id), 1);
+      yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = ${owner.personId}`;
+      yield* settle(orgId, IST_MON_1130);
+      yield* settle(orgId, IST_MON_1130 + 60_000);
+      assert.lengthOf(yield* told("q-first"), 1);
       assert.strictEqual(yield* posted, away + 1);
 
       const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
@@ -1251,21 +1355,10 @@ it.effect("a taken default is owed until told, and held ones don't crowd out peo
       })).chatId;
       yield* sql`UPDATE kin_people SET away_until = '2027-12-31' WHERE person_id = 'meera'`;
       for (let index = 0; index < 51; index += 1)
-        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
-            kind, question, default_label, safe, asked_at, due_at, act_at, state, raised_at,
-            closed_at)
-          VALUES (${`q-held-${index}`}, ${orgId}, 'finance', 'meera', ${meeraChat}, 'card',
-            ${`Invented held question ${index}?`}, 'Yes', 1, 0, 0, 0, 'default_taken',
-            ${index + 1}, ${index + 1})`;
-      const second = yield* ask("And the Apex receipts?", {
-        question: "Shall I file the Apex receipts under October?",
-        options: [{ label: "File them" }, { label: "Leave them" }],
-        default: "File them",
-        about: [],
-        intent: "file the Apex receipts",
-      });
-      assert.strictEqual(yield* settle(orgId, second.due), 1);
-      assert.lengthOf(yield* told(second.id), 1);
+        yield* owe(`q-held-${index}`, meera.personId, meeraChat, index + 1);
+      yield* owe("q-second", owner.personId, chatId, IST_MON_1130);
+      yield* settle(orgId, IST_MON_1130 + 60_000);
+      assert.lengthOf(yield* told("q-second"), 1);
     }).pipe(Effect.provide(layer)),
   ),
 );
