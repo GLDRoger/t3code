@@ -2,15 +2,15 @@
 
 Runs the Kin server from a source build on the always-on Linux machine, as the dedicated `kin` user. Design and reasons: [triggers spec, "Running on the Kin host"](../../../docs/kin/specs/triggers.md#running-on-the-kin-host).
 
-| File                                              | What it does                                                                                                                                                                      |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setup.sh`                                        | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
-| `kin-server.service`                              | The server, as a systemd user unit for `kin`.                                                                                                                                     |
-| `backup.sh`, `kin-backup.{service,timer}`         | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
-| `update.sh`                                       | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
-| `restore.md`                                      | The restore drill.                                                                                                                                                                |
-| `retire-workers.sh`                               | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
-| `clean-temp.sh`, `kin-temp-clean.{service,timer}` | Hourly: removes kin's old temporary files (see Storage).                                                                                                                          |
+| File                                              | What it does                                                                                                                                                                                                                |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setup.sh`                                        | As root, from `/root/kin-ops`: installs bubblewrap and socat if missing, creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
+| `kin-server.service`                              | The server, as a systemd user unit for `kin`.                                                                                                                                                                               |
+| `backup.sh`, `kin-backup.{service,timer}`         | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                                                               |
+| `update.sh`                                       | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                                                           |
+| `restore.md`                                      | The restore drill.                                                                                                                                                                                                          |
+| `retire-workers.sh`                               | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                                                                    |
+| `clean-temp.sh`, `kin-temp-clean.{service,timer}` | Hourly: removes kin's old temporary files (see Storage).                                                                                                                                                                    |
 
 ## A kin shell
 
@@ -38,6 +38,28 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 `~/t3code` is only the clone `update.sh` fetches into. The server runs from `~/kin-current`, a link to a finished build.
 
+### Claude's shell sandbox
+
+Claude's Bash needs `bubblewrap` and `socat` on Linux. Without a working sandbox, Claude's private or helper session fails to start rather than offering an unsandboxed shell.
+
+On Ubuntu 24.04 and later, if `sysctl kernel.apparmor_restrict_unprivileged_userns` reports `1`, an unprofiled bubblewrap cannot set up the sandbox. Check `command -v bwrap` in a kin shell. For the distribution's `/usr/bin/bwrap`, install the [Claude Code AppArmor profile](https://code.claude.com/docs/en/sandboxing#add-an-apparmor-profile-for-bubblewrap) as the owner if no profile grants it `userns`; do not overwrite a distribution or local profile that already does. Keep the sysctl enabled.
+
+```bash
+sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo systemctl reload apparmor
+sudo -iu kin /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / /usr/bin/true
+```
+
+Use the system package on the service's PATH, not a custom binary without a matching profile. A working probe exits zero; no server restart or model call is needed to run it.
+
 ### How the unit finds Node
 
 `ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current`, `KIN_NODE_VERSION` (the build's `engines.node`) and `TMPDIR` (see Storage) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.
@@ -50,7 +72,7 @@ Team memory is the owner's switch in **Settings → Memory**, taking effect on t
 
 ## Memory repo access
 
-Memory git ignores the system and global git config, so the host's credential helpers and `GIT_SSH_COMMAND` don't reach it. Give it a credential through `~/.t3/service.env`. The whole server and its agents see these variables, but only memory git turns them into `GIT_SSH_COMMAND` or a credential helper. Without one, cloning a private memory repo fails and every wake-up fails with it.
+Memory git ignores the system and global git config, so the host's credential helpers and `GIT_SSH_COMMAND` don't reach it. Give it a credential through `~/.t3/service.env`. Memory git turns these variables into `GIT_SSH_COMMAND` or a credential helper; agents' shells do not receive them. Without one, cloning a private memory repo fails and every wake-up fails with it.
 
 **SSH (use this for now).** Add a deploy key with write access to the memory repo only, and keep the private key outside `~/.ssh`:
 
@@ -66,10 +88,10 @@ Then in `~/.t3/service.env`:
 KIN_MEMORY_SSH_COMMAND="ssh -i /home/kin/.config/kin/kin-memory-deploy-key -o IdentitiesOnly=yes"
 ```
 
-Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. Keeping the key out of `~/.ssh` keeps it to the memory repo alone. **Who can read the key.** Anything that runs as `kin`: Kin's server, and an agent's shell in a turn only the owner and co-owners read that has read no outside text (chats with other people, and turns that read outside text, get no shell). Keep GitHub's own containment as a second wall:
+Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. Keeping the key out of `~/.ssh` keeps it to the memory repo alone. **Who can read the key.** Kin's server and other unsandboxed processes running as `kin` can read it. Claude's Kin shell and file tools cannot read it at this path. Codex has no local shell or file tools, and ACP providers are refused for private chats and helper tasks. Keep GitHub's own containment as a second wall:
 
 - While every lead is at L0, protect `main` in the memory repo with a ruleset that requires a pull request and the `memory-check` workflow, with no bypass for this deploy key. The key can then update every ref except `main`, so a branch it pushes is never trusted on its own (see `ops/kin/memory-repo/README.md`, Workflow permissions).
-- Raising a lead to L1 (whose memory writes Kin merges into `main`) wants a key no agent can read. An owner-only turn's shell can read this one, so L1 gives that agent's shell `main` too. It stays the owner's call.
+- Raising a lead to L1 lets Kin merge memory changes into `main`. Keep the key in the protected folder above, outside the agent's checkout and Scratch.
 
 **HTTPS.** Set `KIN_MEMORY_CREDENTIAL_HELPER` to a git credential helper's name or absolute path, with an `https://` repo URL.
 
@@ -223,6 +245,8 @@ KIN_BACKUP_DEST=/mnt/backup/kin
 # Only if the destination is encrypted in a way lsblk can't see (not LUKS/dm-crypt):
 # KIN_BACKUP_FLAGS=--i-know-dest-is-encrypted
 ```
+
+Restart `kin-server` after setting or changing the destination so Claude's shell sandbox hides it. Keep any old copies where the service user cannot read them.
 
 The destination must be a mounted volume of its own: `backup.sh` refuses one on the same filesystem as `~/.t3`, or on `/`, which is what an unmounted mountpoint looks like. The encryption override doesn't skip that check.
 

@@ -83,6 +83,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.83",
     "@effect/graphql-generator": "catalog:",
     "@effect/vitest": "catalog:",
     "@handy-computer/models": "0.2.3",

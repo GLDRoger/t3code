@@ -11,6 +11,8 @@ StartLimitBurst=10
 Type=simple
 WorkingDirectory=%h
 # Owner overrides, such as T3CODE_LAN=true. Backed up with the state.
+# Keep the night backup path in the shell sandbox deny list.
+EnvironmentFile=-%h/.config/kin/backup.env
 EnvironmentFile=-%h/.t3/service.env
 # Read last so service.env can't override it. Written by setup.sh and update.sh:
 # KIN_ENABLED, PATH, KIN_REPO, KIN_CHECKOUT (~/kin-current), KIN_NODE_VERSION and KIN_BUILD_COMMIT.

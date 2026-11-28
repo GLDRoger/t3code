@@ -104,6 +104,13 @@ if [ -e "$CHECKOUT" ] && [ "$(uname -s)" = Linux ] && [ "$(stat -c %U "$CHECKOUT
   refuse "$CHECKOUT is not owned by $KIN_USER."
 fi
 
+# Claude's shell sandbox needs these system binaries.
+if ! command -v bwrap >/dev/null || ! command -v socat >/dev/null; then
+  command -v apt-get >/dev/null || refuse "Install bubblewrap and socat with your package manager."
+  run apt-get update
+  run apt-get install -y bubblewrap socat
+fi
+
 # 1. The kin user.
 if user_exists; then
   say "User $KIN_USER exists."
