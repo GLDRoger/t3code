@@ -316,7 +316,9 @@ class KinReplyUpdateError extends Schema.TaggedError<KinReplyUpdateError>()("Kin
 }) {
   override get message() {
     return this.reason === "withheld"
-      ? `Not shown: ${this.why ?? WITHHELD_ANY}`
+      ? this.why === undefined
+        ? UPDATE_WITHHELD_ANY
+        : `Not shown: ${this.why}`
       : UPDATE_REFUSALS[this.reason];
   }
 }
@@ -362,7 +364,10 @@ type Ending =
 
 type Outcome = "held" | "posted" | "note" | "empty" | "withheld" | "dropped";
 
-const WITHHELD_ANY = "Kin couldn't save it. Send your message again.";
+const WITHHELD_ANY =
+  "Kin couldn't post it for a reason it didn't expect, and logged why. Ask again, and if this line comes back, tell whoever looks after Kin.";
+const UPDATE_WITHHELD_ANY =
+  "Not shown, for a reason Kin didn't give; your message stays as it was posted. Don't try the same update again.";
 type Withheld = {
   readonly _tag: "withheld";
   readonly reason: KinChatError["reason"] | "wake-up ended" | "past_its_day";
