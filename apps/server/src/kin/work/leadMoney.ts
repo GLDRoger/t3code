@@ -75,7 +75,7 @@ import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts"
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
-import { rateMoney } from "./statements/invoiceCredits.ts";
+import { bankShowsPayment, rateMoney } from "./statements/invoiceCredits.ts";
 import { parseFields } from "./lists.ts";
 import {
   dates,
@@ -212,9 +212,11 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
     updatedAt: string | null;
     untilAnswered: number | null;
     detail: string | null;
+    noBankEvidence: number | null;
   }>`SELECT p.state, p.snapshot_json AS snapshot, w.closed_at IS NOT NULL AS closed,
       w.updated_at AS "updatedAt", json_extract(w.state_json, '$.untilAnswered') AS "untilAnswered",
-      json_extract(w.state_json, '$.detail') AS detail
+      json_extract(w.state_json, '$.detail') AS detail,
+      json_extract(p.request_json, '$.noBankEvidence') AS "noBankEvidence"
     FROM kin_receipt_proposals p
     LEFT JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
     WHERE p.org_id = ${lead.orgId} AND p.proposal_id = ${proposal}`;
@@ -257,7 +259,12 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
       message:
         "The figures changed while Kin was asking the owner, so no card was shown and nothing changed. Ask them to do this themselves in Money.",
     });
-  const shown = row?.detail == null ? cardLines(snapshot, asked) : row.detail.split("\n");
+  const noBankEvidence = row?.noBankEvidence === 1;
+  const { noBankEvidence: _computedEvidence, ...firstAsk } = asked;
+  const shown =
+    row?.detail == null
+      ? cardLines(snapshot, { ...firstAsk, ...(noBankEvidence ? { noBankEvidence: true } : {}) })
+      : row.detail.split("\n");
   const card = yield* askOwner(
     lead,
     {
@@ -277,7 +284,7 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
         ),
     }),
   );
-  return { proposal, shown, card };
+  return { proposal, shown, card, noBankEvidence };
 });
 
 const Label = KinToolText(60);
@@ -645,8 +652,13 @@ export const PaymentResult = Schema.Union([
   PaymentAlreadyRecorded,
 ]);
 
-export const PAYMENT_PROPOSED_NEXT =
+const PAYMENT_PROPOSED_NEXT =
   "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
+export const paymentProposedNext = (noBankEvidence: boolean) =>
+  noBankEvidence
+    ? `${PAYMENT_PROPOSED_NEXT} The card tells the owner that no bank statement or alert shows this money yet.`
+    : PAYMENT_PROPOSED_NEXT;
+
 /** What an agent reads when the payment it was told of is already on the invoice. */
 export const alreadyRecordedNext = (
   cash: KinMoney | undefined,
@@ -761,9 +773,14 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         reason: "invalid_state",
         message: `That is more than the ${formatMoney({ minor: owed, currency: fallback })} still owed on ${before.key}.`,
       });
+    const bankShowsIt =
+      cash !== undefined &&
+      came === undefined &&
+      (yield* bankShowsPayment(lead.orgId, before.recordId, cash));
     const asked = yield* proposeMoney(
       lead,
       {
+        ...(bankShowsIt ? {} : { noBankEvidence: true }),
         received: {
           key: before.key,
           ...(cash === undefined ? {} : { amount: cash }),
@@ -781,7 +798,8 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       key: before.key,
       proposal: asked.proposal,
       shown: asked.shown,
-      next: asked.card === undefined ? PAYMENT_NO_CARD_NEXT : PAYMENT_PROPOSED_NEXT,
+      next:
+        asked.card === undefined ? PAYMENT_NO_CARD_NEXT : paymentProposedNext(asked.noBankEvidence),
       sensitive: true as const,
     };
   }
