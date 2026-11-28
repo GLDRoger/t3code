@@ -31,6 +31,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))((it) => {
       const loaded = (organization: string) =>
         ManagedPolicy.loadedPolicy({
           path: "/etc/t3code/policy.json",
+          hasInstalledPolicy: true,
           document: { schemaVersion: 1, organization },
         });
       const installed = yield* loaded("Example Corp");
