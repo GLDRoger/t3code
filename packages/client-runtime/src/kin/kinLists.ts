@@ -30,7 +30,7 @@ import {
   kinBillToName,
   kinIsBillToField,
 } from "./kinBillTo.ts";
-import { kinListSections } from "./kinShell.ts";
+import { kinListSections, kinSectionSwitchOn } from "./kinShell.ts";
 import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
@@ -45,6 +45,7 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import { KIN_OFFLINE_NOT_SENT, kinFailure } from "./kinAnswers.ts";
 import {
   isKinChatError,
+  KIN_ENTRY_SHARE,
   kinWorkAllDay,
   kinWorkClosed,
   kinWorkDueLabel,
@@ -1923,12 +1924,49 @@ export const kinListCanTogglePayments = (def: KinListDefinition) =>
   def.amount && !def.builtIn && def.list !== "invoices";
 
 /** Whether the list's settings offer opening it to the team: a company-made list that isn't sensitive. */
-export const kinListCanOpenToTeam = (def: KinListDefinition) =>
-  def.team === true ||
-  (!def.builtIn &&
-    !def.sensitive &&
-    !(KIN_LISTS_NEVER_TEAM as ReadonlyArray<string>).includes(def.list) &&
-    def.name.trim().toLowerCase() !== "bank transactions");
+export const kinListCanOpenToTeam = (def: KinListDefinition) => def.team === true || teamable(def);
+
+const teamable = (def: KinListDefinition) =>
+  !def.builtIn &&
+  !def.sensitive &&
+  !(KIN_LISTS_NEVER_TEAM as ReadonlyArray<string>).includes(def.list) &&
+  def.name.trim().toLowerCase() !== "bank transactions";
+
+/**
+ * The whole team sees this entry through its team list, as the host's `personSees` decides: an
+ * unlabelled entry made since the list opened, unless the list takes payments while Money is off.
+ */
+const kinEntryOnTeamList = (
+  item: Pick<KinRecord, "sensitive" | "sensitiveInherited" | "createdAt">,
+  def: KinListDefinition | null,
+  shell: KinShell | null | undefined,
+) =>
+  def !== null &&
+  def.team === true &&
+  teamable(def) &&
+  typeof def.teamSince === "number" &&
+  !item.sensitive &&
+  item.sensitiveInherited !== true &&
+  Date.parse(item.createdAt) >= def.teamSince &&
+  !(
+    def.payments === true &&
+    def.list !== "dates" &&
+    def.list !== "subscriptions" &&
+    !kinSectionSwitchOn(shell, "money")
+  );
+
+const KIN_TEAM_LIST_ENTRY_SEEN =
+  "Everyone on the team sees this. Amounts and private details stay hidden from anyone without Money.";
+
+/** The entry sheet's share switch words: on a team list the team sees it either way. */
+export const kinEntryShareCopy = (
+  item: Pick<KinRecord, "sensitive" | "sensitiveInherited" | "createdAt">,
+  def: KinListDefinition | null,
+  shell: KinShell | null | undefined,
+): typeof KIN_ENTRY_SHARE =>
+  kinEntryOnTeamList(item, def, shell)
+    ? { ...KIN_ENTRY_SHARE, on: KIN_TEAM_LIST_ENTRY_SEEN, off: KIN_TEAM_LIST_ENTRY_SEEN }
+    : KIN_ENTRY_SHARE;
 
 const LABEL_MAX = 60;
 export const KIN_LIST_LABEL_MAX = LABEL_MAX;

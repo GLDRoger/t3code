@@ -18,6 +18,7 @@ import {
   KIN_YES_NO,
   KIN_LISTS,
   kinEntryPrivateLine,
+  kinEntryShareCopy,
   KIN_LIST_LABEL_MAX,
   kinListEditDraftOf,
   kinListEditInput,
@@ -43,7 +44,6 @@ import {
   kinInvoiceDraftNote,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
-  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   kinWorkDueLabel,
@@ -84,7 +84,7 @@ import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
-import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./state/useKinShell";
 import {
   KinInvoiceActions,
   KinInvoiceCreditOffer,
@@ -285,6 +285,7 @@ export function KinListEntryBody(
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
+  const shell = useKinShell(environmentId);
   const entry = kinListEntryView(item, def, context);
   const said = kinEntryFacts(useKinAttention(props)).get(item.key);
   const invoice = kinIsInvoice(item)
@@ -758,7 +759,7 @@ export function KinListEntryBody(
             itemKey={item.key}
             shared={view.shared}
             disabled={busy}
-            copy={KIN_ENTRY_SHARE}
+            copy={kinEntryShareCopy(item, def, shell)}
           />
         </ListSection>
       ) : null}
