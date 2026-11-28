@@ -78,6 +78,8 @@ export const KIN_BILLS = {
     check: "Check this one",
     checkAmount: "Check the amount",
     checkDate: "Check the date",
+    /** Every other figure was read; the date was left blank. */
+    needsDate: "Needs its date",
     duplicate: (key: string, title: string) => `Looks like ${key} ${title}`.trim(),
   } as const,
   field: {
@@ -97,6 +99,7 @@ export const KIN_BILLS = {
     byHand: "Enter by hand",
     readAgain: "Read again",
   },
+  needsDate: "Every other figure was read: enter the date by hand, or read it again.",
   open: (key: string) => `Open ${key}`,
   alreadyDropped: (name: string) => `${name} was added before, and its expense was dropped.`,
   keepAll: "Keep all that read cleanly",
@@ -187,7 +190,10 @@ export interface KinBillField {
 export interface KinBillRowView {
   readonly key: string;
   readonly row: KinBillRow;
+  /** The original, which a tap opens. */
   readonly file: KinFileRef;
+  /** What the list draws: the host's smaller copy when it has one. */
+  readonly picture: KinFileRef;
   readonly pdf: boolean;
   /** Any file that is not a picture (a PDF, a mailed bill's text) shows as a file, never drawn. */
   readonly asFile: boolean;
@@ -283,9 +289,26 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
   }
 }
 
+// The host's own words for a bill whose date alone was left blank, alone or before the agent's.
+const DATE_ONLY = /^Couldn't read: date(?:\.|$)/;
+
+/** Not read cleanly, but only for its date: the host has no flag for it, only its sentence. */
+const kinBillNeedsDate = (
+  row: Pick<KinBillRow, "state" | "readClean" | "wrongKind" | "problem" | "read">,
+) =>
+  row.state === "unreadable" &&
+  row.readClean !== true &&
+  row.wrongKind !== true &&
+  DATE_ONLY.test(row.problem ?? "") &&
+  blank(row.read.date) === null &&
+  blank(row.read.vendor) !== null &&
+  blank(row.read.amount) !== null &&
+  blank(row.read.currency) !== null;
+
 function kinBillStateLabel(row: KinBillRow) {
   if (row.state === "kept" && row.mail !== undefined && row.expense?.state === "open")
     return KIN_BILLS.state.keptToPay;
+  if (kinBillNeedsDate(row)) return KIN_BILLS.state.needsDate;
   if (row.state === "duplicate")
     return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
   if (row.state !== "unreadable" || row.readClean !== true) return KIN_BILLS.state[row.state];
@@ -346,7 +369,11 @@ export function kinBillRowView(
     kinBillExpenseFields(row, options.categoryLabel) ??
     kinBillFields(row.read, options.categoryLabel);
   const problem =
-    row.state === "unreadable" && row.problem !== COULD_NOT_READ ? (row.problem ?? null) : null;
+    row.state !== "unreadable" || row.problem === COULD_NOT_READ
+      ? null
+      : kinBillNeedsDate(row) && row.problem === "Couldn't read: date"
+        ? KIN_BILLS.needsDate
+        : (row.problem ?? null);
   const vendor = fields.find((field) => field.key === "vendor")?.value ?? null;
   const amount = fields.find((field) => field.key === "amount")?.value ?? null;
   const read = fields.flatMap((field) =>
@@ -366,6 +393,7 @@ export function kinBillRowView(
     key: row.sha256,
     row,
     file: row.file,
+    picture: row.preview ?? row.file,
     pdf: kinBillIsPdf(row.file),
     asFile: kinBillIsPdf(row.file) || !row.file.mimeType.toLowerCase().startsWith("image/"),
     name:
@@ -408,11 +436,14 @@ export function kinBillRowViews(
 
 // A batch: its counts, its sentence, and the way to it from Expenses
 
-export type KinBillCounts = KinBillBatchSummary["states"];
+export type KinBillCounts = KinBillBatchSummary["states"] & {
+  /** Of `unreadable`: every figure read but the date. The host doesn't count these apart. */
+  readonly date?: number;
+};
 
-export const kinBillCounts = (
-  rows: ReadonlyArray<Pick<KinBillRow, "state" | "readClean">>,
-): KinBillCounts => {
+type KinBillCountRow = Pick<KinBillRow, "state" | "readClean" | "wrongKind" | "problem" | "read">;
+
+const kinBillCounts = (rows: ReadonlyArray<KinBillCountRow>): KinBillCounts => {
   const count = (state: KinBillState) => rows.filter((row) => row.state === state).length;
   return {
     reading: count("reading"),
@@ -422,19 +453,34 @@ export const kinBillCounts = (
     duplicate: count("duplicate"),
     unreadable: count("unreadable"),
     check: rows.filter((row) => row.state === "unreadable" && row.readClean === true).length,
+    date: rows.filter(kinBillNeedsDate).length,
   };
 };
+
+/** A batch's list: the host's counts when it sent them, its bills missing only a date from the rows. */
+export function kinBillReviewCounts(
+  states: KinBillBatchSummary["states"] | null,
+  rows: ReadonlyArray<KinBillCountRow>,
+): KinBillCounts {
+  if (states === null) return kinBillCounts(rows);
+  const date = rows.filter(kinBillNeedsDate).length;
+  return { ...states, date: Math.min(date, states.unreadable - (states.check ?? 0)) };
+}
 
 /** "12 bills: 5 to keep, 1 looks like a duplicate, 3 kept." The host writes no line for this. */
 export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
   const check = counts.check ?? 0;
+  const date = counts.date ?? 0;
   const parts = [
     counts.read === 0 ? null : `${counts.read} to keep`,
     counts.duplicate === 0
       ? null
       : `${counts.duplicate} ${counts.duplicate === 1 ? "looks like a duplicate" : "look like duplicates"}`,
-    counts.unreadable - check === 0 ? null : `${counts.unreadable - check} couldn't be read`,
+    counts.unreadable - check - date <= 0
+      ? null
+      : `${counts.unreadable - check - date} couldn't be read`,
     check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
+    date <= 0 ? null : date === 1 ? "1 needs its date" : `${date} need their date`,
     counts.reading === 0 ? null : `${counts.reading} being read`,
     counts.kept === 0 ? null : `${counts.kept} kept`,
     counts.dropped === 0 ? null : `${counts.dropped} dropped`,

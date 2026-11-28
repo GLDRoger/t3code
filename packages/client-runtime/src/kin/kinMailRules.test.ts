@@ -82,6 +82,7 @@ const makeRule = (overrides: Partial<KinMailRule> = {}): KinMailRule => ({
   fired: 12,
   atLimit: false,
   lastWakeAt: NOV_26_1042,
+  lastRanAt: "2026-11-26T10:42:00.000Z",
   createdAt: NOV_24_0942,
   updatedAt: NOV_24_0942,
   ...overrides,
@@ -290,11 +291,38 @@ describe("kinMailRuleRowView: one line per rule under its mailbox", () => {
 
   it("says a rule that never ran hasn't, and names a lead it can't find plainly", () => {
     const row = kinMailRuleRowView(
-      makeRule({ lastWakeAt: null, fired: 0, agentId: "agt_gone" as KinAgentId }),
+      makeRule({
+        lastWakeAt: null,
+        lastRanAt: undefined,
+        fired: 0,
+        agentId: "agt_gone" as KinAgentId,
+      }),
       { leads: LEADS, now: NOW, words: WORDS },
     );
     expect(row.counts).toBe("0 of 30 this month · hasn't run yet");
     expect(row.does.startsWith("A lead no longer here: ")).toBe(true);
+  });
+
+  it("says a rule whose only wake was held hasn't run, whatever its last wake was", () => {
+    const row = kinMailRuleRowView(
+      makeRule({
+        state: "paused",
+        pausedWhy: "person",
+        fired: 0,
+        monthlyCap: 1,
+        lastRanAt: undefined,
+      }),
+      { leads: LEADS, now: NOW, words: WORDS },
+    );
+    expect(row.counts).toBe("0 of 1 this month · hasn't run yet");
+  });
+
+  it("says when the newest run really started, not when the rule last woke", () => {
+    const row = kinMailRuleRowView(
+      makeRule({ lastWakeAt: NOW, lastRanAt: "2026-11-25T08:15:00.000Z" }),
+      { leads: LEADS, now: NOW, words: WORDS },
+    );
+    expect(row.counts).toBe("12 of 30 this month · last ran 25 Nov, 08:15");
   });
 
   it("shortens long words on the list at a word edge; the rule's page has them whole", () => {
@@ -1333,6 +1361,49 @@ describe("kinMailRuleCardView: a lead's proposal card in chat", () => {
       ),
       { viewerPersonId: RHEA },
       "Turned on by you.",
+    ],
+    [
+      "turned on by another person, then removed",
+      cardWidget(
+        cardState({
+          decision: {
+            status: "on",
+            ruleId: RULE,
+            by: { personId: RHEA, name: "Rhea Kapoor" },
+            removedAt: "2026-11-28T08:00:00.000Z",
+          },
+        }),
+        { closedAt: "2026-11-27T09:15:00.000Z", revision: 3 },
+      ),
+      { viewerPersonId: MEERA },
+      "Turned on by Rhea Kapoor 27 Nov, 09:15. Removed 28 Nov, 08:00, so it no longer runs.",
+    ],
+    [
+      "turned on by the viewer, then removed",
+      cardWidget(
+        cardState({
+          decision: {
+            status: "on",
+            ruleId: RULE,
+            by: { personId: RHEA, name: "Rhea Kapoor" },
+            removedAt: "2026-11-28T08:00:00.000Z",
+          },
+        }),
+        { closedAt: "2026-11-27T09:15:00.000Z", revision: 3 },
+      ),
+      { viewerPersonId: RHEA },
+      "Turned on by you 27 Nov, 09:15. Removed 28 Nov, 08:00, so it no longer runs.",
+    ],
+    [
+      "turned on (older card without by), then removed",
+      cardWidget(
+        cardState({
+          decision: { status: "on", ruleId: RULE, removedAt: "2026-11-28T08:00:00.000Z" },
+        }),
+        { closedAt: "2026-11-27T09:15:00.000Z", revision: 3 },
+      ),
+      {},
+      "Turned on 27 Nov, 09:15. Removed 28 Nov, 08:00, so it no longer runs.",
     ],
     [
       "not now, with when",

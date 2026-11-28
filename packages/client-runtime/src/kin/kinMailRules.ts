@@ -365,6 +365,8 @@ export function kinMailRuleRowView(
   const copy = KIN_MAIL_RULES;
   const state = kinMailRuleState(rule, { leads: options.leads, words });
   const removed = rule.state === "removed";
+  // Not lastWakeAt: a wake that was held, or still waits, never ran.
+  const ranAt = rule.lastRanAt === undefined ? null : Date.parse(rule.lastRanAt);
   return {
     ruleId: rule.ruleId,
     title: kinMailRuleMatchLine(rule.match),
@@ -372,7 +374,7 @@ export function kinMailRuleRowView(
     counts: removed
       ? copy.removedOn(day(rule.updatedAt, options.now, words))
       : `${copy.counts(rule.fired, rule.monthlyCap)} · ${
-          rule.lastWakeAt === null ? copy.neverRan : copy.lastRan(when(rule.lastWakeAt, words))
+          ranAt === null ? copy.neverRan : copy.lastRan(when(ranAt, words))
         }`,
     // Under the Removed group the date says it; a second "Removed" beside it says nothing.
     state: removed ? { ...state, tone: "ok" } : state,
@@ -769,6 +771,8 @@ const KIN_MAIL_RULE_CARD = {
   on: (at: string) => `Turned on ${at}.`,
   onBy: (who: string, at: string | null) =>
     at === null ? `Turned on by ${who}.` : `Turned on by ${who} ${at}.`,
+  removed: (at: string | null) =>
+    at === null ? "Removed, so it no longer runs." : `Removed ${at}, so it no longer runs.`,
   dismissed: (at: string) => `Not now was tapped ${at}, so nothing was turned on.`,
   expired: "This card expired, so nothing was turned on. Ask the lead for a new one.",
   closed: "This card closed, so nothing was turned on.",
@@ -837,13 +841,21 @@ export function kinMailRuleCardView(
         ? "you"
         : visible(card.decision.by.name)
       : null;
+  const removedAt =
+    card.decision.status === "on" && card.decision.removedAt !== undefined
+      ? Date.parse(card.decision.removedAt)
+      : null;
+  const turnedOn =
+    turnedOnBy === null
+      ? settledAt === null
+        ? "Turned on."
+        : copy.on(settledAt)
+      : copy.onBy(turnedOnBy, settledAt);
   const status =
     card.decision.status === "on"
-      ? turnedOnBy === null
-        ? settledAt === null
-          ? "Turned on."
-          : copy.on(settledAt)
-        : copy.onBy(turnedOnBy, settledAt)
+      ? removedAt === null
+        ? turnedOn
+        : `${turnedOn} ${copy.removed(Number.isNaN(removedAt) ? null : when(removedAt, words))}`
       : card.decision.status === "dismissed"
         ? settledAt === null
           ? "Not now was tapped, so nothing was turned on."
