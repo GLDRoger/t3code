@@ -72,6 +72,7 @@ import * as LeadBills from "./leadBills.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billTurn } from "./billTurn.ts";
 import { billPhotoPreviewId, billPhotoPreviewPath } from "./billPhotoForModel.ts";
+import { setProfile } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { outlook } from "./moneyAnswers.ts";
 import { moneySummary } from "./moneyViews.ts";
@@ -214,6 +215,8 @@ const seed = Effect.gen(function* () {
 });
 
 const decodeCard = Schema.decodeUnknownSync(KinBillBatchCard);
+const decodeBillList = Schema.decodeEffect(KinBillsListResult);
+const decodeReaderInput = Schema.decodeEffect(LeadBills.ReadInput);
 const encodeAdded = Schema.encodeUnknownEffect(KinBillsAddResult);
 const card = (batchId: string) =>
   Effect.gen(function* () {
@@ -308,7 +311,7 @@ const firstCut = Effect.gen(function* () {
   return { added, wakeupId, cut };
 });
 
-const mailedIn = (currency: string, tax: string | undefined) =>
+const mailedIn = (currency: string | undefined, tax: string | undefined) =>
   Effect.gen(function* () {
     const store = yield* AttachmentStore.KinAttachmentStore;
     const sql = yield* SqlClient.SqlClient;
@@ -341,7 +344,7 @@ const mailedIn = (currency: string, tax: string | undefined) =>
       date: "2026-11-03",
       amount: "1180",
       ...(tax === undefined ? {} : { tax }),
-      currency,
+      ...(currency === undefined ? {} : { currency }),
     });
     yield* endTurn(wakeupId);
     return added.batchId;
@@ -442,7 +445,7 @@ describe("bills in bulk", () => {
   it.effect("a mailed invoice counts only as To pay after Keep and has no paid day", () =>
     Effect.gen(function* () {
       yield* seed;
-      const batchId = yield* mailedInvoice;
+      const batchId = yield* mailedIn(undefined, "180");
       const expense = yield* expenseOf(batchId);
       const totals = () =>
         Effect.gen(function* () {
@@ -466,6 +469,9 @@ describe("bills in bulk", () => {
         partners: [],
       };
       assert.deepStrictEqual(yield* totals(), before);
+      const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId })).bills;
+      assert.strictEqual(bill?.state, "read");
+      assert.include(bill?.read, { currency: "INR", currencyAssumed: true });
       assert.notProperty(expense, "date");
       assert.include(expense, { state: "open" });
       assert.deepEqual(expense.tax, { minor: 18_000, currency: "INR" });
@@ -877,7 +883,7 @@ describe("bills in bulk", () => {
   );
 
   it.effect(
-    "a quiet turn answers each bill: a clean read is one suggested expense, a blank stays blank, an unanswered one is unread",
+    "a quiet turn answers each bill: clean reads are suggestions, and an unanswered one is unread",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -961,13 +967,15 @@ describe("bills in bulk", () => {
           rest.attachments.map((file) => file.name),
           ["B2.png", "B3.png"],
         );
-        yield* read({
-          bill: "B2",
-          vendor: "Tidewater Freight",
-          date: "2026-11-04",
-          amount: "450",
-          cannotRead: "No currency\n  printed.",
-        });
+        assert.deepStrictEqual(
+          yield* read({
+            bill: "B2",
+            vendor: "Harbor Cafe",
+            date: "2026-11-04",
+            amount: "450",
+          }),
+          { bill: "B2", result: "B2 saved; the owner keeps it." },
+        );
         assert.include(yield* read({ bill: "B9" }).pipe(Effect.flip), { reason: "not_found" });
         assert.deepStrictEqual(yield* read({ bill: "B1", vendor: "Changed" }), {
           bill: "B1",
@@ -980,16 +988,16 @@ describe("bills in bulk", () => {
           rows.map(({ state, problem }) => [state, problem]),
           [
             ["read", null],
-            // Kin's own words first, then the agent's, said as its own, on one line.
-            ["unreadable", "Couldn't read: currency. Finance: No currency printed."],
+            ["read", null],
             ["unreadable", "Kin could not read this one"],
           ],
         );
-        // What was read is kept as given, the blank left out.
         assert.deepStrictEqual(JSON.parse(rows[1]!.readJson!), {
-          vendor: "Tidewater Freight",
+          vendor: "Harbor Cafe",
           date: "2026-11-04",
           amount: "450",
+          currency: "INR",
+          currencyAssumed: true,
         });
         const [expense] = yield* sql<{
           title: string;
@@ -1002,7 +1010,7 @@ describe("bills in bulk", () => {
           origin: string;
         }>`SELECT title, state, confirmed, amount_minor AS amount, currency, category,
             fields_json AS fields, origin_key AS origin
-          FROM kin_records WHERE register_id = 'expenses'`;
+          FROM kin_records WHERE register_id = 'expenses' AND title = 'Sample Cloud, Nov 2026'`;
         const [bill] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
         const fields = JSON.parse(expense!.fields) as Record<string, unknown>;
         assert.deepStrictEqual(
@@ -1033,7 +1041,7 @@ describe("bills in bulk", () => {
         assert.deepStrictEqual(yield* spent(), []);
 
         const done = yield* card(added.batchId);
-        assert.strictEqual(done.text, "3 bills: 1 read, 2 couldn't be read.");
+        assert.strictEqual(done.text, "3 bills: 2 read, 1 couldn't be read.");
         // Its message says what the card says, so a chat list's line never reads "Reading…".
         const [message] = yield* (yield* SqlClient.SqlClient)<{ body: string }>`SELECT body
           FROM kin_messages WHERE org_id = ${orgId} AND message_id = ${`bills:${added.batchId}`}`;
@@ -1047,12 +1055,12 @@ describe("bills in bulk", () => {
           batchId: added.batchId,
           clientRequestId: "keep",
         });
-        assert.lengthOf(kept.kept, 1);
+        assert.lengthOf(kept.kept, 2);
         assert.deepStrictEqual(
           kept.skipped.map((one) => one.why),
-          ["It wasn't read cleanly.", "It wasn't read cleanly."],
+          ["It wasn't read cleanly."],
         );
-        assert.deepStrictEqual(yield* spent(), [{ minor: 118_000, currency: "INR" }]);
+        assert.deepStrictEqual(yield* spent(), [{ minor: 163_000, currency: "INR" }]);
         assert.deepStrictEqual(
           yield* Bills.keepRead(as(meera), {
             orgId,
@@ -1069,7 +1077,7 @@ describe("bills in bulk", () => {
         });
         assert.deepStrictEqual(
           [again.kept, again.skipped.map((one) => one.why)],
-          [[], ["It wasn't read cleanly.", "It wasn't read cleanly."]],
+          [[], ["It wasn't read cleanly."]],
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -1094,17 +1102,25 @@ describe("bills in bulk", () => {
         amount,
         ...(currency === undefined ? {} : { currency }),
       });
-      const answers = new Map([
+      const forged = {
+        ...printed("Inkspot Cloud", "1200.50", "EUR"),
+        currencyAssumed: true as const,
+      };
+      assert.notProperty(
+        yield* decodeReaderInput({ bill: "B1", readable: true, ...forged }),
+        "currencyAssumed",
+      );
+      const answers = new Map<string, KinBillRead>([
         ["cad.png", printed("Maple Hosting", "1200.50", "CAD")],
         // The same bill again in the batch: a duplicate of the suggestion just made of it.
         ["again.png", printed("MAPLE hosting", "1200.5", "CAD")],
         // Kin's rupees of Pakistan have no minor unit (`kinCurrency`): a whole figure.
         ["pkr.png", printed("Indus Couriers", "1200", "PKR")],
-        ["eur.png", printed("Rhein Papier", "1200.50", "EUR")],
+        ["eur.png", forged],
         ["symbol.png", printed("Maple Hosting", "$120.00", "CAD")],
         ["dots.png", printed("Rhein Papier", "1.200", "EUR")],
         ["commas.png", printed("Indus Couriers", "1,200", "PKR")],
-        ["none.png", printed("Tidewater Freight", "1200.50")],
+        ["none.png", { vendor: "Tidewater Freight", date: "2026-11-03" }],
         ["paise.png", printed("Indus Couriers", "1200.50", "PKR")],
       ]);
       // Nine bills are two turns, claimed in either order: each answers its own by file.
@@ -1119,6 +1135,10 @@ describe("bills in bulk", () => {
         }
         yield* endTurn(wakeupId);
       }
+      assert.deepStrictEqual(
+        JSON.parse((yield* billRows).find((row) => row.name === "eur.png")!.readJson!),
+        { vendor: "Inkspot Cloud", date: "2026-11-03", amount: "1200.50", currency: "EUR" },
+      );
       assert.deepStrictEqual(
         yield* sql`SELECT b.state, b.problem, r.amount_minor AS amount, r.currency
             FROM kin_bill_reads b LEFT JOIN kin_records r ON r.org_id = b.org_id
@@ -1137,13 +1157,56 @@ describe("bills in bulk", () => {
           })),
           {
             state: "unreadable",
-            problem: "Couldn't read: currency",
+            problem: "Couldn't read: amount",
             amount: null,
             currency: null,
           },
           { state: "unreadable", problem: "Couldn't read: amount", amount: null, currency: null },
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("uses the company's own currency to parse a bill's unmarked total and tax", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: rhea },
+        { country: "JP", homeCurrency: "JPY" },
+        undefined,
+      );
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [yield* upload("harbor.png", "harbor cafe")],
+          clientRequestId: "add",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId } = yield* claimTurn(1);
+      yield* read({
+        bill: "B1",
+        vendor: "Harbor Cafe",
+        date: "2026-11-03",
+        amount: "1200",
+        tax: "20",
+      });
+      yield* endTurn(wakeupId);
+      const result = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      const [bill] = (yield* decodeBillList(result)).bills;
+      assert.strictEqual(bill?.state, "read");
+      assert.deepEqual(bill?.read, {
+        vendor: "Harbor Cafe",
+        date: "2026-11-03",
+        amount: "1200",
+        tax: "20",
+        currency: "JPY",
+        currencyAssumed: true,
+      });
+      assert.deepEqual(bill?.expense?.amount, { minor: 1200, currency: "JPY" });
+      assert.deepEqual(bill?.expense?.tax, { minor: 20, currency: "JPY" });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1187,7 +1250,12 @@ describe("bills in bulk", () => {
         const bill = (n: number, date: string, amount: string) =>
           read({ bill: `B${n}`, vendor: "Tidewater Freight", date, amount, currency: "INR" });
         // A million times the usual expense: a misplaced comma in a read.
-        yield* bill(1, "2026-11-03", "1180000000");
+        yield* read({
+          bill: "B1",
+          vendor: "Tidewater Freight",
+          date: "2026-11-03",
+          amount: "1180000000",
+        });
         yield* bill(2, "1900-01-01", "450");
         yield* bill(3, "2031-06-01", "451");
         // Old bills are expected: the owner is entering a backlog.
@@ -1580,6 +1648,61 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("Read again settles only the old currency-only failure without a reader turn", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [
+            yield* upload("harbor.png", "harbor cafe"),
+            yield* upload("inkspot.png", "inkspot cloud"),
+            yield* upload("tidewater.png", "tidewater freight"),
+          ],
+          clientRequestId: "add",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId } = yield* claimTurn(1);
+      yield* endTurn(wakeupId);
+      const [harbor, inkspot, tidewater] = added.added;
+      const oldRead = { vendor: "Harbor Cafe", date: "2026-11-03", amount: "450" };
+      for (const [sha, read, problem] of [
+        [harbor!.sha256, oldRead, "Couldn't read: currency. Finance: No currency printed."],
+        [
+          inkspot!.sha256,
+          { vendor: "Inkspot Cloud", date: oldRead.date },
+          "Couldn't read: amount, currency",
+        ],
+        [
+          tidewater!.sha256,
+          { ...oldRead, vendor: "Tidewater Freight" },
+          "Finance: Two different totals.",
+        ],
+      ] as const) {
+        yield* sql`UPDATE kin_bill_reads SET read_json = ${JSON.stringify(read)}, problem = ${problem}
+          WHERE org_id = ${orgId} AND sha256 = ${sha}`;
+      }
+      const retried = yield* Bills.readAgain(as(rhea), { orgId, batchId: added.batchId });
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$.bills') AS bills FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'bills.read' AND state = 'queued'`,
+        [{ bills: JSON.stringify([inkspot!.sha256, tidewater!.sha256]) }],
+      );
+      assert.deepEqual(retried, { queued: 2 });
+      const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.deepEqual(
+        bills.map((bill) => bill.state),
+        ["read", "reading", "reading"],
+      );
+      assert.deepEqual(bills[0]?.read, { ...oldRead, currency: "INR", currencyAssumed: true });
+      assert.deepEqual(bills[0]?.expense?.amount, { minor: 45_000, currency: "INR" });
+      assert.isUndefined(bills[0]?.problem);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "a bill like a recorded expense waits as a duplicate; adding it anyway, reading again and dismissing each act once",
     () =>
@@ -1623,7 +1746,6 @@ describe("bills in bulk", () => {
             vendor: "TIDEWATER  freight",
             date: "2026-11-05",
             amount: "2500",
-            currency: "INR",
           }),
           { bill: "B1", result: "B1 looks like an expense already recorded." },
         );
@@ -1633,7 +1755,6 @@ describe("bills in bulk", () => {
           vendor: "Sample Cloud",
           date: "2026-11-06",
           amount: "0",
-          currency: "USD",
         });
         yield* endTurn(wakeupId);
         const list = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });

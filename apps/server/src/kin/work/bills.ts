@@ -156,6 +156,7 @@ const ReadJson = Schema.fromJsonString(
     date: Schema.optional(Schema.String),
     amount: Schema.optional(Schema.String),
     currency: Schema.optional(Schema.String),
+    currencyAssumed: Schema.optional(Schema.Literal(true)),
     tax: Schema.optional(Schema.String),
     category: Schema.optional(Schema.String),
     number: Schema.optional(Schema.String),
@@ -1346,20 +1347,21 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  const read = answer.read;
+  const { currencyAssumed: _untrusted, ...printed } = answer.read;
+  const home = yield* homeCurrency(orgId);
+  const currency = printed.currency ?? home;
+  const read =
+    printed.currency === undefined
+      ? { ...printed, currency, currencyAssumed: true as const }
+      : printed;
   const json = yield* encodeRead(read).pipe(Effect.orDie);
   const missing: Array<string> = [];
-  const amount = plainNumber(read.amount, read.currency);
+  const amount = plainNumber(read.amount, currency);
   if (read.vendor === undefined || notAVendor(read.vendor)) missing.push("who was paid");
   if (read.date === undefined) missing.push("date");
   if (amount === undefined) missing.push("amount");
-  if (read.currency === undefined) missing.push("currency");
-  if (read.tax !== undefined && plainNumber(read.tax, read.currency) === undefined)
-    missing.push("tax");
-  const parsed =
-    amount === undefined || read.currency === undefined
-      ? undefined
-      : parseKinMoney(amount, read.currency);
+  if (read.tax !== undefined && plainNumber(read.tax, currency) === undefined) missing.push("tax");
+  const parsed = amount === undefined ? undefined : parseKinMoney(amount, currency);
   if (parsed !== undefined && "error" in parsed) missing.push("amount");
   const money = parsed !== undefined && "money" in parsed ? parsed.money : undefined;
   const unreadable = (problem: string) =>
@@ -1385,7 +1387,7 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   if (money.minor === 0) return yield* unreadable("It is for 0");
   // What an agent's record_create or a person's form would question is the owner's to check.
   const largest = yield* largestIn(orgId, "expenses", money.currency);
-  if (farAbove("Expenses", money, largest, yield* homeCurrency(orgId)) !== undefined)
+  if (farAbove("Expenses", money, largest, home) !== undefined)
     return yield* unreadable(CHECK_IT.farAbove);
   const zone = yield* ownerZone(orgId);
   const today = dayIn(now, zone);
@@ -1470,11 +1472,8 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
     read.category === undefined
       ? undefined
       : def.categories.find((one) => one.toLowerCase() === read.category!.toLowerCase());
-  const printedTax = plainNumber(read.tax, read.currency);
-  const tax =
-    printedTax === undefined || read.currency === undefined
-      ? undefined
-      : parseKinMoney(printedTax, read.currency);
+  const printedTax = plainNumber(read.tax, money.currency);
+  const tax = printedTax === undefined ? undefined : parseKinMoney(printedTax, money.currency);
   const [adder] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${row.addedBy}`;
   const writer: Writer = {
@@ -2189,7 +2188,18 @@ export const dismiss = Effect.fn("KinBills.dismiss")(function* (
   );
 }, workFailure);
 
-/** `kin.bills.readAgain`: unreadable bills with no expense, one or a batch's, are queued again. */
+const legacyCurrencyRead = (row: Row) => {
+  if (!/^Couldn't read: currency(?:\. |$)/u.test(row.problem ?? "")) return undefined;
+  const read = Option.getOrUndefined(decodeRead(row.readJson ?? "{}"));
+  return read?.vendor !== undefined &&
+    read.date !== undefined &&
+    read.amount !== undefined &&
+    read.currency === undefined
+    ? read
+    : undefined;
+};
+
+/** `kin.bills.readAgain`: settle old currency-only failures; queue other unreadable bills again. */
 export const readAgain = Effect.fn("KinBills.readAgain")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinBillsReadAgainInput,
@@ -2207,22 +2217,33 @@ export const readAgain = Effect.fn("KinBills.readAgain")(function* (
   const canReadAgain = (row: Row) =>
     row.state === "unreadable" && row.recordId === null && row.dismissedAt === null;
   const candidates = (yield* selected).filter(canReadAgain);
-  const photos = yield* preparePhotos(candidates.map(rowAttachment));
-  const ids = new Set(candidates.map((row) => row.attachmentId));
+  const photos = yield* preparePhotos(
+    candidates.filter((row) => legacyCurrencyRead(row) === undefined).map(rowAttachment),
+  );
+  const readsByAttachment = new Map(candidates.map((row) => [row.attachmentId, row.reads]));
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const rows = yield* selected;
       if (rows.length === 0) return yield* notFound;
-      const again = rows.filter((row) => ids.has(row.attachmentId) && canReadAgain(row));
-      if (again.length === 0) return { queued: 0 };
-      yield* sql`UPDATE kin_bill_reads SET state = 'waiting', problem = NULL
-        WHERE org_id = ${input.orgId} AND sha256 IN ${sql.in(again.map((row) => row.sha256))}
-          AND state = 'unreadable' AND record_id IS NULL`;
-      for (const batchId of new Set(again.map((row) => row.batchId))) {
-        yield* queueWaiting(input.orgId, batchId, photos);
-        yield* refreshCard(input.orgId, batchId);
+      const again = rows.filter(
+        (row) => readsByAttachment.get(row.attachmentId) === row.reads && canReadAgain(row),
+      );
+      const waiting: Array<Row> = [];
+      for (const row of again) {
+        const read = legacyCurrencyRead(row);
+        if (read === undefined) waiting.push(row);
+        else yield* settleRead(input.orgId, row, { readable: true, read });
       }
-      return { queued: again.length };
+      if (waiting.length > 0) {
+        yield* sql`UPDATE kin_bill_reads SET state = 'waiting', problem = NULL
+          WHERE org_id = ${input.orgId} AND sha256 IN ${sql.in(waiting.map((row) => row.sha256))}
+            AND state = 'unreadable' AND record_id IS NULL`;
+        for (const batchId of new Set(waiting.map((row) => row.batchId)))
+          yield* queueWaiting(input.orgId, batchId, photos);
+      }
+      for (const batchId of new Set(again.map((row) => row.batchId)))
+        yield* refreshCard(input.orgId, batchId);
+      return { queued: waiting.length };
     }),
   );
 }, workFailure);
