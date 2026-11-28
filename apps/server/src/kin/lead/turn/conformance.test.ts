@@ -347,7 +347,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
           BILLS_SEAT_INSTRUCTIONS,
         );
         assert.strictEqual(
-          (yield* open(fake, "kin:tech")).instructions,
+          leadThreadInstructions(ThreadId.make("kin:tech"), driver),
           kinInstructions("owner", driver),
         );
         assert.strictEqual(
