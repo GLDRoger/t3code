@@ -1656,7 +1656,8 @@ describe("bill_cut", () => {
       yield* (yield* Bills.KinBillPreviews).drain;
       const hub = yield* KinRefreshHub.KinRefreshHub;
       const revisions = Option.getOrThrow(yield* Stream.runHead(hub.changes(orgId)));
-      assert.isAbove(revisions.moneyStatements, 0);
+      // One refresh for the whole batch: one a copy would reload Money's screens once a photo.
+      assert.strictEqual(revisions.moneyStatements, 1);
       const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
       assert.lengthOf(
         bills.filter(({ preview }) => preview !== undefined),

@@ -416,15 +416,18 @@ const indexPreview = Effect.fn("KinBills.indexPreview")(function* (
   row: RowAttachment & Pick<Row, "sha256">,
   photo: ChatAttachment | undefined,
 ) {
-  if (photo === undefined || photo.id === row.attachmentId) return;
+  if (photo === undefined || photo.id === row.attachmentId) return false;
   const sql = yield* SqlClient.SqlClient;
   const changed = yield* sql`UPDATE kin_bill_reads SET preview_id = ${photo.id}
     WHERE org_id = ${orgId} AND sha256 = ${row.sha256}
       AND attachment_id = ${row.attachmentId} AND preview_id IS NOT ${photo.id}
     RETURNING sha256`;
-  // Bills and statements share the existing owner-level Money refresh revision.
-  if (changed.length > 0 && photo.sizeBytes < row.sizeBytes)
-    yield* (yield* KinRefreshObserver).touch(orgId, "moneyStatements");
+  return changed.length > 0 && photo.sizeBytes < row.sizeBytes;
+});
+
+/** Bills and statements share the existing owner-level Money refresh revision. */
+const touchBills = Effect.fn("KinBills.touchBills")(function* (orgId: KinOrgId) {
+  yield* (yield* KinRefreshObserver).touch(orgId, "moneyStatements");
 });
 
 export class KinBillPreviews extends Context.Service<
@@ -444,16 +447,23 @@ export const previewLayer = Layer.effect(
     >();
     const { attachmentsDir } = yield* ServerConfig.ServerConfig;
     const copyBatch = Effect.fn("KinBills.copyBatch")(function* (orgId: KinOrgId, batchId: string) {
+      let shown = false;
       for (const row of yield* batchRows(orgId, batchId)) {
         const file = rowAttachment(row);
         if (!photoNeedsPreparation(file) || row.previewId !== null) continue;
-        yield* billPhotoForModel(attachmentsDir, file).pipe(
+        const indexed = yield* billPhotoForModel(attachmentsDir, file).pipe(
           Effect.flatMap((photo) => indexPreview(orgId, row, photo)),
           Effect.catchCause((cause) =>
-            Effect.logWarning("Kin could not save a bill preview", { cause }),
+            Effect.logWarning("Kin could not save a bill preview", { cause }).pipe(
+              Effect.as(false),
+            ),
           ),
         );
+        shown ||= indexed;
       }
+      // One refresh a batch: a copy takes longer than a refresh settles, so one a copy would
+      // reload Money's screens once a photo.
+      if (shown) yield* touchBills(orgId);
     });
     return KinBillPreviews.of({
       start: Effect.fn("KinBillPreviews.start")((orgId, batchId) =>
@@ -505,7 +515,10 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
         ? photoNeedsPreparation(rowAttachment(row))
         : prepared.get(row.attachmentId) !== undefined),
   );
-  for (const row of waiting) yield* indexPreview(orgId, row, prepared?.get(row.attachmentId));
+  let shown = false;
+  for (const row of waiting)
+    shown = (yield* indexPreview(orgId, row, prepared?.get(row.attachmentId))) || shown;
+  if (shown) yield* touchBills(orgId);
   const groups: Array<Array<Row>> = [];
   let bytes = 0;
   for (const row of waiting) {
@@ -1650,15 +1663,17 @@ export const prepareClaimedPhotos = Effect.fn("KinBills.prepareClaimedPhotos")(f
       if (claimed === undefined) return undefined;
       const keep = new Set<string>();
       const failed: Array<string> = [];
+      let shown = false;
       for (const row of yield* reading) {
         const photo = photos.get(row.attachmentId);
         if (photos.has(row.attachmentId) && photo === undefined) {
           failed.push(row.sha256);
         } else {
           keep.add(row.sha256);
-          yield* indexPreview(orgId, row, photo);
+          shown = (yield* indexPreview(orgId, row, photo)) || shown;
         }
       }
+      if (shown) yield* touchBills(orgId);
       if (failed.length > 0) {
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
