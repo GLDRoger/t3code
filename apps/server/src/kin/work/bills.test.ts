@@ -19,6 +19,7 @@ import {
   type KinBillRead,
   KinBillsAddResult,
   KinBillsListResult,
+  KIN_BILLS_PER_TURN,
   type KinChatError,
   type KinBillsKeepReadChanged,
   KinChatId,
@@ -2064,11 +2065,11 @@ describe("bills in bulk", () => {
   );
 
   it.effect.each([
-    { country: "IN", home: "INR", ownMark: " ₹ ", otherMark: "eUrOs", other: "EUR" },
-    { country: "US", home: "USD", ownMark: " $ ", otherMark: " ₹ ", other: "INR" },
+    { country: "IN", home: "INR" },
+    { country: "CA", home: "CAD" },
   ] as const)(
     "resolves only safe printed currency marks for a $home company",
-    ({ country, home, ownMark, otherMark, other }) =>
+    ({ country, home }) =>
       Effect.gen(function* () {
         yield* seed;
         yield* setProfile(
@@ -2077,73 +2078,162 @@ describe("bills in bulk", () => {
           { country, homeCurrency: home },
           undefined,
         );
-        const marks = [
-          undefined,
-          ownMark,
-          otherMark,
-          home === "INR" ? "$" : "¥",
-          "Mystery",
-          "£",
-          "€",
+        const marks: ReadonlyArray<
+          readonly [mark: string | undefined, INR: string, CAD: string, printedCode?: string]
+        > = [
+          [undefined, "INR assumed", "CAD assumed"],
+          [" ₹ ", "INR", "INR"],
+          [" $ ", "unclear", "CAD assumed"],
+          [" cA$ ", "CAD", "CAD"],
+          ["¥", "unclear", "unclear"],
+          ["kr", "unclear", "unclear"],
+          ["£", "unclear", "unclear"],
+          ["₩", "unclear", "unclear"],
+          ["Rs", "unclear", "unclear"],
+          ["P", "unclear", "unclear"],
+          ["K", "unclear", "unclear"],
+          ["L", "unclear", "unclear"],
+          ["R", "unclear", "unclear"],
+          ["lei", "unclear", "unclear"],
+          ["Bs", "unclear", "unclear"],
+          ["C$", "unclear", "unclear"],
+          ["€", "EUR", "EUR"],
+          ["₱", "PHP", "PHP"],
+          ["R$", "BRL", "BRL"],
+          ["A$", "AUD", "AUD"],
+          ["HK$", "HKD", "HKD"],
+          ["zł", "unclear", "unclear"],
+          ["₦", "NGN", "NGN"],
+          ["₽", "RUB", "RUB"],
+          ["₺", "TRY", "TRY"],
+          ["₪", "ILS", "ILS"],
+          ["₫", "VND", "VND"],
+          ["eUrOs", "unclear", "unclear"],
+          ["Rs.", "unclear", "unclear"],
+          ["INR", "INR", "INR"],
+          ["usd", "USD", "USD"],
+          ["USD", "USD", "USD"],
+          [" UsD ", "USD", "USD"],
+          ["TAX", "unclear", "unclear"],
+          ["Fr.", "unclear", "unclear"],
+          ["CHF", "CHF", "CHF"],
+          ["Mystery", "unclear", "unclear"],
+          [" € ", "CAD", "CAD", "CAD"],
         ];
+        const files = marks.map(([currencyMark, , , currency], i) => ({
+          name: `mark-${i}.jpg`,
+          read: {
+            vendor: "Harbor Cafe",
+            date: "2026-11-03",
+            amount: String(40 + i),
+            ...(currencyMark === undefined ? {} : { currencyMark }),
+            ...(currency === undefined ? {} : { currency }),
+          },
+        }));
         const added = yield* Bills.add(
           as(rhea),
           {
             orgId,
             clientRequestId: "marks",
-            attachments: yield* Effect.forEach(marks, (_, i) => upload(`mark-${i}.jpg`, String(i))),
+            attachments: yield* Effect.forEach(files, ({ name }) => upload(name, name)),
           },
           TEST_UPLOAD_OWNER,
         );
-        const { wakeupId } = yield* claimTurn(1);
-        for (const [index, currencyMark] of marks.entries())
-          yield* read({
-            bill: `B${index + 1}`,
-            vendor: "Harbor Cafe",
-            date: "2026-11-03",
-            amount: String(40 + index),
-            ...(currencyMark === undefined ? {} : { currencyMark }),
-            ...(index === 6 ? { currency: "CAD" } : {}),
-          });
-        yield* endTurn(wakeupId);
+        const printed = new Map(files.map(({ name, read }) => [name, read]));
+        const readsByHash = new Map(
+          added.added.map(({ name, sha256 }) => [sha256, printed.get(name)!]),
+        );
+        const turns = Math.ceil(files.length / KIN_BILLS_PER_TURN);
+        for (let turn = 1; turn <= turns; turn++) {
+          const { events, wakeupId } = yield* claimTurn(turn);
+          const event = events.find((one) => one._tag === "bills.read")!;
+          yield* Bills.answerMany(
+            { orgId, agentId: finance, wakeupId },
+            event.bills.map((hash, index) => ({
+              bill: `B${index + 1}`,
+              readable: true,
+              read: readsByHash.get(hash)!,
+            })),
+          );
+          yield* endTurn(wakeupId);
+        }
         const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        const expected = marks.map((row) => row[home === "INR" ? 1 : 2]);
         assert.deepStrictEqual(
-          bills.map(({ read }) => [read.currency, read.currencyAssumed]),
-          [
-            [home, true],
-            [home, undefined],
-            [other, undefined],
-            [undefined, undefined],
-            [undefined, undefined],
-            [undefined, undefined],
-            ["CAD", undefined],
-          ],
+          Object.fromEntries(
+            bills.map(({ read }) => [
+              read.currencyMark ?? "(unprinted)",
+              `${read.currency ?? "unclear"}${read.currencyAssumed ? " assumed" : ""}`,
+            ]),
+          ),
+          Object.fromEntries(marks.map(([mark], i) => [mark ?? "(unprinted)", expected[i]])),
         );
+        const unclear = expected.filter((outcome) => outcome === "unclear").length;
         assert.deepStrictEqual(
-          bills.map(({ read }) => read.currencyMark),
-          marks,
-        );
-        assert.deepStrictEqual(
-          bills.slice(3, 6).map(({ state, problem }) => [state, problem]),
-          [
-            ["unreadable", "Couldn't read: currency."],
-            ["unreadable", "Couldn't read: currency."],
-            ["unreadable", "Couldn't read: currency."],
-          ],
+          bills.map(({ state, problem }) => [state, problem]),
+          expected.map((outcome) =>
+            outcome === "unclear"
+              ? ["unreadable", "Couldn't read: currency."]
+              : ["read", undefined],
+          ),
         );
         const summary = yield* card(added.batchId);
         assert.deepStrictEqual(
           summary.needs?.map(({ reason }) => reason),
-          ["the currency isn't clear.", "the currency isn't clear.", "the currency isn't clear."],
+          [
+            "the currency isn't clear.",
+            "the currency isn't clear.",
+            "the currency isn't clear.",
+            "the currency isn't clear.",
+            "the currency isn't clear.",
+          ],
         );
-        assert.strictEqual(summary.keepable?.count, 4);
+        assert.strictEqual(summary.needsMore, unclear - 5);
+        assert.strictEqual(summary.keepable?.count, marks.length - unclear);
         assert.notInclude(JSON.stringify(summary), "Mystery");
         assert.notInclude(JSON.stringify(summary), "¥");
       }).pipe(Effect.provide(layer)),
   );
 
   it.effect.each([
+    { country: "JP", home: "JPY", mark: "¥", currency: "JPY", assumed: true },
+    { country: "SE", home: "SEK", mark: "kr", currency: "SEK", assumed: true },
+    { country: "GB", home: "GBP", mark: "£", currency: "GBP", assumed: true },
+    { country: "KR", home: "KRW", mark: "₩", currency: "KRW", assumed: true },
+    { country: "PK", home: "PKR", mark: "Rs", currency: "PKR", assumed: true },
+    { country: "NI", home: "NIO", mark: "C$", currency: undefined, assumed: undefined },
+  ] as const)(
+    "resolves $mark in a $home company with the expected certainty",
+    ({ country, home, mark, currency, assumed }) =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: rhea },
+          { country, homeCurrency: home },
+          undefined,
+        );
+        const added = yield* addPage(yield* upload("mark.jpg", "printed-mark"));
+        const { wakeupId } = yield* claimTurn(1);
+        yield* read({
+          bill: "B1",
+          vendor: "Harbor Cafe",
+          date: "2026-11-03",
+          amount: "42",
+          currencyMark: mark,
+        });
+        yield* endTurn(wakeupId);
+        const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+        assert.deepStrictEqual(
+          bills.map(({ read }) => [read.currency, read.currencyAssumed]),
+          [[currency, assumed]],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
     { country: "IN", home: "INR", mark: "$" },
+    { country: "CA", home: "CAD", mark: "C$" },
     { country: "US", home: "USD", mark: "¥" },
   ] as const)(
     "an unclear $mark in a $home company keeps the reader's own reason and reads again",

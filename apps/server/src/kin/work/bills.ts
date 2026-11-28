@@ -1929,7 +1929,9 @@ const saidFieldsMatch = Effect.fn("KinBills.saidFieldsMatch")(function* (
       const home = yield* homeCurrency(orgId);
       found =
         says(body, displayNames.of(value) ?? value) ||
-        [...body.matchAll(/\p{Sc}/gu)].some(([mark]) => currencyOfMark(mark, home) === value);
+        [...body.matchAll(/\p{Sc}/gu)].some(
+          ([mark]) => currencyOfMark(mark, home)?.currency === value,
+        );
     }
     if (!found) return yield* invalid("Use only values the person's own message gives.");
   }
@@ -2216,6 +2218,7 @@ export const recutForChat = Effect.fn("KinBills.recutForChat")(function* (
 }, workFailure);
 
 const normalizeMark = (mark: string) => mark.trim().toLowerCase();
+const intlCurrencyCodes = new Set(Intl.supportedValuesOf("currency"));
 const currenciesByMark = new Map<string, Set<string>>();
 const displayNames = new Intl.DisplayNames(KIN_TEXT_LOCALE, { type: "currency" });
 for (const currency of KIN_CURRENCY_CODES) {
@@ -2240,8 +2243,20 @@ for (const currency of KIN_CURRENCY_CODES) {
 }
 
 const currencyOfMark = (mark: string, home: string) => {
-  const codes = currenciesByMark.get(normalizeMark(mark));
-  return codes?.has(home) ? home : codes?.size === 1 ? codes.values().next().value : undefined;
+  const code = mark.trim().toUpperCase();
+  if (isKinCurrency(code) && intlCurrencyCodes.has(code)) return { currency: code };
+
+  const key = normalizeMark(mark);
+  // Canadian and Nicaraguan bills both print C$.
+  if (key === "c$") return undefined;
+  const codes = currenciesByMark.get(key);
+  if (codes?.has(home))
+    return codes.size === 1
+      ? { currency: home }
+      : { currency: home, currencyAssumed: true as const };
+  if (codes?.size === 1 && key !== "$" && /\p{Sc}/u.test(key))
+    return { currency: codes.values().next().value };
+  return undefined;
 };
 
 /** One bill's answer, by plain rules: a clean read becomes one suggested expense or a duplicate. */
@@ -2260,15 +2275,13 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   const now = yield* Clock.currentTimeMillis;
   const { currencyAssumed: _untrusted, ...printed } = answer.read;
   const home = yield* homeCurrency(orgId);
-  const assumed = printed.currency === undefined && printed.currencyMark === undefined;
-  const paperCurrency =
-    printed.currency ??
-    (printed.currencyMark === undefined ? home : currencyOfMark(printed.currencyMark, home));
-  const paper = {
-    ...printed,
-    ...(paperCurrency === undefined ? {} : { currency: paperCurrency }),
-    ...(assumed ? { currencyAssumed: true as const } : {}),
-  };
+  const resolved =
+    printed.currency !== undefined
+      ? { currency: printed.currency }
+      : printed.currencyMark === undefined
+        ? { currency: home, currencyAssumed: true as const }
+        : currencyOfMark(printed.currencyMark, home);
+  const paper = { ...printed, ...resolved };
   const corrections = saidOf(row);
   const { paidBy, ...values } = corrections?.values ?? {};
   const read = { ...paper, ...values };
