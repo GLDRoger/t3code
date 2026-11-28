@@ -17,15 +17,17 @@ export const MEMORY_WRITE_FAILURE_WORDS = {
     "Kin couldn't save memory changes because memory isn't set up to accept them here. Ask whoever looks after Kin to check it.",
   purge: "Kin couldn't save memory changes while older information was being removed from memory.",
   changed: "Kin couldn't save a memory update because memory changed while Kin was working on it.",
-  remote: "Kin couldn't send the memory changes to the online copy.",
-  review: "GitHub didn't accept Kin's memory changes.",
+  remote:
+    "Kin couldn't send the memory changes to the online copy. What is already saved on this server goes up with the next memory change; if this stays, ask whoever looks after Kin to check the memory repository's access.",
+  review:
+    "GitHub didn't accept Kin's memory changes. They are kept on this server; ask whoever looks after Kin to check the memory repository's rules on GitHub.",
   "online-conflict":
-    "Kin couldn't combine the memory changes made on GitHub with the ones saved here.",
+    "Kin couldn't combine the memory changes made on GitHub with the ones saved here, so both are kept apart. Ask whoever looks after Kin to settle the two in the memory repository.",
   "review-needed":
     "GitHub requires a review before it accepts Kin's memory changes. Check the memory repository's review rules on GitHub; Kin tries again once the rules change or the server restarts.",
   secret: "Kin didn't save a memory update because it may contain a password or key.",
   scanner:
-    "Kin held a memory update back because the check for passwords and keys couldn't finish.",
+    "Kin didn't save a memory update because the check for passwords and keys couldn't finish, and it saves nothing unchecked. If this stays, ask whoever looks after Kin to check it.",
   note: "Kin couldn't save a memory update because a memory note couldn't be read.",
   journal: "Kin couldn't save a journal entry because its date or time zone couldn't be read.",
   storage:
@@ -65,12 +67,14 @@ export const MEMORY_WRITE_FAILURE_WORDS = {
   "index-generated":
     "Kin builds the memory index automatically, so the nightly update couldn't write it directly.",
   "undo-target": "Kin couldn't identify the change to undo in memory.",
-  "purged-history": "Kin dropped a pending memory update because memory history was rewritten.",
+  "purged-history":
+    "Kin dropped a pending memory update because memory history was rewritten. If it mattered, tell the agent again.",
   "off-github":
     "Kin couldn't open a review for the memory update because the online copy isn't on GitHub.",
   "dream-base":
     "Kin couldn't finish the nightly memory update because the earlier version it read is gone.",
-  "dream-remote": "Kin couldn't send the nightly memory update to the online copy.",
+  "dream-remote":
+    "Kin couldn't send the nightly memory update to the online copy. Nothing Kin already remembered was lost, and tonight it reads the same days again; if this stays, ask whoever looks after Kin to check the memory repository's access.",
   "dream-changed":
     "Kin couldn't save the nightly memory update because memory changed while it ran.",
   "missing-note": "Kin couldn't find the memory note it needed to update.",
