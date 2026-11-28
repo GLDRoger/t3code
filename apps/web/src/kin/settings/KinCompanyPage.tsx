@@ -10,6 +10,7 @@ import { kinClient } from "../kinClient";
 import { useKinHost } from "../useKinHost";
 import type { KinWorkTarget } from "../useKinWork";
 import { KinBankSendersSection } from "./KinBankSendersSection";
+import { KinBillSendersSection } from "./KinBillSendersSection";
 import { KinSettingsPage, KinSettingsSection } from "./KinSettingsLayout";
 
 /** Settings → Company details: the company on paper, how the agents' day runs, your data, Stop last. */
@@ -19,6 +20,7 @@ export function KinCompanyPage() {
     <KinSettingsPage purpose={KIN_COMPANY_SETTINGS.purpose}>
       <KinCompanyProfileSettings />
       {target === null ? null : <KinBankSendersSection {...target} />}
+      {target === null ? null : <KinBillSendersSection {...target} />}
       {target === null ? null : <TimeAndLimits {...target} />}
       {target === null ? null : <KinCompanyExportSection {...target} />}
       <KinStopSetting />

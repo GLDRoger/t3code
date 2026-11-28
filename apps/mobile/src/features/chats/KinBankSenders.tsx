@@ -31,6 +31,7 @@ import { Notice } from "../../components/ui/Notice";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinLoadFailedRow } from "./components/KinLoadFailed";
+import { KinSenderAddress } from "./components/KinSenderAddress";
 import {
   KinGateView,
   KinWorkFrame,
@@ -224,23 +225,7 @@ function BankSenderMobileRow(props: {
     row.state === "approved" ? "success" : row.state === "waiting" ? "warning" : "secondary";
   return (
     <View className="gap-1.5 px-4 py-3">
-      {/* One text per piece in a wrapping row: the line breaks only after an @ or a dot, where a
-          single text would also break at a hyphen inside the domain. */}
-      <View accessible accessibilityLabel={row.address} className="flex-row flex-wrap">
-        {row.addressSegments.map((segment) => (
-          <Text
-            key={segment.start}
-            textRole="body"
-            className={
-              segment.domain
-                ? "max-w-full font-t3-semibold text-foreground"
-                : "max-w-full text-foreground-muted"
-            }
-          >
-            {segment.text}
-          </Text>
-        ))}
-      </View>
+      <KinSenderAddress address={row.address} segments={row.addressSegments} />
       <View className="flex-row flex-wrap items-center gap-2">
         <Chip size="small" tone={stateTone} label={row.stateLabel} />
       </View>

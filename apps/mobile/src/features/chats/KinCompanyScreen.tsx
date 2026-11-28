@@ -37,6 +37,7 @@ import {
 import { KinCountryPicker } from "./components/KinCountryPicker";
 import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
 import { KinBankSendersSection } from "./KinBankSenders";
+import { KinBillSendersSection } from "./KinBillSenders";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
@@ -144,6 +145,7 @@ function Profile(
         onPress: () => {
           props.onRefresh();
           appAtomRegistry.refresh(kinClient.bankSenders({ environmentId, input: { orgId } }));
+          appAtomRegistry.refresh(kinClient.billSenders({ environmentId, input: { orgId } }));
         },
       }}
     >
@@ -223,6 +225,7 @@ function Profile(
         ))
       )}
       <KinBankSendersSection environmentId={environmentId} orgId={orgId} />
+      <KinBillSendersSection environmentId={environmentId} orgId={orgId} />
       <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
       {canEdit ? (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
