@@ -64,8 +64,11 @@ const tableNames = [
   "kin_bank_senders",
   "kin_bank_statement_entries",
   "kin_bank_statements",
+  "kin_bill_mail",
   "kin_bill_reads",
   "kin_bill_requests",
+  "kin_bill_sender_mail",
+  "kin_bill_senders",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -2372,9 +2375,18 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), [
           [236, "BillCrops"],
           [237, "CardTapDeliveries"],
+          [238, "BillSenders"],
+          [239, "BillMail"],
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
-          { ...before[0], parent_sha256: null, cut_page: null, cut_box_json: null },
+          {
+            ...before[0],
+            parent_sha256: null,
+            cut_page: null,
+            cut_box_json: null,
+            mail_from: null,
+            mail_at: null,
+          },
         ]);
         yield* sql`UPDATE kin_bill_reads SET parent_sha256 = 'parent', cut_page = 1,
           cut_box_json = '[0,0,50,50]'`;
@@ -2415,6 +2427,44 @@ describe("Kin migrations", () => {
       );
       yield* insertTap;
       assert.lengthOf(yield* rows, 4);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("the bill mail migration preserves rows and can run again", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 239`;
+      for (const name of ["mail_from", "mail_at"]) {
+        if (
+          (yield* sql`SELECT 1 FROM pragma_table_info('kin_bill_reads') WHERE name = ${name}`)
+            .length
+        )
+          yield* sql`ALTER TABLE kin_bill_reads DROP COLUMN ${sql(name)}`;
+      }
+      yield* sql`DROP TABLE IF EXISTS kin_bill_mail`;
+      yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+        name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+        widget_id, added_by_person_id, added_at, state)
+        VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.pdf', 'file', 'application/pdf',
+          8, 'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'waiting')`;
+      const before = yield* sql`SELECT * FROM kin_bill_reads`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
+        { ...before[0], mail_from: null, mail_at: null },
+      ]);
+      yield* sql`UPDATE kin_bill_reads SET mail_from = 'billing@inkspot.example', mail_at = 2`;
+      yield* sql`INSERT INTO kin_bill_mail
+        (org_id, connection_id, message_id, address, state, next_at, queued_at)
+        VALUES ('org', 'box', 'message', 'billing@inkspot.example', 'waiting', 2, 2)`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 239`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[239, "BillMail"]]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
+        { ...before[0], mail_from: "billing@inkspot.example", mail_at: 2 },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_bill_mail`, [
+        { message_id: "message" },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
