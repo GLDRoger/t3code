@@ -106,6 +106,7 @@ import {
   modelCallLines,
   replyFollowUp,
   shownText,
+  writtenText,
   unmockedLines,
   unredact,
 } from "./kin.ts";
@@ -254,6 +255,7 @@ type Call = {
 export type SampleRun = {
   readonly calls: ReadonlyArray<Call>;
   text: string;
+  readonly wroteText?: string;
   readonly deliveredText?: string;
   readonly deliveredLevel?: "now" | "quiet" | "check_in";
   readonly deliveredBubbles?: ReadonlyArray<string>;
@@ -346,6 +348,8 @@ const McpToolUseExpect = Schema.Struct({
   /** Case-sensitive regexes on the agent's visible text. */
   textMust: Schema.optional(Schema.Array(Schema.String)),
   textMustNot: Schema.optional(Schema.Array(Schema.String)),
+  /** Regexes on all assistant text, even text Kin did not post. */
+  wroteTextMustNot: Schema.optional(Schema.Array(Schema.String)),
   /** Counts on the agent's visible text, graded pass, within margin or fail. See margin.ts. */
   limits: Schema.optional(Limits),
   delivered: Schema.optional(Schema.Boolean),
@@ -3046,6 +3050,12 @@ export const gradeSample = (
   ].join("\n\n");
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, visible));
+  for (const p of expect.wroteTextMustNot ?? []) {
+    const check = `wroteTextMustNot /${p}/`;
+    if (typeof run.wroteText !== "string")
+      add(`${check} (cannot tell: wroteText was not recorded)`, false);
+    else add(check, !test(p, run.wroteText));
+  }
   checks.push(...limitChecks(expect.limits, visible, run.deliveredBubbles?.length));
   if (delivered !== undefined && DELIVERED_SILENCE.test(delivered))
     add("marker text delivered", false);
@@ -3566,6 +3576,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   return {
     calls,
     text: shownText(responses),
+    wroteText: writtenText(responses),
     ...kinDelivery(sample),
     stopReason,
     finalText,

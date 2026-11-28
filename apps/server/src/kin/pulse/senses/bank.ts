@@ -188,7 +188,15 @@ export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (
 const CONSEQUENCE_MAX = 500;
 const plain = (minor: number, currency: string) => formatMoneyPlain({ minor, currency });
 
-/** repaid_seen's line for a partner debit that may not match their oldest owed expenses. */
+/** Keys as a person writes them, "EXP-4, EXP-7 and EXP-9", the rest counted past `shown`. */
+const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
+  shown < keys.length
+    ? `${keys.slice(0, shown).join(", ")} and ${keys.length - shown} more`
+    : keys.length === 1
+      ? keys[0]!
+      : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
+
+/** repaid_seen's line for a partner debit that may not match what is still owed to the partner. */
 export const repaidShortLine = (input: {
   readonly key: string;
   readonly amountMinor: number;
@@ -196,9 +204,11 @@ export const repaidShortLine = (input: {
   readonly date: string;
   readonly partner: string;
   readonly owedMinor: number | bigint;
-  readonly owedCount: number;
-}) =>
-  `${input.key}, ${plain(input.amountMinor, input.currency)} paid ${shortDay(input.date)}, names ${input.partner} and may not match their oldest owed expenses (${formatKinMoney(input.owedMinor, input.currency)} over ${input.owedCount} expense${input.owedCount === 1 ? "" : "s"}): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.`;
+  readonly owedKeys: ReadonlyArray<string>;
+}) => {
+  const count = input.owedKeys.length;
+  return `${input.key}, ${plain(input.amountMinor, input.currency)} paid ${shortDay(input.date)}, names ${input.partner} and may not match what is still owed to ${input.partner}: ${keysOf(input.owedKeys, 4)} (${formatKinMoney(input.owedMinor, input.currency)} over ${count} expense${count === 1 ? "" : "s"}). Not checked, so Kin marks nothing; the owner or a co-owner marks what it repaid on ${count === 1 ? "that expense" : "those expenses"} in Money.`;
+};
 const creditText = (credit: CreditMatch["credit"]) =>
   `${credit.key}, ${plain(credit.amountMinor, credit.currency)} received ${shortDay(credit.date)}`;
 const creditMatchText = (pair: CreditPair) =>
@@ -417,14 +427,6 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
   });
 });
 
-/** Keys as a person writes them, "EXP-4, EXP-7 and EXP-9", the rest counted past `shown`. */
-const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
-  shown < keys.length
-    ? `${keys.slice(0, shown).join(", ")} and ${keys.length - shown} more`
-    : keys.length === 1
-      ? keys[0]!
-      : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
-
 /**
  * repaid_seen: one fact per unexplained debit that names one partner the company owes. One that
  * adds up exactly to their oldest owed expenses wakes Finance, which may offer the owner a card
@@ -464,7 +466,7 @@ const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
   const wasUndone = new Set(undone);
   const hasOpenCard = new Set(stillOpen);
 
-  return matches.map(({ debit, partner, repays, owedMinor, owedCount, expense }): SensedFact => {
+  return matches.map(({ debit, partner, repays, owedMinor, owedKeys, expense }): SensedFact => {
     const paid = `${debit.key}, ${plain(debit.amountMinor, debit.currency)} paid ${shortDay(debit.date)}, names ${partner.name}`;
     const shared = {
       sense: "repaid_seen" as const,
@@ -493,7 +495,7 @@ const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
           date: debit.date,
           partner: partner.name,
           owedMinor,
-          owedCount,
+          owedKeys,
         }),
         wake: "brief",
       };
@@ -505,7 +507,11 @@ const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
     const open = hasOpenCard.has(debit.recordId);
     const again = !wasUndone.has(debit.recordId)
       ? ""
-      : ` The repayment mark was undone. ${open ? "A repayment card is open." : "No repayment card is open."}`;
+      : ` The repayment mark was undone, so ${one ? "this expense is" : "these expenses are"} owed again. ${
+          open
+            ? "The open repayment card still offers it, so a second card would only repeat it."
+            : "No repayment card is open, so nothing lets the owner or a co-owner mark it again until one is offered."
+        }`;
     return {
       ...shared,
       key: `repaid_seen:${debit.key}`,
