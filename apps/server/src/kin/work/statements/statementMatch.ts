@@ -77,6 +77,13 @@ export type Repaid = {
   /** Who funded it, the partner's `id`. */
   readonly by?: string;
 };
+type RepaidMark = Pick<Repaid, "recordId" | "key" | "amountMinor"> & {
+  /** The expense's own day: a line before it can't be its repayment, so it is never tied to one. */
+  readonly day: string;
+  readonly rev: number;
+  readonly bankRecordId: string | null;
+  readonly hasBankEvidence?: true;
+};
 /**
  * Anyone who has funded an expense, in any currency, owed or not, with the repayments marked by
  * hand (no statement row) as totals and individual marks per currency and day.
@@ -89,10 +96,7 @@ export type PayeeCandidate = {
     readonly currency: string;
     readonly day: string;
     readonly amountMinor: number;
-    readonly marks: ReadonlyArray<{
-      readonly amountMinor: number;
-      readonly bankRecordId: string | null;
-    }>;
+    readonly marks: ReadonlyArray<RepaidMark>;
   }>;
 };
 /** A past expense, to name a new one the way the owner named the last. */
@@ -119,8 +123,9 @@ export type Candidate = {
   readonly why: ReadonlyArray<string>;
   /** An expense's revision when read, for an ordinary expense match. */
   readonly rev?: number;
-  /** A partner's owed expenses this debit pays back, oldest first; `recordId` is the first's. */
+  /** A partner's expenses this row pays back; `recordId` is the first's. */
   readonly repays?: ReadonlyArray<Repaid>;
+  readonly alreadyRepaid?: true;
 };
 export type Suggestion = {
   readonly action: "expense" | "transfer" | "ignore" | "later";
@@ -880,7 +885,14 @@ const openInvoices = (
 };
 
 type RepaidDay = PayeeCandidate["repaid"][number];
-type MarkedRepayment = { readonly name: string; readonly day: string };
+type MarkedRepayment = {
+  readonly name: string;
+  readonly day: string;
+  readonly marks: ReadonlyArray<RepaidMark>;
+};
+
+const alreadyMarkedWhy = ({ name, day }: MarkedRepayment) =>
+  `Looks like ${name}'s repayment already marked on ${day}, so it isn't recorded again`;
 export type BankRepaymentDebit = {
   readonly row: StatementRow;
   readonly currency: string;
@@ -975,9 +987,10 @@ export const assignRepaidMarks = (
       if (single !== -1) {
         if (singles === undefined) claimed.set(day, new Set([single]));
         else singles.add(single);
+        assigned.set(row, { name: payee.name, day: day.day, marks: [day.marks[single]!] });
       } else {
         if (singles !== undefined) continue;
-        const tiedElsewhere = (mark: RepaidDay["marks"][number]) =>
+        const tiedElsewhere = (mark: RepaidMark) =>
           mark.bankRecordId !== null && mark.bankRecordId !== recordId;
         // Do not spend a reopened debit's own evidence on another row's total.
         if (
@@ -995,8 +1008,12 @@ export const assignRepaidMarks = (
         );
         if (total !== amount) continue;
         claimed.set(day, "total");
+        assigned.set(row, {
+          name: payee.name,
+          day: day.day,
+          marks: day.marks.filter((mark) => mark.bankRecordId === null),
+        });
       }
-      assigned.set(row, { name: payee.name, day: day.day });
       return;
     }
   };
@@ -1034,7 +1051,8 @@ export const matchRows = (
   },
 ): ReadonlyArray<RowMatch> => {
   const taken = new Set<string>();
-  const others = rows.map((row) =>
+  const suggestions = rows.map((row) => suggest(row, input));
+  const others = rows.map((row, index) =>
     (row.direction === "credit"
       ? [
           ...input.invoices.map((invoice) =>
@@ -1048,7 +1066,7 @@ export const matchRows = (
               row,
               expense,
               input.currency,
-              suggest(row, input).action === "transfer",
+              suggestions[index]!.action === "transfer",
             ),
           ),
         ]
@@ -1058,7 +1076,7 @@ export const matchRows = (
   const named = (row: StatementRow) => (one: Pick<PartnerCandidate, "name" | "ids">) =>
     identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
   const bankDebits = input.bankDebits ?? [];
-  const bankById = new Map(bankDebits.map((debit) => [debit.recordId, debit.row]));
+  const bankById = new Map(bankDebits.map((debit) => [debit.recordId, debit]));
   const payees = input.payees ?? [];
   const assigned = assignRepaidMarks(
     bankDebits,
@@ -1072,7 +1090,7 @@ export const matchRows = (
       ownAccounts: input.ownAccounts,
     },
   );
-  const markedFor = (row: StatementRow) => {
+  const markedFor = (row: StatementRow): MarkedRepayment | undefined => {
     if (row.direction === "credit") {
       const payee = payeeForMark(row, payees);
       // Credits retain the signed-total check; they neither use nor take an individual mark.
@@ -1083,17 +1101,17 @@ export const matchRows = (
       );
       return total === undefined || payee === undefined
         ? undefined
-        : { name: payee.name, day: total.day };
+        : { name: payee.name, day: total.day, marks: [] };
     }
     const bank = input.bankRows?.get(row.index);
-    const debit = bank === undefined ? row : bankById.get(bank.recordId);
+    const debit = bank === undefined ? row : bankById.get(bank.recordId)?.row;
     return debit === undefined ? undefined : assigned.get(debit);
   };
   // A move between the company's own accounts that names a partner repays nobody, and a
   // repayment already marked by hand isn't offered again.
   const marked = new Map(rows.map((row) => [row, markedFor(row)]));
   const skipped = rows.map(
-    (row) => suggest(row, input).action === "transfer" || marked.get(row) !== undefined,
+    (row, index) => suggestions[index]!.action === "transfer" || marked.get(row) !== undefined,
   );
   const repaying = repayments(
     rows,
@@ -1103,6 +1121,40 @@ export const matchRows = (
     (index) => skipped[index]!,
   );
   const results = rows.map((row, index) => {
+    const repayment = marked.get(row);
+    const first = repayment?.marks[0];
+    const bank = input.bankRows?.get(row.index);
+    const filed = bank === undefined ? undefined : bankById.get(bank.recordId);
+    if (
+      repayment !== undefined &&
+      first !== undefined &&
+      suggestions[index]!.action !== "transfer" &&
+      (bank === undefined || (filed?.row.date === row.date && filed.currency === input.currency)) &&
+      repayment.marks.every(
+        (mark) => mark.bankRecordId === null && !mark.hasBankEvidence && mark.day <= row.date,
+      ) &&
+      repayment.marks.reduce((sum, mark) => sum + BigInt(mark.amountMinor), 0n) ===
+        BigInt(row.amountMinor)
+    ) {
+      const candidate: Candidate = {
+        kind: "expense",
+        recordId: first.recordId,
+        key: first.key,
+        title: repayment.name,
+        fit: "exact",
+        score: CONFIDENT,
+        why: [alreadyMarkedWhy(repayment)],
+        repays: repayment.marks.map(({ recordId, key, rev, amountMinor, day }) => ({
+          recordId,
+          key,
+          rev,
+          amountMinor,
+          day,
+        })),
+        alreadyRepaid: true,
+      };
+      return { row, candidates: [candidate] };
+    }
     const candidates = [...(repaying.get(index) ?? []), ...others[index]!]
       .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
       .slice(0, 5);
@@ -1118,14 +1170,14 @@ export const matchRows = (
     )
     .toSorted((left, right) => right.score - left.score || left.index - right.index);
   // A line naming a partner it settles nothing for is the owner's to place, never a new expense.
-  const suggestFor = (row: StatementRow): Suggestion => {
-    const plain = suggest(row, input);
+  const suggestFor = (row: StatementRow, index: number): Suggestion => {
+    const plain = suggestions[index]!;
     if (plain.action === "transfer") return plain;
     const repayment = marked.get(row);
     if (repayment !== undefined)
       return {
         action: "later",
-        why: `Looks like ${repayment.name}'s repayment already marked on ${repayment.day}, so it isn't recorded again`,
+        why: alreadyMarkedWhy(repayment),
       };
     const partner = (input.partners ?? []).find(
       (one) => one.currency === input.currency && one.owed.length > 0 && named(row)(one),
@@ -1159,11 +1211,15 @@ export const matchRows = (
     settled.set(index, {
       group: clear ? "matched" : open.length > 0 ? "choose" : "unmatched",
       candidates: clear ? [best] : open,
-      suggestion: suggestFor(row),
+      suggestion: suggestFor(row, index),
     });
   }
   return results.map(
     ({ row }, index) =>
-      settled.get(index) ?? { group: "unmatched", candidates: [], suggestion: suggestFor(row) },
+      settled.get(index) ?? {
+        group: "unmatched",
+        candidates: [],
+        suggestion: suggestFor(row, index),
+      },
   );
 };

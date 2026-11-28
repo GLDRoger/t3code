@@ -115,30 +115,36 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
   const zone = yield* ownerZone(orgId);
   const bank = yield* findBankList(orgId);
   const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    rev: number;
     minor: number;
     currency: string;
+    paidAt: number;
     fieldsJson: string;
     linked: number;
     markedAt: number;
-    bankRecordId: string | null;
+    bankEvidenceId: string | null;
     bankDateAt: number | null;
+    bankState: string | null;
   }>`
-    SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
+    SELECT r.record_id AS "recordId", r.key, r.rev, r.amount_minor AS minor,
+      r.currency, COALESCE(r.date_at, r.created_at) AS "paidAt", r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
         AND e.target_record_id = r.record_id) AS linked,
       COALESCE((SELECT c.at FROM kin_record_changes c, json_each(c.fields_json) f
         WHERE c.org_id = r.org_id AND c.record_id = r.record_id
           AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
         ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt",
-      bank_entry.record_id AS "bankRecordId", bank_entry.date_at AS "bankDateAt"
+      bank_entry.record_id AS "bankEvidenceId", bank_entry.date_at AS "bankDateAt",
+      bank_entry.state AS "bankState"
     FROM kin_records r
     LEFT JOIN kin_records bank_entry ON bank_entry.org_id = r.org_id
       AND bank_entry.record_id = (SELECT l.target FROM kin_record_links l
         JOIN kin_records b ON b.org_id = l.org_id AND b.record_id = l.target
-          AND b.state <> 'dropped'
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id
           AND l.kind = 'record' AND l.relation = 'evidence' AND b.register_id = ${bank?.id ?? null}
-        ORDER BY l.created_at DESC, l.target DESC LIMIT 1)
+        ORDER BY b.state = 'dropped', l.created_at DESC, l.target DESC LIMIT 1)
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
     ORDER BY r.key`;
@@ -148,7 +154,14 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
   );
   type RepaidDay = {
     amountMinor: bigint;
-    marks: Array<{ amountMinor: number; bankRecordId: string | null }>;
+    marks: Array<
+      Pick<(typeof rows)[number], "recordId" | "key" | "rev"> & {
+        amountMinor: number;
+        day: string;
+        bankRecordId: string | null;
+        hasBankEvidence?: true;
+      }
+    >;
   };
   const payees = new Map<
     string,
@@ -180,8 +193,14 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       const bankDay = row.bankDateAt === null ? null : dayIn(row.bankDateAt, zone);
       repaid.amountMinor += BigInt(row.minor);
       repaid.marks.push({
+        recordId: row.recordId,
+        key: row.key,
+        rev: row.rev,
         amountMinor: row.minor,
-        bankRecordId: bankDay === markedDay ? row.bankRecordId : null,
+        day: dayIn(row.paidAt, zone),
+        bankRecordId:
+          bankDay === markedDay && row.bankState !== "dropped" ? row.bankEvidenceId : null,
+        ...(row.bankEvidenceId === null ? {} : { hasBankEvidence: true }),
       });
       payee.repaid.set(at, repaid);
     }
