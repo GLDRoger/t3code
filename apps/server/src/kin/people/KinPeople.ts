@@ -1321,10 +1321,10 @@ export const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* person(input.orgId, input.personId);
-          if (caller.personId !== input.personId) {
-            if (!(yield* level(input.orgId, caller.personId))) return yield* denied;
-            yield* mayActOn(caller, input.orgId, input.personId);
-          }
+          const own = caller.personId === input.personId;
+          if ((!own || input.githubLogin !== null) && !(yield* level(input.orgId, caller.personId)))
+            return yield* denied;
+          if (!own) yield* mayActOn(caller, input.orgId, input.personId);
 
           if (input.githubLogin !== null) {
             const clashes =
@@ -1338,7 +1338,6 @@ export const make = Effect.gen(function* () {
                 message: "That GitHub login is already linked to someone.",
               });
           }
-          // This login routes review reminders; it never grants GitHub authority.
           yield* sql`UPDATE kin_people SET github_login = ${input.githubLogin} WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setGithubLogin")),
           );

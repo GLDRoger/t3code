@@ -72,6 +72,7 @@ import {
   outsideBlocksLine,
   outsideLine,
   postedLine,
+  reviewAccessRefused,
   unfinishedLine,
 } from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
@@ -83,7 +84,14 @@ import { ownerFlagKey, triagedKey } from "./boundIssue.ts";
 import { isOutsideTriage } from "../lead/outsideTriage.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
-import { ASK_REFUSAL, DIFF_NEXT, DIFF_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
+import {
+  askedReviewMayStart,
+  ASK_REFUSAL,
+  DIFF_NEXT,
+  DIFF_REFUSAL,
+  POST_REFUSAL,
+  PULL_REFUSAL,
+} from "./reviewAsk.ts";
 const { DIFF_CAP } = GitHubWatch;
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
 
@@ -774,6 +782,49 @@ it.effect.each([
       assert.isTrue(diff.startsWith(whole));
       if (end === DIFF_NEXT.end) assert.strictEqual(whole, diff);
       else assert.isBelow(whole.length, diff.length);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "an asked review whose asker lost collaborator access after queueing reads nothing",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const number = github.openItem({
+        repo: LEDGER,
+        pull: true,
+        author: "dev-gh",
+        association: "COLLABORATOR",
+        title: "Round a total",
+        diff: "diff --git a/totals.ts b/totals.ts\n+round the total\n",
+      });
+      const { review, ask, runReview, directOf, githubEvents, end, told, sql, orgId } =
+        yield* ambermill(github);
+      const chatId = yield* directOf("dev");
+      yield* ask("dev", chatId, "Review my PR");
+      assert.deepStrictEqual(outcomes((yield* review({ repo: LEDGER, number })).value), [
+        [`${LEDGER}#${number}`, "queued"],
+      ]);
+      const [event] = yield* githubEvents;
+      github.world.repos.find((repo) => repo.full_name === LEDGER)!.collaborators = [];
+      yield* runReview(event!.eventId);
+      const before = github.requests.length;
+      const read = yield* callAs("tech", "kin_github_diff", {});
+      assert.isFalse(read.ok);
+      assert.deepStrictEqual(
+        github.requests.slice(before).map(({ call }) => call),
+        [`GET repos/${LEDGER}`, `GET repos/${LEDGER}/collaborators/dev-gh`],
+      );
+      assert.notProperty(read.value, "diff");
+      const [claim] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_events WHERE org_id = ${orgId} AND event_id = ${event!.eventId}`;
+      const admitted = yield* askedReviewMayStart(event!, claim!.wakeupId).pipe(
+        Effect.provideService(GitHubWatch.KinGitHubApi, watchApi(github)),
+      );
+      assert.isFalse(admitted);
+      yield* end("completed");
+      assert.deepStrictEqual(yield* told(chatId), [reviewAccessRefused(`${LEDGER}#${number}`)]);
     }).pipe(Effect.provide(layer));
   },
 );
