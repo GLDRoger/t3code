@@ -106,8 +106,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   rewrites its character and says so in a line. The character is a private doc in **Docs**, and its
   history brings an older one back. A character never changes what an agent may do.
 - **It does, then tells.** Inside the company an agent acts and tells you in a line: it moves a
-  task, drafts a doc, fixes a record. It asks only what only you know, once, with the default it
-  will take. Say "undo it" and it puts back what it just changed. To let it do something without
+  task, drafts a doc, fixes a record. It asks only what only you know, once, with the answer it
+  suggests. Say "undo it" and it puts back what it just changed. To let it do something without
   asking every time, say so ("Finance may always draft payment reminders"); it remembers.
 - **One reply per message.** Each message gets one answer. If the agent starts something longer,
   such as a coding job, it says so and comes back in the chat when there's news.
@@ -140,20 +140,19 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   in the chat. Tapping an answer answers the agent; it is never an approval. An answer with a line
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
-  never does it, and Kin never takes such an answer as a default: it waits for your tap.
+  never runs the action.
   On a phone, the notice of an agent's question with two answers lists them as 1 and 2; press
   and hold it (on Android, expand it) and tap **Answer 1** or **Answer 2** to answer without
   finding the chat. The phone
   unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
   question with more answers, opens the card instead.
-- **It asks once, and says what it will do.** An agent's question comes with the answer it will go
-  with and the day, by default the end of your next working day (until 19:30). If you don't answer
-  by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
-  that would send, post or move money has no such default: it is raised once more the next working
-  morning and then waits for you. Another agent won't ask you the same thing while it is open.
-  To change the answer before the day, tap another one. You can also answer in words in the chat
-  it asked in: only that agent takes it from what you wrote, the card says so, and Undo beside it
-  opens the question again. It then waits for your answer with no default, and anything already
+- **It asks once, and says what it will do.** When the default option shows an action to mark a task
+  or list entry done or drop it, Kin can take it on the day shown if you haven't answered. Kin tells
+  you what it did and gives you an Undo button. If the agent asks a question for itself without an
+  automatic default, Kin raises the question once more the next working morning and waits for you.
+  Another agent won't ask you the same thing while it is open. Tap an option to answer. You can
+  also answer in words in the chat it asked in: only that agent takes it from what you wrote,
+  the card says so, and Undo beside it opens the question again. It then waits for your answer with no default, and anything already
   done from the first answer stands.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
@@ -171,7 +170,7 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   [Who agents work as](#who-agents-work-as) for what holds it to that.
 
 **Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
-its default and day, and you can answer it right there.
+what happens if you don't answer, and you can answer it right there.
 
 ### An agent's page
 

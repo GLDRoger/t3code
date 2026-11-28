@@ -8,7 +8,7 @@ const ofQ = (value: Value | undefined, q: number): Value | undefined =>
 export const title = "A question an agent asks you, its default and its day";
 
 export const guide =
-  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder), for themselves or for someone else's chat. Each box is where the questions stand; each arrow is something that happens: an agent asks, a question held for your quiet hours reaches you, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and the default is taken, a question with no safe default is raised once more, the agent does its default, or a question asked for someone else's chat lapses with nobody answering. Red boxes are where a rule below breaks.";
+  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder), for themselves or for someone else's chat. Each box is where the questions stand; each arrow is something that happens: an agent asks, a question held for your quiet hours reaches you, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and Kin runs the saved action, a question with no runnable default is raised once more, or a question asked for someone else's chat lapses with nobody answering. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn without restarts; the rules are checked with one. */
 export const chartConstants = { MaxOutages: "0" };
@@ -24,6 +24,7 @@ export const rules: Record<string, string> = {
     "Once you answered, the default is never taken; an answer after the default was taken doesn't take it again.",
   NothingLeaves:
     "Nothing that leaves the company or moves money is ever done by a default: such a question waits for you.",
+  NoDefaultWithoutPlan: "Kin takes a default only when the chosen option has a saved action.",
   TapsWhileOpen:
     "While a question is open, its card takes your tap, however long ago it was asked.",
   RaisedOnce: "A question with no safe default is raised once more, never twice.",
@@ -72,9 +73,14 @@ export const variants = [
     what: "taking the default leaves its card open, and a tap answers the question whatever state it is in",
   },
   {
-    name: "no-words-check",
+    name: "no-action-check",
     breaks: "NothingLeaves",
-    what: "Kin trusts the agent's default without reading whether it sends something out",
+    what: "Kin lets an outside action run as a default",
+  },
+  {
+    name: "no-seal-check",
+    breaks: "NoDefaultWithoutPlan",
+    what: "Kin takes a stored default whose option has no saved action",
   },
   {
     name: "day-expiry",
@@ -183,11 +189,11 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "Start":
       return "Kin's host starts again";
     case "TakeDefault":
-      return "Its day comes: Kin takes the default and wakes the agent";
+      return "Its day comes and Kin runs the saved action";
+    case "HoldPlainDefault":
+      return "Its day comes and the question waits for your answer";
     case "Raise":
       return "The next morning: Kin raises it once more";
-    case "RunTurn":
-      return "The agent does its default and says so";
     case "Post":
       return "Your quiet hours end: the held question reaches you";
     case "Deliver":
