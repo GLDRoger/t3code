@@ -154,7 +154,7 @@ it.effect(
         (yield* service.accept({ secret: invite.secret + "x" }).pipe(Effect.flip))._tag,
         "KinChatError",
       );
-      const updated = yield* service.setGithubLogin(verified, {
+      const updated = yield* service.setGithubLogin(ownerSession, {
         orgId: input.orgId,
         personId: member.person.personId,
         githubLogin: "suraj",
@@ -788,6 +788,36 @@ it.effect("reserves invite handles and rechecks collisions at acceptance", () =>
     assert.match(timestamps[0]!.created_at, /^\d{4}-/);
   }).pipe(Effect.provide(layer)),
 );
+it.effect(
+  "only owner-level callers can set a GitHub username, and a member can clear their own",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const {
+        owner: { orgId },
+      } = yield* KinIdentity;
+      yield* pairSession(ownerSession.sessionId);
+      const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Zoya" });
+      const member = yield* service.accept({ secret: invite.secret });
+      const sessions = yield* SessionStore;
+      const session = yield* sessions.verify(member.accessToken);
+      const target = { orgId, personId: member.person.personId };
+      const login = { ...target, githubLogin: "zoya-gh" };
+
+      assert.propertyVal(
+        yield* service.setGithubLogin(session, login).pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.equal((yield* service.setGithubLogin(ownerSession, login)).githubLogin, "zoya-gh");
+      assert.isNull(
+        (yield* service.setGithubLogin(session, { ...target, githubLogin: null })).githubLogin,
+      );
+      yield* service.setAccess(ownerSession, { ...target, access: "co_owner" });
+      assert.equal((yield* service.setGithubLogin(session, login)).githubLogin, "zoya-gh");
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("GitHub routing logins are unique per org ignoring case", () =>
   Effect.gen(function* () {
     const service = yield* People.KinPeople;
@@ -805,7 +835,7 @@ it.effect("GitHub routing logins are unique per org ignoring case", () =>
     const session = yield* sessions.verify(member.accessToken);
     assert.propertyVal(
       yield* service
-        .setGithubLogin(session, {
+        .setGithubLogin(ownerSession, {
           orgId,
           personId: member.person.personId,
           githubLogin: "ownerlogin",
@@ -814,12 +844,12 @@ it.effect("GitHub routing logins are unique per org ignoring case", () =>
       "reason",
       "not_allowed",
     );
-    yield* service.setGithubLogin(session, {
+    yield* service.setGithubLogin(ownerSession, {
       orgId,
       personId: member.person.personId,
       githubLogin: "member",
     });
-    yield* service.setGithubLogin(session, {
+    yield* service.setGithubLogin(ownerSession, {
       orgId,
       personId: member.person.personId,
       githubLogin: "MEMBER",

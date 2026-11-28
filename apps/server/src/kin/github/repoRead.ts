@@ -84,7 +84,7 @@ export const READ_REFUSAL = {
   notHere: (repo: string) =>
     `${repo} is private, and Kin opens a private repo only in a person's own chat with you, for that person. ${NOTHING} Tell them that in one line.`,
   noLogin: (repo: string, name: string) =>
-    `${repo} is private, and Kin has no GitHub username on file for ${name}, so it can't open it for them. That changes when they add theirs under You → GitHub username and GitHub lets them see ${repo}. ${NOTHING} Tell them that in one line; send the owner nothing unless they ask you to get them access.`,
+    `${repo} is private, and Kin has no GitHub username on file for ${name}, so it can't open it for them. That changes when the owner or a co-owner sets their GitHub username in Team and GitHub lets them see ${repo}. ${NOTHING} Tell them that in one line; send the owner nothing unless they ask you to get them access.`,
   notCollaborator: (repo: string, name: string) =>
     `${repo} is private and GitHub doesn't let ${name} see it, so Kin can't open it for them. That changes when the owner gives them access to ${repo} on GitHub. ${NOTHING} Tell them that in one line; send the owner nothing unless they ask you to get them access.`,
   path: `A path names folders and a file inside the repo, such as src/alerts.ts, with no "." or ".." in it. ${NOTHING}`,
