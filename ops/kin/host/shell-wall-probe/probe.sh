@@ -196,7 +196,8 @@ try {
   const gh = await run(`'${path.join(root, "tools", "gh")}' --version`);
   line(gh.status === 0 && /^gh version \d+\./.test(gh.out), "run the allowed GitHub CLI", gh.out.split("\n")[0]);
   const write = await run(`printf x > '${outside}'`);
-  line(write.status !== 0 && !fs.existsSync(outside), "refuse a write outside the checkout", `exit ${write.status}`);
+  // The denied home is an empty throwaway folder inside the sandbox: a write there may succeed and vanish.
+  line(!fs.existsSync(outside), "keep a write outside the checkout off the host", `exit ${write.status}`);
   const allowed = await run("curl -sS -m 20 -o /dev/null -w '%{http_code}' https://github.com/");
   line(allowed.status === 0 && /^[23]\d\d$/.test(allowed.out), "fetch an allowed host (github.com)", allowed.out);
   const other = await run("curl -sS -m 20 -o /dev/null -w '%{http_code}' https://example.com/");
@@ -219,4 +220,5 @@ process.exit(failed === 0 ? 0 : 1);
 JS
 
 cd "$root"
-HOME="$home" TMPDIR="$temp" node "$root/runner.mjs" "$root" "$here/policy.json"
+# Kin gives Claude Code the session temp as both; the sandbox hands its commands CLAUDE_CODE_TMPDIR.
+HOME="$home" TMPDIR="$temp" CLAUDE_CODE_TMPDIR="$temp" node "$root/runner.mjs" "$root" "$here/policy.json"
