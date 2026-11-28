@@ -296,9 +296,9 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     wanted === "none" ? null : input.labels.find((one) => one.trim().toLowerCase() === wanted);
   if (label === undefined)
     return yield* refuse(
-      `default is the label of the option you'll take if they don't answer (one of ${input.labels
+      `default is the label of a done or drop action Kin may run if they haven't answered (one of ${input.labels
         .map((one) => `“${one}”`)
-        .join(", ")}), or "none" when nothing is safe to do without them.`,
+        .join(", ")}), or "none" to wait for their answer.`,
     );
   const personId = yield* personOfChat(input.orgId, input.chatId);
   if (personId === undefined) return undefined;
