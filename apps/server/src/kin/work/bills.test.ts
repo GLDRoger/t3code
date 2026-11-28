@@ -278,6 +278,25 @@ const read = (
     );
   });
 
+const beforeBillTransaction = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  entered: Deferred.Deferred<void>,
+  resume: Deferred.Deferred<void>,
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const withTransaction: typeof sql.withTransaction = (inner) =>
+      Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(resume)),
+        Effect.andThen(sql.withTransaction(inner)),
+      );
+    const gated = new Proxy(sql, {
+      get: (target, key, receiver) =>
+        key === "withTransaction" ? withTransaction : Reflect.get(target, key, receiver),
+    });
+    return yield* effect.pipe(Effect.provideService(SqlClient.SqlClient, gated));
+  });
+
 const threeBoxes: ReadonlyArray<BillBox> = [
   [25, 50, 280, 900],
   [350, 50, 300, 900],
@@ -1806,6 +1825,49 @@ describe("bills in bulk", () => {
           { reason: "invalid_state" },
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a reader that reaches settlement after the turn ends writes nothing", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { batchId } = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: [yield* upload("cafe.png", "harbor")], clientRequestId: "add" },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId } = yield* claimTurn(1);
+      const repo = yield* KinChatRepository.KinChatRepository;
+      const widget = { orgId, widgetId: KinWidgetId.make(`bills:${batchId}`) };
+      const beforeCard = yield* repo.getWidget(widget);
+      const before = yield* billRows;
+      const entered = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const answer = yield* beforeBillTransaction(
+        read({
+          bill: "B1",
+          vendor: "Harbor Cafe",
+          date: "2026-11-20",
+          amount: "12",
+          currency: "INR",
+        }).pipe(Effect.result),
+        entered,
+        resume,
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const queue = yield* KinEventQueue.KinEventQueue;
+      yield* queue.finish({ orgId, wakeupId, status: "completed" });
+      yield* Deferred.succeed(resume, undefined);
+      const result = yield* Fiber.join(answer);
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") assert.include(result.failure, { reason: "not_allowed" });
+      assert.deepStrictEqual(yield* billRows, before);
+      assert.deepStrictEqual(yield* repo.getWidget(widget), beforeCard);
+      const sql = yield* SqlClient.SqlClient;
+      const expenses = yield* sql`SELECT record_id FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+      assert.deepStrictEqual(expenses, []);
+      yield* Bills.turnEnded(orgId, wakeupId);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

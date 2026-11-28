@@ -1546,22 +1546,22 @@ export const answer = Effect.fn("KinBills.answer")(function* (
     readonly cannotRead?: string | undefined;
   },
 ) {
-  const bills = yield* turnBills(turn.orgId, turn.agentId, turn.wakeupId);
-  if (bills.size === 0)
-    return yield* new KinChatError({
-      reason: "not_allowed",
-      message: "bill_read answers only the bills Kin handed you in this turn.",
-    });
-  const id = input.bill.trim().toUpperCase();
-  const file = bills.get(id);
-  if (file === undefined)
-    return yield* new KinChatError({
-      reason: "not_found",
-      message: `No bill ${id.slice(0, 8)} in this turn: ${[...bills.keys()].join(", ")}.`,
-    });
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      const bills = yield* turnBills(turn.orgId, turn.agentId, turn.wakeupId);
+      if (bills.size === 0)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "bill_read answers only the bills Kin handed you in this turn.",
+        });
+      const id = input.bill.trim().toUpperCase();
+      const file = bills.get(id);
+      if (file === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: `No bill ${id.slice(0, 8)} in this turn: ${[...bills.keys()].join(", ")}.`,
+        });
       const row = yield* billRow(turn.orgId, file.hash);
       if (row === undefined || row.state !== "reading" || row.eventId !== file.eventId)
         return readAnswer(id, "answered");
