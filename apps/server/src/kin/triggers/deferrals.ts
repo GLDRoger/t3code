@@ -35,6 +35,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { cardAudience } from "../lead/LeadDelivery.ts";
 import { type DeferralSource, askerOf, firingOrigin } from "./deferralOrigin.ts";
+import { settleStandingReminder } from "./standingReminder.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import { GithubLinkState, githubRef } from "./deferralGithub.ts";
@@ -401,8 +402,20 @@ export const makeDeferralCards = Effect.gen(function* () {
     const { orgId, itemId } = input;
     const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
     const existing = yield* repo.getWidget({ orgId, widgetId });
-    if (Option.isNone(existing) || existing.value.closedAt !== null) return;
+    if (Option.isNone(existing)) return;
     const at = iso(input.now);
+    if (input.closed === "done" || input.closed === "undone" || input.closed === "cancelled") {
+      yield* settleStandingReminder(
+        { orgId, widgetId, at },
+        input.closed === "done" ? "done" : "undone",
+      ).pipe(
+        Effect.provideService(Repository.KinChatRepository, repo),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        (effect) =>
+          Option.isSome(hub) ? Effect.provideService(effect, KinChatHub, hub.value) : effect,
+      );
+    }
+    if (existing.value.closedAt !== null) return;
     const previous = existing.value.state;
     const state =
       typeof previous === "object" && previous !== null

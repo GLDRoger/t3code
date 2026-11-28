@@ -128,6 +128,7 @@ import {
 } from "../triggers/deferralGithub.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
+import { settleStandingReminder } from "../triggers/standingReminder.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
@@ -1743,6 +1744,16 @@ const make = Effect.gen(function* () {
           message: "Too late to undo: Kin already acted on this deferral.",
         });
       const at = yield* now;
+      if (card.onDue === "remind")
+        yield* settleStandingReminder(
+          { orgId: identity.orgId, widgetId: widget.widgetId, at },
+          "undone",
+        ).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, repo),
+          Effect.provideService(Hub.KinChatHub, hub),
+          Effect.mapError(dismissError),
+        );
       const closed = yield* repo.updateWidget({
         ...widget,
         // A tap's results are the card's own words, shown to whoever may tap it.
@@ -1802,7 +1813,9 @@ const make = Effect.gen(function* () {
       if (reminder !== null) {
         const state = yield* ReminderCard.applyReminderTap(widget, reminder, nowMs).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(cardTapError),
+          Effect.provideService(Repository.KinChatRepository, repo),
+          Effect.provideService(Hub.KinChatHub, hub),
+          Effect.mapError(dismissError),
         );
         applied = state === null ? null : { state, closed: false };
       } else if (scheduled !== null)
