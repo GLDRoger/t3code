@@ -756,7 +756,7 @@ const UpdateRow = Schema.Struct({
   ...SpineInputs,
   ...GoalInputs,
 });
-const recordFields = {
+export const recordFields = {
   work: [
     "milestone",
     "size",
@@ -816,7 +816,11 @@ const quoteFieldName = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const isPartyKind = Schema.is(NewPartyKind);
 // The neutral alias uses the client editor's GSTIN format check.
 const clientTaxNumberAlias = Symbol("clientTaxNumberAlias");
-const TaxNumberAlias = { [clientTaxNumberAlias]: Schema.optionalKey(Schema.Literal(true)) };
+const nestedFieldNull = Symbol("nestedFieldNull");
+const WriteFieldMarkers = {
+  [clientTaxNumberAlias]: Schema.optionalKey(Schema.Literal(true)),
+  [nestedFieldNull]: Schema.optionalKey(Schema.Literal(true)),
+};
 const NOTHING_WRITTEN = "Nothing was written.";
 const clientsOnly = (name: string) =>
   `${name} goes on clients alone: change the client in its own call. ${NOTHING_WRITTEN}`;
@@ -855,6 +859,18 @@ const notAField = (name: string, key: string, lists: ReadonlyArray<FieldList>, r
 const givenTwice = (name: string) =>
   `${name} given twice with different values: send it once, at the top or under fields. ${NOTHING_WRITTEN}`;
 
+// The MCP JSON codec omits null on optional fields that lack a null branch.
+const fieldsOmittingNull = (row: Schema.Struct.Fields) =>
+  new Set(
+    Object.entries(row).flatMap(([key, field]) => {
+      const codec = Schema.toCodecJson(Schema.Struct({ value: Schema.toEncoded(field) }));
+      const result = Schema.decodeUnknownResult(codec)({ value: null });
+      return result._tag === "Success" && result.success.value === undefined ? [key] : [];
+    }),
+  );
+const createFieldsOmittingNull = fieldsOmittingNull(CreateRow.fields);
+const updateFieldsOmittingNull = fieldsOmittingNull(UpdateRow.fields);
+
 const liftRecordFields = Effect.fnUntraced(function* (
   {
     fields,
@@ -866,22 +882,30 @@ const liftRecordFields = Effect.fnUntraced(function* (
   },
   lists: ReadonlyArray<FieldList>,
   rowKeys: object,
+  omitsNull: ReadonlySet<string>,
+  deal: boolean,
 ) {
+  const entries = Object.entries(fields ?? {});
+  const hasNull = entries.some(([, value]) => value === null);
   if (lists.length === 0) {
     if (taxNumber !== undefined || taxPlace !== undefined)
       return yield* Effect.fail(
         parameterIssue(clientsOnly(taxNumber === undefined ? "taxPlace" : "taxNumber")),
       );
-    return fields === undefined ? out : { ...out, fields };
+    return fields === undefined
+      ? out
+      : { ...out, fields, ...(deal && hasNull ? { [nestedFieldNull]: true } : {}) };
   }
   let usedTaxNumberAlias = taxNumber !== undefined;
-  for (const [name, value] of Object.entries(fields ?? {})) {
+  for (const [name, value] of entries) {
     const key = canonicalField(name);
+    if (key === "kind" && value === null && lists.every((list) => list === "clients")) continue;
     if (
       !Object.hasOwn(rowKeys, key) ||
       !lists.every((list) => (recordFields[list] as ReadonlyArray<string>).includes(key))
     )
       return yield* Effect.fail(parameterIssue(notAField(name, key, lists, rowKeys)));
+    if (value === null && omitsNull.has(key)) continue;
     if (out[key] !== undefined && !Equal.equals(out[key], value))
       return yield* Effect.fail(parameterIssue(givenTwice(name)));
     out[key] = value;
@@ -910,6 +934,7 @@ const liftRecordFields = Effect.fnUntraced(function* (
     out.kind = category;
     delete out.category;
   }
+  if (hasNull) Object.assign(out, { [nestedFieldNull]: true });
   return usedTaxNumberAlias ? { ...out, [clientTaxNumberAlias]: true } : out;
 });
 
@@ -955,7 +980,7 @@ const rowProperty = (key: string) =>
  * unadvertised (`HIDDEN_CREATE_KEYS`), so a call shaped like a read still writes.
  */
 export const FIELDS_INDEX =
-  "The list's own fields by key; null clears one. work: milestone, size, reason, from, at, attendees, where, alsoOn, promisedTo, deal. clients: cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom. contacts: role, email, phone, emails, phones, tags. projects: repos, billing, value, startsOn, renewsOn, finishedOn, members, audience. goals: measure, target, current, unit, startsOn. deals: stage, source, concerns. A defined list's are its own. list_fields says what each takes.";
+  "The list's own fields by key. Some values clear with null. Whole lists clear with []. work: milestone, size, reason, from, at, attendees, where, alsoOn, promisedTo, deal. clients: cameFrom, tags, terms, address, taxNumber, taxPlace, heardFrom. contacts: role, email, phone, emails, phones, tags. projects: repos, billing, value, startsOn, renewsOn, finishedOn, members, audience. goals: measure, target, current, unit, startsOn. deals: stage, source, concerns. A defined list's are its own. list_fields says what each takes.";
 // Their own words stay in sight beside the index, as they were beside their keys.
 const keptWords = ["reason", "from"]
   .map((key) => `${key}: ${takesOf(rowProperty(key)).about}`)
@@ -982,17 +1007,24 @@ const rawCreate = openRow({
   taxNumber: CreateRow.fields.gstin,
   taxPlace: CreateRow.fields.placeOfSupply,
 });
-const canonicalCreate = openRow({ ...CreateRow.fields, ...TaxNumberAlias });
+const canonicalCreate = openRow({ ...CreateRow.fields, ...WriteFieldMarkers });
 const createRowWithFields = rawCreate.pipe(
   Schema.toEncoded,
   Schema.decodeTo(Schema.Unknown, {
     decode: SchemaGetter.transformEffect((row) => {
       const list = row.list ?? "work";
-      return liftRecordFields(row, isFieldList(list) ? [list] : [], CreateRow.fields);
+      return liftRecordFields(
+        row,
+        isFieldList(list) ? [list] : [],
+        CreateRow.fields,
+        createFieldsOmittingNull,
+        list === "deals",
+      );
     }),
     encode: SchemaGetter.transform((value) => {
       const {
         [clientTaxNumberAlias]: alias,
+        [nestedFieldNull]: _nestedNull,
         gstin,
         ...row
       } = value as typeof canonicalCreate.Encoded;
@@ -1015,17 +1047,25 @@ const rawUpdate = Schema.Struct({
 const canonicalUpdate = Schema.Struct({
   ...UpdateRow.fields,
   kind: Schema.optional(NewPartyKind),
-  ...TaxNumberAlias,
+  ...WriteFieldMarkers,
 });
 export const UpdateInput = rawUpdate.pipe(
   Schema.toEncoded,
   Schema.decodeTo(Schema.Unknown, {
-    decode: SchemaGetter.transformEffect((row) =>
-      liftRecordFields(row, updateLists(row), UpdateRow.fields),
-    ),
+    decode: SchemaGetter.transformEffect((row) => {
+      const keys = row.keys ?? (row.key === undefined ? [] : [row.key]);
+      return liftRecordFields(
+        row,
+        updateLists(row),
+        UpdateRow.fields,
+        updateFieldsOmittingNull,
+        keys.length > 0 && keys.every((key) => key.startsWith(`${LISTS.deals.prefix}-`)),
+      );
+    }),
     encode: SchemaGetter.transform((value) => {
       const {
         [clientTaxNumberAlias]: alias,
+        [nestedFieldNull]: _nestedNull,
         gstin,
         kind,
         ...row
@@ -3604,7 +3644,7 @@ const createRow = Effect.fnUntraced(function* (
 export const suggestedBillResult = (key: string) =>
   `${key} waits as a suggested bill to pay; it counts in To pay once the owner records it. Ask once with kin_ask, an option with action record_bill on ${key}.`;
 
-const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
+export const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
 const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
   const extra = Object.keys(given).filter((key) => !DEAL_FIELDS.includes(key));
@@ -3883,12 +3923,28 @@ export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.
         }),
     ),
   );
+const nothingWrittenOnRefusal =
+  (needed: boolean) =>
+  <A, E, R>(call: Effect.Effect<A, E, R>) =>
+    needed
+      ? call.pipe(
+          Effect.mapError((error) => {
+            if (!isKinChatError(error) || error.message.endsWith(NOTHING_WRITTEN)) return error;
+            const Refused = isSensitiveRefusal(error) ? SensitiveRefusal : KinChatError;
+            return new Refused({
+              reason: error.reason,
+              message: `${error.message} ${NOTHING_WRITTEN}`,
+            });
+          }),
+        )
+      : call;
+
 export const create = leadTool("KinWorkTools.create", (lead, input: typeof CreateInput.Type) =>
   countryWorded(
     lead,
     input.records.length > 1,
     runCreate(lead, input).pipe(Effect.provide(CreditNotes.layer)),
-  ),
+  ).pipe(nothingWrittenOnRefusal(input.records.some((row) => row[nestedFieldNull] === true))),
 );
 
 /** A client's kind or an entry's category; a client with neither is a client. */
@@ -4653,11 +4709,16 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
 export const update = leadTool(
   "KinWorkTools.update",
   (lead, input: Change & { readonly key: string }) =>
-    countryWorded(lead, true, runUpdate(lead, input)),
+    countryWorded(lead, true, runUpdate(lead, input)).pipe(
+      nothingWrittenOnRefusal(input[nestedFieldNull] === true),
+    ),
 );
 export const updateMany = leadTool(
   "KinWorkTools.updateMany",
-  (lead, input: typeof UpdateInput.Type) => countryWorded(lead, true, runUpdateMany(lead, input)),
+  (lead, input: typeof UpdateInput.Type) =>
+    countryWorded(lead, true, runUpdateMany(lead, input)).pipe(
+      nothingWrittenOnRefusal(input[nestedFieldNull] === true),
+    ),
 );
 
 /** Several tasks given out at once, all or none: each person hears once, however many came to them. */

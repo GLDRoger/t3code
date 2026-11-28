@@ -331,6 +331,123 @@ it.effect.each(recordWriteShapes)("record writes accept nested fields on $list",
   }).pipe(Effect.provide(layer)),
 );
 
+const nullFields = {
+  ...LeadWork.recordFields,
+  clients: [...LeadWork.recordFields.clients, "kind"],
+  deals: LeadWork.DEAL_FIELDS,
+};
+
+it.effect.each(
+  Object.entries(nullFields).flatMap(([list, keys]) => keys.map((field) => ({ list, field }))),
+)("legacy null writes match fields.$field on $list", ({ list, field }) =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const create = (row: object) =>
+      decodeCreate({ sourceEventId: "ask-event", records: [row] }).pipe(
+        Effect.flatMap((input) => LeadWork.create(scope, input)),
+      );
+    const update = (key: string, patch: object) =>
+      decodeUpdate({ sourceEventId: "again-event", key, ...patch }).pipe(
+        Effect.flatMap((input) => LeadWork.update(scope, { ...input, key })),
+      );
+    const defaults: Readonly<Record<string, object>> = {
+      work: { category: "meeting" },
+      clients: field === "kind" ? {} : { category: "prospect" },
+      contacts: { client: "C-1" },
+      projects: { category: "campaign" },
+      goals: { due: "2026-12-31", measure: "manual", target: "10" },
+      deals: { client: "C-1" },
+    };
+    const columns: Record<string, unknown> = { ...defaults[list], list };
+    if (list === "contacts" || list === "deals")
+      yield* create({ list: "clients", title: "Juniper Cold Chain" });
+    const made = yield* create({
+      ...columns,
+      title: "Juniper dispatch",
+      ...(list === "contacts" ? { role: "Dispatch", emails: ["zoya@juniper.invalid"] } : {}),
+      ...(list === "clients" ? { tags: ["freight"] } : {}),
+      ...(list === "projects" ? { audience: "freight", repos: ["juniper/dispatch"] } : {}),
+    });
+    const target = made.records[0]!.key;
+    const rows = sql`SELECT key, category, fields_json, state, rev, due_at, date_at, owner_id,
+      party_id, project_id FROM kin_records WHERE org_id = ${orgId} ORDER BY key`;
+    const initial = yield* rows;
+    const probe = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const result = yield* Effect.result(write);
+            const stored = yield* rows;
+            return yield* Effect.fail({
+              allowed: result._tag === "Success",
+              message: result._tag === "Failure" ? String(result.failure) : "",
+              stored,
+            });
+          }),
+        )
+        .pipe(Effect.flip);
+    const name = field === "gstin" ? "taxNumber" : field === "placeOfSupply" ? "taxPlace" : field;
+    const legacy = list === "deals" ? { fields: { [field]: null } } : { [field]: null };
+    const nested = { fields: { [name]: null } };
+    if (list === "goals") delete columns[field];
+    const row = { ...columns, title: "Tidewater dispatch" };
+
+    // The review's Rhea baseline refuses incomplete goals and another open deal on the same client.
+    const createAllowed =
+      list !== "deals" && !(list === "goals" && ["measure", "target"].includes(field));
+    // The MCP preflight refuses these keys on update before the raw decoder can strip them.
+    const updateAllowed = !["cameFrom", "deal", "finishedOn"].includes(field);
+    for (const [op, allowed, old, next] of [
+      ["create", createAllowed, create({ ...row, ...legacy }), create({ ...row, ...nested })],
+      ["update", updateAllowed, update(target, legacy), update(target, nested)],
+    ] as const) {
+      const base =
+        allowed || op === "create" ? yield* probe(old) : { allowed: false, stored: initial };
+      const head = yield* probe(next);
+      assert.equal(base.allowed, allowed, op);
+      assert.equal(head.allowed, allowed, head.message || op);
+      assert.deepStrictEqual(head.stored, base.stored, op);
+      if (!allowed) {
+        assert.deepStrictEqual(head.stored, initial, op);
+        assert.include(head.message, "Nothing was written.");
+      }
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps legacy GSTIN writes and validates fields.taxNumber in India", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at, updated_by_kind, updated_by_id)
+      VALUES (${orgId}, '{"country":"IN"}', 1, 0, 'person', ${ownerId})`;
+    yield* sql`UPDATE kin_messages SET body = 'Juniper uses CA123 and CB123.' WHERE org_id = ${orgId}`;
+    // The neutral name follows the client form; GSTIN remains a legacy input.
+    const create = (tax: object) =>
+      decodeCreate({
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Juniper", ...tax }],
+      }).pipe(Effect.flatMap((input) => LeadWork.create(scope, input)));
+    const update = (key: string, tax: object) =>
+      decodeUpdate({ sourceEventId: "again-event", key, ...tax }).pipe(
+        Effect.flatMap((input) => LeadWork.update(scope, { ...input, key })),
+      );
+    const gstins = sql`SELECT json_extract(fields_json, '$.gstin') AS gstin FROM kin_records WHERE org_id = ${orgId}`;
+    const refusedCreate = yield* Effect.flip(create({ fields: { taxNumber: "CA123" } }));
+    assert.match(String(refusedCreate), /GSTIN/);
+    assert.deepStrictEqual(yield* gstins, []);
+    const made = yield* create({ gstin: "CA123" });
+    assert.deepStrictEqual(yield* gstins, [{ gstin: "CA123" }]);
+    const key = made.records[0]!.key;
+    const refusedUpdate = yield* Effect.flip(update(key, { fields: { taxNumber: "CB123" } }));
+    assert.match(String(refusedUpdate), /GSTIN/);
+    assert.deepStrictEqual(yield* gstins, [{ gstin: "CA123" }]);
+    yield* update(key, { gstin: "CB123" });
+    assert.deepStrictEqual(yield* gstins, [{ gstin: "CB123" }]);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("record writes refuse conflicting names for a field", () =>
   Effect.gen(function* () {
     const row = { list: "clients", title: "Juniper Cold Chain", gstin: "27ABCDE1234F1Z5" };

@@ -191,3 +191,23 @@ it.effect("the fields index names exactly what the decoder takes for each built-
     }
   }),
 );
+
+it.effect("nested null uses the legacy JSON codec for optional and nullable fields", () =>
+  Effect.gen(function* () {
+    const create = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.CreateInput));
+    const update = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.UpdateInput));
+    const row = { list: "contacts", title: "Zoya", client: "C-1" };
+    const change = { sourceEventId: "e", key: "CT-1" };
+    const made = yield* create({
+      sourceEventId: "e",
+      records: [{ ...row, fields: { emails: null, role: null } }],
+    });
+    assert.isUndefined(made.records[0]!.emails);
+    assert.isUndefined(made.records[0]!.role);
+    const changed = yield* update({ ...change, fields: { emails: null, role: null } });
+    assert.isUndefined(changed.emails);
+    assert.isNull(changed.role);
+    const wrongList = yield* Effect.flip(update({ ...change, fields: { attendees: null } }));
+    assert.include(wrongList.message, "Nothing was written.");
+  }),
+);
