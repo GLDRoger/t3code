@@ -222,7 +222,7 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
    */
   function useKinBillFix(target: KinScreenTarget) {
     const { environmentId, orgId } = target;
-    const addAnyway = useAtomCommand(kinClient.billsAddAnyway, { reportFailure: false });
+    const keepEntered = useAtomCommand(kinClient.billsKeepEntered, { reportFailure: false });
     const [requestId] = useState(newId);
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
@@ -236,7 +236,7 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
         const outcome = await kinListSend({
           online: () => kinHostConnected(environmentId),
           send: () =>
-            addAnyway({
+            keepEntered({
               environmentId,
               input: { orgId, sha256, clientRequestId: requestId, entered },
             }),
