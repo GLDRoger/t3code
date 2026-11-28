@@ -91,6 +91,7 @@ import {
 } from "../work/statements/bankAlerts.testkit.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
+import { dmarcPassedFor } from "./MailText.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ASK_CLOSED,
@@ -869,6 +870,19 @@ const pulseEvents = Effect.gen(function* () {
       agent_id AS "agentId", json_extract(json, '$.arrivalId') AS "arrivalId" FROM kin_events
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
+
+const outlookDmarc = (domain: string) =>
+  `spf=pass smtp.mailfrom=${domain}; dmarc=pass action=none header.from=${domain}; compauth=pass reason=100`;
+
+const outlookHeaders = (domain: string, order: "single" | "extra first" | "extra last") => {
+  const receiver = outlookDmarc(domain);
+  const extra = `dmarc=pass header.from=${domain}; compauth=pass`;
+  return order === "single"
+    ? [receiver]
+    : order === "extra first"
+      ? [extra, receiver]
+      : [receiver, extra];
+};
 
 const ruleMail = (fake: FakeMail, to: string, at: number, number: number, verified = true) =>
   fake.deliver({
@@ -2963,7 +2977,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       "no-reply@inkspot.example",
       "Invoice",
       [
-        "mx.example; dmarc=fail header.from=inkspot.example",
+        "mx.google.com; dmarc=fail header.from=inkspot.example",
         "relay.inkspot.example; dmarc=pass header.from=inkspot.example",
       ],
     ],
@@ -3013,7 +3027,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             subject: "Invoice",
             body: "Inkspot Cloud bill.",
             at: NOW + 1,
-            authResults: ["mx.example; dmarc=pass header.from=inkspot.example"],
+            authResults: ["mx.google.com; dmarc=pass header.from=inkspot.example"],
           });
           yield* readMail(accounts);
           const mail = fake.deliver({
@@ -3026,7 +3040,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               verdict === null
                 ? []
                 : typeof verdict === "string"
-                  ? [`mx.example; ${verdict}`]
+                  ? [`mx.google.com; ${verdict}`]
                   : verdict,
             ...(otherFrom[0] === undefined ? {} : { headers: { From: otherFrom[0] } }),
           });
@@ -3071,7 +3085,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             body: "Inkspot Cloud bill.",
             at: NOW + 1,
             files: [{ name: "inkspot.pdf", mimeType: "application/pdf", data: "AA==" }],
-            authResults: ["mx.example; dmarc=pass header.from=inkspot.example"],
+            authResults: [
+              provider === "google"
+                ? "mx.google.com; dmarc=pass header.from=inkspot.example"
+                : outlookDmarc("inkspot.example"),
+            ],
           });
           const negative = fake.deliver({
             to,
@@ -3080,7 +3098,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             body: "Harbor Power bill.",
             at: NOW + 2,
             files: [{ name: "harbor.csv", mimeType: "text/csv", data: "AA==" }],
-            authResults: ["mx.example; dmarc=pass header.from=harbor.example"],
+            authResults: [
+              provider === "google"
+                ? "mx.google.com; dmarc=pass header.from=harbor.example"
+                : outlookDmarc("harbor.example"),
+            ],
           });
           yield* readMail(connectionId);
           assert.deepStrictEqual(
@@ -3124,11 +3146,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             subject: "November invoice",
             body: "Inkspot Cloud bill.",
             authResults: [
-              "mx.example; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
+              "mx.google.com; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
             ],
           };
           const first = fake.deliver({ ...mail, to: ACCOUNTS, at: NOW + 1 });
-          fake.deliver({ ...mail, to: HELLO, at: NOW + 2, messageId: first.messageId });
+          fake.deliver({
+            ...mail,
+            to: HELLO,
+            at: NOW + 2,
+            messageId: first.messageId,
+            authResults: [outlookDmarc("inkspot.example")],
+          });
           yield* readMail(accounts);
           yield* readMail(hello);
           const rows = () => sql`SELECT address, state, seen_count AS count FROM kin_bill_senders
@@ -3158,7 +3186,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* TestClock.adjust("1 minute");
         yield* sql`INSERT INTO kin_bill_senders (org_id, address, state, decided_at, created_at)
           VALUES (${orgId}, 'billing@inkspot.example', 'approved', ${NOW}, ${NOW})`;
-        const passFor = (domain: string) => [`mx.example; dmarc=pass header.from=${domain}`];
+        const passFor = (domain: string) => [
+          provider === "google"
+            ? `mx.google.com; dmarc=pass header.from=${domain}`
+            : outlookDmarc(domain),
+        ];
         const sent: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
           ["Billing@INKSPOT.example", passFor("inkspot.example")],
           ["billing+x@inkspot.example", passFor("inkspot.example")],
@@ -3206,9 +3238,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     at: NOW + 1,
     headers: { "Auto-Submitted": "auto-generated" },
     authResults: [
-      "mx.example; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
+      "mx.google.com; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
     ],
   };
+  const billAuth = (to: string) =>
+    to === HELLO ? [outlookDmarc("inkspot.example")] : billMail.authResults;
   const pdfMail = {
     ...billMail,
     files: [{ name: "Inkspot Cloud.pdf", mimeType: "application/pdf", data: "JVBERi0xLjQK" }],
@@ -3250,7 +3284,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           subject: "November",
           body: "Harbor Power bill.",
           files: [{ name: "harbor-power.pdf", mimeType: "application/pdf", data: "JVBERi0xLjQK" }],
-          authResults: ["mx.example; dmarc=pass header.from=harborpower.example"],
+          authResults: ["mx.google.com; dmarc=pass header.from=harborpower.example"],
         };
         const vendor = fake.deliver({ ...pdf, from: address, at: NOW + 1 });
         const bill = fake.deliver({ ...pdf, from: "Bill <bill@harborpower.example>", at: NOW + 2 });
@@ -3362,7 +3396,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             yield* approved(coOwner);
             yield* TestClock.adjust("1 minute");
             yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${coOwner}`;
-            const mail = fake.deliver({ ...pdfMail, to });
+            const authResults = billAuth(to);
+            const mail = fake.deliver({ ...pdfMail, to, authResults });
             yield* readMail(box);
             assert.deepStrictEqual(yield* billLedger, [{ state: "waiting", reason: null }]);
             assert.isFalse(reads.some(fullRead));
@@ -3441,7 +3476,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             const after = yield* summary;
             assert.deepStrictEqual(after.spent.thisMonth.total, []);
             assert.deepStrictEqual(after.toPay?.total, [{ minor: 1000, currency: "USD" }]);
-            const body = fake.deliver({ ...billMail, to, at: NOW + 2 });
+            const body = fake.deliver({ ...billMail, to, at: NOW + 2, authResults });
             yield* readMail(box);
             yield* drain();
             const appended = yield* Bills.list(people(owner), { orgId, batchId: row!.batchId });
@@ -3473,6 +3508,59 @@ describe("Kin mail end to end, on a fake mailbox", () => {
   const laterPage = (url: URL) =>
     url.searchParams.has("pageToken") || url.searchParams.has("$skip");
   const catchUp = (personId = owner, day = since) => readSince(orgId, personId, inkspot, day);
+  it.effect.each(["single", "extra first", "extra last"] as const)(
+    "Outlook bill catch-up and the named sender rule share the verdict with %s results",
+    (order) => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const box = yield* connect(fake, "microsoft", HELLO);
+            yield* readMail(box);
+            const rule = yield* turnOnRule(box, { address: inkspot });
+            yield* approved();
+            yield* TestClock.adjust("1 minute");
+            const mail = fake.deliver({
+              ...pdfMail,
+              to: HELLO,
+              authResults: outlookHeaders("inkspot.example", order),
+            });
+            yield* readMail(box);
+            const [stored] = yield* storedRuleMail;
+            const checked = order === "single";
+            assert.include(stored, {
+              ruleId: rule.ruleId,
+              senderCheck: checked ? "passed" : "not checked",
+              ...(checked ? {} : { state: "held_unverified", reason: "sender_unverified" }),
+            });
+            assert.strictEqual(
+              (yield* storedRuleEvents).filter(
+                ({ event }) => event._tag === "pulse" && event.rule?.ruleId === rule.ruleId,
+              ).length,
+              checked ? 1 : 0,
+            );
+            if (!checked) {
+              assert.deepStrictEqual(yield* billLedger, []);
+              assert.include(yield* catchUp(), { queued: 1 });
+            }
+            yield* drain();
+            assert.deepStrictEqual(yield* billLedger, [
+              checked
+                ? { state: "done", reason: null }
+                : { state: "skipped", reason: "unverified" },
+            ]);
+            assert.lengthOf(parts(reads, mail.id), checked ? 1 : 0);
+            assert.strictEqual(reads.some(fullRead), checked);
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    },
+  );
+
   const caughtIds = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return yield* sql<{ message_id: string }>`SELECT message_id FROM kin_bill_mail
@@ -3482,7 +3570,13 @@ describe("Kin mail end to end, on a fake mailbox", () => {
   });
   const manyBills = (fake: FakeMail, to: string, count: number) =>
     Array.from({ length: count }, (_, i) =>
-      fake.deliver({ ...billMail, to, at: NOW - 1 - i, body: `Inkspot Cloud bill ${i}.` }),
+      fake.deliver({
+        ...billMail,
+        to,
+        at: NOW - 1 - i,
+        body: `Inkspot Cloud bill ${i}.`,
+        authResults: billAuth(to),
+      }),
     );
 
   describe.each([
@@ -3490,7 +3584,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ["microsoft", HELLO],
   ] as const)("bill catch-up on %s", (vendor, to) => {
     it.effect.each(["Approve", "Add", "decline then Add", "Approve then Remove"] as const)(
-      "holds mail until Settings %s",
+      "holds checked mail until the owner chooses %s in Settings",
       (approval) => {
         const reads: Array<URL> = [];
         return setUp(
@@ -3506,6 +3600,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                   to,
                   at: NOW + offset,
                   body: `Bill ${offset}`,
+                  authResults: billAuth(to),
                 }),
               );
               yield* TestClock.adjust("1 minute");
@@ -3583,7 +3678,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                 .map((tool) => ({ tool: tool.name, mode: "off" as const, digest: tool.pinDigest })),
             });
             yield* approved();
-            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1, authResults: billAuth(to) });
             assert.include(yield* catchUp(), { queued: 1, older: false });
             assert.deepStrictEqual(yield* caughtIds, [mail.id]);
             assert.isTrue(reads.some(searchList));
@@ -3597,6 +3692,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             );
             yield* drain();
             assert.lengthOf(parts(reads, mail.id), 1);
+            assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
             reads.length = 0;
             assert.deepStrictEqual(yield* catchUp(), {
               queued: 0,
@@ -3636,11 +3732,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               yield* caughtIds,
               mail.map(({ id }) => id),
             );
-            const sql = yield* SqlClient.SqlClient;
             for (let batch = 0; batch < 8; batch++) yield* drain();
+            const expected = { state: "done", reason: null };
             assert.deepStrictEqual(
-              yield* sql`SELECT 1 FROM kin_bill_mail WHERE state <> 'done'`,
-              [],
+              yield* billLedger,
+              mail.map(() => expected),
             );
             for (const { id } of mail) {
               assert.lengthOf(
@@ -3897,7 +3993,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             const connectionId = yield* connect(fake, vendor, to);
             const connections = yield* KinConnections;
             yield* approved();
-            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1, authResults: billAuth(to) });
             assert.include(yield* catchUp(), { queued: 1 });
             const detail = yield* connections.get(people(owner), { orgId, connectionId });
             const read = detail.tools.find((tool) => tool.name === "mail_read_thread")!;
@@ -3926,7 +4022,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           Effect.gen(function* () {
             yield* connect(fake, vendor, to);
             yield* approved();
-            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1, authResults: billAuth(to) });
             fake.deliver({ ...pdfMail, to, at: NOW - 2, authResults: [] });
             assert.include(yield* catchUp(), { queued: 2 });
             yield* mailChange("removed");
@@ -4161,7 +4257,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     setUp((fake) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* connect(fake, "microsoft", HELLO);
+        yield* connect(fake, "google", ACCOUNTS);
         yield* approved();
         const chatId = `fin-${coOwner}`;
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -4170,7 +4266,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             agent_id, role, joined_at)
           VALUES ('fin-meera-person', ${orgId}, ${chatId}, 'person', ${coOwner}, NULL, 'member', ${stamp}),
             ('fin-meera-lead', ${orgId}, ${chatId}, 'agent', NULL, ${finance}, 'member', ${stamp})`;
-        fake.deliver({ ...pdfMail, to: HELLO, at: NOW - 1 });
+        fake.deliver({ ...pdfMail, to: ACCOUNTS, at: NOW - 1 });
         assert.include(yield* catchUp(coOwner), { queued: 1, older: false });
         assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_bill_mail`, [
           { asked_by_person_id: coOwner },
@@ -4316,47 +4412,62 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     );
   });
 
-  it.effect("reads one Message-ID across Gmail, Outlook and a repeated change entry", () => {
-    const reads: Array<URL> = [];
-    return setUp(
-      (fake) =>
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          const gmail = yield* connect(fake, "google", ACCOUNTS);
-          const outlook = yield* connect(fake, "microsoft", HELLO);
-          yield* readMail(gmail);
-          yield* readMail(outlook);
-          yield* approved();
-          yield* TestClock.adjust("1 minute");
-          const first = fake.deliver({ ...pdfMail, to: ACCOUNTS });
-          fake.relabel(first.id);
-          const second = fake.deliver({ ...pdfMail, to: HELLO, messageId: first.messageId });
-          yield* readMail(gmail);
-          yield* drain();
-          yield* readMail(outlook);
-          yield* drain();
-          assert.strictEqual(parts(reads, first.id).length, 1);
-          assert.strictEqual(parts(reads, second.id).length, 0);
-          assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
-          assert.sameDeepMembers(
-            [...(yield* billLedger)],
-            [
-              { state: "done", reason: null },
-              { state: "skipped", reason: "same_mail" },
-            ],
-          );
-        }),
-      {
-        mailRead: (url) => {
-          reads.push(url);
+  it.effect(
+    "reads one verified Message-ID once across Gmail, Outlook and a repeated change entry",
+    () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+            const gmail = yield* connect(fake, "google", ACCOUNTS);
+            const otherGmail = yield* connect(fake, "google", MEERA);
+            const outlook = yield* connect(fake, "microsoft", HELLO);
+            yield* readMail(gmail);
+            yield* readMail(otherGmail);
+            yield* readMail(outlook);
+            yield* approved();
+            yield* TestClock.adjust("1 minute");
+            const first = fake.deliver({ ...pdfMail, to: ACCOUNTS });
+            fake.relabel(first.id);
+            const second = fake.deliver({ ...pdfMail, to: MEERA, messageId: first.messageId });
+            const third = fake.deliver({
+              ...pdfMail,
+              to: HELLO,
+              messageId: first.messageId,
+              authResults: billAuth(HELLO),
+            });
+            yield* readMail(gmail);
+            yield* drain();
+            yield* readMail(otherGmail);
+            yield* readMail(outlook);
+            yield* drain();
+            assert.strictEqual(parts(reads, first.id).length, 1);
+            assert.strictEqual(parts(reads, second.id).length, 0);
+            assert.strictEqual(parts(reads, third.id).length, 0);
+            assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
+            assert.sameDeepMembers(
+              [...(yield* billLedger)],
+              [
+                { state: "done", reason: null },
+                { state: "skipped", reason: "same_mail" },
+                { state: "skipped", reason: "same_mail" },
+              ],
+            );
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
         },
-      },
-    );
-  });
+      );
+    },
+  );
 
   it.effect.each([
-    ["DMARC fail", { authResults: ["mx.example; dmarc=fail header.from=inkspot.example"] }],
-    ["another domain", { authResults: ["mx.example; dmarc=pass header.from=harbor.example"] }],
+    ["DMARC fail", { authResults: ["mx.google.com; dmarc=fail header.from=inkspot.example"] }],
+    ["another domain", { authResults: ["mx.google.com; dmarc=pass header.from=harbor.example"] }],
     ["two From headers", { headers: { From: "accounts@harbor.example" } }],
     ["an address in the display name", { from: `"accounts@harbor.example" <${inkspot}>` }],
     ["a reply", { subject: "Re: Invoice" }],
@@ -4442,7 +4553,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           fake.deliver({
             ...pdfMail,
             from: `"${inkspot}" <accounts@harbor.example>`,
-            authResults: ["mx.example; dmarc=pass header.from=harbor.example"],
+            authResults: ["mx.google.com; dmarc=pass header.from=harbor.example"],
             to: ACCOUNTS,
             at: NOW + 20,
           });
@@ -5833,7 +5944,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                 body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
                 at,
                 authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+                  "mx.google.com; dmarc=pass (p=REJECT) header.from=harborbank.example",
                 ],
               });
               return { mail, alert };
@@ -6164,7 +6275,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
               authResults: [
-                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+                service === "google"
+                  ? "mx.google.com; dmarc=pass (p=REJECT) header.from=harborbank.example"
+                  : outlookDmarc("harborbank.example"),
               ],
             });
           yield* approveFixtureAlertSender(orgId, owner);
@@ -6225,6 +6338,10 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.include(lines, "Odd date");
           assert.notInclude(lines, "While it was his");
           assert.deepStrictEqual(yield* alerts, [{ count: 1 }]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT outcome FROM kin_bank_alerts WHERE org_id = ${orgId}`,
+            [{ outcome: "unparsed" }],
+          );
           yield* readMail(company.connectionId);
           const arrived = (yield* arrivalRows).map((row) => row.messageId);
           for (const id of [stamped.id, odd.id, after.id]) assert.include(arrived, id);
@@ -6249,9 +6366,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               subject: "You have done a UPI txn. Check details!",
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              authResults: [
-                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
-              ],
+              authResults: ["mx.google.com; dmarc=pass (p=REJECT) header.from=harborbank.example"],
             });
           yield* approveFixtureAlertSender(orgId, owner);
           const accounts = yield* connect(fake, "google", ACCOUNTS);
@@ -8221,7 +8336,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
   it.effect(
-    "reads every bank alert a pass lists, in Gmail and Outlook, and holds the cursor when it can't",
+    "records verified bank alerts on both services and holds each cursor when reading fails",
     () =>
       setUp((fake) =>
         Effect.gen(function* () {
@@ -8245,9 +8360,13 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${n}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is 6322111100${n}.`,
                 at,
-                authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
-                ],
+                authResults:
+                  to === ACCOUNTS
+                    ? ["mx.google.com; dmarc=pass (p=REJECT) header.from=harborbank.example"]
+                    : outlookHeaders(
+                        "harborbank.example",
+                        n === 10 ? "extra first" : n === 11 ? "extra last" : "single",
+                      ),
                 files: [{ name: "receipt.pdf", mimeType: "application/pdf", data: "YQ==" }],
               });
           const outcomes = sql<{ outcome: string; count: number }>`SELECT outcome,
@@ -8262,10 +8381,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const failing = fromConnections(connections, sql, (_orgId, activity) =>
             Effect.sync(() => {
               assert.lengthOf(activity.mail, 25);
-              for (const mail of activity.mail)
-                assert.deepStrictEqual(mail.authResults, [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
-                ]);
+              assert.lengthOf(
+                activity.mail.filter((mail) =>
+                  dmarcPassedFor(mail.authResults ?? [], "harborbank.example"),
+                ),
+                activity.connectionId === accounts ? 25 : 23,
+              );
               return false;
             }),
           );
@@ -8277,8 +8398,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.deepStrictEqual(yield* outcomes, []);
           yield* watchMail();
           const once = [
-            { outcome: "duplicate", count: 25 },
+            { outcome: "duplicate", count: 23 },
             { outcome: "recorded", count: 25 },
+            { outcome: "unverified", count: 2 },
           ];
           assert.deepStrictEqual(yield* outcomes, once);
           yield* readMail(hello);
