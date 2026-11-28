@@ -12,6 +12,7 @@ import {
   kinBankSenderPermissions,
   kinBankSenderRows,
   kinBankSenderRowView,
+  kinAddressSentencePieces,
 } from "./kinBankSenders.ts";
 
 const ORG = "org-tidewater" as KinOrgId;
@@ -54,6 +55,40 @@ describe("kinBankSenderAddressSegments", () => {
     expect(segments.map((one) => one.text).join("")).toBe(address);
     expect(segments.filter((one) => !one.domain).map((one) => one.text)).toEqual(local);
     expect(segments.filter((one) => one.domain).map((one) => one.text)).toEqual(domain);
+  });
+});
+
+describe("kinAddressSentencePieces", () => {
+  it.each([
+    [
+      "Read bills from billing@inkspot.example?",
+      ["Read ", "bills ", "from ", "billing@", "inkspot.", "example?"],
+    ],
+    [
+      "Read by Kin from a mail from billing@inkspot.example, received Nov 27.",
+      [
+        "Read ",
+        "by ",
+        "Kin ",
+        "from ",
+        "a ",
+        "mail ",
+        "from ",
+        "billing@",
+        "inkspot.",
+        "example, ",
+        "received ",
+        "Nov ",
+        "27.",
+      ],
+    ],
+  ])("breaks %j between words, and inside the address only after @ and a dot", (text, pieces) => {
+    expect(kinAddressSentencePieces(text)).toEqual(pieces);
+    expect(kinAddressSentencePieces(text)?.join("")).toBe(text);
+  });
+
+  it("leaves a sentence with no address whole", () => {
+    expect(kinAddressSentencePieces("Approve this sender?")).toBeNull();
   });
 });
 

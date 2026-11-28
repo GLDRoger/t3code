@@ -14,7 +14,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinBillSenders";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useId, useState, type ReactNode } from "react";
 
 import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import { Button } from "../../components/ui/button";
@@ -25,6 +25,7 @@ import { kinClient } from "../kinClient";
 import { KinGateFailed } from "../KinWorkParts";
 import { kinHostConnected, useKinGate } from "../useKinHost";
 import { useKinBillSenders } from "../useKinMoney";
+import { useKinSectionOn } from "../useKinShell";
 import type { KinWorkTarget } from "../useKinWork";
 import { KinSenderAddress } from "./KinSenderAddress";
 import { KinSettingsField, KinSettingsFormDialog } from "./KinSettingsControls";
@@ -93,6 +94,8 @@ export function KinBillSendersSection(props: KinWorkTarget) {
   const [picking, setPicking] = useState<{ address: string; since: string } | null>(null);
   const [reading, setReading] = useState<ReadonlySet<string>>(() => new Set());
   const [readLines, setReadLines] = useState<Readonly<Record<string, ReadLine>>>({});
+  const moneyOn = useKinSectionOn(environmentId, "money");
+  const moneyOffId = useId();
 
   if (!permissions.visible || state._tag === "refused") return null;
 
@@ -190,38 +193,47 @@ export function KinBillSendersSection(props: KinWorkTarget) {
     </Button>
   ) : undefined;
   const question = ask === null ? null : kinBillSenderConfirm(ask.action, ask.address);
+  const moneyOff = moneyOn ? null : (
+    <p id={moneyOffId} role="note" className="px-4 py-3 text-pretty text-sm text-muted-foreground">
+      {KIN_BILL_SENDERS.moneyOff}
+    </p>
+  );
 
   return (
     <>
       {section(
-        groups.length === 0 ? (
-          <KinSettingsEmpty action={addButton}>{KIN_BILL_SENDERS.empty}</KinSettingsEmpty>
-        ) : (
-          groups.map((group) => (
-            <Fragment key={group.state}>
-              <h4 className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
-                {group.title}
-              </h4>
-              {group.rows.map((row) => (
-                <BillSenderRow
-                  key={row.address}
-                  row={row}
-                  can={permissions.can}
-                  busy={busy !== null}
-                  onAct={(action) => setAsk({ action, address: row.address })}
-                  reading={reading.has(row.address)}
-                  readLine={readLines[row.address] ?? null}
-                  onReadSince={() =>
-                    setPicking({
-                      address: row.address,
-                      since: readLines[row.address]?.since ?? kinBillSenderSinceDefault(now),
-                    })
-                  }
-                />
-              ))}
-            </Fragment>
-          ))
-        ),
+        <>
+          {moneyOff}
+          {groups.length === 0 ? (
+            <KinSettingsEmpty action={addButton}>{KIN_BILL_SENDERS.empty}</KinSettingsEmpty>
+          ) : (
+            groups.map((group) => (
+              <Fragment key={group.state}>
+                <h4 className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+                  {group.title}
+                </h4>
+                {group.rows.map((row) => (
+                  <BillSenderRow
+                    key={row.address}
+                    row={row}
+                    can={permissions.can}
+                    busy={busy !== null}
+                    onAct={(action) => setAsk({ action, address: row.address })}
+                    reading={reading.has(row.address)}
+                    readOffReason={moneyOn ? null : moneyOffId}
+                    readLine={readLines[row.address] ?? null}
+                    onReadSince={() =>
+                      setPicking({
+                        address: row.address,
+                        since: readLines[row.address]?.since ?? kinBillSenderSinceDefault(now),
+                      })
+                    }
+                  />
+                ))}
+              </Fragment>
+            ))
+          )}
+        </>,
         groups.length === 0 ? undefined : addButton,
       )}
       <KinConfirm
@@ -303,6 +315,8 @@ function BillSenderRow(props: {
   readonly busy: boolean;
   readonly onAct: (action: KinBillSenderAction) => void;
   readonly reading: boolean;
+  /** Set while Money is off: the id of the line that says why Read since waits. */
+  readonly readOffReason: string | null;
   readonly readLine: ReadLine | null;
   readonly onReadSince: () => void;
 }) {
@@ -341,8 +355,9 @@ function BillSenderRow(props: {
                       key="readSince"
                       size="xs"
                       variant="outline"
-                      disabled={props.reading}
+                      disabled={props.reading || props.readOffReason !== null}
                       aria-busy={props.reading}
+                      aria-describedby={props.readOffReason ?? undefined}
                       aria-label={`${props.reading ? KIN_BILL_SENDERS.readSince.working : KIN_BILL_SENDERS.readSince.open} ${row.address}`}
                       onClick={props.onReadSince}
                     >

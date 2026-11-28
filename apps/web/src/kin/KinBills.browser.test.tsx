@@ -264,38 +264,46 @@ describe("bills added in bulk", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open bill-1.jpg" }));
     await userEvent.click(page.getByRole("button", { name: "Back, close image preview" }));
 
-    await userEvent.click(screen.getByRole("button", { name: "Keep: bill-1.jpg" }));
+    await userEvent.click(screen.getByRole("button", { name: "Keep: Sample Cloud, $49.00" }));
     expect(host.act).toHaveBeenLastCalledWith(expect.objectContaining({ key: SHA(1) }), "keep");
-    await userEvent.click(screen.getByRole("button", { name: "Drop: bill-1.jpg" }));
+    await userEvent.click(screen.getByRole("button", { name: "Drop: Sample Cloud, $49.00" }));
     expect(host.act).toHaveBeenLastCalledWith(expect.objectContaining({ key: SHA(1) }), "drop");
-    await userEvent.click(screen.getByRole("button", { name: "Edit: bill-1.jpg" }));
+    await userEvent.click(screen.getByRole("button", { name: "Edit: Sample Cloud, $49.00" }));
     expect(onOpenKey).toHaveBeenLastCalledWith("EXP-4");
 
-    await userEvent.click(screen.getByRole("button", { name: "Add anyway: bill-2.jpg" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Add anyway: Tidewater Freight, \S+2,350\.00$/ }),
+    );
     expect(host.act).toHaveBeenLastCalledWith(
       expect.objectContaining({ key: SHA(2) }),
       "addAnyway",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Open EXP-2: bill-2.jpg" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Open EXP-2: Tidewater Freight, \S+2,350\.00$/ }),
+    );
     expect(onOpenKey).toHaveBeenLastCalledWith("EXP-2");
 
-    await userEvent.click(screen.getByRole("button", { name: "Read again: bill-3.jpg" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read again: Bill 3" }));
     expect(host.act).toHaveBeenLastCalledWith(
       expect.objectContaining({ key: SHA(3) }),
       "readAgain",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss: bill-3.jpg" }));
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss: Bill 3" }));
     expect(host.act).toHaveBeenLastCalledWith(expect.objectContaining({ key: SHA(3) }), "dismiss");
     await expect
-      .element(screen.getByRole("button", { name: "Keep: bill-3.jpg" }))
+      .element(screen.getByRole("button", { name: "Keep: Bill 3" }))
       .not.toBeInTheDocument();
     // Read cleanly with a figure to check: typed by hand, since reading again reads the same.
     await expect.element(screen.getByText("CA$1,180,000.00")).toBeVisible();
     await expect
-      .element(screen.getByRole("button", { name: "Enter by hand: bill-4.jpg" }))
+      .element(
+        screen.getByRole("button", { name: "Enter by hand: Tidewater Freight, CA$1,180,000.00" }),
+      )
       .toBeVisible();
     await expect
-      .element(screen.getByRole("button", { name: "Read again: bill-4.jpg" }))
+      .element(
+        screen.getByRole("button", { name: "Read again: Tidewater Freight, CA$1,180,000.00" }),
+      )
       .not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Keep all that read cleanly" }));
