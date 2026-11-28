@@ -810,7 +810,7 @@ it.effect(
       assert.deepStrictEqual(yield* LeadWork.listFields(scope, { list: "clients" }), clients);
       // Expenses aren't the team's: a teammate learns none of its field names.
       const refused = yield* Effect.flip(LeadWork.listFields(scope, { list: "expenses" }));
-      assert.strictEqual(refused.message, "I can't do that in a chat other people can read.");
+      assert.strictEqual(refused.message, SHARED_REFUSAL);
       assert.notInclude(refused.message, "vendor");
       const absent = yield* Effect.flip(LeadWork.listFields(scope, { list: "dispatch_notes" }));
       assert.strictEqual(absent.message, refused.message);
