@@ -486,6 +486,34 @@ describe("KinGitHubWatch", () => {
           [writerPull, "label", writer, false, true],
         ],
       );
+
+      const issue = () =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: owner,
+          association: "OWNER",
+          title: "Dispatch",
+        });
+      const clear = issue();
+      const incomplete = issue();
+      for (const number of [clear, incomplete])
+        github.label({ repo: REPO, number, actor: owner, label: "kin" });
+      github.world.items
+        .find((item) => item.number === incomplete)!
+        .labelEvents!.push(
+          ...Array.from({ length: 99 }, () => ({ label: "other", actor: writer })),
+        );
+      yield* look(github);
+      assert.sameDeepMembers(
+        (yield* events)
+          .filter((trigger) => trigger.item === "issue")
+          .map((trigger) => [trigger.number, githubWakeHasShell(trigger)]),
+        [
+          [clear, true],
+          [incomplete, false],
+        ],
+      );
     }).pipe(Effect.provide(layer));
   });
 

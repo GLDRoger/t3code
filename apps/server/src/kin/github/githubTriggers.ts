@@ -84,6 +84,7 @@ export interface DecideContext {
   readonly kinsPull?: boolean | undefined;
   /** Who applied the `kin` label, when GitHub says. */
   readonly labeledBy?: string | undefined;
+  readonly labelActorKnown?: boolean | undefined;
   readonly triageFrom?: number | undefined;
   readonly kinCommented?: boolean | undefined;
   readonly kinSaid?: number | undefined;
@@ -264,7 +265,7 @@ export const decideTriggers = (
       ...onItem,
       key: `label:${at}`,
       kind: "label",
-      ownerActed: isOwner(context.labeledBy),
+      ownerActed: context.labelActorKnown === true && isOwner(context.labeledBy),
       inside: itemInside,
       text: clip(thread.body),
     });

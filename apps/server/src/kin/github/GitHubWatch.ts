@@ -465,11 +465,17 @@ const labelActor = Effect.fn("KinGitHubWatch.labelActor")(function* (
   repo: string,
   number: number,
 ) {
-  const answer = yield* get(`repos/${repo}/issues/${number}/events?per_page=100`);
+  const pageSize = 100;
+  const answer = yield* get(`repos/${repo}/issues/${number}/events?per_page=${pageSize}`);
   const found = answer.status === 200 ? decodeIssueEvents(answer.body) : Option.none();
-  return Option.getOrElse(found, () => []).findLast(
+  if (Option.isNone(found)) return undefined;
+  const login = found.value.findLast(
     (event) => event.event === "labeled" && event.label?.name.toLowerCase() === KIN_LABEL,
   )?.actor?.login;
+  return {
+    login,
+    latest: found.value.length < pageSize && !/rel="next"/i.test(answer.headers.link ?? ""),
+  };
 });
 
 /** A re-review's head Kin last reviewed, and whether its diff is the whole PR's. */
@@ -1535,9 +1541,10 @@ export const make = Effect.gen(function* () {
       : [];
     if (open.some(({ kind }) => isTriage(kind))) logins.add(current.author);
     for (const comment of replyComments) logins.add(comment.author);
-    const labeledBy = open.some((one) => one.kind === "label")
+    const label = open.some((one) => one.kind === "label")
       ? yield* labelActor(get, current.repo, current.number)
       : undefined;
+    const labeledBy = label?.login;
     if (labeledBy !== undefined) logins.add(labeledBy);
     const writers = new Set<string>();
     for (const login of logins)
@@ -1547,6 +1554,7 @@ export const make = Effect.gen(function* () {
       ...base,
       writes: (login) => writers.has(login.toLowerCase()),
       labeledBy,
+      labelActorKnown: label?.latest === true,
     };
     const triggerTime = ({ kind, reactTo }: Trigger) => {
       if (reactTo.type === "comment")
