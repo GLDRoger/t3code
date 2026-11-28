@@ -537,15 +537,15 @@ describe("bills in bulk", () => {
   );
 
   it.effect.each(["mail first", "photo first"] as const)(
-    "a bill both mailed and added as a photo is one expense, in the first add's state (%s)",
+    "a bill both mailed and uploaded is one expense, in the first add's state (%s)",
     (order) =>
       Effect.gen(function* () {
         yield* seed;
-        const bytes = yield* Effect.promise(() => stripes().encode("png"));
+        const bytes = new TextEncoder().encode("%PDF-1.4 Harbor Power, November");
         const store = yield* AttachmentStore.KinAttachmentStore;
         const sql = yield* SqlClient.SqlClient;
         const mailIt = Effect.gen(function* () {
-          const id = yield* store.storeFile(bytes, "png");
+          const id = yield* store.storeFile(bytes, "pdf");
           return yield* sql.withTransaction(
             Bills.addMailBills({
               orgId,
@@ -555,9 +555,9 @@ describe("bills in bulk", () => {
                 {
                   attachment: {
                     id,
-                    type: "image",
-                    name: "harbor-power.png",
-                    mimeType: "image/png",
+                    type: "file",
+                    name: "harbor-power.pdf",
+                    mimeType: "application/pdf",
                     sizeBytes: bytes.length,
                   },
                   sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
@@ -569,7 +569,10 @@ describe("bills in bulk", () => {
         let adds = 0;
         const photoIt = Effect.gen(function* () {
           adds += 1;
-          return yield* addPage(yield* upload("harbor-power.png", bytes), `photo-${adds}`);
+          return yield* addPage(
+            yield* upload("harbor-power.pdf", bytes, "application/pdf"),
+            `photo-${adds}`,
+          );
         });
         const readIt = Effect.gen(function* () {
           const { wakeupId } = yield* claimTurn(1);
