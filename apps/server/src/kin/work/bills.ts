@@ -1283,22 +1283,24 @@ const sameExpense = Effect.fn("KinBills.sameExpense")(function* (
     title: string;
     vendor: unknown;
     dateAt: number | null;
+    printed: string | null;
   }>`SELECT r.record_id AS "recordId", r.title, json_extract(r.fields_json, '$.vendor') AS vendor,
-      r.date_at AS "dateAt"
+      r.date_at AS "dateAt", b.printed
     FROM kin_records r
+    LEFT JOIN (SELECT org_id, sha256, json_extract(read_json, '$.date') AS printed
+      FROM kin_bill_reads) b ON b.org_id = r.org_id AND b.sha256 = substr(r.origin_key, 6)
+        AND r.origin_key = 'bill:' || b.sha256
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state != 'dropped'
       AND r.amount_minor = ${money.minor} AND r.currency = ${money.currency}
       AND (r.date_at BETWEEN ${at - 2 * 86_400_000} AND ${at + 2 * 86_400_000}
-        OR (r.state = 'open' AND r.date_at IS NULL AND EXISTS (
-          SELECT 1 FROM kin_bill_reads b
-          WHERE b.org_id = r.org_id AND b.sha256 = substr(r.origin_key, 6)
-            AND r.origin_key = 'bill:' || b.sha256 AND json_extract(b.read_json, '$.date') = ${day})))
+        OR b.printed = ${day})
       AND r.origin_key != ${`bill:${hash}`}
     ORDER BY r.created_at, r.record_id`;
   const payee = fold(vendor);
+  // A mailed bill is dated only once paid, on that day: its own read keeps the printed day.
   return rows.find(
     (one) =>
-      (one.dateAt === null || dayIn(one.dateAt, zone) === day) &&
+      (one.printed === day || (one.dateAt !== null && dayIn(one.dateAt, zone) === day)) &&
       payee !== "" &&
       (typeof one.vendor === "string" ? fold(one.vendor) === payee : fold(one.title) === payee),
   )?.recordId;

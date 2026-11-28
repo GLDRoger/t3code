@@ -532,6 +532,34 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a photo of a mailed bill already paid on a later day is its duplicate", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const batchId = yield* mailedInvoice;
+      const expense = yield* expenseOf(batchId);
+      const kept = yield* confirm(as(rhea), { orgId, key: expense.key, rev: expense.rev });
+      const tap = Date.parse("2026-11-28T08:00:00Z");
+      yield* TestClock.setTime(tap);
+      yield* update(as(rhea), { orgId, key: expense.key, rev: kept.rev, state: "done" });
+      const photo = yield* addPage(yield* upload("inkspot-paper.png", "Paper bill, Inkspot Cloud"));
+      const { wakeupId } = yield* claimTurn(2);
+      yield* read({
+        bill: "B1",
+        vendor: "Inkspot Cloud",
+        date: "2026-11-03",
+        amount: "1180",
+        tax: "180",
+        currency: "INR",
+      });
+      yield* endTurn(wakeupId);
+      const [paper] = (yield* Bills.list(as(rhea), { orgId, batchId: photo.batchId })).bills;
+      assert.strictEqual(paper?.state, "duplicate");
+      assert.strictEqual(paper?.duplicateOf?.key, expense.key);
+      const summary = yield* moneySummary(orgId, tap, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(summary.spent.thisMonth.total, [{ minor: 118_000, currency: "INR" }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a single bill preserves the original row, expense and card bytes", () =>
     Effect.gen(function* () {
       yield* seed;
