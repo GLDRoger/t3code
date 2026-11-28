@@ -490,6 +490,8 @@ export class KinReplyBridge extends Context.Service<
       readonly startedAt: number;
       /** The messages it answers brought files: the line says it is looking at them. */
       readonly attachments?: boolean;
+      /** A quiet bills read Kin queued: its files came by mail or earlier, not in this turn. */
+      readonly bills?: boolean;
     }) => Effect.Effect<void>;
     /**
      * After the wake-up's run ends: posts what the live stream did not, then, when the lane
@@ -2644,6 +2646,7 @@ const make = Effect.gen(function* () {
       readonly threadId: ThreadId;
       readonly startedAt: number;
       readonly attachments?: boolean;
+      readonly bills?: boolean;
     }) {
       if (byWakeup.has(input.wakeupId)) return;
       const found = yield* lane(input);
@@ -2678,7 +2681,12 @@ const make = Effect.gen(function* () {
         latest: -1,
         since: input.startedAt,
         stall: undefined,
-        opening: input.attachments === true ? PHASE_LABELS.attachments : PHASE_LABELS.thinking,
+        opening:
+          input.bills === true
+            ? PHASE_LABELS.bills
+            : input.attachments === true
+              ? PHASE_LABELS.attachments
+              : PHASE_LABELS.thinking,
         done: false,
         stamped: new Set(),
       };

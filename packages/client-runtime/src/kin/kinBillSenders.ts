@@ -44,6 +44,9 @@ export const KIN_BILL_SENDERS = {
   title: "Billing senders",
   description:
     "Addresses whose mailed bills Kin reads into suggested expenses. Nothing counts in Money until it is kept.",
+  /** Under the heading while Money is off; approving, declining and adding still save. */
+  moneyOff:
+    "Kin reads no bills from mail while Money is off. You can turn it on in Settings › Sections.",
   loading: "Loading billing senders",
   loadFailed: "Couldn't load billing senders.",
   empty:
@@ -59,7 +62,7 @@ export const KIN_BILL_SENDERS = {
     remove: "Remove",
     addBack: "Add back",
   } satisfies Readonly<Record<KinBillSenderAction, string>>,
-  add: "Add an address",
+  add: "Add address",
   addTitle: "Add a billing sender",
   addDescription: "Use the exact From address on the bill emails.",
   addSubmit: "Continue",

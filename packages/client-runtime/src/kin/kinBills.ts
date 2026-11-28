@@ -189,6 +189,10 @@ export interface KinBillRowView {
   readonly row: KinBillRow;
   readonly file: KinFileRef;
   readonly pdf: boolean;
+  /** Any file that is not a picture (a PDF, a mailed bill's text) shows as a file, never drawn. */
+  readonly asFile: boolean;
+  /** What its taps call it: vendor and amount once read, else its number in the batch. */
+  readonly name: string;
   readonly label: string;
   readonly tone: KinBillTone;
   readonly fields: ReadonlyArray<KinBillField>;
@@ -222,6 +226,9 @@ function kinBillAmountText(amount: string | undefined, currency: string | undefi
     ? kinMoneyText(read.money, true)
     : `${amount.trim()} ${currency}`;
 }
+
+// The host's own problem when it has no more to say: the label already says it.
+const COULD_NOT_READ = "Kin could not read this one";
 
 const blank = (value: string | undefined) =>
   value === undefined || value.trim() === "" ? null : value.trim();
@@ -330,13 +337,18 @@ export function kinBillRowView(
     /** The reader's zone and locale; the device's when absent. */
     readonly zone?: string;
     readonly locale?: string;
+    /** Its place in the batch from 1, which names a bill nothing was read off. */
+    readonly position?: number;
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
   const fields =
     kinBillExpenseFields(row, options.categoryLabel) ??
     kinBillFields(row.read, options.categoryLabel);
-  const problem = row.state === "unreadable" ? (row.problem ?? null) : null;
+  const problem =
+    row.state === "unreadable" && row.problem !== COULD_NOT_READ ? (row.problem ?? null) : null;
+  const vendor = fields.find((field) => field.key === "vendor")?.value ?? null;
+  const amount = fields.find((field) => field.key === "amount")?.value ?? null;
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],
   );
@@ -355,6 +367,13 @@ export function kinBillRowView(
     row,
     file: row.file,
     pdf: kinBillIsPdf(row.file),
+    asFile: kinBillIsPdf(row.file) || !row.file.mimeType.toLowerCase().startsWith("image/"),
+    name:
+      vendor !== null && amount !== null
+        ? `${vendor}, ${amount}`
+        : options.position === undefined
+          ? row.file.name
+          : `Bill ${options.position}`,
     label,
     tone: TONE[row.state],
     fields,
@@ -372,6 +391,19 @@ export function kinBillRowView(
       ...(mailLine === null ? [] : [mailLine.slice(0, -1)]),
     ].join(". "),
   };
+}
+
+/** A batch's rows in order, each named apart from the others for its taps. */
+export function kinBillRowViews(
+  rows: ReadonlyArray<KinBillRow>,
+  options: Omit<NonNullable<Parameters<typeof kinBillRowView>[1]>, "position"> = {},
+): ReadonlyArray<KinBillRowView> {
+  const views = rows.map((row, index) => kinBillRowView(row, { ...options, position: index + 1 }));
+  const named = new Map<string, number>();
+  for (const view of views) named.set(view.name, (named.get(view.name) ?? 0) + 1);
+  return views.map((view, index) =>
+    (named.get(view.name) ?? 0) > 1 ? { ...view, name: `${view.name}, bill ${index + 1}` } : view,
+  );
 }
 
 // A batch: its counts, its sentence, and the way to it from Expenses

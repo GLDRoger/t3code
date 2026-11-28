@@ -4,7 +4,7 @@ import {
   kinBillCounts,
   kinBillExpenseStart,
   kinBillIsPdf,
-  kinBillRowView,
+  kinBillRowViews,
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsEntry,
@@ -449,12 +449,10 @@ function KinBillBatchReview(
   const now = new Date(useNowMinuteMs());
   const [byHand, setByHand] = useState<KinBillRow | null>(null);
   const skipped = actions.kept?.skipped;
-  const views = rows.map((row) =>
-    kinBillRowView(row, {
-      categoryLabel: (category) => kinCategoryLabel(category, expenses),
-      ...(skipped === undefined ? {} : { skipped }),
-    }),
-  );
+  const views = kinBillRowViews(rows, {
+    categoryLabel: (category) => kinCategoryLabel(category, expenses),
+    ...(skipped === undefined ? {} : { skipped }),
+  });
   const urls = useAssetUrls(
     environmentId,
     views.map((view) => ({
@@ -602,11 +600,9 @@ const BillRow = memo(function BillRow(props: {
   const { file } = view;
   const actions = view.actions.filter((action) => props.canChange || !CHANGES.has(action));
   const note = view.problem ?? view.skipped;
-  // A mailed bill's text is a .txt file: it opens like a PDF, never as a broken picture.
-  const asFile = view.pdf || !file.mimeType.toLowerCase().startsWith("image/");
   return (
     <li aria-label={view.accessibilityLabel} className="flex gap-3 py-3">
-      {asFile ? (
+      {view.asFile ? (
         <a
           {...(src === null ? {} : { href: src, download: file.name })}
           aria-label={`Open ${file.name}`}
@@ -670,7 +666,7 @@ const BillRow = memo(function BillRow(props: {
               size="xs"
               variant={action === "keep" || action === "addAnyway" ? "outline" : "ghost"}
               disabled={props.busy && CHANGES.has(action)}
-              aria-label={`${LABEL(view, action)}: ${file.name}`}
+              aria-label={`${LABEL(view, action)}: ${view.name}`}
               onClick={() => props.onAction(view, action)}
             >
               {LABEL(view, action)}
