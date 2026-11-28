@@ -87,6 +87,8 @@ const scenarios = [
   "stall-body",
   "run-from-fork",
   "no-pull-requests",
+  "off-github-local-save",
+  "off-github-strip-quotes",
   "batched",
   "restart",
   "repeat-edit",
@@ -173,6 +175,18 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       yield* fs.writeFileString(
         `${source}/.github/workflows/memory-check.yml`,
         yield* workflow(scenario === "decision-then-journal" ? buildCommit : oldPin),
+      );
+    }
+    if (scenario === "off-github-strip-quotes") {
+      yield* fs.makeDirectory(`${source}/claims`);
+      yield* fs.writeFileString(
+        `${source}/claims/said.md`,
+        fixtureItem({
+          id: "said",
+          kind: "claim",
+          source: "kin:chat:cleared-chat:message:m-cleared",
+          quote: FIXTURE_QUOTE,
+        }),
       );
     }
     yield* git(source, ["add", "--", "."]);
@@ -499,8 +513,10 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 201, body: {} };
         return { status: 404, body: { message: "Not Found" } };
       }).pipe(Effect.orDie);
-    // GitHub as the owner's `gh` login, or as Kin's GitHub App in `merged`, over `route`.
-    const asApp = scenario === "merged";
+    // GitHub requests go through `route` as the owner or as the GitHub App.
+    const offGitHub =
+      scenario === "off-github-local-save" || scenario === "off-github-strip-quotes";
+    const asApp = scenario === "merged" || offGitHub;
     const github = { requests: [] as Array<RecordedRequest> };
     const callAs =
       (as: "app" | "owner"): KinGitHubApi["Service"]["call"] =>
@@ -558,7 +574,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
       ...(scenario === "code-owner-refusal" ? {} : { buildCommit }),
-      repositories: [{ orgId, repoUrl: remote, path: "state", githubRepo: repo }],
+      repositories: [
+        { orgId, repoUrl: remote, path: "state", ...(offGitHub ? {} : { githubRepo: repo }) },
+      ],
     });
     const auth = Layer.succeed(Writer.MemoryWriterAuthority, {
       resolve: (_org, wakeupId) =>
@@ -652,6 +670,31 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           (request) => request.method === "POST" && request.path === `/repos/${repo}/pulls`,
         ).length;
       const toldOwner = () => notices.flatMap((notice) => notice.owner ?? []);
+
+      if (offGitHub) {
+        if (scenario === "off-github-local-save") {
+          yield* writer.stage(orgId, "wake1", claim("new"));
+          const { commit } = yield* journal("wake1");
+          expect(yield* localMain()).toBe(commit);
+          expect((yield* memory.readItem(orgId, KinMemoryItemId.make("new"))).head.id).toBe("new");
+        } else {
+          const localFile = () => git(paths.writer, ["show", "main:claims/said.md"]);
+          expect(yield* localFile()).toContain(`quote: "${FIXTURE_QUOTE}"`);
+          yield* writer.stripQuotes(orgId);
+          const stripped = yield* localFile();
+          expect(stripped).not.toContain("quote:");
+          expect(stripped).toContain("Invented fixture body.");
+        }
+        const head = yield* localMain();
+        expect(head).not.toBe(original);
+        expect(yield* memory.anchor(orgId, "main")).toBe(head);
+        expect(yield* Queue.take(outcomes)).toEqual({ _tag: "idle" });
+        yield* lander.sweep(orgId);
+        expect(github.requests).toEqual([]);
+        expect(yield* bare("rev-parse", "refs/heads/main")).toBe(original);
+        expect(yield* bare("for-each-ref", "--format=%(refname)")).toBe("refs/heads/main");
+        return;
+      }
 
       if (scenario === "decision-then-journal") {
         // A decision saved by code, then a wake-up's journal: both land, no review asked.
