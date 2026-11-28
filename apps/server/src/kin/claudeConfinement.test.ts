@@ -1,17 +1,21 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The OS sandbox runs in a child with a fixture HOME.
-import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
-import * as NodeUtil from "node:util";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import * as Confinement from "./claudeConfinement.ts";
+import {
+  AGENT_POSTS_FILE,
+  agentShellScripts,
+  APP_IDENTITY_FILE,
+  APP_REPOS_FOLDER,
+  APP_TOKENS_FOLDER,
+  GH_APP_FOLDER,
+  OWNER_USES_FILE,
+} from "./github/ghSign.ts";
 import { dreamTools } from "./dreaming/DreamIsolation.ts";
 const readTools = ["Read", "Grep", "Glob"];
 
@@ -188,94 +192,56 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-const platform = HostProcess.Platform.defaultValue();
-const sandboxToolsPresent =
-  platform === "darwin"
-    ? NodeFS.existsSync("/usr/bin/sandbox-exec")
-    : platform === "linux" &&
-      ["/usr/bin/bwrap", "/usr/bin/socat", "/usr/bin/rg"].every(NodeFS.existsSync);
-const runNode = NodeUtil.promisify(NodeChildProcess.execFile);
-const sandboxTestPath = HostProcess.Environment.defaultValue().PATH;
-
-it.live.skipIf(!sandboxToolsPresent)(
-  "the owner shell wall holds in Seatbelt or bubblewrap (needs sandbox-exec or bwrap, socat and rg)",
-  () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const fixture = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-      const home = path.join(fixture, "home");
-      const baseDir = path.join(home, "data");
-      const stateDir = path.join(baseDir, "userdata");
-      const root = path.join(stateDir, "kin", "work");
-      const secret = path.join(stateDir, "secret");
-      const allowed = path.join(root, "file");
-      const attached = path.join(stateDir, "attachments", "given.txt");
-      const notAttached = path.join(stateDir, "attachments", "other.txt");
-      const external = path.join(home, "outside");
-      const backup = path.join(fixture, "backup", "snapshot");
-      const audit = path.join(stateDir, "kin", "gh-app", "log");
-      for (const file of [secret, allowed, attached, notAttached, external, audit, backup]) {
-        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
-        yield* fs.writeFileString(file, "fixture");
-      }
-      const linked = path.join(root, "linked-secret");
-      yield* fs.symlink(secret, linked);
-      const env = { HOME: home, PATH: sandboxTestPath, ANTHROPIC_API_KEY: "fixture-key" };
-      const settings = Confinement.shellSandbox(
-        {
-          root,
-          stateDir,
-          baseDir,
-          home,
-          attachments: [attached],
-          readPaths: [],
-          logPaths: [audit],
-          environment: { ...env, KIN_BACKUP_DEST: path.dirname(backup) },
+// The host probe (ops/kin/host/shell-wall-probe) runs this exact policy on the Linux host, where
+// it matters; `vp test run src/kin/claudeConfinement.test.ts -u` rewrites it after a change.
+it.effect("the host probe runs the owner seat's own shell sandbox policy", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const fixture = "__ROOT__";
+    const home = path.join(fixture, "home");
+    const baseDir = path.join(home, ".t3");
+    const stateDir = path.join(baseDir, "userdata");
+    const kin = path.join(stateDir, "kin");
+    const app = path.join(kin, GH_APP_FOLDER);
+    const tools = path.join(fixture, "tools");
+    const guards = agentShellScripts({
+      shims: path.join(kin, "gh-sign"),
+      app,
+      realGh: path.join(tools, "gh"),
+      node: "node",
+    }).map((script) => path.join(kin, "gh-sign", script.name));
+    const settings = Confinement.shellSandbox(
+      {
+        root: path.join(kin, "acme", "read"),
+        home,
+        baseDir,
+        stateDir,
+        attachments: [path.join(stateDir, "attachments", "kin-chat-given.txt")],
+        readPaths: [
+          ...guards,
+          path.join(tools, "gh"),
+          path.join(tools, "typst"),
+          ...[APP_IDENTITY_FILE, APP_REPOS_FOLDER, APP_TOKENS_FOLDER].map((name) =>
+            path.join(app, name),
+          ),
+        ],
+        logPaths: [AGENT_POSTS_FILE, OWNER_USES_FILE].map((name) => path.join(app, name)),
+        environment: {
+          HOME: home,
+          PATH: "/usr/bin:/bin",
+          KIN_CHECKOUT: path.join(home, "kin-current"),
+          KIN_BACKUP_DEST: path.join(fixture, "backup"),
+          TMPDIR: path.join(home, ".cache", "kin-tmp"),
+          ANTHROPIC_API_KEY: "placeholder",
+          GITHUB_TOKEN: "placeholder",
         },
-        path,
-      );
-      const script = `
-        import { execFileSync } from "node:child_process";
-        import { SandboxManager, SandboxRuntimeConfigSchema } from ${JSON.stringify(
-          import.meta.resolve("@anthropic-ai/sandbox-runtime"),
-        )};
-        const settings = SandboxRuntimeConfigSchema.parse(JSON.parse(process.argv[1]));
-        await SandboxManager.initialize(settings);
-        try {
-          const command = await SandboxManager.wrapWithSandbox(process.argv[2]);
-          console.log(execFileSync("/bin/sh", ["-c", command], { encoding: "utf8" }).trim());
-        } finally {
-          await SandboxManager.reset();
-        }
-      `;
-      const command = [
-        ...[secret, notAttached, linked, backup].map((file) => `! cat '${file}'`),
-        `test "$(cat '${allowed}')" = fixture && test "$(cat '${attached}')" = fixture`,
-        `! (printf tampered > '${external}') && ! (printf tampered > '${attached}')`,
-        `test -z "$ANTHROPIC_API_KEY" && printf ok >> '${audit}' && printf 'wall held'`,
-      ].join(" && ");
-      const executable = yield* HostProcess.ExecutablePath;
-      const output = yield* Effect.promise((signal) =>
-        runNode(
-          executable,
-          [
-            "--input-type=module",
-            "-e",
-            script,
-            JSON.stringify({
-              ...settings,
-              network: { deniedDomains: [], ...settings.network },
-              filesystem: { denyWrite: [], ...settings.filesystem },
-            }),
-            command,
-          ],
-          { cwd: root, env, signal },
-        ),
-      );
-      assert.strictEqual(output.stdout.trim(), "wall held");
-      assert.strictEqual(yield* fs.readFileString(external), "fixture");
-      assert.strictEqual(yield* fs.readFileString(attached), "fixture");
-      assert.strictEqual(yield* fs.readFileString(audit), "fixtureok");
-    }).pipe(Effect.provide(NodeServices.layer)),
+      },
+      path,
+    );
+    yield* Effect.promise(() =>
+      expect(`${JSON.stringify(settings, null, 2)}\n`).toMatchFileSnapshot(
+        "../../../../ops/kin/host/shell-wall-probe/policy.json",
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

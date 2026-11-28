@@ -60,6 +60,8 @@ sudo -iu kin /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / /usr/bin/
 
 Use the system package on the service's PATH, not a custom binary without a matching profile. A working probe exits zero; no server restart or model call is needed to run it.
 
+Then check the wall itself, as `kin`, after each deploy: `sh ~/kin-current/ops/kin/host/shell-wall-probe/probe.sh "$(mktemp -d)"`. It runs the owner seat's sandbox policy (`policy.json` beside it, pinned to the server's code by a test) through Anthropic's sandbox runtime against stand-in files in that empty folder, prints a line per check and ends with `PROBE PASS` or `PROBE FAIL`. It needs `node`, `npm` and `curl`, and on Linux also `rg` (ripgrep), which only the probe uses; npm fetches the pinned runtime into the folder. It reads no real secret and touches nothing outside the folder.
+
 ### How the unit finds Node
 
 `ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current`, `KIN_NODE_VERSION` (the build's `engines.node`) and `TMPDIR` (see Storage) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.

@@ -1,0 +1,104 @@
+{
+  "enabled": true,
+  "failIfUnavailable": true,
+  "allowUnsandboxedCommands": false,
+  "excludedCommands": [],
+  "filesystem": {
+    "disabled": false,
+    "denyRead": [
+      "__ROOT__/home/.t3",
+      "__ROOT__/home/.t3/userdata",
+      "__ROOT__/home/.kin",
+      "__ROOT__/home/.config",
+      "__ROOT__/home/.local/share/keyrings",
+      "__ROOT__/home/Library/Keychains",
+      "__ROOT__/home/.ssh",
+      "__ROOT__/home/.gnupg",
+      "__ROOT__/home/.aws",
+      "__ROOT__/home/.azure",
+      "__ROOT__/home/.kube",
+      "__ROOT__/home/.docker",
+      "__ROOT__/home/.netrc",
+      "__ROOT__/home/.npmrc",
+      "__ROOT__/home/.git-credentials",
+      "__ROOT__/home/.pypirc",
+      "__ROOT__/home/.cargo/credentials",
+      "__ROOT__/home/.cargo/credentials.toml",
+      "__ROOT__/home/.config/gcloud",
+      "__ROOT__/home/.claude",
+      "__ROOT__/home/.claude.json",
+      "__ROOT__/home/.codex",
+      "__ROOT__/home/.gemini",
+      "__ROOT__/home/kin-current",
+      "__ROOT__/home/kin-builds",
+      "__ROOT__/home/kin-update-backups",
+      "__ROOT__/home/t3code",
+      "__ROOT__/home/.env",
+      "__ROOT__/home/.cache/kin-tmp",
+      "__ROOT__/home/.config/gh"
+    ],
+    "allowRead": [
+      "__ROOT__/home/.t3/userdata/kin/acme/read",
+      "__ROOT__/home/.t3/userdata/attachments/kin-chat-given.txt",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/gh",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/gh-policy.mjs",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/git",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/pre-push",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/git-credential-kin",
+      "__ROOT__/home/.t3/userdata/kin/gh-sign/kin-as-owner",
+      "__ROOT__/tools/gh",
+      "__ROOT__/tools/typst",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/identity",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/repos",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/tokens",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/agent-posts.log",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/owner-uses.log",
+      "__ROOT__/home/.config/gh/hosts.yml",
+      "__ROOT__/home/.config/gh/config.yml",
+      "__ROOT__/home/.gitconfig",
+      "__ROOT__/home/.config/git/config"
+    ],
+    "allowWrite": [
+      "__ROOT__/home/.t3/userdata/kin/acme/read",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/agent-posts.log",
+      "__ROOT__/home/.t3/userdata/kin/gh-app/owner-uses.log"
+    ]
+  },
+  "network": {
+    "strictAllowlist": true,
+    "allowedDomains": [
+      "github.com",
+      "api.github.com",
+      "codeload.github.com",
+      "raw.githubusercontent.com",
+      "objects.githubusercontent.com",
+      "release-assets.githubusercontent.com",
+      "uploads.github.com",
+      "ghcr.io",
+      "registry.npmjs.org",
+      "registry.npmjs.com",
+      "registry.yarnpkg.com",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "crates.io",
+      "index.crates.io",
+      "static.crates.io",
+      "proxy.golang.org",
+      "sum.golang.org"
+    ],
+    "allowAllUnixSockets": false,
+    "allowLocalBinding": false
+  },
+  "credentials": {
+    "envVars": [
+      {
+        "name": "ANTHROPIC_API_KEY",
+        "mode": "deny"
+      },
+      {
+        "name": "GITHUB_TOKEN",
+        "mode": "deny"
+      }
+    ]
+  }
+}

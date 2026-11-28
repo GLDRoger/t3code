@@ -788,6 +788,8 @@ leaks:
         - ops/kin/host/retire-workers.sh
         - ops/kin/host/setup.sh
         - ops/kin/host/update.sh
+        - ops/kin/host/shell-wall-probe/policy.json
+        - ops/kin/host/shell-wall-probe/probe.sh
     - reason: The shell denies the source host's original state and build clone by their on-disk names.
       leak: t3-home
       text: '^\.t3$'
