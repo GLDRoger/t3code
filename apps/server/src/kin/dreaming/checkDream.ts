@@ -79,7 +79,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   const people = new Set(
     input.material.flatMap((entry) => (entry.trust === "agent" ? [] : [entry.saidBy])),
   );
-  const listed = new Set(report?.changes.map((change) => change.path));
+  const listed = new Map(report?.changes.map((change) => [change.path, change.sources]));
   /** New items refused only for their edit quote, by id: candidates to leave out. */
   const untyped = new Map<string, string>();
 
@@ -96,7 +96,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       failures.push(`${path} is outside item files and journal/`);
       continue;
     }
-    if (report !== undefined && !listed.has(path))
+    const cited = listed.get(path);
+    if (report !== undefined && cited === undefined)
       failures.push(`${path} is not listed in dream.json`);
     if (!isItemPath(path)) continue;
     const parsed = yield* parseFrontMatter(input.orgId, path, text).pipe(Effect.result);
@@ -172,8 +173,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         );
       continue;
     }
-    // An edit's draft is the agent's words: only what the person typed in it can be theirs to
-    // quote, and only a preference for drafts (rule 1c) may cite one without a quote.
+    // Rule 1c's draft preference cites multiple edits by the same person.
     if (author.kind === "edit") {
       const sameAuthor = author.trust === fm.trust && author.saidBy === fm.said_by;
       if (!sameAuthor)
@@ -183,12 +183,26 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       const quote = fm.quote;
       const typed =
         quote === undefined
-          ? fm.kind === "person"
+          ? fm.kind === "person" &&
+            cited?.includes(author.ref) === true &&
+            cited.some((ref) => {
+              const edit = material.get(ref);
+              return (
+                ref !== author.ref &&
+                edit?.kind === "edit" &&
+                edit.saidBy === author.saidBy &&
+                edit.trust === author.trust
+              );
+            })
           : (author.changed ?? []).some((part) => quoteRefusal(quote, part.now) === undefined);
       if (!typed) {
         failures.push(`${path} quote: ${EDIT_QUOTE}`);
         untyped.set(path, fm.id);
       } else if (sameAuthor && quote !== undefined) {
+        if (parsed.success.body.trim() !== quote.trim()) {
+          failures.push(`${path} body: an item from an edit uses only its quote as the body`);
+          continue;
+        }
         const dated = withRecordedAt(text, author.at);
         if (dated === undefined) failures.push(`${path} can't be dated as it is formatted`);
         else changes.set(path, dated);

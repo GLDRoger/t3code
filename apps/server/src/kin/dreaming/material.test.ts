@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KEY_SENT_STORED } from "../chat/keySent.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { changedParts } from "./edits.ts";
@@ -198,6 +199,38 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
         .filter((entry) => entry.kind === "item")
         .map(({ ref, reminder }) => ({ ref, reminder })),
       [{ ref: "memory:deferrals/def-owner.md", reminder: true }],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("leaves a message sent through the owner's coding-agent key out of material", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Tidewater Freight', ${at})`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('rhea', ${orgId}, 'rhea', 'Rhea', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('dm', ${orgId}, 'direct', 2, ${at}, 'person:rhea:agent:finance')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('dm-rhea', ${orgId}, 'dm', 'person', 'rhea', 'owner', ${at})`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+        author_member_id, author_role, kind, body, mentions_json, status, client_message_id, created_at)
+      VALUES ('direct', ${orgId}, 'dm', 1, 'human', 'rhea', 'dm-rhea', 'owner', 'text',
+          'The Tidewater Freight report is due Friday.', '[]', 'posted', NULL, ${at}),
+        ('key', ${orgId}, 'dm', 2, 'human', 'rhea', 'dm-rhea', 'owner', 'text',
+          'The Tidewater Freight report is due Monday.', '[]', 'posted',
+          ${`${KEY_SENT_STORED}session-rhea:message`}, ${at})`;
+    const material = yield* collectMaterial({
+      orgId,
+      from: 0,
+      until: Date.parse(at),
+      full: false,
+      timeZone: "UTC",
+      files: new Map(),
+    });
+    assert.deepStrictEqual(
+      material.entries.map(({ ref, saidBy, trust }) => ({ ref, saidBy, trust })),
+      [{ ref: "kin:chat:dm:message:direct", saidBy: "rhea", trust: "owner" }],
     );
   }).pipe(Effect.provide(layer)),
 );

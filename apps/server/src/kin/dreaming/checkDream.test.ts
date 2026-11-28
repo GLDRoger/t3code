@@ -450,12 +450,15 @@ const editOf = (before: string, text: string): MaterialEntry => ({
   text,
   changed: changedParts(before, text),
 });
-/** Rhea's change to Finance's quote mail: the rate, and a start date she added. */
+/** Rhea's change to Finance's quote mail: the rate and a start date. */
 const rateEdit = editOf(
   "Subject: Rates\n\nHi Sam, our rate is 45 an hour. Invoices are due within 30 days.",
   "Subject: Rates\n\nHi Sam, our rate is 50 an hour, from 1 January. Invoices are due within 30 days.",
 );
-const fromEdit = (overrides: Record<string, unknown> = {}) =>
+const fromEdit = (
+  overrides: Record<string, unknown> = {},
+  body = typeof overrides.quote === "string" ? overrides.quote : "Use a short greeting in drafts.",
+) =>
   fixtureItem({
     id: "clm-rate",
     kind: "claim",
@@ -464,7 +467,15 @@ const fromEdit = (overrides: Record<string, unknown> = {}) =>
     trust: "owner",
     sensitive: true,
     ...overrides,
-  });
+  }).replace("Invented fixture body.", body);
+const firstGreetingEdit = editOf(
+  "Dear Arjun Rao,\n\nThe report is ready.",
+  "Hi Arjun,\n\nThe report is ready.",
+);
+const secondGreetingEdit = {
+  ...editOf("Dear Meera Shah,\n\nThe report is ready.", "Hi Meera,\n\nThe report is ready."),
+  ref: "kin:send:report-ready",
+};
 const typedOnly = (path: string) =>
   `${path} quote: an item from an edit quotes only what the person typed in it`;
 it.effect.each([
@@ -479,6 +490,12 @@ it.effect.each([
     path: "claims/rate.md",
     item: fromEdit({ quote: "50" }),
     failures: [],
+  },
+  {
+    name: "refuses a body that adds a sentence to the typed quote",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "from 1 January" }, "from 1 January. Invoices are due within 30 days."),
+    failures: ["claims/rate.md body: an item from an edit uses only its quote as the body"],
   },
   {
     name: "leaves out a fact quoting the agent's words the person left as they were",
@@ -502,9 +519,27 @@ it.effect.each([
     leftOut: ["claims/rate.md"],
   },
   {
-    name: "keeps the person's preference for drafts, as rule 1c writes it",
+    name: "leaves out a person item with no quote based on one edit",
     path: "people/drafts.md",
     item: fromEdit({ id: "per-drafts", kind: "person" }),
+    failures: [],
+    leftOut: ["people/drafts.md"],
+  },
+  {
+    name: "keeps the person's preference for drafts, as rule 1c writes it",
+    path: "people/drafts.md",
+    item: fromEdit(
+      { id: "per-drafts", kind: "person" },
+      "Use a short greeting in drafts, as in these two edits.",
+    ),
+    edit: firstGreetingEdit,
+    moreEdits: [secondGreetingEdit],
+    failures: [],
+  },
+  {
+    name: "keeps a person item quoting words the person typed",
+    path: "people/drafts.md",
+    item: fromEdit({ id: "per-drafts", kind: "person", quote: "from 1 January" }),
     failures: [],
   },
   {
@@ -577,6 +612,7 @@ it.effect.each([
       ...("before" in row ? [[row.path, row.before] as const] : []),
     ]);
     const also = "also" in row ? [row.also] : [];
+    const moreEdits = "moreEdits" in row ? row.moreEdits : [];
     const result = yield* checkDream({
       orgId,
       base: before,
@@ -587,11 +623,11 @@ it.effect.each([
         ...goodDream,
         changes: [row.path, ...also.map(([path]) => path)].map((path) => ({
           path,
-          sources: [path === row.path ? editRef : agentRef],
+          sources: path === row.path ? [editRef, ...moreEdits.map((edit) => edit.ref)] : [agentRef],
         })),
         merges: "merges" in row ? row.merges : [],
       }),
-      material: [...material, "edit" in row ? row.edit : rateEdit],
+      material: [...material, "edit" in row ? row.edit : rateEdit, ...moreEdits],
       requireResolutions: true,
     });
     assert.deepStrictEqual(result.failures, [...row.failures]);
@@ -625,7 +661,6 @@ it.effect("an item quoting what a person typed in an edit is dated by the edit",
       ["Monday 8"],
     );
     const path = "claims/tidewater-delivery.md";
-    const preferencePath = "people/drafts.md";
     const recordedAt = "2026-11-09T03:00:00.000Z";
     const item = fromEdit({
       id: "clm-tidewater-delivery",
@@ -633,16 +668,15 @@ it.effect("an item quoting what a person typed in an edit is dated by the edit",
       quote: "Monday 8",
       recorded_at: recordedAt,
     });
-    const preference = fromEdit({ id: "per-drafts", kind: "person", recorded_at: recordedAt });
     const result = yield* checkDream({
       orgId,
       base,
       stored: base,
-      tree: new Map([...base, [path, item], [preferencePath, preference]]),
+      tree: new Map([...base, [path, item]]),
       special: [],
       dreamJson: json({
         ...goodDream,
-        changes: [path, preferencePath].map((path) => ({ path, sources: [editRef] })),
+        changes: [{ path, sources: [editRef] }],
       }),
       material: [...material, edit],
       requireResolutions: true,
@@ -657,7 +691,6 @@ it.effect("an item quoting what a person typed in an edit is dated by the edit",
       const parsed = yield* parseFrontMatter(orgId, path, text);
       assert.strictEqual(parsed.frontMatter.recorded_at, edit.at);
       assert.deepStrictEqual(text.split("\n"), expected);
-      assert.strictEqual(files.get(preferencePath), preference);
     }
   }),
 );

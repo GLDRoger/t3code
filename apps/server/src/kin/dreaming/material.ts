@@ -7,6 +7,7 @@ import type * as Statement from "effect/sql/Statement";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { keySentSql } from "../chat/keySent.ts";
 import { itemFolders } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
@@ -140,6 +141,7 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
       LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
       WHERE m.org_id = ${orgId} AND m.status = 'posted' AND m.kind = 'text'
         AND m.author_kind IN ('human', 'agent')
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND CAST(unixepoch(m.created_at, 'subsec') * 1000 AS INTEGER) > ${from}
         AND CAST(unixepoch(m.created_at, 'subsec') * 1000 AS INTEGER) <= ${until}
         AND ${ownerOnlyChat(sql, sql`m.chat_id`)}
