@@ -816,7 +816,7 @@ it.effect(
       for (const tool of ["Read", "Edit", "Write"]) {
         for (const file_path of [...outside, `${memory}/linked-secret`])
           assert.isFalse(yield* allows(tool, { file_path }), `${tool}: ${file_path}`);
-        assert.isTrue(yield* allows(tool, { file_path: `${memory}/notes.md` }));
+        assert.isFalse(yield* allows(tool, { file_path: `${memory}/notes.md` }));
       }
       assert.isTrue(yield* allows("Read", { file_path: given }));
       assert.isFalse(yield* allows("Read", { file_path: notGiven }));
@@ -1271,7 +1271,10 @@ it.effect(
             `${scratch}/linked-secret`,
           ])
             assert.isString(yield* denial(session, tool, { file_path }), `${tool}: ${file_path}`);
-          assert.isUndefined(yield* denial(session, tool, { file_path: `${scratch}/notes.md` }));
+          assert.strictEqual(
+            yield* denial(session, tool, { file_path: `${scratch}/notes.md` }),
+            "Use your shell for files in your working folder.",
+          );
         }
         const sandbox = typeof session?.settings === "object" && session.settings.sandbox;
         assert.isObject(sandbox);

@@ -64,6 +64,7 @@ export const OWNER_SEAT_OFF = [
 export const OWNER_SEAT_NATIVE_TOOLS = ["Bash", "Read", "Edit", "Write", "WebSearch"] as const;
 const FILE_TOOLS = [...capabilities.readFiles, "Edit", "Write", "NotebookEdit"];
 const SHELL_OFF = "This session has no shell because Kin couldn't secure it.";
+const SHELL_FILE_REFUSAL = "Use your shell for files in your working folder.";
 const FILE_REFUSAL =
   "This file tool can use only your working folder and can read only the attachments given to this turn.";
 
@@ -314,6 +315,7 @@ const decisionHook = (
   plan: KinSessionPlan,
   files: (tool: string, input: unknown) => Promise<boolean>,
   prepareShell: Effect.Effect<boolean>,
+  fileRefusal: string,
 ): HookCallbackMatcher => ({
   onFailure: "block",
   hooks: [
@@ -337,7 +339,7 @@ const decisionHook = (
         return (await Effect.runPromise(prepareShell)) ? {} : refused(SHELL_OFF);
       }
       if (!WEB_READS.has(input.tool_name))
-        return (await files(input.tool_name, input.tool_input)) ? {} : refused(FILE_REFUSAL);
+        return (await files(input.tool_name, input.tool_input)) ? {} : refused(fileRefusal);
       // What it reads is outside text: the turn is marked before the result reaches the model.
       const marked = await Effect.runPromise(plan.webRead(hostOf(input.tool_input)));
       return marked === undefined ? {} : refused(marked);
@@ -490,7 +492,13 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
               if (unsafe) root = undefined;
               else if (plan.shell !== undefined) sandbox = settings;
             } else root = undefined;
-            scope = { root, tools: FILE_TOOLS, attachmentPaths: attachments };
+            // With no shell, there is no sandboxed process racing these checkout path checks.
+            scope = {
+              root,
+              tools: FILE_TOOLS,
+              attachmentPaths: attachments,
+              attachmentsOnly: sandbox !== undefined,
+            };
           }
           return yield* runner.open({
             ...input,
@@ -505,6 +513,7 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
                         ? Promise.resolve(false)
                         : confiner.permits(scope, tool, args),
                     sandbox === undefined ? Effect.succeed(false) : plan.shell!.prepareLogs,
+                    sandbox === undefined ? FILE_REFUSAL : SHELL_FILE_REFUSAL,
                   ),
               auth,
               scope,

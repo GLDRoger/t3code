@@ -16,6 +16,7 @@ export interface FileScope {
   readonly attachments?: string;
   /** Unlike dreams, an interactive turn gets only the attachment paths it was handed. */
   readonly attachmentPaths?: ReadonlyArray<string>;
+  readonly attachmentsOnly?: boolean;
   /** `false` refuses every MCP tool too, for a session that must have none. */
   readonly mcp?: boolean;
 }
@@ -110,6 +111,13 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
   if (targets === undefined || !targets.globs.every(safeGlob)) return false;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  if (scope.attachmentsOnly) {
+    const file = targets.paths[0];
+    if (tool !== "Read" || file === undefined || !scope.attachmentPaths?.includes(file))
+      return false;
+    const real = yield* fs.realPath(file).pipe(Effect.orElseSucceed(() => undefined));
+    return real === file;
+  }
   const inside = (parent: string, child: string) => {
     const relative = path.relative(parent, child);
     return (
