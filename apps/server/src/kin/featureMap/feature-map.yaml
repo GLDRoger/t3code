@@ -52,6 +52,17 @@ features:
       - apps/server/src/kin/lead/ChatWake.test.ts
       - apps/server/src/kin/reply/KinReplyBridge.test.ts
 
+  - id: money-in-check
+    name: Ask Finance whether incoming money matches the bank
+    tab: chats
+    web: [home, chat, card:Money in against the bank]
+    phone: [tab:chats, KinChat, card:Money in against the bank]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [money_in_check]
+    note: Uses stored bank evidence, says what it covers, and changes no money.
+    proof:
+      - apps/server/src/kin/work/statements/moneyInCheck.test.ts
+
   - id: chat-kept-true
     name: An agent takes back or puts right its plain message nobody has read yet; the owner side can show what it said, the last version only
     tab: chats

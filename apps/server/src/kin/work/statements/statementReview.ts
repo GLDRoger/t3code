@@ -344,11 +344,10 @@ export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(func
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
-    WHERE p.org_id = ${orgId} AND p.withheld = 0 AND ${
+    WHERE p.org_id = ${orgId} AND p.withheld = 0 AND ${countedPayment(sql)} AND ${
       check === undefined
-        ? sql`r.register_id = 'invoices' AND p.voided_at IS NULL AND ${keptEntry(sql)}
-          AND p.paid_on >= ${sinceDay} AND ${recorded}`
-        : sql`r.register_id IN ('invoices', 'receipts') AND ${countedPayment(sql)} AND (
+        ? sql`r.register_id = 'invoices' AND p.paid_on >= ${sinceDay} AND ${recorded}`
+        : sql`r.register_id IN ('invoices', 'receipts') AND (
           p.paid_on BETWEEN ${sinceDay} AND ${check.through} OR
           ${bankId} IN (SELECT value FROM json_each(${bankIds})))`
     }

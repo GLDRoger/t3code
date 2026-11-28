@@ -47,7 +47,7 @@ const OWN_READS: Readonly<Record<string, number>> = {
   // The entries one bank alert may already be, and a statement's alert entries listed one by
   // one against its rows: amounts matched and named, nothing summed.
   "work/statements/bankAlerts.ts": 2,
-  "work/statements/statementReview.ts": 4,
+  "work/statements/statementReview.ts": 3,
   // Each kept bill or competing expense is matched by its own amount, never added up here.
   "work/statements/debitBill.ts": 3,
   // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
